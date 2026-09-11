@@ -39,6 +39,7 @@
   --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.03);
   --modal-overlay-bg: rgba(15, 23, 42, 0.65);
   --topbar-bg: rgba(255, 255, 255, 0.85);
+  --progress-track-bg: rgb(216, 219, 223);
 }
 
 [data-theme="dark"] {
@@ -48,6 +49,7 @@
   --bg-accent: #064e3b;
   --bg-accent-warm: #451a03;
   --topbar-bg: rgba(17, 24, 39, 0.85);
+  --progress-track-bg: #334155;
   
   --border-color: #334155;
   --border-color-strong: #475569;
@@ -227,6 +229,19 @@
 
 ::-webkit-scrollbar-thumb:hover {
   background: #059669;
+}
+
+/* Universal Loading & Progress Bar Track Background */
+.progress-bar-track,
+[class*="progress-bar-track"],
+[class*="progress_track"],
+.progress-track,
+progress {
+  background: var(--progress-track-bg, rgb(216, 219, 223)) !important;
+}
+
+progress::-webkit-progress-bar {
+  background: var(--progress-track-bg, rgb(216, 219, 223)) !important;
 }
 
 html, body {

@@ -25,7 +25,7 @@ export const CircularProgress: React.FC<CircularProgressProps> = ({
   progress,
   size = 20,
   strokeWidth = 2.5,
-  trackColor = "rgba(255, 255, 255, 0.25)",
+  trackColor = "var(--progress-track-bg, rgb(216, 219, 223))",
   progressColor = "#34d399",
   isProcessing = false,
 }) => {
@@ -402,10 +402,11 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                   {(isUploading || isProcessing) && (
                     <div>
                       <div
+                        className="progress-bar-track"
                         style={{
                           height: "6px",
                           borderRadius: "3px",
-                          background: "#e2e8f0",
+                          background: "var(--progress-track-bg, rgb(216, 219, 223))",
                           overflow: "hidden",
                         }}
                       >
@@ -437,7 +438,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                                 const totalMB = ((task.fileSizeBytes || 0) / (1024 * 1024)).toFixed(1);
                                 const loadedBytes = task.loadedBytes ?? ((task.fileSizeBytes || 0) * (task.progress || 0)) / 100;
                                 const loadedMB = (loadedBytes / (1024 * 1024)).toFixed(1);
-                                return `تم رفع ${loadedMB} من ${totalMB} MB`;
+                                return `جاري رفع الملفات: MB ${loadedMB} من MB ${totalMB}`;
                               })()}
                         </span>
                         <strong style={{ color: isProcessing ? "#0284c7" : "#059669" }}>{task.progress}%</strong>

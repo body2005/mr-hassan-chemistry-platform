@@ -64,7 +64,7 @@ interface AIKnowledgeCenterViewProps {
 export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () => {
   const confirm = useConfirm();
   const toast = useToast();
-  const [selectedCourseId, setSelectedCourseId] = useState<string>("all");
+  const [selectedCourseId] = useState<string>("all");
   const [courses, setCourses] = useState<Course[]>([]);
 
   const [sources, setSources] = useState<KnowledgeSourceItem[]>([]);
@@ -490,62 +490,6 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
 
 
 
-      {/* Course Selector Bar */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "10px",
-          marginBottom: "20px",
-          padding: "12px 16px",
-          background: "var(--bg-card, rgba(255,255,255,0.04))",
-          borderRadius: "12px",
-          border: "1px solid var(--border-color, rgba(255,255,255,0.08))",
-          flexWrap: "wrap",
-        }}
-      >
-        <span style={{ fontSize: "13px", fontWeight: 800, color: "var(--text-main)" }}>
-          📚 المقرر الدراسي المستهدف:
-        </span>
-        <button
-          type="button"
-          onClick={() => setSelectedCourseId("all")}
-          style={{
-            padding: "6px 14px",
-            borderRadius: "20px",
-            fontSize: "12px",
-            fontWeight: 700,
-            cursor: "pointer",
-            border: "1px solid var(--border-color, #e2e8f0)",
-            background: selectedCourseId === "all" ? "#0f392b" : "transparent",
-            color: selectedCourseId === "all" ? "#ffffff" : "var(--text-main)",
-            transition: "all 0.2s ease",
-          }}
-        >
-          جميع المقررات
-        </button>
-        {courses.map((c) => (
-          <button
-            key={c.id}
-            type="button"
-            onClick={() => setSelectedCourseId(c.id)}
-            style={{
-              padding: "6px 14px",
-              borderRadius: "20px",
-              fontSize: "12px",
-              fontWeight: 700,
-              cursor: "pointer",
-              border: "1px solid var(--border-color, #e2e8f0)",
-              background: selectedCourseId === c.id ? "#0f392b" : "transparent",
-              color: selectedCourseId === c.id ? "#ffffff" : "var(--text-main)",
-              transition: "all 0.2s ease",
-            }}
-          >
-            {c.title}
-          </button>
-        ))}
-      </div>
-
       {/* Upload Zone */}
       <div
         style={{
@@ -603,7 +547,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                     const totalMB = ((currentKnowledgeTask?.fileSizeBytes || 0) / (1024 * 1024)).toFixed(1);
                     const loadedBytes = currentKnowledgeTask?.loadedBytes ?? ((currentKnowledgeTask?.fileSizeBytes || 0) * (uploadProgress || 0)) / 100;
                     const loadedMB = (loadedBytes / (1024 * 1024)).toFixed(1);
-                    return `جاري رفع الملفات: ${loadedMB} من ${totalMB} MB (${uploadProgress}%)...`;
+                    return `جاري رفع الملفات: MB ${loadedMB} من MB ${totalMB} (${uploadProgress}%)`;
                   })()
                 : "جاري حفظ وتجهيز الملفات..."
               : "اختر كتابًا أو عدة ملفات لرفعها وفهرستها"}
@@ -612,7 +556,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
 
         {uploading && uploadProgress !== null && currentKnowledgeTask && (
           <div style={{ marginTop: "14px", width: "100%", maxWidth: "420px", marginInline: "auto" }}>
-            <div style={{ background: "rgba(255,255,255,0.12)", borderRadius: "9999px", height: "8px", overflow: "hidden" }}>
+            <div className="progress-bar-track" style={{ background: "var(--progress-track-bg, rgb(216, 219, 223))", borderRadius: "9999px", height: "8px", overflow: "hidden" }}>
               <div
                 style={{
                   width: `${uploadProgress}%`,
@@ -676,7 +620,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                     <>
                       <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
                         <span>
-                          تم رفع {loadedMB} ميجابايت من {totalMB} ميجابايت
+                          جاري رفع الملفات: MB {loadedMB} من MB {totalMB}
                         </span>
                         <button
                           type="button"
@@ -767,7 +711,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                             <span>جاري الفهرسة... {src.progress_percent > 0 ? `${src.progress_percent}%` : ""}</span>
                           </span>
                           {src.progress_percent > 0 && (
-                            <div style={{ width: "110px", height: "5px", background: "rgba(255,255,255,0.12)", borderRadius: "9999px", overflow: "hidden" }}>
+                            <div className="progress-bar-track" style={{ width: "110px", height: "5px", background: "var(--progress-track-bg, rgb(216, 219, 223))", borderRadius: "9999px", overflow: "hidden" }}>
                               <div style={{ width: `${src.progress_percent}%`, height: "100%", background: "#fbbf24", transition: "width 0.3s ease" }} />
                             </div>
                           )}
