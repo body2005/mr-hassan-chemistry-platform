@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.db
+pytest_full.log
+
+# Environment & secrets
+.env
+apps/*/.env
+!*.env.example
+cookies.txt
+*.cookies
+
+# Node
+node_modules/
+dist/
+
+# Uploaded media & regenerable caches
+apps/api/uploads/
+**/knowledge_center/page_cache/
+**/knowledge_center/ocr_cache/
+**/knowledge_center/cache_test/
+
+# Backups & artifacts
+backups/
+*.sql.gz
+
+# OS
+.DS_Store
+Thumbs.db
+
+# SQLite WAL files
+*.db-shm
+*.db-wal
+
+# Standalone exports & old builds
+standalone_chemistry_platform/
+real_chemistry_platform/
+
+# Large generated docs (regenerable)
+ALL_AI_CODE.md
+COMPLETE_AI_AND_INDEXING_CODE.md
+
+# IDE
+.idea/
+.vscode/
+
+# Misc
+*.log
+$null

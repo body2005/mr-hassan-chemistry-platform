@@ -1,0 +1,33 @@
+from __future__ import annotations
+
+import os
+
+os.environ["APP_ENV"] = "test"
+os.environ["SECRET_KEY"] = "test-secret-key-that-is-long-enough"
+os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+os.environ["FRONTEND_ORIGINS"] = "http://localhost:5173"
+os.environ["AI_SERVICE_URL"] = "http://127.0.0.1:9"
+os.environ["AI_SERVICE_TIMEOUT"] = "0.05"
+os.environ["OLLAMA_TIMEOUT"] = "0.05"
+
+import pytest
+from sqlalchemy.orm import Session
+
+from app.core.database import SessionLocal, engine
+from app.core.rate_limit import reset_rate_limits
+from app.models import Base
+
+
+@pytest.fixture(autouse=True)
+def clean_database():
+    reset_rate_limits()
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    yield
+    Base.metadata.drop_all(bind=engine)
+
+
+@pytest.fixture
+def db() -> Session:
+    with SessionLocal() as session:
+        yield session

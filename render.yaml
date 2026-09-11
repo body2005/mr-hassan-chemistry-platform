@@ -1,0 +1,24 @@
+# Render Blueprint — auto-deploy configuration
+# https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: chemistry-platform-api
+    runtime: python
+    rootDir: apps/api
+    buildCommand: pip install -r requirements.txt && python -m scripts.seed_teacher
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        value: sqlite:///./learning_website.db
+      - key: FRONTEND_ORIGINS
+        sync: false  # Set after Vercel deployment
+      - key: COOKIE_CROSS_SITE
+        value: "true"
+      - key: PYTHON_VERSION
+        value: "3.10.17"
+    autoDeploy: true
