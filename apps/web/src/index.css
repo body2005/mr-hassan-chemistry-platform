@@ -252,6 +252,8 @@ html, body {
   background-color: var(--bg-primary);
   position: relative;
   overflow-x: hidden;
+  max-width: 100vw;
+  width: 100%;
 }
 
 /* Mobile Sidebar Backdrop — Lightweight for 60fps rendering */
@@ -408,7 +410,9 @@ main {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  padding-top: 68px;
+  max-width: 100vw;
+  overflow-x: hidden;
+  padding-top: 74px;
   box-sizing: border-box;
 }
 
@@ -899,33 +903,49 @@ img, video, canvas, svg {
 /* Mobile Breakpoint: <= 640px */
 @media (max-width: 640px) {
   .page-container {
-    padding: 12px 10px !important;
+    padding: 14px 10px 85px 10px !important;
   }
 
   .topbar {
-    height: 58px !important;
+    height: 60px !important;
     padding: 0 10px !important;
   }
 
   main {
-    padding-top: 58px !important;
+    padding-top: 68px !important;
   }
 
   .search-box {
     display: none !important;
   }
 
+  .topbar-brand-subtitle {
+    display: none !important;
+  }
+
+  .topbar-brand-title {
+    font-size: 13px !important;
+    max-width: 155px !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  .topbar-quick-search-btn {
+    display: none !important;
+  }
+
   .icon-btn {
-    width: 40px !important;
-    height: 40px !important;
+    width: 36px !important;
+    height: 36px !important;
   }
 
   .btn-primary,
   .btn-secondary,
   .btn-outline {
-    min-height: 44px;
-    padding: 10px 14px !important;
-    font-size: 12.5px !important;
+    min-height: 40px;
+    padding: 8px 12px !important;
+    font-size: 12px !important;
   }
 
   .responsive-split-grid,
@@ -945,19 +965,31 @@ img, video, canvas, svg {
     gap: 14px !important;
   }
 
-  /* Floating AI Assistant on Mobile */
+  /* Floating AI Assistant on Mobile: Compact 46px Circle */
   .floating-ai-fab {
-    bottom: 16px !important;
-    padding: 9px 14px !important;
-    font-size: 12px !important;
+    bottom: 20px !important;
+    width: 46px !important;
+    height: 46px !important;
+    padding: 0 !important;
+    border-radius: 50% !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-shadow: 0 6px 20px rgba(5, 150, 105, 0.45) !important;
+  }
+
+  .floating-ai-text {
+    display: none !important;
   }
 
   [dir="rtl"] .floating-ai-fab {
-    left: 14px !important;
+    left: 16px !important;
+    right: auto !important;
   }
 
   [dir="ltr"] .floating-ai-fab {
-    right: 14px !important;
+    right: 16px !important;
+    left: auto !important;
   }
 
   .ai-chat-window {
@@ -1116,6 +1148,41 @@ img, video, canvas, svg {
 }
 
 @media (max-width: 768px) {
+  .landing-top-utility-bar {
+    padding: 6px 10px !important;
+  }
+
+  .landing-topbar-actions {
+    gap: 6px !important;
+  }
+
+  .landing-navbar-wrapper {
+    padding: 0 8px !important;
+  }
+
+  .landing-navbar-pill {
+    border-radius: 18px !important;
+    padding: 8px 12px !important;
+    margin-top: 6px !important;
+  }
+
+  .landing-brand-sub {
+    display: none !important;
+  }
+
+  .landing-brand-title {
+    font-size: 12.5px !important;
+    max-width: 145px !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+  }
+
+  .landing-nav-cta-btn {
+    padding: 6px 12px !important;
+    font-size: 11.5px !important;
+  }
+
   .landing-about-card {
     grid-template-columns: 1fr !important;
     padding: 24px 18px !important;

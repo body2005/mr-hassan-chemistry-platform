@@ -907,6 +907,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
             padding: "5px",
             borderRadius: "14px",
             border: "1px solid var(--border-color, #cbd5e1)",
+            flexWrap: "wrap",
+            width: "100%",
+            maxWidth: "480px",
           }}
         >
           <button
@@ -915,16 +918,19 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
             style={{
               display: "flex",
               alignItems: "center",
+              justifyContent: "center",
               gap: "8px",
-              padding: "9px 18px",
+              padding: "9px 14px",
               borderRadius: "10px",
               border: "none",
               background: activeSubTab === "create" ? "#0f392b" : "transparent",
               color: activeSubTab === "create" ? "#ffffff" : "var(--text-main, #0f172a)",
               fontWeight: 800,
-              fontSize: "13px",
+              fontSize: "12.5px",
               cursor: "pointer",
               transition: "all 0.2s ease",
+              flex: 1,
+              minWidth: "140px",
             }}
           >
             <Sparkles size={15} />
@@ -937,20 +943,23 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
             style={{
               display: "flex",
               alignItems: "center",
+              justifyContent: "center",
               gap: "8px",
-              padding: "9px 18px",
+              padding: "9px 14px",
               borderRadius: "10px",
               border: "none",
               background: activeSubTab === "history" ? "#0f392b" : "transparent",
               color: activeSubTab === "history" ? "#ffffff" : "var(--text-main, #0f172a)",
               fontWeight: 800,
-              fontSize: "13px",
+              fontSize: "12.5px",
               cursor: "pointer",
               transition: "all 0.2s ease",
+              flex: 1,
+              minWidth: "160px",
             }}
           >
             <FileQuestion size={15} />
-            <span>سجل الاختبارات المرفوعة (History)</span>
+            <span>سجل الاختبارات المرفوعة</span>
             {historyCount > 0 && (
               <span
                 style={{
@@ -994,23 +1003,26 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
         </div>
 
         {/* Mode Tabs: AI vs Manual */}
-        <div style={{ display: "flex", background: "var(--bg-surface-secondary, #f1f5f9)", padding: "4px", borderRadius: "12px", border: "1px solid var(--border-color, #e2e8f0)" }}>
+        <div style={{ display: "flex", background: "var(--bg-surface-secondary, #f1f5f9)", padding: "4px", borderRadius: "12px", border: "1px solid var(--border-color, #e2e8f0)", flexWrap: "wrap", gap: "4px", width: "100%", maxWidth: "420px" }}>
           <button
             type="button"
             onClick={() => { setCreationMode("ai"); setApproved(false); }}
             style={{
               display: "flex",
               alignItems: "center",
+              justifyContent: "center",
               gap: "6px",
-              padding: "8px 14px",
+              padding: "8px 12px",
               borderRadius: "8px",
               border: "none",
               background: creationMode === "ai" ? "#0f392b" : "transparent",
               color: creationMode === "ai" ? "#ffffff" : "var(--text-main)",
-              fontSize: "12.5px",
+              fontSize: "12px",
               fontWeight: 800,
               cursor: "pointer",
               transition: "all 0.2s ease",
+              flex: 1,
+              minWidth: "130px",
             }}
           >
             <Sparkles size={14} />
@@ -1023,16 +1035,19 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
             style={{
               display: "flex",
               alignItems: "center",
+              justifyContent: "center",
               gap: "6px",
-              padding: "8px 14px",
+              padding: "8px 12px",
               borderRadius: "8px",
               border: "none",
               background: creationMode === "manual" ? "#0f392b" : "transparent",
               color: creationMode === "manual" ? "#ffffff" : "var(--text-main)",
-              fontSize: "12.5px",
+              fontSize: "12px",
               fontWeight: 800,
               cursor: "pointer",
               transition: "all 0.2s ease",
+              flex: 1,
+              minWidth: "150px",
             }}
           >
             <PenTool size={14} />
@@ -1099,7 +1114,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
             <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "6px", color: "var(--text-main)" }}>
               الصف الدراسي:
             </label>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "6px", marginBottom: "12px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "6px", marginBottom: "12px" }}>
               {[
                 { id: "1st_secondary" as const, label: "الأول الثانوي" },
                 { id: "2nd_secondary" as const, label: "الثاني الثانوي" },
@@ -1110,15 +1125,19 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
                   type="button"
                   onClick={() => setSelectedAcademicYear(y.id)}
                   style={{
-                    padding: "8px 4px",
+                    padding: "8px 2px",
                     borderRadius: "8px",
                     border: selectedAcademicYear === y.id ? "2px solid #059669" : "1px solid var(--border-color)",
                     background: selectedAcademicYear === y.id ? "#0f392b" : "var(--bg-surface-secondary)",
                     color: selectedAcademicYear === y.id ? "#ffffff" : "var(--text-main)",
-                    fontSize: "12px",
+                    fontSize: "11.5px",
                     fontWeight: 800,
                     cursor: "pointer",
                     textAlign: "center",
+                    minWidth: 0,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
                   }}
                 >
                   {y.label}
@@ -1490,19 +1509,19 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
               <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
                 {assessmentType === "quiz" ? "موعد النشر وبدء الإتاحة:" : "موعد نشر الواجب:"}
               </label>
-              <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: "6px" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "6px" }}>
                 <input
                   type="date"
                   value={publishStartDate}
                   onChange={(e) => setPublishStartDate(e.target.value)}
-                  style={{ padding: "7px 10px", border: "1px solid var(--border-color-strong)", borderRadius: "6px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)" }}
+                  style={{ width: "100%", boxSizing: "border-box", minWidth: 0, padding: "7px 10px", border: "1px solid var(--border-color-strong)", borderRadius: "6px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)" }}
                 />
                 <input
                   type="text"
                   value={publishStartTime}
                   onChange={(e) => setPublishStartTime(e.target.value)}
                   placeholder="06:00 م"
-                  style={{ padding: "7px 10px", border: "1px solid var(--border-color-strong)", borderRadius: "6px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)", textAlign: "center" }}
+                  style={{ width: "100%", boxSizing: "border-box", minWidth: 0, padding: "7px 10px", border: "1px solid var(--border-color-strong)", borderRadius: "6px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)", textAlign: "center" }}
                 />
               </div>
             </div>
@@ -1512,19 +1531,19 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
               <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
                 {assessmentType === "quiz" ? "موعد انتهاء الإتاحة وإغلاق الاختبار:" : "آخر موعد لتسليم الواجب (Deadline):"}
               </label>
-              <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: "6px" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "6px" }}>
                 <input
                   type="date"
                   value={closeDeadlineDate}
                   onChange={(e) => setCloseDeadlineDate(e.target.value)}
-                  style={{ padding: "7px 10px", border: "1px solid var(--border-color-strong)", borderRadius: "6px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)" }}
+                  style={{ width: "100%", boxSizing: "border-box", minWidth: 0, padding: "7px 10px", border: "1px solid var(--border-color-strong)", borderRadius: "6px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)" }}
                 />
                 <input
                   type="text"
                   value={closeDeadlineTime}
                   onChange={(e) => setCloseDeadlineTime(e.target.value)}
                   placeholder="11:59 م"
-                  style={{ padding: "7px 10px", border: "1px solid var(--border-color-strong)", borderRadius: "6px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)", textAlign: "center" }}
+                  style={{ width: "100%", boxSizing: "border-box", minWidth: 0, padding: "7px 10px", border: "1px solid var(--border-color-strong)", borderRadius: "6px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)", textAlign: "center" }}
                 />
               </div>
             </div>

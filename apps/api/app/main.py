@@ -141,18 +141,29 @@ def ensure_demo_users_exist() -> None:
                     is_active=True,
                 )
                 db.add(teacher)
-            student = db.query(User).filter(User.email == "student@demo.com").first()
-            if not student:
-                student = User(
-                    institution_id=inst.id,
-                    username="student",
-                    email="student@demo.com",
-                    display_name="أحمد محمد",
-                    role=UserRole.STUDENT,
-                    password_hash=hash_password("Demo-Pass-2026!"),
-                    is_active=True,
-                )
-                db.add(student)
+            student_accounts = [
+                ("student", "student@demo.com", "أحمد محمد"),
+                ("ahmed_ibrahim", "ahmed.ibrahim@student.com", "أحمد إبراهيم محمود"),
+                ("mariam_khaled", "mariam.khaled@student.com", "مريم خالد عبد الرحمن"),
+                ("youssef_tarek", "youssef.tarek@student.com", "يوسف طارق الديب"),
+                ("omar_sharif", "omar.sharif@student.com", "عمر شريف المهدي"),
+                ("salma_hany", "salma.hany@student.com", "سلمى هاني القاضي"),
+            ]
+            for u_name, u_email, u_disp in student_accounts:
+                st = db.query(User).filter(User.email == u_email).first()
+                if not st:
+                    st = User(
+                        institution_id=inst.id,
+                        username=u_name,
+                        email=u_email,
+                        display_name=u_disp,
+                        role=UserRole.STUDENT,
+                        password_hash=hash_password("Demo-Pass-2026!"),
+                        is_active=True,
+                    )
+                    db.add(st)
+                else:
+                    st.display_name = u_disp
             db.commit()
 
             from app.models.course import Course, CourseStatus

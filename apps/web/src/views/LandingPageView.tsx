@@ -90,6 +90,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
           TOP BAR 1: TOP COLORED UTILITY BAR
          ========================================================================= */}
       <div
+        className="landing-top-utility-bar"
         style={{
           background: "linear-gradient(90deg, #09261c 0%, #0f392b 50%, #164f40 100%)",
           color: "#ffffff",
@@ -138,7 +139,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
         </div>
 
         {/* Center/End Utility: Search Bar, Language, Theme, and Auth Links */}
-        <div style={{ display: "flex", alignItems: "center", gap: "10px", marginInlineStart: "auto" }}>
+        <div className="landing-topbar-actions" style={{ display: "flex", alignItems: "center", gap: "10px", marginInlineStart: "auto" }}>
           {/* Search Box in Top Bar (Hidden on mobile) */}
           <div className="landing-topbar-search">
             <input
@@ -237,8 +238,9 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
       {/* =========================================================================
           MAIN FLOATING NAVIGATION BAR (Pill Bar)
          ========================================================================= */}
-      <div style={{ position: "relative", zIndex: 30, padding: "0 16px" }}>
+      <div className="landing-navbar-wrapper" style={{ position: "relative", zIndex: 30, padding: "0 16px" }}>
         <div
+          className="landing-navbar-pill"
           style={{
             maxWidth: "1180px",
             margin: "0 auto",
@@ -255,7 +257,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
           }}
         >
           {/* Logo on Right */}
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
             <div
               style={{
                 width: "38px",
@@ -272,11 +274,11 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
             >
               <GraduationCap size={20} fill="white" />
             </div>
-            <div>
-              <strong style={{ fontSize: "14px", display: "block", color: "var(--text-main)", lineHeight: "1.1" }}>
+            <div style={{ minWidth: 0 }}>
+              <strong className="landing-brand-title" style={{ fontSize: "14px", display: "block", color: "var(--text-main)", lineHeight: "1.1" }}>
                 {t.brandTitle}
               </strong>
-              <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>{t.brandSubtitle}</span>
+              <span className="landing-brand-sub" style={{ fontSize: "10px", color: "var(--text-muted)" }}>{t.brandSubtitle}</span>
             </div>
           </div>
 
@@ -423,7 +425,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
 
             {/* Left CTA Button */}
             <button
-              className="btn-primary"
+              className="btn-primary landing-nav-cta-btn"
               onClick={() => onNavigateToAuth("register")}
               style={{
                 padding: "8px 16px",
@@ -431,6 +433,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
                 fontSize: "12px",
                 fontWeight: 800,
                 whiteSpace: "nowrap",
+                flexShrink: 0,
               }}
             >
               <span>{t.landingStartLearningBtn}</span>

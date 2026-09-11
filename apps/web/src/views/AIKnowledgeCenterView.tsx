@@ -474,15 +474,15 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
   };
 
   return (
-    <div style={{ padding: "24px", maxWidth: "1280px", margin: "0 auto", color: "var(--text-main, var(--text-color, inherit))" }}>
+    <div className="page-container" style={{ maxWidth: "1280px", margin: "0 auto", color: "var(--text-main, var(--text-color, inherit))" }}>
       {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px" }}>
-        <div>
-          <h1 style={{ fontSize: "24px", fontWeight: "700", display: "flex", alignItems: "center", gap: "10px", margin: 0, color: "var(--text-main, var(--text-color, inherit))" }}>
-            <Sparkles style={{ color: "#2563eb" }} />
-            مركز المعرفة التعليمي للذكاء الاصطناعي (AI Knowledge Center)
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
+        <div style={{ minWidth: 0, width: "100%" }}>
+          <h1 style={{ fontSize: "20px", fontWeight: "700", display: "flex", alignItems: "center", gap: "10px", margin: 0, flexWrap: "wrap", color: "var(--text-main, var(--text-color, inherit))" }}>
+            <Sparkles style={{ color: "#2563eb", flexShrink: 0 }} size={22} />
+            <span>مركز المعرفة التعليمي للذكاء الاصطناعي (AI Knowledge Center)</span>
           </h1>
-          <p style={{ color: "var(--text-muted, #94a3b8)", marginTop: "6px", fontSize: "14px" }}>
+          <p style={{ color: "var(--text-muted, #94a3b8)", marginTop: "6px", fontSize: "13px" }}>
             تحكّم في المصادر التعليمية والمذكرات والأسئلة السابقة التي يستند إليها الذكاء الاصطناعي في الشرح والإجابة وصناعة الاختبارات والواجبات.
           </p>
         </div>

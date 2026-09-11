@@ -106,11 +106,11 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <GraduationCap size={20} />
           </div>
-          <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.2 }}>
-            <strong style={{ fontSize: "14px", fontWeight: 800, color: "var(--text-main)", whiteSpace: "nowrap" }}>
+          <div className="topbar-brand-text" style={{ display: "flex", flexDirection: "column", lineHeight: 1.2, minWidth: 0 }}>
+            <strong className="topbar-brand-title" style={{ fontSize: "14px", fontWeight: 800, color: "var(--text-main)" }}>
               {t.brandTitle || (lang === "ar" ? "منصة الكيمياء — مستر حسن شعبان" : "Chemistry Platform — Mr. Hassan Shaaban")}
             </strong>
-            <span style={{ fontSize: "10.5px", color: "var(--text-muted)", fontWeight: 600 }}>
+            <span className="topbar-brand-subtitle" style={{ fontSize: "10.5px", color: "var(--text-muted)", fontWeight: 600 }}>
               {t.brandSubtitle || (lang === "ar" ? "المنصة المتخصصة في تدريس الكيمياء" : "Secondary Chemistry Learning Portal")}
             </span>
           </div>
@@ -124,7 +124,7 @@ export const Header: React.FC<HeaderProps> = ({
           </label>
           <button
             type="button"
-            className="icon-btn"
+            className="icon-btn topbar-quick-search-btn"
             title={lang === "ar" ? "تصفية وبحث متقدم في المحتوى" : "Quick Search & Filter"}
             aria-label="Filter Search"
             style={{ width: "36px", height: "36px", borderRadius: "10px", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)" }}

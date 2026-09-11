@@ -233,7 +233,7 @@ export const FloatingAITutor: React.FC<FloatingAITutorProps> = ({
           }}
         >
           <Sparkles size={18} />
-          <span>{isTeacher ? "مساعد المعلم الذكي" : "المساعد الذكي"}</span>
+          <span className="floating-ai-text">{isTeacher ? "مساعد المعلم الذكي" : "المساعد الذكي"}</span>
         </button>
       )}
 
