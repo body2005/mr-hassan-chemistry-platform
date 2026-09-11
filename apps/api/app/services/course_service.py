@@ -22,6 +22,8 @@ def _course_query_for_user(db: Session, user: User | None):
         query = query.where(Course.institution_id == user.institution_id)
     if user.role == UserRole.STUDENT:
         query = query.where(Course.status == CourseStatus.PUBLISHED)
+    elif user.role == UserRole.TEACHER:
+        query = query.where(Course.teacher_id == user.id)
     return query
 
 

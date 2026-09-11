@@ -443,6 +443,8 @@ def test_job_status_endpoint(setup_db):
     db: Session = setup_db["db"]
     lesson: Lesson = setup_db["lesson"]
     course: Course = setup_db["course"]
+    teacher: User = setup_db["teacher"]
+    from app.core.security import create_session_token
 
     job, _, _ = TranscriptionJobManager.create_job(
         db=db,
@@ -452,7 +454,13 @@ def test_job_status_endpoint(setup_db):
         storage_path="path.mp4",
     )
 
-    resp = client.get(f"/api/v1/transcription/jobs/{job.id}")
+    # 1. Unauthenticated request must return 401
+    resp_unauth = client.get(f"/api/v1/transcription/jobs/{job.id}")
+    assert resp_unauth.status_code == 401
+
+    # 2. Authenticated request for course teacher returns 200
+    token = create_session_token(teacher)
+    resp = client.get(f"/api/v1/transcription/jobs/{job.id}", cookies={"matgar_session": token})
     assert resp.status_code == 200
     data = resp.json()
     assert data["job_id"] == str(job.id)

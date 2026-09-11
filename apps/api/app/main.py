@@ -4,7 +4,6 @@ import time
 import uuid
 
 from fastapi import FastAPI, HTTPException
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -14,9 +13,6 @@ from app.core.database import engine
 from app.core.errors import install_error_handlers
 from app.core.metrics import record_request
 from app.core.rate_limit import enforce_rate_limit
-from app.models import Base
-
-Base.metadata.create_all(bind=engine)
 
 settings = get_settings()
 
@@ -75,22 +71,11 @@ async def security_middleware(request, call_next):
             )
     if unsafe_method and origin and not is_origin_allowed(origin):
         return JSONResponse(status_code=403, content={"detail": "Origin is not allowed"})
-    # CSRF validation: enforce whenever a cookie session is used on an unsafe
-    # method with an Origin header (Bearer tokens are not CSRF-susceptible).
-    auth_header = request.headers.get("Authorization") or ""
-    has_bearer = auth_header.startswith("Bearer ")
-    if (
-        not has_bearer
-        and unsafe_method
-        and origin
-        and request.cookies.get(settings.session_cookie_name)
-    ):
+    if unsafe_method and origin and request.cookies.get(settings.session_cookie_name):
         csrf_cookie = request.cookies.get(settings.csrf_cookie_name)
         csrf_header = request.headers.get("X-CSRF-Token")
         if not csrf_cookie or not secrets.compare_digest(csrf_cookie, csrf_header or ""):
-            if settings.app_env == "production":
-                return JSONResponse(status_code=403, content={"detail": "CSRF validation failed"})
-            # In development / demo tunnels, allow request to proceed without 403 block
+            return JSONResponse(status_code=403, content={"detail": "CSRF validation failed"})
 
     request.state.request_id = request_id
     started = time.perf_counter()
@@ -114,7 +99,6 @@ async def security_middleware(request, call_next):
 
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-app.mount("/static/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 app.include_router(api_router, prefix=settings.api_v1_prefix)
 install_error_handlers(app)

@@ -6,7 +6,7 @@ UTC = timezone.utc
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status, UploadFile, File, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 import os
 import shutil
 from sqlalchemy import func, select
@@ -101,50 +101,79 @@ async def upload_lesson_video(
     request: Request,
     file: UploadFile = File(...),
 ) -> dict:
+    enforce_rate_limit(request, bucket="video_upload", limit=5, window_seconds=60)
     lesson = db.get(Lesson, lesson_id)
     if not lesson:
         raise HTTPException(status_code=404, detail="Lesson not found")
+    module = db.get(CourseModule, lesson.module_id)
+    course = db.get(Course, module.course_id) if module else None
+    if not course or (user.role != UserRole.PLATFORM_ADMIN and course.institution_id != user.institution_id):
+        raise HTTPException(status_code=404, detail="Lesson not found")
+
+    allowed_extensions = {".mp4", ".webm", ".mov", ".m4v"}
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in allowed_extensions:
+        raise HTTPException(status_code=422, detail="Unsupported video format")
+    if file.content_type and not file.content_type.startswith("video/"):
+        raise HTTPException(status_code=422, detail="Uploaded file is not a video")
 
     upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "uploads")
     os.makedirs(upload_dir, exist_ok=True)
-
-    ext = os.path.splitext(file.filename or "")[1] or ".mp4"
     filename = f"{lesson_id}{ext}"
     filepath = os.path.join(upload_dir, filename)
 
-    with open(filepath, "wb") as buffer:
-        while chunk := await file.read(1024 * 1024):
-            buffer.write(chunk)
-
-    # Rate-limit: max 5 video uploads per minute per user
-    enforce_rate_limit(request, bucket="video_upload", limit=5, window_seconds=60)
-
-    # File size check: max 500MB
     file_size_limit = 500 * 1024 * 1024
-    content_length = int(request.headers.get("content-length", 0))
-    if content_length > file_size_limit:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"code": "FILE_TOO_LARGE", "message": "حجم ملف الفيديو لا يجب أن يتجاوز 500 ميجابايت."},
-        )
+    written = 0
+    try:
+        with open(filepath, "wb") as buffer:
+            while chunk := await file.read(1024 * 1024):
+                written += len(chunk)
+                if written > file_size_limit:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail={"code": "FILE_TOO_LARGE", "message": "حجم ملف الفيديو لا يجب أن يتجاوز 500 ميجابايت."},
+                    )
+                buffer.write(chunk)
+    except Exception:
+        if os.path.exists(filepath):
+            os.remove(filepath)
+        raise
 
-    video_url = f"/static/uploads/{filename}"
+    video_url = f"/api/v1/lessons/{lesson_id}/video"
     lesson.video_asset_key = video_url
     lesson.indexing_status = IndexingStatus.NOT_INDEXED
     lesson.indexing_error = None
     db.commit()
     db.refresh(lesson)
 
-    # Get course_id for cross-isolation tracking
-    module = db.get(CourseModule, lesson.module_id)
-    course_id = module.course_id if module else lesson.id
-
     return {
         "id": str(lesson.id),
         "video_url": video_url,
         "filename": filename,
-        "message": "Video uploaded successfully as playback asset. AI knowledge relies on AI Knowledge Center sources.",
+        "message": "Video uploaded successfully as a protected playback asset.",
     }
+
+
+@router.get("/lessons/{lesson_id}/video")
+def stream_lesson_video(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> FileResponse:
+    lesson = db.get(Lesson, lesson_id)
+    module = db.get(CourseModule, lesson.module_id) if lesson else None
+    course = db.get(Course, module.course_id) if module else None
+    if not lesson or not course or (user.role != UserRole.PLATFORM_ADMIN and course.institution_id != user.institution_id):
+        raise HTTPException(status_code=404, detail="Video not found")
+    if user.role == UserRole.STUDENT:
+        enrolled = db.scalar(select(Enrollment).where(
+            Enrollment.course_id == course.id,
+            Enrollment.student_id == user.id,
+            Enrollment.status == EnrollmentStatus.ACTIVE,
+        ))
+        if not enrolled:
+            raise HTTPException(status_code=403, detail="Course enrollment required")
+    upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "uploads")
+    matches = [name for name in os.listdir(upload_dir) if name.startswith(f"{lesson_id}.")]
+    if not matches:
+        raise HTTPException(status_code=404, detail="Video not found")
+    return FileResponse(os.path.join(upload_dir, matches[0]), media_type="video/mp4", filename=matches[0])
 
 
 @router.get("/lessons/{lesson_id}/transcript")

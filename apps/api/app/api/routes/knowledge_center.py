@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import CurrentUser, require_roles
+from app.api.dependencies import CurrentUser, get_current_user, require_roles
 from app.core.database import get_db
 from app.core.rate_limit import enforce_rate_limit
 from app.models.course import Course, Lesson
@@ -52,7 +52,7 @@ from app.services.knowledge_retriever import search_knowledge_base
 from app.services.ai_access_policy import can_access_course_knowledge, enforce_ai_access
 from app.services.exam_processing import relink_answer_key, validate_assessment_question
 
-router = APIRouter(prefix="/knowledge-center", tags=["knowledge-center"])
+router = APIRouter(prefix="/knowledge-center", tags=["knowledge-center"], dependencies=[Depends(get_current_user)])
 Db = Annotated[Session, Depends(get_db)]
 TeacherOrAdmin = Annotated[
     User,
@@ -197,6 +197,28 @@ def _get_active_user(db: Session, user: User | None) -> User:
     return demo_teacher
 
 
+MAX_KNOWLEDGE_FILE_BYTES = 100 * 1024 * 1024
+MAX_KNOWLEDGE_BATCH_BYTES = 250 * 1024 * 1024
+
+
+async def _read_upload_limited(uploaded: UploadFile, limit: int = MAX_KNOWLEDGE_FILE_BYTES) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await uploaded.read(1024 * 1024):
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(status_code=413, detail=f"File exceeds the {limit // (1024 * 1024)} MB limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _get_source_for_user(db: Session, source_id: uuid.UUID | None, user: User) -> KnowledgeSource:
+    source = db.get(KnowledgeSource, source_id) if source_id else None
+    if not source or (user.role != UserRole.PLATFORM_ADMIN and source.institution_id != user.institution_id):
+        raise HTTPException(status_code=404, detail="Source not found")
+    return source
+
+
 def _source_response(source: KnowledgeSource, total_pages: int | None = None) -> KnowledgeSourceResponse:
     return KnowledgeSourceResponse(
         id=str(source.id),
@@ -239,7 +261,7 @@ async def upload_knowledge_source(
     course_uuid = _resolve_course_uuid(db, user, course_id)
     lesson_uuid = _parse_uuid(lesson_id)
     
-    file_bytes = await file.read()
+    file_bytes = await _read_upload_limited(file)
     if len(file_bytes) == 0:
         raise HTTPException(status_code=400, detail="الملف المرفوع فارغ (0 بايت)")
 
@@ -316,9 +338,13 @@ async def upload_knowledge_sources_batch(
 
     created: list[KnowledgeSource] = []
     errors: list[str] = []
+    batch_total = 0
 
     for uploaded in files:
-        file_bytes = await uploaded.read()
+        file_bytes = await _read_upload_limited(uploaded)
+        batch_total += len(file_bytes)
+        if batch_total > MAX_KNOWLEDGE_BATCH_BYTES:
+            raise HTTPException(status_code=413, detail="Batch exceeds the 250 MB total limit")
         if not file_bytes:
             errors.append(f"الملف {uploaded.filename or 'المحدد'} فارغ (0 بايت)")
             continue
@@ -359,10 +385,15 @@ async def upload_knowledge_sources_batch(
 def list_knowledge_sources(
     request: Request,
     db: Db,
+    user: CurrentUser = None,
     course_id: str | None = None,
     lesson_id: str | None = None,
 ) -> list[KnowledgeSourceResponse]:
+    if user is None:
+        user = _get_active_user(db, None)
     stmt = select(KnowledgeSource)
+    if user.role != UserRole.PLATFORM_ADMIN:
+        stmt = stmt.where(KnowledgeSource.institution_id == user.institution_id)
     if course_id and course_id.strip():
         course_uuid = _parse_uuid(course_id)
         if course_uuid:
@@ -432,11 +463,9 @@ async def mark_sources_interrupted(
 
 
 @router.get("/sources/{source_id}")
-def get_knowledge_source_detail(source_id: str, db: Db) -> dict[str, Any]:
+def get_knowledge_source_detail(source_id: str, db: Db, user: CurrentUser) -> dict[str, Any]:
     s_uuid = _parse_uuid(source_id)
-    source = db.scalar(select(KnowledgeSource).where(KnowledgeSource.id == s_uuid))
-    if not source:
-        raise HTTPException(status_code=404, detail="Source not found")
+    source = _get_source_for_user(db, s_uuid, user)
 
     doc = db.scalar(select(KnowledgeDocument).where(KnowledgeDocument.source_id == s_uuid))
     assets = db.scalars(select(KnowledgeAsset).where(KnowledgeAsset.source_id == s_uuid)).all()
@@ -558,10 +587,9 @@ def get_knowledge_source_detail(source_id: str, db: Db) -> dict[str, Any]:
 
 
 @router.get("/sources/{source_id}/outline")
-def get_source_outline(source_id: str, db: Db) -> list[dict[str, Any]]:
+def get_source_outline(source_id: str, db: Db, user: CurrentUser) -> list[dict[str, Any]]:
     source_uuid = _parse_uuid(source_id)
-    if not db.get(KnowledgeSource, source_uuid):
-        raise HTTPException(status_code=404, detail="Source not found")
+    _get_source_for_user(db, source_uuid, user)
     nodes = db.scalars(
         select(KnowledgeOutlineNode)
         .where(KnowledgeOutlineNode.source_id == source_uuid)
@@ -578,10 +606,9 @@ def get_source_outline(source_id: str, db: Db) -> list[dict[str, Any]]:
 
 
 @router.get("/sources/{source_id}/lesson-relations")
-def get_source_lesson_relations(source_id: str, db: Db) -> list[dict[str, Any]]:
+def get_source_lesson_relations(source_id: str, db: Db, user: CurrentUser) -> list[dict[str, Any]]:
     source_uuid = _parse_uuid(source_id)
-    if not db.get(KnowledgeSource, source_uuid):
-        raise HTTPException(status_code=404, detail="Source not found")
+    _get_source_for_user(db, source_uuid, user)
     relations = db.scalars(
         select(KnowledgeLessonRelation)
         .where(KnowledgeLessonRelation.source_id == source_uuid)
@@ -632,11 +659,9 @@ def knowledge_query_summary(course_id: str, db: Db, user: TeacherOrAdmin) -> dic
 
 
 @router.post("/sources/{source_id}/reindex", response_model=KnowledgeSourceResponse)
-def reindex_source(source_id: str, db: Db, background_tasks: BackgroundTasks) -> KnowledgeSourceResponse:
+def reindex_source(source_id: str, db: Db, background_tasks: BackgroundTasks, user: TeacherOrAdmin) -> KnowledgeSourceResponse:
     s_uuid = _parse_uuid(source_id)
-    source = db.scalar(select(KnowledgeSource).where(KnowledgeSource.id == s_uuid))
-    if not source:
-        raise HTTPException(status_code=404, detail="Source not found")
+    source = _get_source_for_user(db, s_uuid, user)
 
     source.version += 1
     source.status = SourceStatus.PROCESSING
@@ -678,12 +703,12 @@ def reindex_source(source_id: str, db: Db, background_tasks: BackgroundTasks) ->
 
 
 @router.post("/sources/{source_id}/stop-indexing")
-def stop_indexing_source(source_id: str, db: Db) -> dict[str, Any]:
+def stop_indexing_source(source_id: str, db: Db, user: TeacherOrAdmin = None) -> dict[str, Any]:
     """Stops source indexing gracefully without deleting the file from server storage."""
+    if user is None:
+        user = _get_active_user(db, None)
     s_uuid = _parse_uuid(source_id)
-    source = db.scalar(select(KnowledgeSource).where(KnowledgeSource.id == s_uuid))
-    if not source:
-        raise HTTPException(status_code=404, detail="Source not found")
+    source = _get_source_for_user(db, s_uuid, user)
 
     source.status = SourceStatus.FAILED
     source.error_message = "تم إيقاف الفهرسة (الملف محفوظ بالسيرفر)"
@@ -692,18 +717,19 @@ def stop_indexing_source(source_id: str, db: Db) -> dict[str, Any]:
 
 
 @router.delete("/sources/{source_id}")
-def delete_source(source_id: str, db: Db) -> dict[str, Any]:
+def delete_source(source_id: str, db: Db, user: TeacherOrAdmin) -> dict[str, Any]:
     s_uuid = _parse_uuid(source_id)
+    _get_source_for_user(db, s_uuid, user)
     success = delete_knowledge_source(db, s_uuid)
     return {"success": True, "deleted_id": source_id}
 
 
 @router.get("/sources/{source_id}/view")
-def view_knowledge_source_file(source_id: str, db: Db) -> FileResponse:
+def view_knowledge_source_file(source_id: str, db: Db, user: CurrentUser) -> FileResponse:
     from fastapi.responses import FileResponse
     s_uuid = _parse_uuid(source_id)
-    source = db.scalar(select(KnowledgeSource).where(KnowledgeSource.id == s_uuid))
-    if not source or not os.path.exists(source.storage_path):
+    source = _get_source_for_user(db, s_uuid, user)
+    if not os.path.exists(source.storage_path):
         raise HTTPException(status_code=404, detail="Source file not found")
 
     ext = os.path.splitext(source.filename)[1].lower()
@@ -749,13 +775,16 @@ def stream_source_page_image(
     page_number: int,
     db: Db,
     background_tasks: BackgroundTasks,
+    user: CurrentUser = None,
     scale: float = 1.3,
 ) -> FileResponse:
     from fastapi.responses import FileResponse
 
+    if user is None:
+        user = _get_active_user(db, None)
     s_uuid = _parse_uuid(source_id)
-    source = db.scalar(select(KnowledgeSource).where(KnowledgeSource.id == s_uuid))
-    if not source or not os.path.exists(source.storage_path):
+    source = _get_source_for_user(db, s_uuid, user)
+    if not os.path.exists(source.storage_path):
         raise HTTPException(status_code=404, detail="Source file not found")
 
     ext = os.path.splitext(source.filename)[1].lower()
@@ -763,7 +792,7 @@ def stream_source_page_image(
     # Direct image sources
     if ext in [".png", ".jpg", ".jpeg", ".webp"]:
         media_type = f"image/{'jpeg' if ext in ['.jpg', '.jpeg'] else ('webp' if ext == '.webp' else 'png')}"
-        return FileResponse(source.storage_path, media_type=media_type, headers={"Cache-Control": "public, max-age=86400"})
+        return FileResponse(source.storage_path, media_type=media_type, headers={"Cache-Control": "private, max-age=3600"})
 
     if ext != ".pdf":
         raise HTTPException(status_code=400, detail="Page streaming is supported for PDF and image sources")
@@ -782,7 +811,7 @@ def stream_source_page_image(
         return FileResponse(
             path=cached_page_file,
             media_type="image/jpeg",
-            headers={"Cache-Control": "public, max-age=86400"},
+            headers={"Cache-Control": "private, max-age=3600"},
         )
 
     try:
@@ -806,7 +835,7 @@ def stream_source_page_image(
         return FileResponse(
             path=cached_page_file,
             media_type="image/jpeg",
-            headers={"Cache-Control": "public, max-age=86400"},
+            headers={"Cache-Control": "private, max-age=3600"},
         )
     except HTTPException:
         raise
@@ -815,10 +844,12 @@ def stream_source_page_image(
 
 
 @router.get("/assets/{asset_id}/view")
-def view_knowledge_asset_file(asset_id: str, db: Db) -> FileResponse:
+def view_knowledge_asset_file(asset_id: str, db: Db, user: CurrentUser) -> FileResponse:
     from fastapi.responses import FileResponse
     a_uuid = _parse_uuid(asset_id)
     asset = db.scalar(select(KnowledgeAsset).where(KnowledgeAsset.id == a_uuid))
+    if asset:
+        _get_source_for_user(db, asset.source_id, user)
     if not asset or not os.path.exists(asset.storage_path):
         raise HTTPException(status_code=404, detail="Asset image not found")
 
