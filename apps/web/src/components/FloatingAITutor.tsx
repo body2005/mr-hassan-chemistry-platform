@@ -7,6 +7,7 @@ import {
   Maximize2,
   Minimize2,
   Plus,
+  Quote,
   Send,
   Sparkles,
   Trash2,
@@ -530,6 +531,51 @@ export const FloatingAITutor: React.FC<FloatingAITutorProps> = ({
                   >
                     <FormulaRenderer text={m.content} />
 
+                    {/* Prominent Citations & Textual Snippets Highlight Box */}
+                    {m.citations && m.citations.length > 0 && (
+                      <div
+                        style={{
+                          marginTop: "12px",
+                          padding: "10px 12px",
+                          background: "var(--bg-surface)",
+                          border: "1px solid var(--border-accent, #a7f3d0)",
+                          borderRadius: "10px",
+                          boxShadow: "0 1px 3px rgba(0,0,0,0.02)",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "6px", color: "#059669", fontSize: "11.5px", fontWeight: 800 }}>
+                          <Quote size={14} />
+                          <span>مقتطفات واستشهادات موثقة من نص الدرس:</span>
+                        </div>
+
+                        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                          {m.citations.map((c, cIdx) => (
+                            <div
+                              key={cIdx}
+                              style={{
+                                background: "var(--bg-accent, #ecfdf5)",
+                                padding: "8px 10px",
+                                borderRadius: "6px",
+                                borderRight: "3px solid #059669",
+                                fontSize: "12px",
+                                color: "var(--text-main)",
+                                lineHeight: "1.5",
+                              }}
+                            >
+                              {c.lesson_title && (
+                                <div style={{ fontSize: "11px", fontWeight: 800, color: "#065f46", marginBottom: "3px" }}>
+                                  {c.lesson_title}
+                                </div>
+                              )}
+                              <div style={{ fontStyle: "italic", color: "var(--text-main)" }}>
+                                {c.snippet}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     <div style={{ textAlign: "inherit", fontSize: "10px", opacity: 0.7, marginTop: "6px" }}>
                       {m.timestamp}
                     </div>
@@ -539,7 +585,7 @@ export const FloatingAITutor: React.FC<FloatingAITutorProps> = ({
                 {loading && (
                   <div style={{ alignSelf: "flex-start", display: "flex", alignItems: "center", gap: "8px", color: "#059669", fontSize: "12.5px", background: "var(--bg-accent)", padding: "10px 16px", borderRadius: "10px", fontWeight: 700 }}>
                     <Loader2 size={16} className="animate-spin" />
-                    <span>{isTeacher ? "جاري معالجة الإجابة والتوضيحات..." : "جاري تجهيز الشرح وإعداد الإجابة..."}</span>
+                    <span>{isTeacher ? "جاري معالجة الإجابة والتوضيحات..." : "جاري استخراج الشرح والمقتطفات من نصوص الدروس..."}</span>
                   </div>
                 )}
               </div>
@@ -548,21 +594,21 @@ export const FloatingAITutor: React.FC<FloatingAITutorProps> = ({
               {!isTeacher && (
                 <div style={{ padding: "8px 14px", display: "flex", gap: "8px", overflowX: "auto", borderTop: "1px solid var(--border-color)", background: "var(--bg-surface-secondary)" }}>
                   <button
-                    onClick={() => handleSend("وضح واشرح مفاهيم الدرس بأسلوب تعليمي متسلسل ومبسط، مع الاهتمام بجميع العناصر الأساسية وتوضيح العلاقات العلمية بدقة.")}
+                    onClick={() => handleSend("وضح واشرح مفاهيم الدرس بأسلوب تعليمي متسلسل ومبسط، مع الاهتمام بجميع العناصر الأساسية وتوضيح العلاقات العلمية وتقديم مقتطفات واستشهادات نصية دقيقة من الشرح.")}
                     style={{ whiteSpace: "nowrap", padding: "6px 14px", background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "20px", fontSize: "12px", fontWeight: 800, cursor: "pointer", color: "var(--text-main)" }}
                     title="شرح مبسط وتفصيلي يغطي كل عناصر الدرس"
                   >
                     وضح الدرس
                   </button>
                   <button
-                    onClick={() => handleSend("لخص لي أهم محاور ومفاهيم الدرس في نقاط رئيسية شاملة تغطي كافة العناصر والتعريفات الهامة والقوانين بصورة واضحة.")}
+                    onClick={() => handleSend("لخص لي أهم محاور ومفاهيم الدرس في نقاط رئيسية شاملة تغطي كافة العناصر والتعريفات الهامة والقوانين بصورة واضحة وموثقة.")}
                     style={{ whiteSpace: "nowrap", padding: "6px 14px", background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "20px", fontSize: "12px", fontWeight: 800, cursor: "pointer", color: "var(--text-main)" }}
                     title="تلخيص شامل للمحاور والمفاهيم الرئيسية"
                   >
                     لخص المحتوى
                   </button>
                   <button
-                    onClick={() => handleSend("استخرج أهم النقاط المفتاحية ومواضع الأسئلة الجوهرية في هذا الدرس، مع بيان ما يجب التركيز عليه بدقة.")}
+                    onClick={() => handleSend("استخرج أهم النقاط المفتاحية ومواضع الأسئلة الجوهرية في هذا الدرس، مع بيان ما يجب التركيز عليه بدقة والاستشهاد بنص الدرس.")}
                     style={{ whiteSpace: "nowrap", padding: "6px 14px", background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "20px", fontSize: "12px", fontWeight: 800, cursor: "pointer", color: "var(--text-main)" }}
                     title="أبرز النقاط المفتاحية ومواضع الامتحانات"
                   >
