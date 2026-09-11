@@ -27,7 +27,7 @@ export const DEFAULT_TEACHER_USER: TeacherProfile = {
 
 export const DEFAULT_STUDENT_USER: StudentProfile = {
   id: "usr_student_demo",
-  name: "طالب",
+  name: "أحمد محمد",
   email: "student@demo.com",
   role: "student",
   nationalId: "",

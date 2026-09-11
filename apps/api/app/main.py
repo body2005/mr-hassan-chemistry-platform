@@ -147,7 +147,7 @@ def ensure_demo_users_exist() -> None:
                     institution_id=inst.id,
                     username="student",
                     email="student@demo.com",
-                    display_name="طالب كيمياء (أحمد محمد)",
+                    display_name="أحمد محمد",
                     role=UserRole.STUDENT,
                     password_hash=hash_password("Demo-Pass-2026!"),
                     is_active=True,

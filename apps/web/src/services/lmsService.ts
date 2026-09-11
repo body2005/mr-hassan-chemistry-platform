@@ -912,7 +912,7 @@ export const submissionService = {
       id,
       assignmentId: "asg_1",
       studentId: "std_301",
-      studentName: "طالب كيمياء",
+      studentName: "أحمد محمد",
       academicYear: "3rd_secondary",
       academicYearLabel: "الصف الثالث الثانوي",
       assignmentTitle: "واجب منزلي",
@@ -956,7 +956,7 @@ export const userService = {
       return {
         id: studentId,
         email: "student@demo.com",
-        display_name: "طالب",
+        display_name: "أحمد محمد",
         role: "student",
         is_active: false,
         created_at: new Date().toISOString(),
