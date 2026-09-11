@@ -39,7 +39,8 @@ def set_session_cookie(response: Response, token: str, request: Request | None =
     if request:
         proto = request.headers.get("x-forwarded-proto") or request.url.scheme
         is_https = proto.lower() == "https"
-    secure_val = settings.secure_cookies or cross_site or is_https
+    samesite_val = "none" if cross_site else "lax"
+    secure_val = True if cross_site else (settings.secure_cookies or is_https)
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(seconds=settings.session_ttl_seconds)
 
@@ -50,7 +51,7 @@ def set_session_cookie(response: Response, token: str, request: Request | None =
         expires=expires_at,
         httponly=True,
         secure=secure_val,
-        samesite="lax",
+        samesite=samesite_val,
         path="/",
     )
     response.set_cookie(
@@ -60,7 +61,7 @@ def set_session_cookie(response: Response, token: str, request: Request | None =
         expires=expires_at,
         httponly=False,
         secure=secure_val,
-        samesite="lax",
+        samesite=samesite_val,
         path="/",
     )
 
@@ -138,8 +139,10 @@ def logout(
                 db.commit()
         except (KeyError, TypeError, ValueError):
             db.rollback()
-    response.delete_cookie(settings.session_cookie_name, path="/")
-    response.delete_cookie(settings.csrf_cookie_name, path="/")
+    samesite_val = "none" if settings.cookie_cross_site else "lax"
+    secure_val = True if settings.cookie_cross_site else settings.secure_cookies
+    response.delete_cookie(settings.session_cookie_name, path="/", samesite=samesite_val, secure=secure_val)
+    response.delete_cookie(settings.csrf_cookie_name, path="/", samesite=samesite_val, secure=secure_val)
 
 
 @router.get("/me", response_model=UserResponse)
