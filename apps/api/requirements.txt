@@ -16,7 +16,7 @@ pillow>=11.0.0
 sympy>=1.13.0
 
 # Audio/video processing and document extraction (P0)
-openai-whisper>=20250625
+# openai-whisper>=20250625  # Heavy (pulls torch) - omitted for lightweight cloud deployment
 gTTS>=2.5.4
 pdfplumber>=0.11.10
 pymupdf>=1.25.0
