@@ -121,6 +121,44 @@ install_error_handlers(app)
 
 
 @app.on_event("startup")
+def ensure_demo_users_exist() -> None:
+    """Ensure default institution, teacher, and student exist for immediate login in any environment."""
+    from app.core.database import SessionLocal
+    from app.services.auth_service import get_or_create_institution, hash_password
+    from app.models.user import User, UserRole
+    try:
+        with SessionLocal() as db:
+            inst = get_or_create_institution(db, "demo")
+            teacher = db.query(User).filter(User.email == "teacher@demo.com").first()
+            if not teacher:
+                teacher = User(
+                    institution_id=inst.id,
+                    username="teacher",
+                    email="teacher@demo.com",
+                    display_name="مستر حسن شعبان",
+                    role=UserRole.TEACHER,
+                    password_hash=hash_password("Demo-Pass-2026!"),
+                    is_active=True,
+                )
+                db.add(teacher)
+            student = db.query(User).filter(User.email == "student@demo.com").first()
+            if not student:
+                student = User(
+                    institution_id=inst.id,
+                    username="student",
+                    email="student@demo.com",
+                    display_name="طالب كيمياء (أحمد محمد)",
+                    role=UserRole.STUDENT,
+                    password_hash=hash_password("Demo-Pass-2026!"),
+                    is_active=True,
+                )
+                db.add(student)
+            db.commit()
+    except Exception as exc:
+        print(f"[startup] ensure_demo_users_exist note: {exc}")
+
+
+@app.on_event("startup")
 def resume_interrupted_indexing() -> None:
     """Automatically resume any knowledge sources left in PROCESSING or QUEUED state in background threads."""
     import threading

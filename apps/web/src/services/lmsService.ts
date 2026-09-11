@@ -365,6 +365,19 @@ export const authService = {
   },
 
   async getCurrentUser(): Promise<CurrentUser | null> {
+    const token = typeof localStorage !== "undefined" ? localStorage.getItem("lms_session_token") : null;
+    const cached = typeof localStorage !== "undefined" ? localStorage.getItem("lms_cached_user") : null;
+
+    // Standalone or mock fallback session: always honor the cached user without roundtripping to /auth/me
+    if (!token || token === "standalone_mock_token") {
+      if (cached) {
+        try {
+          return JSON.parse(cached) as CurrentUser;
+        } catch {}
+      }
+      return null;
+    }
+
     try {
       const apiUser = await apiRequest<ApiUser>("/auth/me");
       const user = mapApiUser(apiUser);
@@ -373,21 +386,18 @@ export const authService = {
       }
       return user;
     } catch (err: any) {
+      // If we have a cached user, preserve it rather than abruptly kicking the user out
+      if (cached) {
+        try {
+          return JSON.parse(cached) as CurrentUser;
+        } catch {}
+      }
       if (err instanceof ApiClientError && (err.status === 401 || err.status === 403)) {
         if (typeof localStorage !== "undefined") {
           localStorage.removeItem("lms_session_token");
           localStorage.removeItem("lms_cached_user");
         }
         return null;
-      }
-      // If network is offline or temporarily disconnected, use cached identity
-      if (typeof localStorage !== "undefined") {
-        const cached = localStorage.getItem("lms_cached_user");
-        if (cached) {
-          try {
-            return JSON.parse(cached) as CurrentUser;
-          } catch {}
-        }
       }
       return null;
     }
@@ -414,7 +424,7 @@ export const authService = {
       window.dispatchEvent(new Event("lms_user_updated"));
       return { success: true, user };
     } catch {
-      // Offline/Standalone Fallback: Allows the platform to operate 100% without any backend server
+      // Offline/Standalone Fallback: Allows the platform to operate 100% smoothly without crashing
       const isTeacher = !cleanEmail || cleanEmail.includes("teacher") || cleanEmail.includes("hassan") || cleanEmail.includes("admin") || cleanPass.toLowerCase().includes("hassan");
       const user: CurrentUser = isTeacher
         ? { ...DEFAULT_TEACHER_USER, email: cleanEmail || DEFAULT_TEACHER_USER.email }

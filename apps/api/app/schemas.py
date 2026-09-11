@@ -55,7 +55,7 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: str = Field(min_length=1, max_length=160)
     password: str = Field(min_length=1, max_length=128)
     institution_slug: str = Field(
         default="demo", min_length=2, max_length=80, pattern=r"^[a-z0-9-]+$"
