@@ -18,6 +18,7 @@ cookies.txt
 # Node
 node_modules/
 dist/
+.vercel
 
 # Uploaded media & regenerable caches
 apps/api/uploads/

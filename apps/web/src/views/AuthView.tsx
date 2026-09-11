@@ -84,26 +84,6 @@ export const AuthView: React.FC<AuthViewProps> = ({
     }
   }
 
-  async function handleQuickLogin(role: "teacher" | "student") {
-    setIsSubmitting(true);
-    setError("");
-    setSuccessMsg("");
-    const email = role === "teacher" ? "teacher@demo.com" : "student@demo.com";
-    const pass = "Demo-Pass-2026!";
-    try {
-      const res = await authService.login(email, pass);
-      if (res.success && res.user) {
-        onLoginSuccess(res.user);
-      } else {
-        setIsSubmitting(false);
-        setError(res.error || (lang === "ar" ? "تعذر تسجيل الدخول" : "Login failed"));
-      }
-    } catch {
-      setIsSubmitting(false);
-      setError(lang === "ar" ? "تعذر تسجيل الدخول، يرجى المحاولة ثانية" : "Login error");
-    }
-  }
-
   // Handle Student Registration via authService
   async function handleRegister(e: React.FormEvent) {
     e.preventDefault();
@@ -370,7 +350,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                 }}
               >
                 <UserPlus size={14} />
-                <span>{lang === "ar" ? "حساب طالب جديد" : "Student Register"}</span>
+                <span>{lang === "ar" ? "تسجيل جديد" : "Register"}</span>
               </button>
             </div>
 
@@ -382,7 +362,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
               <h2 style={{ fontSize: "24px", fontWeight: 900, color: "var(--text-main)", margin: "0 0 4px" }}>
                 {activeTab === "signin"
                   ? lang === "ar" ? "تسجيل الدخول للمنصة" : "Sign In to Platform"
-                  : lang === "ar" ? "إنشاء حساب طالب جديد" : "Create Student Account"}
+                  : lang === "ar" ? "تسجيل حساب جديد" : "Create Account"}
               </h2>
               <p style={{ margin: 0, fontSize: "12px", color: "var(--text-muted)", lineHeight: "1.5" }}>
                 {activeTab === "signin"
@@ -430,55 +410,6 @@ export const AuthView: React.FC<AuthViewProps> = ({
             {/* ===================== VIEW A: SIGN IN FORM ===================== */}
             {activeTab === "signin" ? (
               <form onSubmit={handleSignIn} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-                {/* 1-Click Quick Demo Access */}
-                <div style={{ background: "rgba(15, 57, 43, 0.06)", border: "1px dashed #059669", borderRadius: "10px", padding: "10px", marginBottom: "4px" }}>
-                  <span style={{ fontSize: "11px", fontWeight: 800, color: "#065f46", display: "block", marginBottom: "6px" }}>
-                    ⚡ {lang === "ar" ? "تسجيل دخول فوري بنقرة واحدة للتجربة:" : "1-Click Instant Demo Login:"}
-                  </span>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
-                    <button
-                      type="button"
-                      onClick={() => handleQuickLogin("teacher")}
-                      style={{
-                        background: "#0f392b",
-                        color: "#ffffff",
-                        border: "none",
-                        borderRadius: "8px",
-                        padding: "7px 10px",
-                        fontSize: "11.5px",
-                        fontWeight: 800,
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: "4px",
-                      }}
-                    >
-                      👨‍🏫 {lang === "ar" ? "حساب المعلم" : "Teacher"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleQuickLogin("student")}
-                      style={{
-                        background: "#059669",
-                        color: "#ffffff",
-                        border: "none",
-                        borderRadius: "8px",
-                        padding: "7px 10px",
-                        fontSize: "11.5px",
-                        fontWeight: 800,
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: "4px",
-                      }}
-                    >
-                      👨‍🎓 {lang === "ar" ? "حساب طالب" : "Student"}
-                    </button>
-                  </div>
-                </div>
-
                 <div>
                   <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "5px", textTransform: "uppercase" }}>
                     {lang === "ar" ? "البريد الإلكتروني أو اسم المستخدم" : "Email or Username"}

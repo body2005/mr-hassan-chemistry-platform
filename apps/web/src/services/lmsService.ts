@@ -691,7 +691,7 @@ export const courseService = {
         if (stored) return JSON.parse(stored);
       } catch {}
     }
-    return ["course_chem_3rd", "course_chem_2nd", "course_chem_1st"];
+    return [];
   },
 
   async enrollCourse(courseId: string): Promise<string[]> {
