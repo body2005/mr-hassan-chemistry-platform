@@ -56,8 +56,8 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
   const typewriterRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    const typeSpeed = isDeleting ? 40 : 80;
-    const pauseDuration = isDeleting ? 500 : 2000;
+    const typeSpeed = isDeleting ? 20 : 45;
+    const pauseDuration = isDeleting ? 350 : 1500;
 
     if (!isDeleting && displayedText === heroFullText) {
       // Finished typing — pause then start deleting
