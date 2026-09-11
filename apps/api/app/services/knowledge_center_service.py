@@ -1571,6 +1571,9 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
             for unit, vector in zip(units_to_embed, provider.embed_texts(texts), strict=False):
                 unit.embedding_json = vector
 
+        source.progress_percent = 90
+        db.commit()
+
         indexed_units = db.scalars(
             select(KnowledgeUnitRecord).where(KnowledgeUnitRecord.source_id == source.id)
         ).all()
@@ -1581,6 +1584,9 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
             )
             for unit in indexed_units
         )
+
+        source.progress_percent = 95
+        db.commit()
 
         build_source_knowledge_graph(db, source.id)
 

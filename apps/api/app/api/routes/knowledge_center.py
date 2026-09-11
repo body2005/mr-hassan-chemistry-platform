@@ -62,12 +62,23 @@ TeacherOrAdmin = Annotated[
 
 def _run_bg_process_source(source_id: uuid.UUID) -> None:
     """Runs knowledge source indexing and OCR in a background worker task with dedicated DB session."""
+    import logging
+    logger = logging.getLogger(__name__)
     from app.core.database import SessionLocal
     with SessionLocal() as db_session:
         try:
             process_knowledge_source(db_session, source_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.exception("Background indexing failed for source %s: %s", source_id, exc)
+            try:
+                from app.models.knowledge_center import KnowledgeSource, SourceStatus
+                src = db_session.get(KnowledgeSource, source_id)
+                if src and src.status != SourceStatus.INDEXED:
+                    src.status = SourceStatus.FAILED
+                    src.error_message = str(exc)[:1000]
+                    db_session.commit()
+            except Exception:
+                db_session.rollback()
 
 
 def _enqueue_source_processing(background_tasks: BackgroundTasks, source_id: uuid.UUID) -> None:
