@@ -128,19 +128,36 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
 
   const primaryActive = activeTasks[0];
 
-  const isDesktop = typeof window !== "undefined" ? window.innerWidth >= 1024 : true;
-  const rightOffset = menuOpen && isDesktop ? "304px" : "24px";
+  const [windowWidth, setWindowWidth] = useState(
+    typeof window !== "undefined" ? window.innerWidth : 1200
+  );
+
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  const isMobile = windowWidth < 640;
+  // When sidebar is open on tablet/desktop, shift 304px (280px sidebar width + 24px clean gap).
+  // On mobile (<640px), when sidebar drawer is open, hide the widget so it doesn't obstruct the drawer.
+  const rightOffset = menuOpen && !isMobile ? "304px" : isMobile ? "16px" : "24px";
+  const bottomOffset = isMobile ? "16px" : "24px";
+  const isHiddenOnMobile = menuOpen && isMobile;
 
   return (
     <div
       style={{
         position: "fixed",
-        bottom: "24px",
+        bottom: bottomOffset,
         right: rightOffset,
         left: "auto",
-        zIndex: 9998,
+        zIndex: isExpanded ? 9999 : 95,
         fontFamily: "inherit",
-        transition: "right 0.2s ease, bottom 0.2s ease",
+        opacity: isHiddenOnMobile ? 0 : 1,
+        pointerEvents: isHiddenOnMobile ? "none" : "auto",
+        transform: isHiddenOnMobile ? "scale(0.9)" : "scale(1)",
+        transition: "right 0.22s cubic-bezier(0.16, 1, 0.3, 1), bottom 0.22s ease, opacity 0.18s ease, transform 0.18s ease",
       }}
       dir="rtl"
     >
