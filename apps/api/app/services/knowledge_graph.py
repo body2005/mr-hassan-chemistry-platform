@@ -53,7 +53,25 @@ def _get_or_create_concept(db: Session, course_id: uuid.UUID, label: str, descri
     return concept
 
 
-def _link(db: Session, concept: KnowledgeConcept, entity_type: str, entity_id: uuid.UUID, source_id: uuid.UUID | None, confidence: float = 1.0) -> None:
+def _link(
+    db: Session,
+    concept: KnowledgeConcept,
+    entity_type: str,
+    entity_id: uuid.UUID,
+    source_id: uuid.UUID | None,
+    confidence: float = 1.0,
+    seen_links: set[tuple[uuid.UUID, str, uuid.UUID]] | None = None,
+) -> None:
+    key = (concept.id, entity_type, entity_id)
+    if seen_links is not None:
+        if key in seen_links:
+            return
+        seen_links.add(key)
+
+    for pending in db.new:
+        if isinstance(pending, KnowledgeConceptLink) and (pending.concept_id, pending.entity_type, pending.entity_id) == key:
+            return
+
     existing = db.scalar(
         select(KnowledgeConceptLink).where(
             KnowledgeConceptLink.concept_id == concept.id,
@@ -75,11 +93,14 @@ def build_source_knowledge_graph(db: Session, source_id: uuid.UUID) -> None:
     if not units:
         return
     course_id = units[0].course_id
+    seen_links: set[tuple[uuid.UUID, str, uuid.UUID]] = set()
+    seen_relations: set[tuple[uuid.UUID, uuid.UUID, str]] = set()
+
     concepts_by_unit: dict[uuid.UUID, list[KnowledgeConcept]] = defaultdict(list)
     for unit in units:
         concept = _get_or_create_concept(db, course_id, unit.concept, unit.statement)
         if concept:
-            _link(db, concept, "unit", unit.id, source_id, unit.semantic_confidence)
+            _link(db, concept, "unit", unit.id, source_id, unit.semantic_confidence, seen_links)
             concepts_by_unit[unit.id].append(concept)
 
     assets = db.scalars(select(KnowledgeAsset).where(KnowledgeAsset.source_id == source_id)).all()
@@ -88,7 +109,7 @@ def build_source_knowledge_graph(db: Session, source_id: uuid.UUID) -> None:
         for label in analysis.get("entities", []) + analysis.get("formulas", []):
             concept = _get_or_create_concept(db, course_id, str(label))
             if concept:
-                _link(db, concept, "asset", asset.id, source_id, float(analysis.get("confidence", 0.5)))
+                _link(db, concept, "asset", asset.id, source_id, float(analysis.get("confidence", 0.5)), seen_links)
 
     # Questions embedded in textbook pages are first-class learning evidence,
     # even when the source is not an uploaded assessment bank.
@@ -100,7 +121,7 @@ def build_source_knowledge_graph(db: Session, source_id: uuid.UUID) -> None:
         label = hierarchy.get("topic") or hierarchy.get("lesson") or question.question_text[:120]
         concept = _get_or_create_concept(db, course_id, str(label))
         if concept:
-            _link(db, concept, "extracted_question", question.id, source_id, 0.85)
+            _link(db, concept, "extracted_question", question.id, source_id, 0.85, seen_links)
 
     questions = db.scalars(
         select(AssessmentQuestion)
@@ -112,7 +133,7 @@ def build_source_knowledge_graph(db: Session, source_id: uuid.UUID) -> None:
         if tokens:
             concept = _get_or_create_concept(db, course_id, question.topic_concept or question.question_text[:120])
             if concept:
-                _link(db, concept, "question", question.id, source_id, 0.8)
+                _link(db, concept, "question", question.id, source_id, 0.8, seen_links)
 
     # Same-unit mentions are explicit evidence of a relationship, rather than a
     # model guess. Relations are deduplicated by the database constraint.
@@ -133,6 +154,11 @@ def build_source_knowledge_graph(db: Session, source_id: uuid.UUID) -> None:
             for source_concept in source_concepts:
                 if source_concept.id == target.id:
                     continue
+                rel_key = (source_concept.id, target.id, relation_type)
+                if rel_key in seen_relations:
+                    continue
+                seen_relations.add(rel_key)
+
                 existing = db.scalar(select(KnowledgeConceptRelation).where(
                     KnowledgeConceptRelation.from_concept_id == source_concept.id,
                     KnowledgeConceptRelation.to_concept_id == target.id,
