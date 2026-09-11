@@ -127,11 +127,6 @@ def ensure_demo_users_exist() -> None:
                 db.add(teacher)
             student_accounts = [
                 ("student", "student@demo.com", "أحمد محمد"),
-                ("ahmed_ibrahim", "ahmed.ibrahim@student.com", "أحمد إبراهيم محمود"),
-                ("mariam_khaled", "mariam.khaled@student.com", "مريم خالد عبد الرحمن"),
-                ("youssef_tarek", "youssef.tarek@student.com", "يوسف طارق الديب"),
-                ("omar_sharif", "omar.sharif@student.com", "عمر شريف المهدي"),
-                ("salma_hany", "salma.hany@student.com", "سلمى هاني القاضي"),
             ]
             for u_name, u_email, u_disp in student_accounts:
                 st = db.query(User).filter(User.email == u_email).first()
@@ -148,6 +143,17 @@ def ensure_demo_users_exist() -> None:
                     db.add(st)
                 else:
                     st.display_name = u_disp
+
+            # Purge any non-demo students from database
+            from app.models.course import Enrollment
+            from app.models.progress import LessonProgress
+            from app.models.platform import AssignmentSubmission
+            extra_students = db.query(User).filter(User.role == UserRole.STUDENT, User.email != "student@demo.com").all()
+            for extra_s in extra_students:
+                db.query(Enrollment).filter(Enrollment.student_id == extra_s.id).delete()
+                db.query(LessonProgress).filter(LessonProgress.user_id == extra_s.id).delete()
+                db.query(AssignmentSubmission).filter(AssignmentSubmission.student_id == extra_s.id).delete()
+                db.delete(extra_s)
             db.commit()
 
             from app.models.course import Course, CourseStatus
