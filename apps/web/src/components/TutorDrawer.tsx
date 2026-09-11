@@ -1,9 +1,6 @@
 import React, { useState } from "react";
 import {
-  BookOpen,
   CheckCircle2,
-  ChevronDown,
-  ChevronUp,
   HelpCircle,
   Loader2,
   Send,
@@ -40,7 +37,6 @@ export const TutorDrawer: React.FC<TutorDrawerProps> = ({
   const [sessionId] = useState(() => `session_${Date.now()}`);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
 
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -162,28 +158,6 @@ export const TutorDrawer: React.FC<TutorDrawerProps> = ({
             )}
 
             <FormulaRenderer text={m.content} />
-
-            {m.citations && m.citations.length > 0 && (
-              <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid var(--border-color)" }}>
-                <button
-                  onClick={() => setExpandedIndex(expandedIndex === idx ? null : idx)}
-                  style={{ display: "flex", alignItems: "center", gap: "4px", background: "none", border: "none", padding: 0, color: "var(--text-main)", fontSize: "11px", fontWeight: 700, cursor: "pointer" }}
-                >
-                  <BookOpen size={12} /> {m.citations.length} مقتطفات من درسك
-                  {expandedIndex === idx ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                </button>
-
-                {expandedIndex === idx && (
-                  <div style={{ marginTop: "6px", display: "flex", flexDirection: "column", gap: "4px" }}>
-                    {m.citations.map((cite, cIdx) => (
-                      <div key={cIdx} style={{ background: "var(--bg-surface)", padding: "6px 8px", borderRadius: "6px", border: "1px solid var(--border-color)", fontSize: "11px", color: "var(--text-muted)" }}>
-                        <p style={{ margin: 0, fontStyle: "italic" }}>"{cite.snippet}"</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         ))}
 

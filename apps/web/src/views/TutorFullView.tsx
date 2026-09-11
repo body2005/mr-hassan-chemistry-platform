@@ -1,9 +1,6 @@
 import React, { useState } from "react";
 import {
-  BookOpen,
   CheckCircle2,
-  ChevronDown,
-  ChevronUp,
   Database,
   HelpCircle,
   Loader2,
@@ -31,7 +28,6 @@ export const TutorFullView: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [indexing, setIndexing] = useState(false);
   const [indexMessage, setIndexMessage] = useState<string | null>(null);
-  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
 
   const [messages, setMessages] = useState<ChatTurn[]>([
     {
@@ -256,29 +252,6 @@ export const TutorFullView: React.FC = () => {
                 )}
 
                 <FormulaRenderer text={m.content} />
-
-                {m.citations && m.citations.length > 0 && (
-                  <div style={{ marginTop: "10px", paddingTop: "8px", borderTop: "1px solid var(--border-color)" }}>
-                    <button
-                      onClick={() => setExpandedIndex(expandedIndex === idx ? null : idx)}
-                      style={{ display: "flex", alignItems: "center", gap: "4px", background: "none", border: "none", padding: 0, color: "var(--text-main)", fontSize: "11px", fontWeight: 800, cursor: "pointer" }}
-                    >
-                      <BookOpen size={13} /> {m.citations.length} مقتطفات من نصوص الدروس
-                      {expandedIndex === idx ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-                    </button>
-
-                    {expandedIndex === idx && (
-                      <div style={{ marginTop: "6px", display: "flex", flexDirection: "column", gap: "6px" }}>
-                        {m.citations.map((c, cIdx) => (
-                          <div key={cIdx} style={{ background: "var(--bg-surface)", padding: "8px 10px", borderRadius: "6px", border: "1px solid var(--border-color)", fontSize: "11px" }}>
-                            <strong style={{ display: "block", color: "var(--text-main)", marginBottom: "2px" }}>درس: {c.lesson_id}</strong>
-                            <p style={{ margin: 0, color: "var(--text-muted)", fontStyle: "italic" }}>"{c.snippet}"</p>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
               </div>
             ))}
 
