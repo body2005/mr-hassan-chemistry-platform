@@ -10,7 +10,6 @@ from fastapi.responses import JSONResponse
 from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.database import engine
-from app.core.errors import install_error_handlers
 from app.core.metrics import record_request
 from app.core.rate_limit import enforce_rate_limit
 
@@ -24,6 +23,9 @@ app = FastAPI(
     redoc_url=None,
 )
 
+from app.core.errors import _apply_cors_headers, install_error_handlers
+
+
 def is_origin_allowed(origin: str | None) -> bool:
     if not origin:
         return True
@@ -31,7 +33,14 @@ def is_origin_allowed(origin: str | None) -> bool:
         return True
     if settings.app_env != "production":
         return True
-    return any(origin.endswith(suffix) for suffix in [".trycloudflare.com", ".ngrok-free.app", ".ngrok-free.dev", ".ngrok.io", ".loca.lt"])
+    return any(origin.endswith(suffix) for suffix in [
+        ".vercel.app",
+        ".trycloudflare.com",
+        ".ngrok-free.app",
+        ".ngrok-free.dev",
+        ".ngrok.io",
+        ".loca.lt",
+    ])
 
 
 app.add_middleware(
@@ -61,21 +70,39 @@ async def security_middleware(request, call_next):
                 window_seconds=60,
             )
         except HTTPException as exc:
-            return JSONResponse(
+            res = JSONResponse(
                 status_code=exc.status_code,
                 content={
+                    "detail": str(exc.detail),
                     "error": {"code": "RATE_LIMITED", "message": exc.detail},
                     "request_id": request_id,
                 },
                 headers=exc.headers,
             )
+            return _apply_cors_headers(request, res)
     if unsafe_method and origin and not is_origin_allowed(origin):
-        return JSONResponse(status_code=403, content={"detail": "Origin is not allowed"})
+        res = JSONResponse(
+            status_code=403,
+            content={
+                "detail": "Origin is not allowed",
+                "error": {"code": "FORBIDDEN", "message": "Origin is not allowed"},
+                "request_id": request_id,
+            },
+        )
+        return _apply_cors_headers(request, res)
     if unsafe_method and origin and request.cookies.get(settings.session_cookie_name):
         csrf_cookie = request.cookies.get(settings.csrf_cookie_name)
         csrf_header = request.headers.get("X-CSRF-Token")
         if not csrf_cookie or not secrets.compare_digest(csrf_cookie, csrf_header or ""):
-            return JSONResponse(status_code=403, content={"detail": "CSRF validation failed"})
+            res = JSONResponse(
+                status_code=403,
+                content={
+                    "detail": "CSRF validation failed",
+                    "error": {"code": "FORBIDDEN", "message": "CSRF validation failed"},
+                    "request_id": request_id,
+                },
+            )
+            return _apply_cors_headers(request, res)
 
     if request.method == "POST" and request.url.path in {
         f"{settings.api_v1_prefix}/knowledge-center/sources/upload",
@@ -89,7 +116,7 @@ async def security_middleware(request, call_next):
                     settings.max_request_size_mb + settings.multipart_overhead_mb
                 ) * 1024 * 1024
                 if content_length > maximum_http_body:
-                    return JSONResponse(
+                    res = JSONResponse(
                         status_code=413,
                         content={
                             "error": {
@@ -99,12 +126,23 @@ async def security_middleware(request, call_next):
                             "request_id": request_id,
                         },
                     )
+                    return _apply_cors_headers(request, res)
             except (ValueError, TypeError):
                 pass
 
     request.state.request_id = request_id
     started = time.perf_counter()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        import logging
+        logging.getLogger("matgar.server").exception("Unhandled error processing request %s: %s", request_id, exc)
+        err_res = JSONResponse(
+            status_code=500,
+            content={"error": {"code": "INTERNAL_SERVER_ERROR", "message": "An internal server error occurred"}, "request_id": request_id},
+        )
+        return _apply_cors_headers(request, err_res)
+
     record_request(
         request.url.path,
         request.method,
@@ -119,6 +157,13 @@ async def security_middleware(request, call_next):
     if settings.secure_cookies:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'self'"
+
+    if origin and is_origin_allowed(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+
     return response
 
 

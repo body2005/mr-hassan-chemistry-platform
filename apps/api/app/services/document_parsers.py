@@ -20,6 +20,8 @@ from typing import Any
 
 from PIL import Image, ImageOps
 
+from app.core.errors import OperationCancelledError
+
 logger = logging.getLogger(__name__)
 
 
@@ -400,7 +402,7 @@ def ocr_pdf_page(file_bytes: bytes | None = None, page_number: int = 1, lang: st
 # 1. PDF PARSER (pdfplumber + selective OCR fallback)
 # =============================================================================
 
-def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", progress_callback: Any = None, file_path: str | None = None) -> ParsedDocument:
+def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", progress_callback: Any = None, file_path: str | None = None, cancel_check: Any = None) -> ParsedDocument:
     """Parses a PDF document using pdfplumber, preserving page numbers, layout, tables, and images with automatic OCR fallback for garbled pages."""
     import pdfplumber
     import pypdfium2 as pdfium
@@ -429,6 +431,15 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
             parsed_doc.total_pages = total_pages
             
             for p_idx, page in enumerate(pdf.pages, start=1):
+                if cancel_check and cancel_check():
+                    logger.info("Cancellation requested; aborting PDF parsing on page %s of %s", p_idx, total_pages)
+                    if pdfium_shared:
+                        try:
+                            pdfium_shared.close()
+                        except Exception:
+                            pass
+                    raise OperationCancelledError(f"PDF indexing cancelled on page {p_idx}")
+
                 if progress_callback:
                     try:
                         progress_callback(p_idx, total_pages)
@@ -1051,12 +1062,12 @@ def extract_pdf_page_images(file_bytes: bytes, page_number: int) -> list[tuple[b
 # UNIFIED DISPATCH PARSER
 # =============================================================================
 
-def parse_knowledge_file(file_bytes: bytes | None = None, filename: str = "", mime_type: str | None = None, progress_callback: Any = None, file_path: str | None = None) -> ParsedDocument:
+def parse_knowledge_file(file_bytes: bytes | None = None, filename: str = "", mime_type: str | None = None, progress_callback: Any = None, file_path: str | None = None, cancel_check: Any = None) -> ParsedDocument:
     """Dispatches a source file to the correct structure-preserving parser."""
     ext = os.path.splitext(filename)[1].lower().lstrip(".")
 
     if ext == "pdf":
-        return parse_pdf_document(file_bytes, filename, progress_callback=progress_callback, file_path=file_path)
+        return parse_pdf_document(file_bytes, filename, progress_callback=progress_callback, file_path=file_path, cancel_check=cancel_check)
     elif ext in ("docx", "doc"):
         if file_bytes is None and file_path and os.path.exists(file_path):
             with open(file_path, "rb") as f:

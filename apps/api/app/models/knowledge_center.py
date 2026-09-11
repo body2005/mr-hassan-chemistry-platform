@@ -50,6 +50,9 @@ class SourceStatus(StrEnum):
     PROCESSING = "PROCESSING"
     INDEXED = "INDEXED"
     FAILED = "FAILED"
+    STOPPED = "STOPPED"
+    CANCELLED = "CANCELLED"
+    DELETING = "DELETING"
 
 
 class KnowledgeSource(UUIDPrimaryKeyMixin, TimestampMixin, Base):

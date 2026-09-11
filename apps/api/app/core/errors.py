@@ -25,6 +25,11 @@ class ApiError(Exception):
         super().__init__(message)
 
 
+class OperationCancelledError(Exception):
+    """Raised when an ongoing background job is cooperatively cancelled."""
+    pass
+
+
 _STATUS_TO_CODE = {
     status.HTTP_400_BAD_REQUEST: "BAD_REQUEST",
     status.HTTP_401_UNAUTHORIZED: "UNAUTHENTICATED",
@@ -33,6 +38,7 @@ _STATUS_TO_CODE = {
     status.HTTP_409_CONFLICT: "CONFLICT",
     getattr(status, "HTTP_413_CONTENT_TOO_LARGE", 413): "PAYLOAD_TOO_LARGE",
     status.HTTP_429_TOO_MANY_REQUESTS: "RATE_LIMITED",
+    status.HTTP_500_INTERNAL_SERVER_ERROR: "INTERNAL_SERVER_ERROR",
 }
 
 try:  # Starlette >= 0.41 renamed the constant
@@ -43,16 +49,51 @@ except AttributeError:
 
 def _error_payload(request: Request, code: str, message: str) -> dict:
     request_id = getattr(getattr(request, "state", None), "request_id", None)
-    return {"error": {"code": code, "message": message}, "request_id": request_id}
+    if not request_id:
+        request_id = request.headers.get("X-Request-ID")
+    return {
+        "detail": message,
+        "error": {"code": code, "message": message},
+        "request_id": request_id,
+    }
+
+
+def _apply_cors_headers(request: Request, response: JSONResponse) -> JSONResponse:
+    origin = request.headers.get("Origin")
+    if origin:
+        try:
+            from app.core.config import get_settings
+            settings = get_settings()
+            is_allowed = (
+                origin in settings.cors_origins
+                or settings.app_env != "production"
+                or any(origin.endswith(suffix) for suffix in [
+                    ".vercel.app",
+                    ".trycloudflare.com",
+                    ".ngrok-free.app",
+                    ".ngrok-free.dev",
+                    ".ngrok.io",
+                    ".loca.lt",
+                ])
+            )
+            if is_allowed:
+                response.headers["Access-Control-Allow-Origin"] = origin
+                response.headers["Access-Control-Allow-Credentials"] = "true"
+                response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD"
+                response.headers["Access-Control-Allow-Headers"] = "*"
+        except Exception:
+            pass
+    return response
 
 
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
     async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
-        return JSONResponse(
+        res = JSONResponse(
             status_code=exc.status_code,
             content=_error_payload(request, exc.code, exc.message),
         )
+        return _apply_cors_headers(request, res)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(
@@ -67,7 +108,7 @@ def install_error_handlers(app: FastAPI) -> None:
         response = JSONResponse(status_code=exc.status_code, content=content)
         if exc.headers:
             response.headers.update(exc.headers)
-        return response
+        return _apply_cors_headers(request, response)
 
     @app.exception_handler(RequestValidationError)
     async def validation_handler(
@@ -76,7 +117,22 @@ def install_error_handlers(app: FastAPI) -> None:
         first = exc.errors()[0] if exc.errors() else {}
         loc = ".".join(str(part) for part in first.get("loc", []) if part != "body")
         message = f"Invalid value for '{loc}'" if loc else "Invalid request payload"
-        return JSONResponse(
+        res = JSONResponse(
             status_code=_VALIDATION_STATUS,
             content=_error_payload(request, "VALIDATION_ERROR", message),
         )
+        return _apply_cors_headers(request, res)
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(
+        request: Request, exc: Exception
+    ) -> JSONResponse:
+        import logging
+        logging.getLogger("matgar.server").exception(
+            "Unhandled server error on %s %s: %s", request.method, request.url.path, exc
+        )
+        res = JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content=_error_payload(request, "INTERNAL_SERVER_ERROR", "An internal server error occurred"),
+        )
+        return _apply_cors_headers(request, res)

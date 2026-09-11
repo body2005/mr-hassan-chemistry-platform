@@ -47,10 +47,18 @@ from app.models.knowledge_center import (
     SourceStatus,
 )
 from app.models.user import User, UserRole
+from app.core.errors import OperationCancelledError
 from app.services.knowledge_center_service import (
+    clear_source_tracking,
     create_knowledge_source,
     delete_knowledge_source,
+    is_parser_active,
+    is_source_deleting,
+    mark_parser_active,
+    mark_parser_inactive,
     process_knowledge_source,
+    register_cancellation,
+    register_deleting,
     reindex_knowledge_source,
     sanitize_source_filename,
 )
@@ -71,20 +79,37 @@ def _run_bg_process_source(source_id: uuid.UUID) -> None:
     import logging
     logger = logging.getLogger(__name__)
     from app.core.database import SessionLocal
-    with SessionLocal() as db_session:
-        try:
-            process_knowledge_source(db_session, source_id)
-        except Exception as exc:
-            logger.exception("Background indexing failed for source %s: %s", source_id, exc)
+
+    mark_parser_active(source_id)
+    try:
+        with SessionLocal() as db_session:
             try:
-                from app.models.knowledge_center import KnowledgeSource, SourceStatus
-                src = db_session.get(KnowledgeSource, source_id)
-                if src and src.status != SourceStatus.INDEXED:
-                    src.status = SourceStatus.FAILED
-                    src.error_message = str(exc)[:1000]
-                    db_session.commit()
-            except Exception:
-                db_session.rollback()
+                process_knowledge_source(db_session, source_id)
+            except OperationCancelledError:
+                logger.info("Background indexing cancelled cooperatively for source %s", source_id)
+                try:
+                    from app.models.knowledge_center import KnowledgeSource, SourceStatus
+                    src = db_session.get(KnowledgeSource, source_id)
+                    if src and not is_source_deleting(source_id):
+                        src.status = SourceStatus.STOPPED
+                        src.error_message = "تم إيقاف الفهرسة (الملف محفوظ بالسيرفر)"
+                        db_session.commit()
+                except Exception:
+                    db_session.rollback()
+            except Exception as exc:
+                logger.exception("Background indexing failed for source %s: %s", source_id, exc)
+                try:
+                    from app.models.knowledge_center import KnowledgeSource, SourceStatus
+                    src = db_session.get(KnowledgeSource, source_id)
+                    if src and src.status != SourceStatus.INDEXED:
+                        src.status = SourceStatus.FAILED
+                        src.error_message = str(exc)[:1000]
+                        db_session.commit()
+                except Exception:
+                    db_session.rollback()
+    finally:
+        mark_parser_inactive(source_id)
+        clear_source_tracking(source_id)
 
 
 def _enqueue_source_processing(background_tasks: BackgroundTasks, source_id: uuid.UUID) -> None:
@@ -797,20 +822,68 @@ def stop_indexing_source(source_id: str, db: Db, user: TeacherOrAdmin = None) ->
     if user is None:
         user = _get_active_user(db, None)
     s_uuid = _parse_uuid(source_id)
-    source = _get_source_for_user(db, s_uuid, user)
+    if not s_uuid:
+        raise HTTPException(status_code=400, detail="Invalid source ID")
 
-    source.status = SourceStatus.FAILED
+    # Register in-memory cancellation immediately so any active parsing thread stops at the next page
+    register_cancellation(s_uuid)
+
+    source = db.get(KnowledgeSource, s_uuid)
+    if not source:
+        return {"status": "ok", "message": "المصدر غير موجود", "source_status": "NOT_FOUND"}
+
+    if user and user.role != UserRole.PLATFORM_ADMIN and source.institution_id != user.institution_id:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    # Idempotent check
+    if source.status in (SourceStatus.STOPPED, SourceStatus.CANCELLED, SourceStatus.FAILED):
+        return {"status": "ok", "message": "تم إيقاف الفهرسة مسبقاً", "source_status": source.status}
+
+    source.status = SourceStatus.STOPPED
     source.error_message = "تم إيقاف الفهرسة (الملف محفوظ بالسيرفر)"
-    db.commit()
-    return {"status": "ok", "message": "تم إيقاف الفهرسة وحفظ الملف بالسيرفر"}
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return {"status": "ok", "message": "تم إيقاف الفهرسة وحفظ الملف بالسيرفر", "source_status": source.status}
 
 
 @router.delete("/sources/{source_id}")
 def delete_source(source_id: str, db: Db, user: TeacherOrAdmin) -> dict[str, Any]:
     s_uuid = _parse_uuid(source_id)
-    _get_source_for_user(db, s_uuid, user)
-    success = delete_knowledge_source(db, s_uuid)
-    return {"success": True, "deleted_id": source_id}
+    if not s_uuid:
+        raise HTTPException(status_code=400, detail="Invalid source ID")
+
+    source = db.get(KnowledgeSource, s_uuid)
+    if not source:
+        # Idempotent deletion: already deleted
+        clear_source_tracking(s_uuid)
+        return {"success": True, "deleted_id": source_id, "status": "already_deleted"}
+
+    if user.role != UserRole.PLATFORM_ADMIN and source.institution_id != user.institution_id:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    # Signal cooperative cancellation to any background worker running on this source
+    register_deleting(s_uuid)
+
+    # If the background parser is actively running, set status to DELETING, commit,
+    # and wait cooperatively up to 500ms for it to exit cleanly
+    if is_parser_active(s_uuid) or source.status == SourceStatus.PROCESSING:
+        source.status = SourceStatus.DELETING
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+        import time
+        for _ in range(10):
+            if not is_parser_active(s_uuid):
+                break
+            time.sleep(0.05)
+
+    delete_knowledge_source(db, s_uuid)
+    return {"success": True, "deleted_id": source_id, "status": "deleted"}
 
 
 @router.get("/sources/{source_id}/view")

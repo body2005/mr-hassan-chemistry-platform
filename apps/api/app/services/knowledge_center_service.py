@@ -57,6 +57,8 @@ from app.services.semantic_rewriter import invoke_llm_semantic_rewriting, verify
 from app.services.embedding_provider import get_embedding_provider
 from app.services.exam_processing import materialize_assessment_questions
 from app.services.book_outline import materialize_book_outline, materialize_lesson_relations, outline_node_for_page
+import threading
+from app.core.errors import OperationCancelledError
 from app.services.vision_language import analyze_educational_image
 from app.services.knowledge_graph import build_source_knowledge_graph
 from app.services.content_safety import sanitize_retrieval_text
@@ -67,6 +69,54 @@ from app.services.question_image_linker import ImageMatch, select_question_image
 STORAGE_DIR = os.getenv("STORAGE_DIR", "storage/knowledge_center")
 SEMANTIC_CONFIDENCE_THRESHOLD = float(os.getenv("SEMANTIC_CONFIDENCE_THRESHOLD", "0.65"))
 logger = logging.getLogger(__name__)
+
+_CANCELLATION_REGISTRY_LOCK = threading.Lock()
+_CANCEL_REQUESTED_SOURCES: set[uuid.UUID] = set()
+_DELETING_SOURCES: set[uuid.UUID] = set()
+_ACTIVE_PARSER_SOURCES: set[uuid.UUID] = set()
+
+
+def register_cancellation(source_id: uuid.UUID) -> None:
+    with _CANCELLATION_REGISTRY_LOCK:
+        _CANCEL_REQUESTED_SOURCES.add(source_id)
+
+
+def register_deleting(source_id: uuid.UUID) -> None:
+    with _CANCELLATION_REGISTRY_LOCK:
+        _CANCEL_REQUESTED_SOURCES.add(source_id)
+        _DELETING_SOURCES.add(source_id)
+
+
+def is_source_cancelled(source_id: uuid.UUID) -> bool:
+    with _CANCELLATION_REGISTRY_LOCK:
+        return source_id in _CANCEL_REQUESTED_SOURCES
+
+
+def is_source_deleting(source_id: uuid.UUID) -> bool:
+    with _CANCELLATION_REGISTRY_LOCK:
+        return source_id in _DELETING_SOURCES
+
+
+def clear_source_tracking(source_id: uuid.UUID) -> None:
+    with _CANCELLATION_REGISTRY_LOCK:
+        _CANCEL_REQUESTED_SOURCES.discard(source_id)
+        _DELETING_SOURCES.discard(source_id)
+
+
+def mark_parser_active(source_id: uuid.UUID) -> None:
+    with _CANCELLATION_REGISTRY_LOCK:
+        _ACTIVE_PARSER_SOURCES.add(source_id)
+
+
+def mark_parser_inactive(source_id: uuid.UUID) -> None:
+    with _CANCELLATION_REGISTRY_LOCK:
+        _ACTIVE_PARSER_SOURCES.discard(source_id)
+
+
+def is_parser_active(source_id: uuid.UUID) -> bool:
+    with _CANCELLATION_REGISTRY_LOCK:
+        return source_id in _ACTIVE_PARSER_SOURCES
+
 
 
 def _compute_checksum(data: bytes) -> str:
@@ -1019,22 +1069,26 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
     source.progress_percent = 10
     db.commit()
 
-    # Ensure idempotency: purge any prior child records for this source before processing
-    db.execute(delete(KnowledgeUnitRecord).where(KnowledgeUnitRecord.source_id == source_id))
-    db.execute(delete(KnowledgeQuestionImageLink).where(
-        KnowledgeQuestionImageLink.question_record_id.in_(
-            select(KnowledgeQuestionRecord.id).where(KnowledgeQuestionRecord.source_id == source_id)
-        )
-    ))
-    db.execute(delete(KnowledgeQuestionRecord).where(KnowledgeQuestionRecord.source_id == source_id))
-    db.execute(delete(KnowledgeAsset).where(KnowledgeAsset.source_id == source_id))
-    db.execute(delete(KnowledgeConceptLink).where(KnowledgeConceptLink.source_id == source_id))
-    db.execute(delete(KnowledgeConceptRelation).where(KnowledgeConceptRelation.source_id == source_id))
-    db.execute(delete(KnowledgeLessonRelation).where(KnowledgeLessonRelation.source_id == source_id))
-    db.execute(delete(KnowledgeOutlineNode).where(KnowledgeOutlineNode.source_id == source_id))
-    db.execute(delete(KnowledgeDocument).where(KnowledgeDocument.source_id == source_id))
-    db.execute(delete(AssessmentSource).where(AssessmentSource.source_id == source_id))
     try:
+        # Ensure idempotency: purge any prior child records for this source before processing
+        db.execute(delete(KnowledgeUnitRecord).where(KnowledgeUnitRecord.source_id == source_id))
+        db.execute(delete(KnowledgeQuestionImageLink).where(
+            KnowledgeQuestionImageLink.question_record_id.in_(
+                select(KnowledgeQuestionRecord.id).where(KnowledgeQuestionRecord.source_id == source_id)
+            )
+        ))
+        db.execute(delete(KnowledgeQuestionRecord).where(KnowledgeQuestionRecord.source_id == source_id))
+        db.execute(delete(KnowledgeAsset).where(KnowledgeAsset.source_id == source_id))
+        db.execute(delete(KnowledgeConceptLink).where(KnowledgeConceptLink.source_id == source_id))
+        db.execute(delete(KnowledgeConceptRelation).where(KnowledgeConceptRelation.source_id == source_id))
+        db.execute(delete(KnowledgeLessonRelation).where(KnowledgeLessonRelation.source_id == source_id))
+        db.execute(delete(KnowledgeOutlineNode).where(KnowledgeOutlineNode.source_id == source_id))
+        db.execute(delete(KnowledgeDocument).where(KnowledgeDocument.source_id == source_id))
+        db.execute(delete(AssessmentSource).where(AssessmentSource.source_id == source_id))
+        db.commit()
+
+        if is_source_cancelled(source_id):
+            raise OperationCancelledError(f"Indexing cancelled for source {source_id}")
         # Structured assessment banks are parsed directly; document assessments use
         # the normal structure-preserving document parser below, then materialize.
         if source.file_format in ("json", "quiz"):
@@ -1092,6 +1146,8 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
 
         # Document & Media parsing (PDF, DOCX, PPTX, TXT, Images)
         def on_page_progress(current_page: int, total_pages: int) -> None:
+            if is_source_cancelled(source_id):
+                raise OperationCancelledError(f"Indexing cancelled for source {source_id} on page {current_page}")
             if total_pages > 0 and (current_page % 5 == 0 or current_page == total_pages):
                 pct = min(75, int(10 + (current_page / total_pages) * 65))
                 source.progress_percent = pct
@@ -1106,7 +1162,11 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
             mime_type=source.mime_type,
             progress_callback=on_page_progress,
             file_path=source.storage_path,
+            cancel_check=lambda: is_source_cancelled(source_id),
         )
+
+        if is_source_cancelled(source_id):
+            raise OperationCancelledError(f"Indexing cancelled for source {source_id} after document parsing")
 
         doc_rec = KnowledgeDocument(
             source_id=source.id,
@@ -1120,6 +1180,9 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
         db.add(doc_rec)
         db.commit()
         db.refresh(doc_rec)
+
+        if is_source_cancelled(source_id):
+            raise OperationCancelledError(f"Indexing cancelled for source {source_id} before outline materialization")
 
         outline_nodes = materialize_book_outline(
             db,
@@ -1151,6 +1214,8 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
         os.makedirs(assets_dir, exist_ok=True)
 
         for p_img in parsed_doc.all_images:
+            if is_source_cancelled(source_id):
+                raise OperationCancelledError(f"Indexing cancelled for source {source_id} during asset processing")
             asset_path = p_img.storage_path or source.storage_path
             vision_analysis: dict[str, Any] = {}
             if p_img.image_bytes:
@@ -1241,6 +1306,8 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
         question_count = 0
         table_questions = parse_table_questions(parsed_doc, distant_keys)
         for tq in table_questions:
+            if is_source_cancelled(source_id):
+                raise OperationCancelledError(f"Indexing cancelled for source {source_id} during table questions")
             q_page = tq.get("page_number") or tq.get("slide_number")
             matches = question_image_matches(tq["question_text"], q_page)
             outline_node, context = outline_context(q_page)
@@ -1271,6 +1338,8 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
         doc_assembled_questions = assemble_document_questions(parsed_doc, distant_keys)
         assembled_q_stems: set[str] = set()
         for aq in doc_assembled_questions:
+            if is_source_cancelled(source_id):
+                raise OperationCancelledError(f"Indexing cancelled for source {source_id} during document questions")
             q_page = aq.get("page_number") or 1
             explicit_img_ids = [str(img_id_map[m_id]) for m_id in aq.get("image_asset_ids", []) if m_id in img_id_map]
             matches = question_image_matches(aq["question_text"], q_page, explicit_img_ids)
@@ -1402,12 +1471,8 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
         stripped_instruction_lines = 0
 
         for page in parsed_doc.pages:
-            # Check if user requested to stop indexing
-            if (page.page_number or 0) % 2 == 0:
-                current_status = db.scalar(select(KnowledgeSource.status).where(KnowledgeSource.id == source.id))
-                if current_status == SourceStatus.FAILED:
-                    logger.info(f"Stopping indexing early for source {source.id} per user request.")
-                    return source
+            if is_source_cancelled(source_id):
+                raise OperationCancelledError(f"Indexing cancelled for source {source_id} on page {page.page_number}")
 
             # Front-matter page heuristic for multi-page books/documents:
             # Skip entire cover/credits/preface/TOC pages if page_number in (1, 2, 3) and contains markers
@@ -1617,6 +1682,9 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
         source.progress_percent = 85
         db.commit()
 
+        if is_source_cancelled(source_id):
+            raise OperationCancelledError(f"Indexing cancelled for source {source_id} before embeddings")
+
         units_to_embed = db.scalars(
             select(KnowledgeUnitRecord).where(
                 KnowledgeUnitRecord.source_id == source.id,
@@ -1635,6 +1703,9 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
         source.progress_percent = 90
         db.commit()
 
+        if is_source_cancelled(source_id):
+            raise OperationCancelledError(f"Indexing cancelled for source {source_id} before vector store upsert")
+
         indexed_units = db.scalars(
             select(KnowledgeUnitRecord).where(KnowledgeUnitRecord.source_id == source.id)
         ).all()
@@ -1649,6 +1720,9 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
         source.progress_percent = 95
         db.commit()
 
+        if is_source_cancelled(source_id):
+            raise OperationCancelledError(f"Indexing cancelled for source {source_id} before graph generation")
+
         build_source_knowledge_graph(db, source.id)
 
         source.unit_count = unit_count
@@ -1662,10 +1736,32 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
 
         return source
 
+    except OperationCancelledError as exc:
+        logger.info(f"Indexing cancelled for source {source_id}: {exc}")
+        if is_source_deleting(source_id):
+            try:
+                delete_knowledge_source(db, source_id)
+            except Exception:
+                pass
+        else:
+            try:
+                src = db.get(KnowledgeSource, source_id)
+                if src:
+                    src.status = SourceStatus.STOPPED
+                    src.error_message = "تم إيقاف الفهرسة (الملف محفوظ بالسيرفر)"
+                    db.commit()
+            except Exception:
+                db.rollback()
+        raise exc
     except Exception as exc:
-        source.status = SourceStatus.FAILED
-        source.error_message = str(exc)
-        db.commit()
+        try:
+            src = db.get(KnowledgeSource, source_id)
+            if src and src.status != SourceStatus.INDEXED:
+                src.status = SourceStatus.FAILED
+                src.error_message = str(exc)
+                db.commit()
+        except Exception:
+            db.rollback()
         raise exc
 
 
@@ -1702,6 +1798,7 @@ def delete_knowledge_source(db: Session, source_id: uuid.UUID) -> bool:
     """Deletes source file and purges associated document, assets, units, and questions."""
     source = db.scalar(select(KnowledgeSource).where(KnowledgeSource.id == source_id))
     if not source:
+        clear_source_tracking(source_id)
         return False
 
     # Purge child records explicitly to prevent orphaned units in search/RAG
@@ -1720,12 +1817,15 @@ def delete_knowledge_source(db: Session, source_id: uuid.UUID) -> bool:
     db.execute(delete(KnowledgeDocument).where(KnowledgeDocument.source_id == source_id))
     db.execute(delete(AssessmentSource).where(AssessmentSource.source_id == source_id))
 
-    if os.path.exists(source.storage_path):
-        try:
-            os.remove(source.storage_path)
-        except Exception:
-            pass
-
+    storage_path = source.storage_path
     db.delete(source)
     db.commit()
+
+    if storage_path and os.path.exists(storage_path):
+        try:
+            os.remove(storage_path)
+        except Exception as exc:
+            logger.warning(f"Could not remove source file {storage_path}: {exc}")
+
+    clear_source_tracking(source_id)
     return True
