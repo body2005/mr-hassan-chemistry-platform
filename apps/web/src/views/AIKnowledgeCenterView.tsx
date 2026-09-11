@@ -26,6 +26,7 @@ import {
   X,
 } from "lucide-react";
 import { courseService } from "../services/lmsService";
+import { Course } from "../types/lms";
 import { apiRequest, ApiClientError } from "../services/apiClient";
 import { uploadManager } from "../services/uploadManager";
 import { useConfirm } from "../components/ConfirmWizard";
@@ -63,7 +64,8 @@ interface AIKnowledgeCenterViewProps {
 export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () => {
   const confirm = useConfirm();
   const toast = useToast();
-  const [selectedCourseId, setSelectedCourseId] = useState<string>("");
+  const [selectedCourseId, setSelectedCourseId] = useState<string>("all");
+  const [courses, setCourses] = useState<Course[]>([]);
 
   const [sources, setSources] = useState<KnowledgeSourceItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -109,9 +111,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
     async function loadCourses() {
       try {
         const list = await courseService.getCourses();
-        if (list.length > 0) {
-          setSelectedCourseId(list[0].id);
-        }
+        setCourses(list);
       } catch (err) {
         console.error("Failed to load courses", err);
       }
@@ -123,7 +123,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
   const fetchSources = useCallback(async () => {
     setLoading(true);
     try {
-      const query = selectedCourseId
+      const query = selectedCourseId && selectedCourseId !== "all"
         ? `?course_id=${encodeURIComponent(selectedCourseId)}`
         : "";
       const data = await apiRequest<KnowledgeSourceItem[]>(`/knowledge-center/sources${query}`);
@@ -166,16 +166,8 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
     if (!files || files.length === 0) return;
 
     let targetCourseId = selectedCourseId;
-    if (!targetCourseId) {
-      try {
-        const list = await courseService.getCourses();
-        if (list.length > 0) {
-          targetCourseId = list[0].id;
-          setSelectedCourseId(targetCourseId);
-        }
-      } catch (err) {
-        console.error("Failed to dynamically fetch courses on upload", err);
-      }
+    if (!targetCourseId || targetCourseId === "all") {
+      targetCourseId = courses[0]?.id || "f33b77ad-45d0-54c0-80e8-1373a52ec477";
     }
 
     uploadManager.enqueueKnowledgeBatchUpload({
@@ -497,6 +489,62 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
       </div>
 
 
+
+      {/* Course Selector Bar */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "10px",
+          marginBottom: "20px",
+          padding: "12px 16px",
+          background: "var(--bg-card, rgba(255,255,255,0.04))",
+          borderRadius: "12px",
+          border: "1px solid var(--border-color, rgba(255,255,255,0.08))",
+          flexWrap: "wrap",
+        }}
+      >
+        <span style={{ fontSize: "13px", fontWeight: 800, color: "var(--text-main)" }}>
+          📚 المقرر الدراسي المستهدف:
+        </span>
+        <button
+          type="button"
+          onClick={() => setSelectedCourseId("all")}
+          style={{
+            padding: "6px 14px",
+            borderRadius: "20px",
+            fontSize: "12px",
+            fontWeight: 700,
+            cursor: "pointer",
+            border: "1px solid var(--border-color, #e2e8f0)",
+            background: selectedCourseId === "all" ? "#0f392b" : "transparent",
+            color: selectedCourseId === "all" ? "#ffffff" : "var(--text-main)",
+            transition: "all 0.2s ease",
+          }}
+        >
+          جميع المقررات
+        </button>
+        {courses.map((c) => (
+          <button
+            key={c.id}
+            type="button"
+            onClick={() => setSelectedCourseId(c.id)}
+            style={{
+              padding: "6px 14px",
+              borderRadius: "20px",
+              fontSize: "12px",
+              fontWeight: 700,
+              cursor: "pointer",
+              border: "1px solid var(--border-color, #e2e8f0)",
+              background: selectedCourseId === c.id ? "#0f392b" : "transparent",
+              color: selectedCourseId === c.id ? "#ffffff" : "var(--text-main)",
+              transition: "all 0.2s ease",
+            }}
+          >
+            {c.title}
+          </button>
+        ))}
+      </div>
 
       {/* Upload Zone */}
       <div

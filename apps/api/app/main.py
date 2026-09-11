@@ -154,6 +154,37 @@ def ensure_demo_users_exist() -> None:
                 )
                 db.add(student)
             db.commit()
+
+            from app.models.course import Course, CourseStatus
+            if db.query(Course).count() == 0:
+                courses_to_seed = [
+                    Course(
+                        institution_id=inst.id,
+                        teacher_id=teacher.id,
+                        code="CHEM-1SEC",
+                        title="الكيمياء - الصف الأول الثانوي",
+                        description="منهج الكيمياء للصف الأول الثانوي — شرح وتدريبات واختبارات تفاعلية.",
+                        status=CourseStatus.PUBLISHED,
+                    ),
+                    Course(
+                        institution_id=inst.id,
+                        teacher_id=teacher.id,
+                        code="CHEM-2SEC",
+                        title="الكيمياء - الصف الثاني الثانوي",
+                        description="منهج الكيمياء للصف الثاني الثانوي — شرح وتدريبات واختبارات تفاعلية.",
+                        status=CourseStatus.PUBLISHED,
+                    ),
+                    Course(
+                        institution_id=inst.id,
+                        teacher_id=teacher.id,
+                        code="CHEM-3SEC",
+                        title="الكيمياء - الصف الثالث الثانوي",
+                        description="منهج الكيمياء للثانوية العامة — شرح وافٍ وتدريبات وتأهيل للامتحان النهائي.",
+                        status=CourseStatus.PUBLISHED,
+                    ),
+                ]
+                db.add_all(courses_to_seed)
+                db.commit()
     except Exception as exc:
         print(f"[startup] ensure_demo_users_exist note: {exc}")
 

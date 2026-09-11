@@ -42,7 +42,53 @@ export const DEFAULT_STUDENT_USER: StudentProfile = {
 
 export const INITIAL_STUDENT_PROFILE: StudentProfile = DEFAULT_STUDENT_USER;
 
-export const INITIAL_COURSES: Course[] = [];
+export const INITIAL_COURSES: Course[] = [
+  {
+    id: "f33b77ad-45d0-54c0-80e8-1373a52ec477",
+    title: "الكيمياء - الصف الثالث الثانوي",
+    subject: "الكيمياء",
+    academicYear: "3rd_secondary",
+    academicYearLabel: "الصف الثالث الثانوي",
+    teacherName: "مستر حسن شعبان",
+    teacherTitle: "معلم أول الكيمياء للثانوية العامة",
+    description: "منهج الكيمياء للثانوية العامة — شرح وافٍ وتدريبات وتأهيل للامتحان النهائي.",
+    thumbnailColor: "#0f392b",
+    lessonsCount: 0,
+    totalDurationFormatted: "0 دقيقة",
+    lessons: [],
+    enrolledStudentsCount: 0,
+  },
+  {
+    id: "1d8881ce-c07d-5e2e-bd9e-a756989ad3b6",
+    title: "الكيمياء - الصف الثاني الثانوي",
+    subject: "الكيمياء",
+    academicYear: "2nd_secondary",
+    academicYearLabel: "الصف الثاني الثانوي",
+    teacherName: "مستر حسن شعبان",
+    teacherTitle: "معلم أول الكيمياء للثانوية العامة",
+    description: "منهج الكيمياء للصف الثاني الثانوي — شرح وتدريبات واختبارات تفاعلية.",
+    thumbnailColor: "#164e63",
+    lessonsCount: 0,
+    totalDurationFormatted: "0 دقيقة",
+    lessons: [],
+    enrolledStudentsCount: 0,
+  },
+  {
+    id: "0326dbfd-5df8-5af1-8efe-4458d53977f0",
+    title: "الكيمياء - الصف الأول الثانوي",
+    subject: "الكيمياء",
+    academicYear: "1st_secondary",
+    academicYearLabel: "الصف الأول الثانوي",
+    teacherName: "مستر حسن شعبان",
+    teacherTitle: "معلم أول الكيمياء للثانوية العامة",
+    description: "منهج الكيمياء للصف الأول الثانوي — شرح وتدريبات واختبارات تفاعلية.",
+    thumbnailColor: "#065f46",
+    lessonsCount: 0,
+    totalDurationFormatted: "0 دقيقة",
+    lessons: [],
+    enrolledStudentsCount: 0,
+  },
+];
 
 export const INITIAL_STUDENTS: StudentRecord[] = [];
 

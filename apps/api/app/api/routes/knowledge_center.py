@@ -138,6 +138,40 @@ def _parse_uuid(id_str: str | None) -> uuid.UUID | None:
         return uuid.uuid5(uuid.NAMESPACE_DNS, str(id_str))
 
 
+def _resolve_course_uuid(db: Session, user: User, course_id: str | None) -> uuid.UUID:
+    course_uuid = _parse_uuid(course_id)
+    if course_uuid:
+        existing = db.scalar(select(Course).where(Course.id == course_uuid))
+        if existing:
+            return existing.id
+
+    # Try by user's institution
+    default_course = db.scalar(select(Course).where(Course.institution_id == user.institution_id))
+    if default_course:
+        return default_course.id
+
+    # Try any course in system
+    default_course = db.scalar(select(Course))
+    if default_course:
+        return default_course.id
+
+    # Auto-create if no course exists at all
+    from app.models.course import CourseStatus
+    new_course = Course(
+        institution_id=user.institution_id,
+        teacher_id=user.id,
+        code="CHEM-3SEC",
+        title="الكيمياء - الصف الثالث الثانوي",
+        description="منهج الكيمياء للثانوية العامة — مستر حسن شعبان",
+        status=CourseStatus.PUBLISHED,
+    )
+    db.add(new_course)
+    db.commit()
+    db.refresh(new_course)
+    return new_course.id
+
+
+
 def _get_active_user(db: Session, user: User | None) -> User:
     if user:
         return user
@@ -202,13 +236,7 @@ async def upload_knowledge_source(
 ) -> KnowledgeSourceResponse:
     enforce_rate_limit(request, bucket="upload", limit=50, window_seconds=60)
     
-    course_uuid = _parse_uuid(course_id)
-    if not course_uuid:
-        default_course = db.scalar(select(Course).where(Course.institution_id == user.institution_id))
-        if default_course:
-            course_uuid = default_course.id
-        else:
-            raise HTTPException(status_code=400, detail="المقرر الدراسي غير صالح أو غير موجود")
+    course_uuid = _resolve_course_uuid(db, user, course_id)
     lesson_uuid = _parse_uuid(lesson_id)
     
     file_bytes = await file.read()
@@ -283,14 +311,7 @@ async def upload_knowledge_sources_batch(
     if len(files) > 25:
         raise HTTPException(status_code=400, detail="الحد الأقصى للرفع دفعة واحدة هو 25 ملفاً")
 
-    course_uuid = _parse_uuid(course_id)
-    if not course_uuid:
-        default_course = db.scalar(select(Course).where(Course.institution_id == user.institution_id))
-        if default_course:
-            course_uuid = default_course.id
-        else:
-            raise HTTPException(status_code=400, detail="المقرر الدراسي غير صالح أو غير موجود")
-
+    course_uuid = _resolve_course_uuid(db, user, course_id)
     lesson_uuid = _parse_uuid(lesson_id)
 
     created: list[KnowledgeSource] = []

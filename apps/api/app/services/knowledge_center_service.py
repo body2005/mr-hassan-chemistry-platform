@@ -875,15 +875,27 @@ def create_knowledge_source(
         )
     )
     if not course:
-        # Fallback to the institution's primary course
+        # Fallback to the institution's primary course or auto-create official chemistry course
         fallback_course = db.scalar(
             select(Course).where(Course.institution_id == user.institution_id)
         )
-        if fallback_course:
-            course = fallback_course
-            course_id = fallback_course.id
-        else:
-            raise ValueError("المقرر الدراسي غير موجود أو ليس لديك صلاحية للوصول إليه")
+        if not fallback_course:
+            fallback_course = db.scalar(select(Course))
+        if not fallback_course:
+            from app.models.course import CourseStatus
+            fallback_course = Course(
+                institution_id=user.institution_id,
+                teacher_id=user.id,
+                code="CHEM-3SEC",
+                title="الكيمياء - الصف الثالث الثانوي",
+                description="منهج الكيمياء للثانوية العامة — مستر حسن شعبان",
+                status=CourseStatus.PUBLISHED,
+            )
+            db.add(fallback_course)
+            db.commit()
+            db.refresh(fallback_course)
+        course = fallback_course
+        course_id = fallback_course.id
 
     # Check for existing checksum upload to avoid duplicate storage
     existing = db.scalar(
