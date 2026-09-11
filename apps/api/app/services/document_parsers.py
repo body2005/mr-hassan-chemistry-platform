@@ -323,14 +323,19 @@ def clean_arabic_ocr_text(text: str) -> str:
     return cleaned.strip()
 
 
-def ocr_pdf_page(file_bytes: bytes, page_number: int, lang: str = "ara+eng", pdfium_doc: Any = None) -> str:
+def ocr_pdf_page(file_bytes: bytes | None = None, page_number: int = 1, lang: str = "ara+eng", pdfium_doc: Any = None, file_path: str | None = None) -> str:
     """
     Renders a specific PDF page to an image and performs OCR using Tesseract.
     Uses disk caching to prevent re-running OCR on previously processed pages.
     """
     cache_file = None
     try:
-        file_hash = hashlib.sha256(file_bytes[:100000] + str(len(file_bytes)).encode()).hexdigest()[:16]
+        if file_bytes:
+            file_hash = hashlib.sha256(file_bytes[:100000] + str(len(file_bytes)).encode()).hexdigest()[:16]
+        elif file_path and os.path.exists(file_path):
+            file_hash = hashlib.sha256(os.path.basename(file_path).encode() + str(os.path.getsize(file_path)).encode()).hexdigest()[:16]
+        else:
+            file_hash = "generic_ocr"
         # Check standard app storage location first
         api_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         possible_dirs = [
@@ -358,7 +363,12 @@ def ocr_pdf_page(file_bytes: bytes, page_number: int, lang: str = "ara+eng", pdf
 
         get_tesseract_cmd()  # Ensure Tesseract executable path is configured
 
-        pdf = pdfium_doc if pdfium_doc is not None else pdfium.PdfDocument(file_bytes)
+        if pdfium_doc is not None:
+            pdf = pdfium_doc
+        elif file_path:
+            pdf = pdfium.PdfDocument(file_path)
+        else:
+            pdf = pdfium.PdfDocument(file_bytes)
         if page_number < 1 or page_number > len(pdf):
             return ""
         page = pdf[page_number - 1]
@@ -390,7 +400,7 @@ def ocr_pdf_page(file_bytes: bytes, page_number: int, lang: str = "ara+eng", pdf
 # 1. PDF PARSER (pdfplumber + selective OCR fallback)
 # =============================================================================
 
-def parse_pdf_document(file_bytes: bytes, filename: str, progress_callback: Any = None) -> ParsedDocument:
+def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", progress_callback: Any = None, file_path: str | None = None) -> ParsedDocument:
     """Parses a PDF document using pdfplumber, preserving page numbers, layout, tables, and images with automatic OCR fallback for garbled pages."""
     import pdfplumber
     import pypdfium2 as pdfium
@@ -401,13 +411,20 @@ def parse_pdf_document(file_bytes: bytes, filename: str, progress_callback: Any 
     )
 
     pdfium_shared = None
+    pdf_source = file_path if (file_path and os.path.exists(file_path)) else (io.BytesIO(file_bytes) if file_bytes else None)
+    if pdf_source is None:
+        return parsed_doc
+
     try:
-        pdfium_shared = pdfium.PdfDocument(file_bytes)
+        if file_path and os.path.exists(file_path):
+            pdfium_shared = pdfium.PdfDocument(file_path)
+        elif file_bytes:
+            pdfium_shared = pdfium.PdfDocument(file_bytes)
     except Exception:
         pass
 
     try:
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        with pdfplumber.open(pdf_source) as pdf:
             total_pages = len(pdf.pages)
             parsed_doc.total_pages = total_pages
             
@@ -425,7 +442,7 @@ def parse_pdf_document(file_bytes: bytes, filename: str, progress_callback: Any 
                 needs_ocr = is_text_garbled(page_text) or (len(page_text.strip()) < 15 and len(page.images) > 0)
                 if needs_ocr:
                     logger.info(f"Page {p_idx} has absent or corrupt text layer; triggering OCR fallback (ara+eng)...")
-                    ocr_text = ocr_pdf_page(file_bytes, p_idx, lang="ara+eng", pdfium_doc=pdfium_shared)
+                    ocr_text = ocr_pdf_page(file_bytes=file_bytes, page_number=p_idx, lang="ara+eng", pdfium_doc=pdfium_shared, file_path=file_path)
                     if ocr_text:
                         page_text = ocr_text
                         parsed_page.extracted_via_ocr = True
@@ -1034,18 +1051,30 @@ def extract_pdf_page_images(file_bytes: bytes, page_number: int) -> list[tuple[b
 # UNIFIED DISPATCH PARSER
 # =============================================================================
 
-def parse_knowledge_file(file_bytes: bytes, filename: str, mime_type: str | None = None, progress_callback: Any = None) -> ParsedDocument:
+def parse_knowledge_file(file_bytes: bytes | None = None, filename: str = "", mime_type: str | None = None, progress_callback: Any = None, file_path: str | None = None) -> ParsedDocument:
     """Dispatches a source file to the correct structure-preserving parser."""
     ext = os.path.splitext(filename)[1].lower().lstrip(".")
 
     if ext == "pdf":
-        return parse_pdf_document(file_bytes, filename, progress_callback=progress_callback)
+        return parse_pdf_document(file_bytes, filename, progress_callback=progress_callback, file_path=file_path)
     elif ext in ("docx", "doc"):
-        return parse_docx_document(file_bytes, filename)
+        if file_bytes is None and file_path and os.path.exists(file_path):
+            with open(file_path, "rb") as f:
+                file_bytes = f.read()
+        return parse_docx_document(file_bytes or b"", filename)
     elif ext in ("pptx", "ppt"):
-        return parse_pptx_document(file_bytes, filename)
+        if file_bytes is None and file_path and os.path.exists(file_path):
+            with open(file_path, "rb") as f:
+                file_bytes = f.read()
+        return parse_pptx_document(file_bytes or b"", filename)
     elif ext in ("png", "jpg", "jpeg", "webp", "gif"):
-        return parse_image_asset(file_bytes, filename)
+        if file_bytes is None and file_path and os.path.exists(file_path):
+            with open(file_path, "rb") as f:
+                file_bytes = f.read()
+        return parse_image_asset(file_bytes or b"", filename)
     else:
         # Default text / markdown parser
-        return parse_txt_document(file_bytes, filename)
+        if file_bytes is None and file_path and os.path.exists(file_path):
+            with open(file_path, "rb") as f:
+                file_bytes = f.read()
+        return parse_txt_document(file_bytes or b"", filename)

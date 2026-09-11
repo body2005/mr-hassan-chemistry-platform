@@ -13,6 +13,7 @@ import hashlib
 import logging
 import os
 import re
+import shutil
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -836,19 +837,54 @@ def assemble_document_questions(
     return questions
 
 
+def sanitize_source_filename(name: str) -> str:
+    base = os.path.basename(name).strip()
+    base = base.replace("\x00", "").replace("/", "_").replace("\\", "_")
+    base = re.sub(r'[\r\n\t]', '', base)
+    while ".." in base:
+        base = base.replace("..", "_")
+    if not base or base.startswith("."):
+        base = f"file_{base.lstrip('.')}" if base.lstrip('.') else "uploaded_file"
+    return base[:200]
+
+
 def create_knowledge_source(
     db: Session,
     user: User,
     course_id: uuid.UUID,
     filename: str,
-    file_bytes: bytes,
+    file_bytes: bytes | None = None,
     lesson_id: uuid.UUID | None = None,
     source_role: str = SourceRole.KNOWLEDGE,
     mime_type: str | None = None,
     metadata: dict[str, Any] | None = None,
+    staged_file_path: str | None = None,
+    checksum: str | None = None,
+    size_bytes: int | None = None,
 ) -> KnowledgeSource:
     """Uploads and creates a new KnowledgeSource record in QUEUED state."""
-    checksum = _compute_checksum(file_bytes)
+    filename = sanitize_source_filename(filename)
+
+    if checksum is None:
+        if file_bytes is not None:
+            checksum = _compute_checksum(file_bytes)
+        elif staged_file_path and os.path.exists(staged_file_path):
+            hasher = hashlib.sha256()
+            with open(staged_file_path, "rb") as sf:
+                while chk := sf.read(1024 * 1024):
+                    hasher.update(chk)
+            checksum = hasher.hexdigest()
+        else:
+            raise ValueError("Either file_bytes or staged_file_path must be provided.")
+
+    if size_bytes is None:
+        if file_bytes is not None:
+            size_bytes = len(file_bytes)
+        elif staged_file_path and os.path.exists(staged_file_path):
+            size_bytes = os.path.getsize(staged_file_path)
+        else:
+            size_bytes = 0
+
     ext = os.path.splitext(filename)[1].lower().lstrip(".")
     if isinstance(source_role, SourceRole):
         source_role = source_role.value
@@ -907,6 +943,11 @@ def create_knowledge_source(
         )
     )
     if existing:
+        if staged_file_path and os.path.exists(staged_file_path) and staged_file_path != existing.storage_path:
+            try:
+                os.remove(staged_file_path)
+            except OSError:
+                pass
         return existing
 
     # A source with the same logical document key is a new edition. Retrieval
@@ -930,15 +971,20 @@ def create_knowledge_source(
     for item in matching_prior:
         item.is_current = False
 
-    # Save file to storage
+    # Save file to storage using completely server-generated filename
     rel_dir = f"courses/{course_id}"
     full_dir = os.path.join(STORAGE_DIR, rel_dir)
     os.makedirs(full_dir, exist_ok=True)
     
-    unique_filename = f"{uuid.uuid4().hex[:8]}_{filename}"
-    file_path = os.path.join(full_dir, unique_filename)
-    with open(file_path, "wb") as f:
-        f.write(file_bytes)
+    server_storage_name = f"{uuid.uuid4().hex}_{uuid.uuid4().hex[:8]}.{ext}"
+    file_path = os.path.join(full_dir, server_storage_name)
+    if staged_file_path and os.path.exists(staged_file_path):
+        shutil.move(staged_file_path, file_path)
+    elif file_bytes is not None:
+        with open(file_path, "wb") as f:
+            f.write(file_bytes)
+    else:
+        raise ValueError("Either file_bytes or staged_file_path must be provided.")
 
     source = KnowledgeSource(
         institution_id=user.institution_id,
@@ -949,7 +995,7 @@ def create_knowledge_source(
         file_format=ext,
         mime_type=mime_type or f"application/{ext}",
         storage_path=file_path,
-        size_bytes=len(file_bytes),
+        size_bytes=size_bytes,
         source_role=source_role,
         version=next_version,
         is_current=True,
@@ -988,15 +1034,12 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
     db.execute(delete(KnowledgeOutlineNode).where(KnowledgeOutlineNode.source_id == source_id))
     db.execute(delete(KnowledgeDocument).where(KnowledgeDocument.source_id == source_id))
     db.execute(delete(AssessmentSource).where(AssessmentSource.source_id == source_id))
-    db.commit()
-
-    with open(source.storage_path, "rb") as f:
-        file_bytes = f.read()
-
     try:
         # Structured assessment banks are parsed directly; document assessments use
         # the normal structure-preserving document parser below, then materialize.
         if source.file_format in ("json", "quiz"):
+            with open(source.storage_path, "rb") as f:
+                file_bytes = f.read()
             parsed_questions = parse_assessment_bank(file_bytes, source.filename)
             
             assess_source = AssessmentSource(
@@ -1057,7 +1100,13 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
                 except Exception:
                     pass
 
-        parsed_doc = parse_knowledge_file(file_bytes, source.filename, source.mime_type, progress_callback=on_page_progress)
+        parsed_doc = parse_knowledge_file(
+            file_bytes=None,
+            filename=source.filename,
+            mime_type=source.mime_type,
+            progress_callback=on_page_progress,
+            file_path=source.storage_path,
+        )
 
         doc_rec = KnowledgeDocument(
             source_id=source.id,

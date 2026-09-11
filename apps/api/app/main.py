@@ -77,6 +77,31 @@ async def security_middleware(request, call_next):
         if not csrf_cookie or not secrets.compare_digest(csrf_cookie, csrf_header or ""):
             return JSONResponse(status_code=403, content={"detail": "CSRF validation failed"})
 
+    if request.method == "POST" and request.url.path in {
+        f"{settings.api_v1_prefix}/knowledge-center/sources/upload",
+        f"{settings.api_v1_prefix}/knowledge-center/sources/upload-batch",
+    }:
+        content_length_header = request.headers.get("content-length")
+        if content_length_header:
+            try:
+                content_length = int(content_length_header)
+                maximum_http_body = (
+                    settings.max_request_size_mb + settings.multipart_overhead_mb
+                ) * 1024 * 1024
+                if content_length > maximum_http_body:
+                    return JSONResponse(
+                        status_code=413,
+                        content={
+                            "error": {
+                                "code": "PAYLOAD_TOO_LARGE",
+                                "message": f"Request size exceeds the {settings.max_request_size_mb} MB limit",
+                            },
+                            "request_id": request_id,
+                        },
+                    )
+            except (ValueError, TypeError):
+                pass
+
     request.state.request_id = request_id
     started = time.perf_counter()
     response = await call_next(request)

@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     max_file_size_mb: int = Field(default=500, ge=10, le=2048)
     max_batch_size_mb: int = Field(default=1000, ge=50, le=4096)
     max_request_size_mb: int = Field(default=1000, ge=50, le=4096)
+    multipart_overhead_mb: int = Field(default=10, ge=1, le=100)
 
     @property
     def secure_cookies(self) -> bool:

@@ -808,8 +808,15 @@ async def extract_quiz_from_file(
     lesson_id: str | None = Form(None),
 ) -> QuizDraftResponse:
     """Extract questions directly from an uploaded exam / question file (PDF, Word, TXT, JSON, etc.)"""
-    enforce_rate_limit(request, bucket="ai", limit=30, window_seconds=60)
-    file_bytes = await file.read()
+    max_exam_bytes = 50 * 1024 * 1024
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await file.read(1024 * 1024):
+        total += len(chunk)
+        if total > max_exam_bytes:
+            raise HTTPException(status_code=413, detail="حجم الملف يتجاوز الحد المسموح به لاستخراج الأسئلة (50 ميجابايت)")
+        chunks.append(chunk)
+    file_bytes = b"".join(chunks)
     if not file_bytes:
         raise HTTPException(status_code=400, detail="الملف المرفوع فارغ.")
 

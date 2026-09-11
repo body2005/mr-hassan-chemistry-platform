@@ -12,7 +12,7 @@ import {
   Sun,
   X,
 } from "lucide-react";
-import { NotificationItem } from "../types/lms";
+import { CurrentUser, NotificationItem } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
 
 interface HeaderProps {
@@ -27,6 +27,7 @@ interface HeaderProps {
   lang: Language;
   onToggleLang: () => void;
   onNavigateHome?: () => void;
+  currentUser?: CurrentUser | null;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -41,10 +42,20 @@ export const Header: React.FC<HeaderProps> = ({
   lang,
   onToggleLang,
   onNavigateHome,
+  currentUser,
 }) => {
   const [showNotifDropdown, setShowNotifDropdown] = useState(false);
   const unreadCount = notifications.filter((n) => !n.read).length;
   const t = translations[lang];
+
+  const isTeacher = currentUser?.role === "teacher" || (() => {
+    try {
+      const cached = localStorage.getItem("lms_cached_user");
+      return cached ? JSON.parse(cached).role === "teacher" : false;
+    } catch {
+      return false;
+    }
+  })();
 
   function handleNotificationClick(notif: NotificationItem) {
     onMarkNotificationRead(notif.id);
@@ -116,22 +127,24 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         </div>
 
-        {/* Search Bar with Attached Secondary Quick-Search Icon */}
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <label className="search-box">
-            <Search size={16} />
-            <input placeholder={t.searchPlaceholder} aria-label="Search" />
-          </label>
-          <button
-            type="button"
-            className="icon-btn topbar-quick-search-btn"
-            title={lang === "ar" ? "تصفية وبحث متقدم في المحتوى" : "Quick Search & Filter"}
-            aria-label="Filter Search"
-            style={{ width: "36px", height: "36px", borderRadius: "10px", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)" }}
-          >
-            <Search size={15} style={{ color: "#059669" }} />
-          </button>
-        </div>
+        {/* Search Bar with Attached Secondary Quick-Search Icon (Students Only) */}
+        {!isTeacher && (
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <label className="search-box">
+              <Search size={16} />
+              <input placeholder={t.searchPlaceholder} aria-label="Search" />
+            </label>
+            <button
+              type="button"
+              className="icon-btn topbar-quick-search-btn"
+              title={lang === "ar" ? "تصفية وبحث متقدم في المحتوى" : "Quick Search & Filter"}
+              aria-label="Filter Search"
+              style={{ width: "36px", height: "36px", borderRadius: "10px", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)" }}
+            >
+              <Search size={15} style={{ color: "#059669" }} />
+            </button>
+          </div>
+        )}
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: "10px", position: "relative" }}>

@@ -189,6 +189,38 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     if (!activeCourse?.lessons) return [];
     return [...activeCourse.lessons].reverse();
   }, [activeCourse]);
+
+  // Video & Lesson Search / Filter State
+  const [videoSearchQuery, setVideoSearchQuery] = useState("");
+  const [videoFilterType, setVideoFilterType] = useState<"all" | "video_only" | "notes_only">("all");
+
+  const totalWithVideo = React.useMemo(
+    () => activeLessons.filter((l) => Boolean(l.videoUrl)).length,
+    [activeLessons]
+  );
+  const totalWithNotes = React.useMemo(
+    () => activeLessons.filter((l) => Boolean(l.materials && l.materials.length > 0)).length,
+    [activeLessons]
+  );
+
+  const filteredLessons: VideoLesson[] = React.useMemo(() => {
+    let result = activeLessons;
+    if (videoSearchQuery.trim()) {
+      const q = videoSearchQuery.trim().toLowerCase();
+      result = result.filter((l) => {
+        const title = (l.title || "").toLowerCase();
+        const desc = (l.description || "").toLowerCase();
+        return title.includes(q) || desc.includes(q);
+      });
+    }
+    if (videoFilterType === "video_only") {
+      result = result.filter((l) => Boolean(l.videoUrl));
+    } else if (videoFilterType === "notes_only") {
+      result = result.filter((l) => Boolean(l.materials && l.materials.length > 0));
+    }
+    return result;
+  }, [activeLessons, videoSearchQuery, videoFilterType]);
+
   const activeYearLabel =
     selectedYear === "1st_secondary"
       ? "الصف الأول الثانوي"
@@ -927,6 +959,182 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
             )}
           </div>
 
+          {/* Dedicated Search & Filter Bar for Teacher's Uploaded Videos & Lessons */}
+          {activeLessons.length > 0 && (
+            <div
+              style={{
+                background: "var(--bg-surface, #ffffff)",
+                border: "1px solid var(--border-color, #e2e8f0)",
+                borderRadius: "14px",
+                padding: "12px 16px",
+                display: "flex",
+                flexDirection: "column",
+                gap: "10px",
+                boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                {/* Search Input Box */}
+                <div style={{ position: "relative", flex: 1, minWidth: "220px" }}>
+                  <Search
+                    size={16}
+                    style={{
+                      position: "absolute",
+                      right: "12px",
+                      top: "50%",
+                      transform: "translateY(-50%)",
+                      color: "#059669",
+                      pointerEvents: "none",
+                    }}
+                  />
+                  <input
+                    type="text"
+                    value={videoSearchQuery}
+                    onChange={(e) => setVideoSearchQuery(e.target.value)}
+                    placeholder={`ابحث في فيديوهات وشروحات ${activeYearLabel}...`}
+                    style={{
+                      width: "100%",
+                      padding: "9px 38px 9px 36px",
+                      borderRadius: "10px",
+                      border: "1.5px solid var(--border-color, #e2e8f0)",
+                      background: "var(--bg-surface-secondary, #f8fafc)",
+                      color: "var(--text-main, #0f172a)",
+                      fontSize: "13px",
+                      fontWeight: 600,
+                      outline: "none",
+                      boxSizing: "border-box",
+                      transition: "border-color 0.15s ease, box-shadow 0.15s ease",
+                    }}
+                    onFocus={(e) => (e.target.style.borderColor = "#059669")}
+                    onBlur={(e) => (e.target.style.borderColor = "var(--border-color, #e2e8f0)")}
+                  />
+                  {videoSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setVideoSearchQuery("")}
+                      style={{
+                        position: "absolute",
+                        left: "10px",
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        background: "none",
+                        border: "none",
+                        color: "var(--text-muted, #94a3b8)",
+                        cursor: "pointer",
+                        padding: "2px",
+                        display: "flex",
+                        alignItems: "center",
+                      }}
+                      title="مسح البحث"
+                    >
+                      <X size={15} />
+                    </button>
+                  )}
+                </div>
+
+                {/* Filter Pills: All / Videos Only / Notes Only */}
+                <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    onClick={() => setVideoFilterType("all")}
+                    style={{
+                      padding: "6px 12px",
+                      borderRadius: "20px",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      border: "none",
+                      background: videoFilterType === "all" ? "#0f392b" : "var(--bg-surface-secondary, #f1f5f9)",
+                      color: videoFilterType === "all" ? "#ffffff" : "var(--text-muted, #64748b)",
+                      transition: "all 0.15s ease",
+                    }}
+                  >
+                    الكل ({activeLessons.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setVideoFilterType("video_only")}
+                    style={{
+                      padding: "6px 12px",
+                      borderRadius: "20px",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      border: "none",
+                      background: videoFilterType === "video_only" ? "#059669" : "var(--bg-surface-secondary, #f1f5f9)",
+                      color: videoFilterType === "video_only" ? "#ffffff" : "var(--text-muted, #64748b)",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "4px",
+                      transition: "all 0.15s ease",
+                    }}
+                  >
+                    <span>فيديوهات فقط 🎥</span>
+                    <span>({totalWithVideo})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setVideoFilterType("notes_only")}
+                    style={{
+                      padding: "6px 12px",
+                      borderRadius: "20px",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      border: "none",
+                      background: videoFilterType === "notes_only" ? "#0284c7" : "var(--bg-surface-secondary, #f1f5f9)",
+                      color: videoFilterType === "notes_only" ? "#ffffff" : "var(--text-muted, #64748b)",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "4px",
+                      transition: "all 0.15s ease",
+                    }}
+                  >
+                    <span>مذكرات فقط 📄</span>
+                    <span>({totalWithNotes})</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Search Active Indicator / Summary */}
+              {(videoSearchQuery.trim() || videoFilterType !== "all") && (
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    fontSize: "11.5px",
+                    color: "var(--text-muted, #64748b)",
+                    paddingTop: "4px",
+                    borderTop: "1px dashed var(--border-color, #e2e8f0)",
+                  }}
+                >
+                  <span>
+                    تم العثور على <strong style={{ color: "#059669" }}>{filteredLessons.length}</strong> من أصل {activeLessons.length} درس
+                    {videoSearchQuery.trim() ? ` لبحثك عن "${videoSearchQuery}"` : ""}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setVideoSearchQuery("");
+                      setVideoFilterType("all");
+                    }}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: "#dc2626",
+                      cursor: "pointer",
+                      fontSize: "11.5px",
+                      fontWeight: 700,
+                    }}
+                  >
+                    إعادة ضبط الفلترة
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {activeLessons.length === 0 ? (
             <div
               style={{
@@ -948,8 +1156,45 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                 املأ نموذج "رفع درس ومحتوى جديد" على اليمين للبدء
               </span>
             </div>
+          ) : filteredLessons.length === 0 ? (
+            <div
+              style={{
+                background: "var(--bg-surface, #ffffff)",
+                border: "1.5px dashed var(--border-color, #cbd5e1)",
+                borderRadius: "16px",
+                padding: "36px 20px",
+                textAlign: "center",
+              }}
+            >
+              <Search size={36} style={{ color: "#059669", opacity: 0.5, margin: "0 auto 10px" }} />
+              <h4 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: 800, color: "var(--text-main)" }}>
+                لا توجد فيديوهات أو شروحات مطابقة لبحثك
+              </h4>
+              <p style={{ margin: "0 auto 12px", color: "var(--text-muted)", fontSize: "12.5px" }}>
+                لم يتم العثور على أي درس يطابق "{videoSearchQuery}". جرب البحث بكلمات أخرى أو مسح الفلتر.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setVideoSearchQuery("");
+                  setVideoFilterType("all");
+                }}
+                style={{
+                  background: "var(--bg-surface-secondary, #f1f5f9)",
+                  color: "#059669",
+                  border: "1px solid #059669",
+                  borderRadius: "8px",
+                  padding: "6px 14px",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                عرض جميع الفيديوهات
+              </button>
+            </div>
           ) : (
-            activeLessons.map((lesson, idx) => {
+            filteredLessons.map((lesson, idx) => {
             const viewsCount = lesson.aiSignals?.viewsCount || 0;
             const hasRealTelemetry = viewsCount > 0 && Boolean(lesson.aiSignals);
             const isAnalyzed = hasRealTelemetry && viewsCount >= minViewsThreshold;

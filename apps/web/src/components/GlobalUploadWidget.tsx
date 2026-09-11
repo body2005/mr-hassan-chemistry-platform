@@ -92,9 +92,10 @@ export const CircularProgress: React.FC<CircularProgressProps> = ({
 
 interface GlobalUploadWidgetProps {
   currentUser?: { role?: string } | null;
+  menuOpen?: boolean;
 }
 
-export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentUser }) => {
+export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentUser, menuOpen = false }) => {
   const [tasks, setTasks] = useState<UploadTask[]>([]);
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -120,27 +121,26 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
     return () => unsubscribe();
   }, []);
 
-  // Auto-expand when a new upload starts if not already open
   const activeTasks = tasks.filter(
     (t) => t.status === "uploading" || t.status === "queued" || t.status === "processing"
   );
   const completedTasks = tasks.filter((t) => t.status === "completed");
 
-  if (tasks.length === 0) {
-    return null;
-  }
-
   const primaryActive = activeTasks[0];
+
+  const isDesktop = typeof window !== "undefined" ? window.innerWidth >= 1024 : true;
+  const rightOffset = menuOpen && isDesktop ? "304px" : "24px";
 
   return (
     <div
       style={{
         position: "fixed",
         bottom: "24px",
-        right: "24px",
+        right: rightOffset,
         left: "auto",
         zIndex: 9998,
         fontFamily: "inherit",
+        transition: "right 0.2s ease, bottom 0.2s ease",
       }}
       dir="rtl"
     >
@@ -279,7 +279,18 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
               gap: "10px",
             }}
           >
-            {tasks.map((task) => {
+            {tasks.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "26px 14px", color: "var(--text-muted)" }}>
+                <UploadCloud size={34} style={{ color: "#059669", opacity: 0.7, margin: "0 auto 8px" }} />
+                <div style={{ fontSize: "13px", fontWeight: 800, color: "var(--text-main)" }}>
+                  لا توجد عمليات رفع نشطة حالياً
+                </div>
+                <div style={{ fontSize: "11px", marginTop: "4px", lineHeight: 1.5 }}>
+                  عند رفع أي درس، فيديو أو مذكرة، ستظهر حالة ونسبة الرفع والمعالجة هنا لحظياً.
+                </div>
+              </div>
+            ) : (
+              tasks.map((task) => {
               const isVideo = task.type === "lesson_video";
               const isUploading = task.status === "uploading";
               const isProcessing = task.status === "processing";
@@ -480,7 +491,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                   )}
                 </div>
               );
-            })}
+            }))}
           </div>
 
           {/* Footer */}

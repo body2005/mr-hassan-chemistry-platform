@@ -443,6 +443,7 @@ function App() {
           lang={lang}
           onToggleLang={handleToggleLang}
           onNavigateHome={() => navigateToTab(currentUser?.role === "teacher" ? "LessonManagement" : "GeneralHome")}
+          currentUser={currentUser}
         />
 
         <Suspense fallback={<div className="page-container" style={{ minHeight: "60vh" }} />}>
@@ -521,7 +522,9 @@ function App() {
       />
 
       {/* Global Background Upload Manager Widget - strictly for teachers only */}
-      {currentUser?.role === "teacher" && <GlobalUploadWidget currentUser={currentUser} />}
+      {currentUser?.role === "teacher" && (
+        <GlobalUploadWidget currentUser={currentUser} menuOpen={menuOpen} />
+      )}
     </div>
   );
 }

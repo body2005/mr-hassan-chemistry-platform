@@ -8,7 +8,11 @@ source indexing status, document inspection, reindexing, deletion, and knowledge
 """
 from __future__ import annotations
 
+import hashlib
+import inspect
 import os
+import shutil
+import tempfile
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -48,6 +52,7 @@ from app.services.knowledge_center_service import (
     delete_knowledge_source,
     process_knowledge_source,
     reindex_knowledge_source,
+    sanitize_source_filename,
 )
 from app.services.knowledge_retriever import search_knowledge_base
 from app.services.ai_access_policy import can_access_course_knowledge, enforce_ai_access
@@ -198,23 +203,58 @@ def _get_active_user(db: Session, user: User | None) -> User:
     return demo_teacher
 
 
-_settings = get_settings()
-MAX_KNOWLEDGE_FILE_BYTES = int(os.getenv("MAX_FILE_SIZE_MB", str(getattr(_settings, "max_file_size_mb", 500)))) * 1024 * 1024
-MAX_KNOWLEDGE_BATCH_BYTES = int(os.getenv("MAX_BATCH_SIZE_MB", os.getenv("MAX_REQUEST_SIZE_MB", str(getattr(_settings, "max_batch_size_mb", 1000))))) * 1024 * 1024
+def _get_kc_temp_dir() -> str:
+    storage_dir = os.getenv("STORAGE_DIR", "storage/knowledge_center")
+    tmp = os.path.join(storage_dir, "tmp")
+    os.makedirs(tmp, exist_ok=True)
+    return tmp
 
 
-async def _read_upload_limited(uploaded: UploadFile, limit: int | None = None) -> bytes:
-    if limit is None:
-        limit = MAX_KNOWLEDGE_FILE_BYTES
-    chunks: list[bytes] = []
-    total = 0
-    while chunk := await uploaded.read(1024 * 1024):
-        total += len(chunk)
-        if total > limit:
-            raise HTTPException(status_code=413, detail=f"File exceeds the {limit // (1024 * 1024)} MB limit")
-        chunks.append(chunk)
-    await uploaded.seek(0)
-    return b"".join(chunks)
+
+
+
+async def _stream_upload_to_file(
+    uploaded: UploadFile,
+    dest_path: str,
+    max_file_bytes: int,
+    current_batch_bytes: int = 0,
+    max_batch_bytes: int = 0,
+) -> tuple[int, str]:
+    """
+    Streams an UploadFile directly to a file on disk in ~1 MiB chunks.
+    Monitors file-level and batch-level size limits incrementally.
+    Computes SHA-256 hash on the fly with bounded memory usage.
+    Returns (bytes_written, sha256_hex).
+    """
+    hasher = hashlib.sha256()
+    file_bytes_written = 0
+    try:
+        with open(dest_path, "wb") as f:
+            while chunk := await uploaded.read(1024 * 1024):
+                file_bytes_written += len(chunk)
+                if file_bytes_written > max_file_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                        detail=f"File exceeds the {max_file_bytes // (1024 * 1024)} MB limit",
+                    )
+                if max_batch_bytes > 0 and (current_batch_bytes + file_bytes_written) > max_batch_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                        detail=f"Batch exceeds the {max_batch_bytes // (1024 * 1024)} MB total limit",
+                    )
+                hasher.update(chunk)
+                f.write(chunk)
+    except Exception:
+        if os.path.exists(dest_path):
+            try:
+                os.remove(dest_path)
+            except OSError:
+                pass
+        raise
+    return file_bytes_written, hasher.hexdigest()
+
+
+
 
 
 def _get_source_for_user(db: Session, source_id: uuid.UUID | None, user: User) -> KnowledgeSource:
@@ -262,24 +302,34 @@ async def upload_knowledge_source(
     file: UploadFile = File(...),
 ) -> KnowledgeSourceResponse:
     enforce_rate_limit(request, bucket="upload", limit=50, window_seconds=60)
-    
+    settings = get_settings()
+    max_file_bytes = settings.max_file_size_mb * 1024 * 1024
+
     course_uuid = _resolve_course_uuid(db, user, course_id)
     lesson_uuid = _parse_uuid(lesson_id)
-    
-    file_bytes = await _read_upload_limited(file)
-    if len(file_bytes) == 0:
-        raise HTTPException(status_code=400, detail="الملف المرفوع فارغ (0 بايت)")
 
-    teacher = user
+    tmp_dir = _get_kc_temp_dir()
+    safe_name = sanitize_source_filename(file.filename or "uploaded_file")
+    staging_file = os.path.join(tmp_dir, f"stage_{uuid.uuid4().hex[:12]}_{safe_name}")
 
     try:
+        size_bytes, checksum = await _stream_upload_to_file(
+            uploaded=file,
+            dest_path=staging_file,
+            max_file_bytes=max_file_bytes,
+        )
+        if size_bytes == 0:
+            raise HTTPException(status_code=400, detail="الملف المرفوع فارغ (0 بايت)")
+
         source = create_knowledge_source(
             db=db,
-            user=teacher,
+            user=user,
             course_id=course_uuid,
             lesson_id=lesson_uuid,
-            filename=file.filename or "uploaded_file",
-            file_bytes=file_bytes,
+            filename=file.filename or safe_name,
+            staged_file_path=staging_file,
+            checksum=checksum,
+            size_bytes=size_bytes,
             source_role=source_role,
             mime_type=file.content_type,
             metadata={
@@ -287,35 +337,20 @@ async def upload_knowledge_source(
                 "answer_key_source_id": answer_key_source_id,
             },
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    # Ingest & index source asynchronously in background
-    source.status = SourceStatus.PROCESSING
-    source.progress_percent = 10
-    db.commit()
-    db.refresh(source)
-    _enqueue_source_processing(background_tasks, source.id)
-
-    return KnowledgeSourceResponse(
-        id=str(source.id),
-        course_id=str(source.course_id),
-        lesson_id=str(source.lesson_id) if source.lesson_id else None,
-        filename=source.filename,
-        file_format=source.file_format,
-        size_bytes=source.size_bytes,
-        source_role=source.source_role,
-        version=source.version,
-        checksum=source.checksum,
-        status=source.status,
-        progress_percent=source.progress_percent,
-        unit_count=source.unit_count,
-        image_count=source.image_count,
-        table_count=source.table_count,
-        question_count=source.question_count,
-        error_message=source.error_message,
-        created_at=source.created_at.isoformat(),
-    )
+        source.status = SourceStatus.PROCESSING
+        source.progress_percent = 10
+        db.commit()
+        db.refresh(source)
+        _enqueue_source_processing(background_tasks, source.id)
+        return _source_response(source)
+    except Exception:
+        if os.path.exists(staging_file):
+            try:
+                os.remove(staging_file)
+            except OSError:
+                pass
+        db.rollback()
+        raise
 
 
 @router.post("/sources/upload-batch", response_model=list[KnowledgeSourceResponse])
@@ -331,58 +366,107 @@ async def upload_knowledge_sources_batch(
     answer_key_source_id: str | None = Form(None),
     files: list[UploadFile] = File(...),
 ) -> list[KnowledgeSourceResponse]:
-    """Create one source per uploaded book and enqueue each independently."""
+    """Create one source per uploaded book and enqueue each independently with atomic staging."""
     enforce_rate_limit(request, bucket="upload", limit=50, window_seconds=60)
     if not files:
         raise HTTPException(status_code=400, detail="يجب اختيار ملف واحد على الأقل للرفع")
     if len(files) > 25:
         raise HTTPException(status_code=400, detail="الحد الأقصى للرفع دفعة واحدة هو 25 ملفاً")
 
+    settings = get_settings()
+    max_file_bytes = settings.max_file_size_mb * 1024 * 1024
+    max_batch_bytes = settings.max_batch_size_mb * 1024 * 1024
+
     course_uuid = _resolve_course_uuid(db, user, course_id)
     lesson_uuid = _parse_uuid(lesson_id)
 
-    created: list[KnowledgeSource] = []
-    errors: list[str] = []
-    batch_total = 0
+    # Correction 3: Atomic Staged Operation
+    tmp_base = _get_kc_temp_dir()
+    batch_stage_dir = tempfile.mkdtemp(prefix=f"batch_stage_{uuid.uuid4().hex[:12]}_", dir=tmp_base)
 
-    for uploaded in files:
-        file_bytes = await _read_upload_limited(uploaded)
-        batch_total += len(file_bytes)
-        if batch_total > MAX_KNOWLEDGE_BATCH_BYTES:
-            raise HTTPException(status_code=413, detail=f"Batch exceeds the {MAX_KNOWLEDGE_BATCH_BYTES // (1024 * 1024)} MB total limit")
-        if not file_bytes:
-            errors.append(f"الملف {uploaded.filename or 'المحدد'} فارغ (0 بايت)")
-            continue
-        try:
-            source = create_knowledge_source(
-                db=db,
-                user=user,
-                course_id=course_uuid,
-                lesson_id=lesson_uuid,
-                filename=uploaded.filename or "uploaded_file",
-                file_bytes=file_bytes,
-                source_role=source_role,
-                mime_type=uploaded.content_type,
-                metadata={
-                    "batch_upload": True,
-                    "assessment_type": assessment_type,
-                    "answer_key_source_id": answer_key_source_id,
-                },
+    staged_items: list[dict[str, Any]] = []
+    batch_total_bytes = 0
+
+    try:
+        # Phase 1: Stream and validate all files into isolated staging directory
+        for idx, uploaded in enumerate(files):
+            safe_name = sanitize_source_filename(uploaded.filename or f"upload_{idx}")
+            staged_path = os.path.join(batch_stage_dir, f"file_{idx}_{uuid.uuid4().hex[:8]}_{safe_name}")
+
+            size_bytes, checksum = await _stream_upload_to_file(
+                uploaded=uploaded,
+                dest_path=staged_path,
+                max_file_bytes=max_file_bytes,
+                current_batch_bytes=batch_total_bytes,
+                max_batch_bytes=max_batch_bytes,
             )
-            source.status = SourceStatus.PROCESSING
-            source.progress_percent = 10
-            created.append(source)
-        except ValueError as exc:
-            errors.append(f"{uploaded.filename or 'الملف'}: {str(exc)}")
+            batch_total_bytes += size_bytes
+            if size_bytes == 0:
+                continue
 
-    if not created and errors:
-        raise HTTPException(status_code=400, detail="; ".join(errors))
+            staged_items.append({
+                "staged_path": staged_path,
+                "filename": uploaded.filename or safe_name,
+                "mime_type": uploaded.content_type,
+                "size_bytes": size_bytes,
+                "checksum": checksum,
+            })
 
-    db.commit()
-    for source in created:
-        db.refresh(source)
-        _enqueue_source_processing(background_tasks, source.id)
-    return [_source_response(source) for source in created]
+        if not staged_items:
+            raise HTTPException(status_code=400, detail="كافة الملفات المرفوعة فارغة (0 بايت)")
+
+        # Phase 2: Move files and create database records atomically
+        created_sources: list[KnowledgeSource] = []
+        newly_created_permanent_paths: list[str] = []
+
+        try:
+            for item in staged_items:
+                source = create_knowledge_source(
+                    db=db,
+                    user=user,
+                    course_id=course_uuid,
+                    lesson_id=lesson_uuid,
+                    filename=item["filename"],
+                    staged_file_path=item["staged_path"],
+                    checksum=item["checksum"],
+                    size_bytes=item["size_bytes"],
+                    source_role=source_role,
+                    mime_type=item["mime_type"],
+                    metadata={
+                        "batch_upload": True,
+                        "assessment_type": assessment_type,
+                        "answer_key_source_id": answer_key_source_id,
+                    },
+                )
+                if source.storage_path != item["staged_path"] and source.storage_path not in newly_created_permanent_paths:
+                    newly_created_permanent_paths.append(source.storage_path)
+
+                source.status = SourceStatus.PROCESSING
+                source.progress_percent = 10
+                created_sources.append(source)
+
+            db.commit()
+        except Exception:
+            # Delete only newly created permanent files, never delete pre-existing deduplicated files
+            for p in newly_created_permanent_paths:
+                if os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+            db.rollback()
+            raise
+
+        for source in created_sources:
+            db.refresh(source)
+            _enqueue_source_processing(background_tasks, source.id)
+
+        return [_source_response(source) for source in created_sources]
+
+    finally:
+        # Always clean up the staging directory on success or failure
+        if os.path.exists(batch_stage_dir):
+            shutil.rmtree(batch_stage_dir, ignore_errors=True)
 
 
 
