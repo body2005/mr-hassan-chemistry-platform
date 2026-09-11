@@ -22,6 +22,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import CurrentUser, get_current_user, require_roles
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.rate_limit import enforce_rate_limit
 from app.models.course import Course, Lesson
@@ -197,11 +198,14 @@ def _get_active_user(db: Session, user: User | None) -> User:
     return demo_teacher
 
 
-MAX_KNOWLEDGE_FILE_BYTES = 100 * 1024 * 1024
-MAX_KNOWLEDGE_BATCH_BYTES = 250 * 1024 * 1024
+_settings = get_settings()
+MAX_KNOWLEDGE_FILE_BYTES = int(os.getenv("MAX_FILE_SIZE_MB", str(getattr(_settings, "max_file_size_mb", 500)))) * 1024 * 1024
+MAX_KNOWLEDGE_BATCH_BYTES = int(os.getenv("MAX_BATCH_SIZE_MB", os.getenv("MAX_REQUEST_SIZE_MB", str(getattr(_settings, "max_batch_size_mb", 1000))))) * 1024 * 1024
 
 
-async def _read_upload_limited(uploaded: UploadFile, limit: int = MAX_KNOWLEDGE_FILE_BYTES) -> bytes:
+async def _read_upload_limited(uploaded: UploadFile, limit: int | None = None) -> bytes:
+    if limit is None:
+        limit = MAX_KNOWLEDGE_FILE_BYTES
     chunks: list[bytes] = []
     total = 0
     while chunk := await uploaded.read(1024 * 1024):
@@ -209,6 +213,7 @@ async def _read_upload_limited(uploaded: UploadFile, limit: int = MAX_KNOWLEDGE_
         if total > limit:
             raise HTTPException(status_code=413, detail=f"File exceeds the {limit // (1024 * 1024)} MB limit")
         chunks.append(chunk)
+    await uploaded.seek(0)
     return b"".join(chunks)
 
 
@@ -344,7 +349,7 @@ async def upload_knowledge_sources_batch(
         file_bytes = await _read_upload_limited(uploaded)
         batch_total += len(file_bytes)
         if batch_total > MAX_KNOWLEDGE_BATCH_BYTES:
-            raise HTTPException(status_code=413, detail="Batch exceeds the 250 MB total limit")
+            raise HTTPException(status_code=413, detail=f"Batch exceeds the {MAX_KNOWLEDGE_BATCH_BYTES // (1024 * 1024)} MB total limit")
         if not file_bytes:
             errors.append(f"الملف {uploaded.filename or 'المحدد'} فارغ (0 بايت)")
             continue

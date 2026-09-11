@@ -21,4 +21,12 @@ services:
         value: "true"
       - key: PYTHON_VERSION
         value: "3.10.17"
+      - key: MAX_FILE_SIZE_MB
+        value: "500"
+      - key: MAX_UPLOAD_SIZE_MB
+        value: "500"
+      - key: MAX_REQUEST_SIZE_MB
+        value: "1000"
+      - key: MAX_BATCH_SIZE_MB
+        value: "1000"
     autoDeploy: true

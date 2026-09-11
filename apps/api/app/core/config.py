@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # (e.g. api.onrender.com + vercel app). Requires HTTPS on both.
     cookie_cross_site: bool = False
     tesseract_cmd: str | None = None
+    max_file_size_mb: int = Field(default=500, ge=10, le=2048)
+    max_batch_size_mb: int = Field(default=1000, ge=50, le=4096)
+    max_request_size_mb: int = Field(default=1000, ge=50, le=4096)
 
     @property
     def secure_cookies(self) -> bool:
