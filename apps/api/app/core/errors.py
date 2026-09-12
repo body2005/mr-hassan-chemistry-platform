@@ -58,32 +58,14 @@ def _error_payload(request: Request, code: str, message: str) -> dict:
     }
 
 
-def _apply_cors_headers(request: Request, response: JSONResponse) -> JSONResponse:
-    origin = request.headers.get("Origin")
-    if origin:
-        try:
-            from app.core.config import get_settings
-            settings = get_settings()
-            is_allowed = (
-                origin in settings.cors_origins
-                or settings.app_env != "production"
-                or any(origin.endswith(suffix) for suffix in [
-                    ".vercel.app",
-                    ".trycloudflare.com",
-                    ".ngrok-free.app",
-                    ".ngrok-free.dev",
-                    ".ngrok.io",
-                    ".loca.lt",
-                ])
-            )
-            if is_allowed:
-                response.headers["Access-Control-Allow-Origin"] = origin
-                response.headers["Access-Control-Allow-Credentials"] = "true"
-                response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD"
-                response.headers["Access-Control-Allow-Headers"] = "*"
-        except Exception:
-            pass
-    return response
+def _clear_auth_cookies(response: JSONResponse) -> None:
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    samesite = "none" if settings.cookie_cross_site else "lax"
+    secure = True if settings.cookie_cross_site else settings.secure_cookies
+    response.delete_cookie(settings.session_cookie_name, path="/", samesite=samesite, secure=secure)
+    response.delete_cookie(settings.csrf_cookie_name, path="/", samesite=samesite, secure=secure)
 
 
 def install_error_handlers(app: FastAPI) -> None:
@@ -93,7 +75,9 @@ def install_error_handlers(app: FastAPI) -> None:
             status_code=exc.status_code,
             content=_error_payload(request, exc.code, exc.message),
         )
-        return _apply_cors_headers(request, res)
+        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+            _clear_auth_cookies(res)
+        return res
 
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(
@@ -108,7 +92,9 @@ def install_error_handlers(app: FastAPI) -> None:
         response = JSONResponse(status_code=exc.status_code, content=content)
         if exc.headers:
             response.headers.update(exc.headers)
-        return _apply_cors_headers(request, response)
+        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+            _clear_auth_cookies(response)
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def validation_handler(
@@ -121,7 +107,7 @@ def install_error_handlers(app: FastAPI) -> None:
             status_code=_VALIDATION_STATUS,
             content=_error_payload(request, "VALIDATION_ERROR", message),
         )
-        return _apply_cors_headers(request, res)
+        return res
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(
@@ -135,4 +121,4 @@ def install_error_handlers(app: FastAPI) -> None:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content=_error_payload(request, "INTERNAL_SERVER_ERROR", "An internal server error occurred"),
         )
-        return _apply_cors_headers(request, res)
+        return res

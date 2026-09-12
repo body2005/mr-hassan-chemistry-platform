@@ -629,11 +629,11 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
 # 2. DOCX PARSER (python-docx)
 # =============================================================================
 
-def parse_docx_document(file_bytes: bytes, filename: str) -> ParsedDocument:
+def parse_docx_document(file_source: bytes | str, filename: str) -> ParsedDocument:
     """Parses a Word DOCX document, preserving headings, paragraphs, lists, tables, and images."""
     import docx
 
-    doc = docx.Document(io.BytesIO(file_bytes))
+    doc = docx.Document(io.BytesIO(file_source) if isinstance(file_source, bytes) else file_source)
     parsed_doc = ParsedDocument(
         title=os.path.splitext(filename)[0],
         doc_type="docx",
@@ -727,11 +727,11 @@ def parse_docx_document(file_bytes: bytes, filename: str) -> ParsedDocument:
 # 3. PPTX PARSER (python-pptx)
 # =============================================================================
 
-def parse_pptx_document(file_bytes: bytes, filename: str) -> ParsedDocument:
+def parse_pptx_document(file_source: bytes | str, filename: str) -> ParsedDocument:
     """Parses a PowerPoint PPTX presentation, preserving slides, titles, notes, and diagrams."""
     import pptx
 
-    prs = pptx.Presentation(io.BytesIO(file_bytes))
+    prs = pptx.Presentation(io.BytesIO(file_source) if isinstance(file_source, bytes) else file_source)
     parsed_doc = ParsedDocument(
         title=os.path.splitext(filename)[0],
         doc_type="pptx",
@@ -823,9 +823,13 @@ def parse_pptx_document(file_bytes: bytes, filename: str) -> ParsedDocument:
 # 4. TXT / MARKDOWN PARSER
 # =============================================================================
 
-def parse_txt_document(file_bytes: bytes, filename: str) -> ParsedDocument:
+def parse_txt_document(file_source: bytes | str, filename: str) -> ParsedDocument:
     """Parses a plain text or Markdown document preserving section headings, questions, and lists."""
-    text = file_bytes.decode("utf-8", errors="ignore").strip()
+    if isinstance(file_source, str):
+        with open(file_source, "r", encoding="utf-8", errors="ignore") as source_file:
+            text = source_file.read().strip()
+    else:
+        text = file_source.decode("utf-8", errors="ignore").strip()
     parsed_doc = ParsedDocument(
         title=os.path.splitext(filename)[0],
         doc_type="txt",
@@ -873,9 +877,15 @@ def parse_txt_document(file_bytes: bytes, filename: str) -> ParsedDocument:
 # 5. IMAGE PARSER
 # =============================================================================
 
-def parse_image_asset(file_bytes: bytes, filename: str) -> ParsedDocument:
+def parse_image_asset(file_source: bytes | str, filename: str) -> ParsedDocument:
     """Parses a standalone image file (diagram, figure, map, equation)."""
-    img = Image.open(io.BytesIO(file_bytes))
+    if isinstance(file_source, str):
+        img = Image.open(file_source)
+        with open(file_source, "rb") as source_file:
+            file_bytes = source_file.read()
+    else:
+        file_bytes = file_source
+        img = Image.open(io.BytesIO(file_bytes))
     parsed_doc = ParsedDocument(
         title=os.path.splitext(filename)[0],
         doc_type="image",
@@ -1069,23 +1079,15 @@ def parse_knowledge_file(file_bytes: bytes | None = None, filename: str = "", mi
     if ext == "pdf":
         return parse_pdf_document(file_bytes, filename, progress_callback=progress_callback, file_path=file_path, cancel_check=cancel_check)
     elif ext in ("docx", "doc"):
-        if file_bytes is None and file_path and os.path.exists(file_path):
-            with open(file_path, "rb") as f:
-                file_bytes = f.read()
-        return parse_docx_document(file_bytes or b"", filename)
+        source = file_path if file_path and os.path.exists(file_path) else (file_bytes or b"")
+        return parse_docx_document(source, filename)
     elif ext in ("pptx", "ppt"):
-        if file_bytes is None and file_path and os.path.exists(file_path):
-            with open(file_path, "rb") as f:
-                file_bytes = f.read()
-        return parse_pptx_document(file_bytes or b"", filename)
+        source = file_path if file_path and os.path.exists(file_path) else (file_bytes or b"")
+        return parse_pptx_document(source, filename)
     elif ext in ("png", "jpg", "jpeg", "webp", "gif"):
-        if file_bytes is None and file_path and os.path.exists(file_path):
-            with open(file_path, "rb") as f:
-                file_bytes = f.read()
-        return parse_image_asset(file_bytes or b"", filename)
+        source = file_path if file_path and os.path.exists(file_path) else (file_bytes or b"")
+        return parse_image_asset(source, filename)
     else:
         # Default text / markdown parser
-        if file_bytes is None and file_path and os.path.exists(file_path):
-            with open(file_path, "rb") as f:
-                file_bytes = f.read()
-        return parse_txt_document(file_bytes or b"", filename)
+        source = file_path if file_path and os.path.exists(file_path) else (file_bytes or b"")
+        return parse_txt_document(source, filename)

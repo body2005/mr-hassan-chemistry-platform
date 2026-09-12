@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     password_reset_ttl_minutes: int = Field(default=30, ge=5, le=24 * 60)
     default_institution_slug: str = "demo"
     database_url: str = "sqlite:///./learning_website.db"
+    db_pool_size: int = Field(default=5, ge=1, le=50)
+    db_max_overflow: int = Field(default=10, ge=0, le=100)
+    db_pool_timeout_seconds: int = Field(default=30, ge=5, le=120)
+    db_pool_recycle_seconds: int = Field(default=1800, ge=60, le=7200)
     redis_url: str = "redis://localhost:6379/0"
     s3_endpoint_url: str = "http://localhost:9000"
     s3_access_key: str = "learning"
@@ -47,6 +51,7 @@ class Settings(BaseSettings):
     max_batch_size_mb: int = Field(default=1000, ge=50, le=4096)
     max_request_size_mb: int = Field(default=1000, ge=50, le=4096)
     multipart_overhead_mb: int = Field(default=10, ge=1, le=100)
+    max_concurrent_ingestions: int = Field(default=1, ge=1, le=8)
 
     @property
     def secure_cookies(self) -> bool:
@@ -61,6 +66,15 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.frontend_origins.split(",") if origin.strip()]
+
+    @property
+    def sqlalchemy_database_url(self) -> str:
+        """Use psycopg v3 for provider URLs that omit a SQLAlchemy driver."""
+        if self.database_url.startswith("postgres://"):
+            return self.database_url.replace("postgres://", "postgresql+psycopg://", 1)
+        if self.database_url.startswith("postgresql://"):
+            return self.database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+        return self.database_url
 
 
 @lru_cache
@@ -96,5 +110,3 @@ def get_tesseract_cmd() -> str | None:
                 pytesseract.pytesseract.tesseract_cmd = clean_path
                 return clean_path
     return None
-
-

@@ -911,6 +911,8 @@ def create_knowledge_source(
     staged_file_path: str | None = None,
     checksum: str | None = None,
     size_bytes: int | None = None,
+    commit: bool = True,
+    created_storage_paths: list[str] | None = None,
 ) -> KnowledgeSource:
     """Uploads and creates a new KnowledgeSource record in QUEUED state."""
     filename = sanitize_source_filename(filename)
@@ -961,27 +963,7 @@ def create_knowledge_source(
         )
     )
     if not course:
-        # Fallback to the institution's primary course or auto-create official chemistry course
-        fallback_course = db.scalar(
-            select(Course).where(Course.institution_id == user.institution_id)
-        )
-        if not fallback_course:
-            fallback_course = db.scalar(select(Course))
-        if not fallback_course:
-            from app.models.course import CourseStatus
-            fallback_course = Course(
-                institution_id=user.institution_id,
-                teacher_id=user.id,
-                code="CHEM-3SEC",
-                title="الكيمياء - الصف الثالث الثانوي",
-                description="منهج الكيمياء للثانوية العامة — مستر حسن شعبان",
-                status=CourseStatus.PUBLISHED,
-            )
-            db.add(fallback_course)
-            db.commit()
-            db.refresh(fallback_course)
-        course = fallback_course
-        course_id = fallback_course.id
+        raise ValueError("Course not found in the current institution")
 
     # Check for existing checksum upload to avoid duplicate storage
     existing = db.scalar(
@@ -1035,6 +1017,8 @@ def create_knowledge_source(
             f.write(file_bytes)
     else:
         raise ValueError("Either file_bytes or staged_file_path must be provided.")
+    if created_storage_paths is not None:
+        created_storage_paths.append(file_path)
 
     source = KnowledgeSource(
         institution_id=user.institution_id,
@@ -1054,8 +1038,11 @@ def create_knowledge_source(
         metadata_json=source_metadata,
     )
     db.add(source)
-    db.commit()
-    db.refresh(source)
+    if commit:
+        db.commit()
+        db.refresh(source)
+    else:
+        db.flush()
     return source
 
 

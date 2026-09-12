@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
-from app.core.security import hash_password
+from app.core.security import create_session_token, hash_password
 from app.main import app
 from app.models.course import Course, CourseModule, CourseStatus, Lesson, LessonKind
 from app.models.extended import AIJob, Grade, IdempotencyKey, QuestionVersion
@@ -136,6 +136,38 @@ def test_error_format_is_standardized(db) -> None:
     assert set(body["error"]) == {"code", "message"}
     assert body["error"]["code"] == "UNAUTHENTICATED"
     assert "request_id" in body
+
+
+def test_mock_or_standalone_tokens_never_authenticate(db) -> None:
+    inst = make_institution(db, "no-mock-auth")
+    make_user(db, inst.id, UserRole.TEACHER, "teacher")
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": "Bearer standalone_mock_token"},
+    )
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "UNAUTHENTICATED"
+
+
+def test_stale_session_is_rejected_instead_of_switching_identity(db) -> None:
+    inst = make_institution(db, "stale-session")
+    stale_user = make_user(db, inst.id, UserRole.TEACHER, "stale")
+    token = create_session_token(stale_user)
+    db.delete(stale_user)
+    db.commit()
+
+    replacement = make_user(db, inst.id, UserRole.TEACHER, "replacement")
+    client = TestClient(app)
+    response = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 401
+    assert "sign in again" in response.json()["error"]["message"]
+    assert str(replacement.id) not in response.text
 
 
 def test_validation_errors_use_standard_format(db) -> None:

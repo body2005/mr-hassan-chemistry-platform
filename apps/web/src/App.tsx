@@ -79,20 +79,12 @@ function getTabFromHash(): AllTabs | null {
 
 function App() {
   const confirm = useConfirm();
-  // Restore cached user session immediately so user is instantly authenticated without having to sign in again
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(() => {
-    try {
-      const cached = typeof localStorage !== "undefined" ? localStorage.getItem("lms_cached_user") : null;
-      return cached ? (JSON.parse(cached) as CurrentUser) : null;
-    } catch {
-      return null;
-    }
-  });
+  // Cached identity is display metadata only. Do not mount authenticated views
+  // until /auth/me has verified the server session.
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isInitialRefresh, setIsInitialRefresh] = useState(true);
-  const [authLoading, setAuthLoading] = useState(() => {
-    return typeof localStorage !== "undefined" ? !localStorage.getItem("lms_cached_user") : true;
-  });
+  const [authLoading, setAuthLoading] = useState(true);
 
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     const saved = localStorage.getItem("lms_theme");

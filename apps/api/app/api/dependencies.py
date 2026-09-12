@@ -39,10 +39,6 @@ def get_current_user(
 
     payload = decode_session_token(token)
     if not payload:
-        if token and ("mock" in token or "standalone" in token or "demo" in token):
-            user = db.scalar(select(User).where(User.role == UserRole.TEACHER, User.is_active.is_(True))) or db.scalar(select(User).where(User.is_active.is_(True)))
-            if user:
-                return user
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session"
         )
@@ -68,22 +64,16 @@ def get_current_user(
             )
         )
     if user is None:
-        # Graceful fallback if database was reset or reseeded on cloud deploy
-        role_claim = payload.get("role")
-        email_claim = payload.get("email")
-        if email_claim:
-            user = db.scalar(select(User).where(User.email == email_claim, User.is_active.is_(True)))
-        if not user and role_claim:
-            if role_claim == "teacher":
-                user = db.scalar(select(User).where(User.role == UserRole.TEACHER, User.is_active.is_(True)))
-            elif role_claim == "student":
-                user = db.scalar(select(User).where(User.role == UserRole.STUDENT, User.is_active.is_(True)))
-        if not user:
-            user = db.scalar(select(User).where(User.is_active.is_(True)))
-        if user is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User is unavailable")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session user no longer exists; please sign in again",
+        )
+    if payload.get("role") != user.role.value:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session role is no longer valid")
     jti = str(payload.get("jti", ""))
-    if jti and db.scalar(select(RevokedSession.id).where(RevokedSession.jti == jti)):
+    if not jti:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session")
+    if db.scalar(select(RevokedSession.id).where(RevokedSession.jti == jti)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session is revoked")
     return user
 

@@ -32,6 +32,17 @@ function authToken(): string | undefined {
   return localStorage.getItem("lms_session_token") || undefined;
 }
 
+function clearStaleSession(path: string): void {
+  if (path === "/auth/login" || path === "/auth/register") return;
+  if (typeof localStorage !== "undefined") {
+    localStorage.removeItem("lms_session_token");
+    localStorage.removeItem("lms_cached_user");
+  }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event("lms_user_updated"));
+  }
+}
+
 export async function apiRequest<T>(path: string, init: ApiRequestInit = {}): Promise<T> {
   const { timeoutMs = 30_000, ...requestInit } = init;
   const headers = new Headers(requestInit.headers);
@@ -92,6 +103,7 @@ export async function apiRequest<T>(path: string, init: ApiRequestInit = {}): Pr
     } catch {
       // Keep status-derived error if the body is not JSON.
     }
+    if (response.status === 401) clearStaleSession(path);
     throw new ApiClientError(code, message, response.status);
   }
   if (response.status === 204) return undefined as T;
@@ -174,6 +186,7 @@ export function uploadWithProgress<T>(
             msg = "فشل رفع الملف: انقطع الاتصال أو انتهت مهلة الخادم. يرجى التحقق من سرعة الإنترنت والمحاولة مرة أخرى.";
           }
         }
+        if (xhr.status === 401) clearStaleSession(path);
         console.error(`[Upload Error] Status: ${xhr.status}, Response:`, xhr.responseText);
         reject(new ApiClientError(code, msg, xhr.status));
       }

@@ -10,17 +10,26 @@ from app.core.config import get_settings
 settings = get_settings()
 
 engine_options: dict[str, object] = {"pool_pre_ping": True}
-if settings.database_url.startswith("sqlite"):
+database_url = settings.sqlalchemy_database_url
+
+if database_url.startswith("sqlite"):
     engine_options["connect_args"] = {"check_same_thread": False, "timeout": 15}
     if os.getenv("APP_ENV") == "test":
         engine_options["poolclass"] = StaticPool
+else:
+    engine_options.update(
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+        pool_timeout=settings.db_pool_timeout_seconds,
+        pool_recycle=settings.db_pool_recycle_seconds,
+    )
 
-engine = create_engine(settings.database_url, **engine_options)
+engine = create_engine(database_url, **engine_options)
 
 
 @event.listens_for(engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
-    if settings.database_url.startswith("sqlite"):
+    if database_url.startswith("sqlite"):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA journal_mode = WAL")
         cursor.execute("PRAGMA synchronous = NORMAL")

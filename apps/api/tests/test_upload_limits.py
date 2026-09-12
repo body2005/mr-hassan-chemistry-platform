@@ -273,6 +273,42 @@ def test_batch_atomic_cleanup_on_failure(auth_teacher_client, db):
         assert len(remaining_stages) == 0, f"Staging directories were not cleaned up: {remaining_stages}"
 
 
+def test_batch_database_phase_is_atomic(auth_teacher_client, db):
+    """A failure after the first source must roll back its row and permanent file."""
+    from app.api.routes import knowledge_center as route_module
+
+    client = auth_teacher_client["client"]
+    course = auth_teacher_client["course"]
+    original_create = route_module.create_knowledge_source
+    calls = 0
+
+    def fail_on_second_source(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("simulated database phase failure")
+        return original_create(*args, **kwargs)
+
+    with patch.object(route_module, "create_knowledge_source", side_effect=fail_on_second_source):
+        response = client.post(
+            "/api/v1/knowledge-center/sources/upload-batch",
+            data={"course_id": str(course.id), "source_role": "KNOWLEDGE"},
+            files=[
+                ("files", ("atomic_a.txt", io.BytesIO(b"first atomic payload"), "text/plain")),
+                ("files", ("atomic_b.txt", io.BytesIO(b"second atomic payload"), "text/plain")),
+            ],
+        )
+        assert response.status_code == 500
+
+    assert db.query(KnowledgeSource).count() == 0
+    course_storage = os.path.join(
+        os.getenv("STORAGE_DIR", "storage/knowledge_center"),
+        "courses",
+        str(course.id),
+    )
+    assert not os.path.exists(course_storage) or not os.listdir(course_storage)
+
+
 def test_middleware_early_rejection_content_length(auth_teacher_client):
     """Middleware should immediately reject requests with Content-Length > 1010 MiB before reading body."""
     client = auth_teacher_client["client"]
@@ -425,4 +461,3 @@ def test_server_generated_storage_path_and_deduplication(auth_teacher_client, db
     data2 = res2.json()
     assert data2["id"] == data1["id"]  # Deduplicated to existing source
     assert os.path.exists(src1.storage_path)  # Pre-existing file is preserved
-

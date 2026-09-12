@@ -107,11 +107,9 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
       if (cached) {
         role = JSON.parse(cached).role;
       }
-    } catch {}
-  }
-
-  if (role !== "teacher") {
-    return null;
+    } catch {
+      role = undefined;
+    }
   }
 
   useEffect(() => {
@@ -138,26 +136,37 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
+  if (role !== "teacher") {
+    return null;
+  }
+
   const isMobile = windowWidth < 640;
-  // When sidebar is open on tablet/desktop, shift 304px (280px sidebar width + 24px clean gap).
-  // On mobile (<640px), when sidebar drawer is open, hide the widget so it doesn't obstruct the drawer.
-  const rightOffset = menuOpen && !isMobile ? "304px" : isMobile ? "16px" : "24px";
+  // Sidebar width is defined as --sidebar-width: 280px in index.css.
+  // When sidebar is open on tablet/desktop, shift widget right by sidebar width + 24px clean gap.
+  // On mobile (<640px), the sidebar is a full overlay; keep widget visible at bottom-left so it
+  // doesn't overlap the drawer and remains accessible.
+  const SIDEBAR_WIDTH = 280; // matches --sidebar-width in .sidebar CSS
+  const GAP = 24;
+  const rightOffset = menuOpen && !isMobile
+    ? `${SIDEBAR_WIDTH + GAP}px`
+    : isMobile
+      ? "16px"
+      : "24px";
   const bottomOffset = isMobile ? "16px" : "24px";
-  const isHiddenOnMobile = menuOpen && isMobile;
+
+  // On mobile with sidebar open, move widget to bottom-left instead of hiding it.
+  const mobileOverride = menuOpen && isMobile;
 
   return (
     <div
       style={{
         position: "fixed",
         bottom: bottomOffset,
-        right: rightOffset,
-        left: "auto",
+        right: mobileOverride ? "auto" : rightOffset,
+        left: mobileOverride ? "16px" : "auto",
         zIndex: isExpanded ? 9999 : 95,
         fontFamily: "inherit",
-        opacity: isHiddenOnMobile ? 0 : 1,
-        pointerEvents: isHiddenOnMobile ? "none" : "auto",
-        transform: isHiddenOnMobile ? "scale(0.9)" : "scale(1)",
-        transition: "right 0.22s cubic-bezier(0.16, 1, 0.3, 1), bottom 0.22s ease, opacity 0.18s ease, transform 0.18s ease",
+        transition: "right 250ms ease, left 250ms ease, bottom 250ms ease",
       }}
       dir="rtl"
     >

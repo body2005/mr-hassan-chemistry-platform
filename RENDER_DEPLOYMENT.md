@@ -1,0 +1,39 @@
+# Render + Vercel deployment checklist
+
+## Required Render environment values
+
+The updated `render.yaml` provisions PostgreSQL and connects the API through
+`DATABASE_URL`. Set these secret values in the Render dashboard before deploy:
+
+- `INITIAL_TEACHER_PASSWORD`: a new strong password; never commit it.
+- `SECRET_KEY`: keep the generated Render value stable between deploys.
+
+The initial teacher email is `teacher@hassanshaban.com`. The seed is
+idempotent and never changes an existing account or prints its password.
+
+After the first deployment, sign in again once. Old tokens that point to the
+former ephemeral SQLite database are intentionally rejected and cleared by the
+web client.
+
+## File persistence
+
+PostgreSQL makes users, courses, and source metadata persistent. Uploaded book
+files are still local files. A free Render web service has ephemeral storage,
+so production uploads require one of these before relying on them:
+
+1. Attach a paid Render Persistent Disk and set `STORAGE_DIR` to a directory
+   under its mount path; or
+2. Move source storage to an S3-compatible object store.
+
+Do not point `STORAGE_DIR` at `/var/data` unless a disk is actually attached.
+
+## Capacity testing
+
+Use `apps/api/tests/load/locustfile.py`. Start read-only at 10 virtual users and
+increase in steps. The free Render tier is suitable for functional checks, not
+for establishing production capacity: it has limited CPU/RAM and can sleep.
+
+For a real capacity result, test a paid instance with the same size intended
+for production and watch Render CPU, RAM, response p95, error rate, and
+PostgreSQL connections. Keep uploads disabled until the read-only test is
+stable.

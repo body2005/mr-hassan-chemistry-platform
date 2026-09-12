@@ -225,11 +225,17 @@ def test_cors_headers_on_exception_and_error_responses(auth_teacher_client):
         headers={
             "Origin": origin,
             "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type,x-csrf-token",
         },
     )
     assert res_options.status_code == 200
     assert res_options.headers.get("access-control-allow-origin") == origin
     assert "POST" in res_options.headers.get("access-control-allow-methods", "")
+    allowed_headers = res_options.headers.get("access-control-allow-headers", "").lower()
+    assert "authorization" in allowed_headers
+    assert "content-type" in allowed_headers
+    assert "x-csrf-token" in allowed_headers
+    assert allowed_headers != "*"
 
 
 def test_unhandled_500_exception_returns_json_with_cors(auth_teacher_client, db):

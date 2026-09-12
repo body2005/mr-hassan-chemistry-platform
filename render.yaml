@@ -6,21 +6,35 @@ services:
     name: chemistry-platform-api
     runtime: python
     rootDir: apps/api
-    buildCommand: pip install -r requirements.txt && python -m scripts.seed_teacher
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    buildCommand: pip install -r requirements.txt
+    startCommand: alembic upgrade head && python -m scripts.seed_teacher && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: APP_ENV
         value: production
       - key: SECRET_KEY
         generateValue: true
       - key: DATABASE_URL
-        value: sqlite:///./learning_website.db
+        fromDatabase:
+          name: chemistry-platform-db
+          property: connectionString
       - key: FRONTEND_ORIGINS
-        sync: false  # Set after Vercel deployment
+        value: https://mr-hassan-chemistry.vercel.app
       - key: COOKIE_CROSS_SITE
         value: "true"
       - key: PYTHON_VERSION
-        value: "3.10.17"
+        value: "3.12.11"
+      - key: INITIAL_TEACHER_EMAIL
+        value: teacher@hassanshaban.com
+      - key: INITIAL_TEACHER_PASSWORD
+        sync: false
+      - key: INITIAL_TEACHER_NAME
+        value: "مستر حسن شعبان"
+      - key: DB_POOL_SIZE
+        value: "5"
+      - key: DB_MAX_OVERFLOW
+        value: "10"
+      - key: MAX_CONCURRENT_INGESTIONS
+        value: "1"
       - key: MAX_FILE_SIZE_MB
         value: "500"
       - key: MAX_REQUEST_SIZE_MB
@@ -28,3 +42,9 @@ services:
       - key: MAX_BATCH_SIZE_MB
         value: "1000"
     autoDeploy: true
+
+databases:
+  - name: chemistry-platform-db
+    databaseName: chemistry_platform
+    user: chemistry_platform
+    plan: free

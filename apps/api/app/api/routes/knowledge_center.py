@@ -15,6 +15,7 @@ import shutil
 import tempfile
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
@@ -73,6 +74,11 @@ TeacherOrAdmin = Annotated[
     Depends(require_roles(UserRole.TEACHER, UserRole.INSTITUTION_ADMIN, UserRole.PLATFORM_ADMIN)),
 ]
 
+_LOCAL_INGEST_EXECUTOR = ThreadPoolExecutor(
+    max_workers=get_settings().max_concurrent_ingestions,
+    thread_name_prefix="knowledge-ingestion",
+)
+
 
 def _run_bg_process_source(source_id: uuid.UUID) -> None:
     """Runs knowledge source indexing and OCR in a background worker task with dedicated DB session."""
@@ -121,7 +127,10 @@ def _enqueue_source_processing(background_tasks: BackgroundTasks, source_id: uui
             return
         except Exception:
             pass
-    background_tasks.add_task(_run_bg_process_source, source_id)
+    # Submission is a tiny post-response task.  CPU-heavy OCR/indexing runs in
+    # a bounded executor so concurrent uploads cannot exhaust FastAPI's shared
+    # thread pool and make normal API requests unresponsive.
+    background_tasks.add_task(_LOCAL_INGEST_EXECUTOR.submit, _run_bg_process_source, source_id)
 
 
 class KnowledgeSourceResponse(BaseModel):
@@ -462,9 +471,9 @@ async def upload_knowledge_sources_batch(
                         "assessment_type": assessment_type,
                         "answer_key_source_id": answer_key_source_id,
                     },
+                    commit=False,
+                    created_storage_paths=newly_created_permanent_paths,
                 )
-                if source.storage_path != item["staged_path"] and source.storage_path not in newly_created_permanent_paths:
-                    newly_created_permanent_paths.append(source.storage_path)
 
                 source.status = SourceStatus.PROCESSING
                 source.progress_percent = 10

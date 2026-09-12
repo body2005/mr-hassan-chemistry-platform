@@ -20,8 +20,6 @@ import {
   StudentVideoWatchLog,
 } from "../types/lms";
 import {
-  DEFAULT_TEACHER_USER,
-  DEFAULT_STUDENT_USER,
   INITIAL_COURSES,
   INITIAL_STUDENTS,
   INITIAL_NOTIFICATIONS,
@@ -365,18 +363,9 @@ export const authService = {
   },
 
   async getCurrentUser(): Promise<CurrentUser | null> {
-    const token = typeof localStorage !== "undefined" ? localStorage.getItem("lms_session_token") : null;
-    const cached = typeof localStorage !== "undefined" ? localStorage.getItem("lms_cached_user") : null;
-
-    // Standalone or mock fallback session: always honor the cached user without roundtripping to /auth/me
-    if (!token || token === "standalone_mock_token") {
-      if (cached) {
-        try {
-          return JSON.parse(cached) as CurrentUser;
-        } catch {}
-      }
-      return null;
-    }
+    const hasSession = typeof localStorage !== "undefined"
+      && Boolean(localStorage.getItem("lms_session_token") || localStorage.getItem("lms_cached_user"));
+    if (!hasSession) return null;
 
     try {
       const apiUser = await apiRequest<ApiUser>("/auth/me");
@@ -385,13 +374,7 @@ export const authService = {
         localStorage.setItem("lms_cached_user", JSON.stringify(user));
       }
       return user;
-    } catch (err: any) {
-      // If we have a cached user, preserve it rather than abruptly kicking the user out
-      if (cached) {
-        try {
-          return JSON.parse(cached) as CurrentUser;
-        } catch {}
-      }
+    } catch (err: unknown) {
       if (err instanceof ApiClientError && (err.status === 401 || err.status === 403)) {
         if (typeof localStorage !== "undefined") {
           localStorage.removeItem("lms_session_token");
@@ -423,25 +406,11 @@ export const authService = {
       }
       window.dispatchEvent(new Event("lms_user_updated"));
       return { success: true, user };
-    } catch {
-      // Offline/Standalone Fallback: Allows the platform to operate 100% smoothly without crashing
-      const isTeacher = !cleanEmail || cleanEmail.includes("teacher") || cleanEmail.includes("hassan") || cleanEmail.includes("admin") || cleanPass.toLowerCase().includes("hassan");
-      const user: CurrentUser = isTeacher
-        ? { ...DEFAULT_TEACHER_USER, email: cleanEmail || DEFAULT_TEACHER_USER.email }
-        : {
-            ...DEFAULT_STUDENT_USER,
-            email: cleanEmail || DEFAULT_STUDENT_USER.email,
-            name: cleanEmail ? cleanEmail.split("@")[0] : DEFAULT_STUDENT_USER.name,
-          };
-
-      if (typeof localStorage !== "undefined") {
-        localStorage.setItem("lms_session_token", "standalone_mock_token");
-        localStorage.setItem("lms_cached_user", JSON.stringify(user));
-        const targetTab = user.role === "student" ? "GeneralHome" : "LessonManagement";
-        localStorage.setItem("lms_active_tab", targetTab);
-      }
-      window.dispatchEvent(new Event("lms_user_updated"));
-      return { success: true, user };
+    } catch (error: unknown) {
+      const message = error instanceof ApiClientError
+        ? error.message
+        : "تعذر تسجيل الدخول. تحقق من الاتصال وبيانات الحساب ثم حاول مرة أخرى.";
+      return { success: false, error: message };
     }
   },
 
@@ -476,37 +445,11 @@ export const authService = {
       }
       window.dispatchEvent(new Event("lms_user_updated"));
       return { success: true, user };
-    } catch {
-      // Offline/Standalone Fallback: Register locally in browser
-      const yearLabel =
-        (userData.academicYear as string) === "2nd_secondary"
-          ? "الصف الثاني الثانوي"
-          : (userData.academicYear as string) === "3rd_secondary"
-          ? "الصف الثالث الثانوي"
-          : "الصف الأول الثانوي";
-
-      const user: CurrentUser = {
-        id: `usr_std_${Date.now()}`,
-        name: userData.name || "طالب جديد",
-        email: cleanEmail,
-        role: "student",
-        nationalId: (userData.nationalId as string) || "30000000000000",
-        studentPhone: (userData.studentPhone as string) || "",
-        guardianPhone: (userData.guardianPhone as string) || "",
-        age: 17,
-        academicYear: ((userData.academicYear as any) || "3rd_secondary"),
-        academicYearLabel: yearLabel,
-        interestedSubjects: ["الكيمياء"],
-        joinedDate: new Date().toISOString().slice(0, 10),
-      };
-
-      if (typeof localStorage !== "undefined") {
-        localStorage.setItem("lms_session_token", "standalone_mock_token");
-        localStorage.setItem("lms_cached_user", JSON.stringify(user));
-        localStorage.setItem("lms_active_tab", "GeneralHome");
-      }
-      window.dispatchEvent(new Event("lms_user_updated"));
-      return { success: true, user };
+    } catch (error: unknown) {
+      const message = error instanceof ApiClientError
+        ? error.message
+        : "تعذر إنشاء الحساب. تحقق من الاتصال والبيانات ثم حاول مرة أخرى.";
+      return { success: false, error: message };
     }
   },
 

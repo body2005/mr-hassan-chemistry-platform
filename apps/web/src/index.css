@@ -281,7 +281,8 @@ html, body {
 
 /* Sidebar Styles — Ultra-smooth GPU accelerated drawer */
 .sidebar {
-  width: 280px;
+  --sidebar-width: 280px;
+  width: var(--sidebar-width);
   background: var(--bg-surface);
   border-inline-end: 1px solid var(--border-color);
   display: flex;
