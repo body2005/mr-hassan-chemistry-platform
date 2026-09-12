@@ -61,11 +61,44 @@ def seed():
             db.commit()
             print(f"[seed] Teacher created: {teacher.username} ({teacher.email})")
 
-        # Ensure demo teacher has valid password if present
+        # Ensure demo teacher exists and has valid password
         demo_t = db.query(User).filter(User.institution_id == institution.id, User.email == "teacher@demo.com").first()
-        if demo_t and demo_t.id != teacher.id:
-            demo_t.password_hash = hash_password(teacher_password)
+        if not demo_t:
+            demo_t = User(
+                institution_id=institution.id,
+                username="teacher_demo",
+                email="teacher@demo.com",
+                display_name="المعلم التجريبي",
+                password_hash=hash_password("Demo-Pass-2026!"),
+                role=UserRole.TEACHER,
+                is_active=True,
+            )
+            db.add(demo_t)
+            db.commit()
+            print("[seed] Demo teacher created: teacher@demo.com")
+        else:
+            demo_t.password_hash = hash_password("Demo-Pass-2026!")
             demo_t.is_active = True
+            db.commit()
+
+        # Ensure demo student exists
+        demo_s = db.query(User).filter(User.institution_id == institution.id, User.email == "student@demo.com").first()
+        if not demo_s:
+            demo_s = User(
+                institution_id=institution.id,
+                username="student_demo",
+                email="student@demo.com",
+                display_name="طالب تجريبي",
+                password_hash=hash_password("Demo-Pass-2026!"),
+                role=UserRole.STUDENT,
+                is_active=True,
+            )
+            db.add(demo_s)
+            db.commit()
+            print("[seed] Demo student created: student@demo.com")
+        else:
+            demo_s.password_hash = hash_password("Demo-Pass-2026!")
+            demo_s.is_active = True
             db.commit()
 
         # Ensure official chemistry course exists
