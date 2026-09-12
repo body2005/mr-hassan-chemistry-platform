@@ -27,6 +27,10 @@ services:
         value: teacher@hassanshaban.com
       - key: INITIAL_TEACHER_PASSWORD
         sync: false
+      # One-time recovery switch. Set to true in the Render dashboard, deploy,
+      # verify login, then set it back to false and deploy again.
+      - key: RESET_INITIAL_TEACHER_PASSWORD
+        sync: false
       - key: INITIAL_TEACHER_NAME
         value: "مستر حسن شعبان"
       - key: DB_POOL_SIZE

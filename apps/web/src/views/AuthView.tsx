@@ -84,7 +84,6 @@ export const AuthView: React.FC<AuthViewProps> = ({
     }
   }
 
-
   // Handle Student Registration via authService
   async function handleRegister(e: React.FormEvent) {
     e.preventDefault();
@@ -411,7 +410,6 @@ export const AuthView: React.FC<AuthViewProps> = ({
             {/* ===================== VIEW A: SIGN IN FORM ===================== */}
             {activeTab === "signin" ? (
               <form onSubmit={handleSignIn} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-
                 <div>
                   <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "5px", textTransform: "uppercase" }}>
                     {lang === "ar" ? "البريد الإلكتروني أو اسم المستخدم" : "Email or Username"}
@@ -421,7 +419,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                     required
                     value={signInEmail}
                     onChange={(e) => setSignInEmail(e.target.value)}
-                    placeholder={lang === "ar" ? "مثال: teacher@hassanshaban.com أو اسم المستخدم" : "e.g. teacher@hassanshaban.com or username"}
+                    placeholder={lang === "ar" ? "مثال: teacher@demo.com أو اسم المستخدم" : "e.g. teacher@demo.com or username"}
                     style={{
                       width: "100%",
                       padding: "11px 14px",

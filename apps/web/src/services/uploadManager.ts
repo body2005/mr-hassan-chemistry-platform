@@ -57,6 +57,11 @@ class UploadManager {
     this.startServerSyncLoop();
   }
 
+  private hasAuthenticatedSession(): boolean {
+    if (typeof window === "undefined" || !window.localStorage) return false;
+    return Boolean(localStorage.getItem("lms_session_token"));
+  }
+
   private initBeforeUnloadHandler() {
     if (typeof window !== "undefined") {
       window.addEventListener("beforeunload", (e) => {
@@ -124,7 +129,7 @@ class UploadManager {
 
     // Trigger initial sync shortly after initialization
     setTimeout(() => {
-      void this.syncWithServer();
+      if (this.hasAuthenticatedSession()) void this.syncWithServer();
     }, 1200);
 
     const scheduleNext = () => {
@@ -132,7 +137,7 @@ class UploadManager {
       const hasProcessing = this.tasks.some((t) => t.status === "processing");
       const delay = hasProcessing ? 3500 : 15000;
       this.syncTimer = setTimeout(async () => {
-        await this.syncWithServer();
+        if (this.hasAuthenticatedSession()) await this.syncWithServer();
         scheduleNext();
       }, delay);
     };
@@ -141,7 +146,7 @@ class UploadManager {
   }
 
   public async syncWithServer(): Promise<void> {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || !this.hasAuthenticatedSession()) return;
     try {
       const sources = await apiRequest<any[]>("/knowledge-center/sources");
       if (!Array.isArray(sources)) return;

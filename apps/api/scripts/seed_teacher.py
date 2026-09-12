@@ -12,112 +12,60 @@ from app.models.user import User, UserRole
 from app.core.security import hash_password
 
 
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def seed():
     # Create all tables
     Base.metadata.create_all(bind=engine)
 
-    teacher_email = os.getenv("INITIAL_TEACHER_EMAIL", "teacher@hassanshaban.com").strip().lower() or "teacher@hassanshaban.com"
-    teacher_username = os.getenv("INITIAL_TEACHER_USERNAME", "mr.hassan").strip().lower() or "mr.hassan"
-    teacher_password = os.getenv("INITIAL_TEACHER_PASSWORD", "").strip() or "Hassan@2025"
-    teacher_name = os.getenv("INITIAL_TEACHER_NAME", "مستر حسن شعبان").strip() or "مستر حسن شعبان"
-    institution_slug = os.getenv("INITIAL_INSTITUTION_SLUG", "demo").strip().lower() or "demo"
+    teacher_email = os.getenv("INITIAL_TEACHER_EMAIL", "").strip().lower()
+    teacher_password = os.getenv("INITIAL_TEACHER_PASSWORD", "")
+    teacher_name = os.getenv("INITIAL_TEACHER_NAME", "مستر حسن شعبان").strip()
+    institution_slug = os.getenv("INITIAL_INSTITUTION_SLUG", "demo").strip().lower()
+    if not teacher_email or not teacher_password:
+        print("Initial teacher seed skipped: set INITIAL_TEACHER_EMAIL and INITIAL_TEACHER_PASSWORD.")
+        return
 
     with SessionLocal() as db:
-        # Create institution if missing
+        # Create institution
         institution = db.query(Institution).filter(Institution.slug == institution_slug).first()
         if not institution:
             institution = Institution(name=institution_slug.replace("-", " ").title(), slug=institution_slug)
             db.add(institution)
             db.flush()
 
-        # Check if primary teacher already exists by email or username
         existing = db.query(User).filter(
             User.institution_id == institution.id,
-            (User.email == teacher_email) | (User.username == teacher_username)
+            User.email == teacher_email,
         ).first()
-
         if existing:
-            existing.email = teacher_email
-            existing.username = teacher_username
-            existing.display_name = teacher_name
-            existing.password_hash = hash_password(teacher_password)
-            existing.is_active = True
-            existing.role = UserRole.TEACHER
-            db.commit()
-            print(f"[seed] Teacher account verified: {existing.username} ({existing.email})")
-            teacher = existing
-        else:
-            # Create teacher
-            teacher = User(
-                institution_id=institution.id,
-                username=teacher_username,
-                email=teacher_email,
-                display_name=teacher_name,
-                password_hash=hash_password(teacher_password),
-                role=UserRole.TEACHER,
-                is_active=True,
-            )
-            db.add(teacher)
-            db.commit()
-            print(f"[seed] Teacher created: {teacher.username} ({teacher.email})")
+            if _env_flag("RESET_INITIAL_TEACHER_PASSWORD"):
+                existing.password_hash = hash_password(teacher_password)
+                existing.is_active = True
+                existing.deleted_at = None
+                db.commit()
+                print(f"Teacher password reset from deployment secret: {existing.email}")
+            else:
+                print(f"Teacher already exists: {existing.display_name} ({existing.email})")
+            return
 
-        # Ensure demo teacher exists and has valid password
-        demo_t = db.query(User).filter(User.institution_id == institution.id, User.email == "teacher@demo.com").first()
-        if not demo_t:
-            demo_t = User(
-                institution_id=institution.id,
-                username="teacher_demo",
-                email="teacher@demo.com",
-                display_name="المعلم التجريبي",
-                password_hash=hash_password("Demo-Pass-2026!"),
-                role=UserRole.TEACHER,
-                is_active=True,
-            )
-            db.add(demo_t)
-            db.commit()
-            print("[seed] Demo teacher created: teacher@demo.com")
-        else:
-            demo_t.password_hash = hash_password("Demo-Pass-2026!")
-            demo_t.is_active = True
-            db.commit()
-
-        # Ensure demo student exists
-        demo_s = db.query(User).filter(User.institution_id == institution.id, User.email == "student@demo.com").first()
-        if not demo_s:
-            demo_s = User(
-                institution_id=institution.id,
-                username="student_demo",
-                email="student@demo.com",
-                display_name="طالب تجريبي",
-                password_hash=hash_password("Demo-Pass-2026!"),
-                role=UserRole.STUDENT,
-                is_active=True,
-            )
-            db.add(demo_s)
-            db.commit()
-            print("[seed] Demo student created: student@demo.com")
-        else:
-            demo_s.password_hash = hash_password("Demo-Pass-2026!")
-            demo_s.is_active = True
-            db.commit()
-
-        # Ensure official chemistry course exists
-        from app.models.course import Course, CourseStatus
-        course = db.query(Course).filter(Course.institution_id == institution.id).first()
-        if not course:
-            course = Course(
-                institution_id=institution.id,
-                teacher_id=teacher.id,
-                code="CHEM-3SEC",
-                title="الكيمياء - الصف الثالث الثانوي",
-                description="منهج الكيمياء للثانوية العامة — مستر حسن شعبان",
-                status=CourseStatus.PUBLISHED,
-            )
-            db.add(course)
-            db.commit()
-            print(f"[seed] Default course created: {course.code}")
+        # Create teacher
+        teacher = User(
+            institution_id=institution.id,
+            username=os.getenv("INITIAL_TEACHER_USERNAME", teacher_email.split("@", 1)[0]).strip().lower(),
+            email=teacher_email,
+            display_name=teacher_name,
+            password_hash=hash_password(teacher_password),
+            role=UserRole.TEACHER,
+            is_active=True,
+        )
+        db.add(teacher)
+        db.commit()
+        print(f"✅ Teacher created: {teacher.display_name}")
+        print(f"   Email: {teacher.email}")
 
 
 if __name__ == "__main__":
     seed()
-

@@ -9,7 +9,16 @@ The updated `render.yaml` provisions PostgreSQL and connects the API through
 - `SECRET_KEY`: keep the generated Render value stable between deploys.
 
 The initial teacher email is `teacher@hassanshaban.com`. The seed is
-idempotent and never changes an existing account or prints its password.
+idempotent and does not change an existing account or print its password unless
+the explicit one-time recovery switch below is enabled.
+
+If the teacher exists but login returns `401 Invalid credentials`:
+
+1. Set `RESET_INITIAL_TEACHER_PASSWORD=true` in the Render dashboard.
+2. Confirm `INITIAL_TEACHER_PASSWORD` contains the intended new password.
+3. redeploy the API and verify teacher login.
+4. Set `RESET_INITIAL_TEACHER_PASSWORD=false` and redeploy again, so later
+   application password changes are not overwritten.
 
 After the first deployment, sign in again once. Old tokens that point to the
 former ephemeral SQLite database are intentionally rejected and cleared by the

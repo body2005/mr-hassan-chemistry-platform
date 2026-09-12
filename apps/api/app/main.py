@@ -41,6 +41,10 @@ async def security_middleware(request, call_next):
     request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     origin = request.headers.get("Origin")
     unsafe_method = request.method in {"POST", "PUT", "PATCH", "DELETE"}
+    authorization = request.headers.get("Authorization", "")
+    has_bearer_auth = authorization.lower().startswith("bearer ") and bool(
+        authorization[7:].strip()
+    )
     if request.url.path.startswith(settings.api_v1_prefix) and request.url.path not in {
         f"{settings.api_v1_prefix}/health",
         f"{settings.api_v1_prefix}/ready",
@@ -73,7 +77,15 @@ async def security_middleware(request, call_next):
             },
         )
         return res
-    if unsafe_method and origin and request.cookies.get(settings.session_cookie_name):
+    # Double-submit CSRF applies only to cookie-authenticated mutations.  The
+    # cross-origin SPA cannot read a cookie scoped to the Render API domain,
+    # and an explicit Bearer token is already protected from ambient CSRF.
+    if (
+        unsafe_method
+        and origin
+        and request.cookies.get(settings.session_cookie_name)
+        and not has_bearer_auth
+    ):
         csrf_cookie = request.cookies.get(settings.csrf_cookie_name)
         csrf_header = request.headers.get("X-CSRF-Token")
         if not csrf_cookie or not secrets.compare_digest(csrf_cookie, csrf_header or ""):
