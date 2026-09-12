@@ -33,6 +33,22 @@ services:
         sync: false
       - key: INITIAL_TEACHER_NAME
         value: "مستر حسن شعبان"
+      - key: ENABLE_DEMO_ACCOUNTS
+        sync: false
+      - key: DEMO_INSTITUTION_SLUG
+        value: demo
+      - key: DEMO_TEACHER_EMAIL
+        value: teacher@demo.com
+      - key: DEMO_TEACHER_PASSWORD
+        sync: false
+      - key: DEMO_STUDENT_EMAIL
+        value: student@demo.com
+      - key: DEMO_STUDENT_PASSWORD
+        sync: false
+      # One-time switch: enable for one deploy to reset both demo passwords,
+      # then disable it again.
+      - key: RESET_DEMO_PASSWORDS
+        sync: false
       - key: DB_POOL_SIZE
         value: "5"
       - key: DB_MAX_OVERFLOW

@@ -1,70 +1,154 @@
-"""Create the initial teacher only when deployment credentials are supplied."""
-import sys
+"""Seed deployment accounts only when their Render secrets are supplied."""
 import os
+import sys
 
-# Ensure the api package root is importable
+# Ensure the api package root is importable.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.core.database import engine, SessionLocal
+from app.core.database import SessionLocal, engine
+from app.core.security import hash_password
 from app.models import Base
 from app.models.institution import Institution
 from app.models.user import User, UserRole
-from app.core.security import hash_password
 
 
 def _env_flag(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def seed():
-    # Create all tables
+def _get_or_create_institution(db, slug: str, name: str | None = None) -> Institution:
+    institution = db.query(Institution).filter(Institution.slug == slug).first()
+    if institution:
+        return institution
+    institution = Institution(name=name or slug.replace("-", " ").title(), slug=slug)
+    db.add(institution)
+    db.flush()
+    return institution
+
+
+def _seed_account(
+    db,
+    *,
+    institution: Institution,
+    email: str,
+    username: str,
+    display_name: str,
+    password: str,
+    role: UserRole,
+    reset_password: bool,
+    label: str,
+) -> None:
+    existing = db.query(User).filter(
+        User.institution_id == institution.id,
+        User.email == email,
+    ).first()
+
+    if existing:
+        changed = False
+        if existing.role != role:
+            existing.role = role
+            changed = True
+        if not existing.is_active or existing.deleted_at is not None:
+            existing.is_active = True
+            existing.deleted_at = None
+            changed = True
+        if reset_password:
+            existing.password_hash = hash_password(password)
+            changed = True
+        if changed:
+            db.commit()
+            print(f"{label} updated from deployment configuration: {email}")
+        else:
+            print(f"{label} already exists: {email}")
+        return
+
+    account = User(
+        institution_id=institution.id,
+        username=username,
+        email=email,
+        display_name=display_name,
+        password_hash=hash_password(password),
+        role=role,
+        is_active=True,
+    )
+    db.add(account)
+    db.commit()
+    print(f"{label} created: {email}")
+
+
+def seed() -> None:
     Base.metadata.create_all(bind=engine)
 
     teacher_email = os.getenv("INITIAL_TEACHER_EMAIL", "").strip().lower()
     teacher_password = os.getenv("INITIAL_TEACHER_PASSWORD", "")
-    teacher_name = os.getenv("INITIAL_TEACHER_NAME", "مستر حسن شعبان").strip()
-    institution_slug = os.getenv("INITIAL_INSTITUTION_SLUG", "demo").strip().lower()
-    if not teacher_email or not teacher_password:
-        print("Initial teacher seed skipped: set INITIAL_TEACHER_EMAIL and INITIAL_TEACHER_PASSWORD.")
-        return
+    demo_enabled = _env_flag("ENABLE_DEMO_ACCOUNTS")
 
     with SessionLocal() as db:
-        # Create institution
-        institution = db.query(Institution).filter(Institution.slug == institution_slug).first()
-        if not institution:
-            institution = Institution(name=institution_slug.replace("-", " ").title(), slug=institution_slug)
-            db.add(institution)
-            db.flush()
+        if teacher_email and teacher_password:
+            institution_slug = os.getenv("INITIAL_INSTITUTION_SLUG", "demo").strip().lower()
+            institution = _get_or_create_institution(db, institution_slug)
+            _seed_account(
+                db,
+                institution=institution,
+                email=teacher_email,
+                username=os.getenv(
+                    "INITIAL_TEACHER_USERNAME", teacher_email.split("@", 1)[0]
+                ).strip().lower(),
+                display_name=os.getenv("INITIAL_TEACHER_NAME", "مستر حسن شعبان").strip(),
+                password=teacher_password,
+                role=UserRole.TEACHER,
+                reset_password=_env_flag("RESET_INITIAL_TEACHER_PASSWORD"),
+                label="Initial teacher",
+            )
+        else:
+            print(
+                "Initial teacher seed skipped: set INITIAL_TEACHER_EMAIL "
+                "and INITIAL_TEACHER_PASSWORD."
+            )
 
-        existing = db.query(User).filter(
-            User.institution_id == institution.id,
-            User.email == teacher_email,
-        ).first()
-        if existing:
-            if _env_flag("RESET_INITIAL_TEACHER_PASSWORD"):
-                existing.password_hash = hash_password(teacher_password)
-                existing.is_active = True
-                existing.deleted_at = None
-                db.commit()
-                print(f"Teacher password reset from deployment secret: {existing.email}")
-            else:
-                print(f"Teacher already exists: {existing.display_name} ({existing.email})")
+        if not demo_enabled:
+            print("Demo account seed disabled.")
             return
 
-        # Create teacher
-        teacher = User(
-            institution_id=institution.id,
-            username=os.getenv("INITIAL_TEACHER_USERNAME", teacher_email.split("@", 1)[0]).strip().lower(),
-            email=teacher_email,
-            display_name=teacher_name,
-            password_hash=hash_password(teacher_password),
-            role=UserRole.TEACHER,
-            is_active=True,
+        demo_teacher_password = os.getenv("DEMO_TEACHER_PASSWORD", "")
+        demo_student_password = os.getenv("DEMO_STUDENT_PASSWORD", "")
+        if not demo_teacher_password or not demo_student_password:
+            print(
+                "Demo account seed skipped: set DEMO_TEACHER_PASSWORD "
+                "and DEMO_STUDENT_PASSWORD."
+            )
+            return
+
+        demo_slug = os.getenv("DEMO_INSTITUTION_SLUG", "demo").strip().lower()
+        demo_institution = _get_or_create_institution(
+            db,
+            demo_slug,
+            os.getenv("DEMO_INSTITUTION_NAME", "Demo Chemistry Academy").strip(),
         )
-        db.add(teacher)
-        db.commit()
-        print(f"✅ Teacher created: {teacher.display_name}")
-        print(f"   Email: {teacher.email}")
+        reset_demo_passwords = _env_flag("RESET_DEMO_PASSWORDS")
+
+        _seed_account(
+            db,
+            institution=demo_institution,
+            email=os.getenv("DEMO_TEACHER_EMAIL", "teacher@demo.com").strip().lower(),
+            username=os.getenv("DEMO_TEACHER_USERNAME", "teacher").strip().lower(),
+            display_name=os.getenv("DEMO_TEACHER_NAME", "Demo Teacher").strip(),
+            password=demo_teacher_password,
+            role=UserRole.TEACHER,
+            reset_password=reset_demo_passwords,
+            label="Demo teacher",
+        )
+        _seed_account(
+            db,
+            institution=demo_institution,
+            email=os.getenv("DEMO_STUDENT_EMAIL", "student@demo.com").strip().lower(),
+            username=os.getenv("DEMO_STUDENT_USERNAME", "student").strip().lower(),
+            display_name=os.getenv("DEMO_STUDENT_NAME", "Demo Student").strip(),
+            password=demo_student_password,
+            role=UserRole.STUDENT,
+            reset_password=reset_demo_passwords,
+            label="Demo student",
+        )
 
 
 if __name__ == "__main__":

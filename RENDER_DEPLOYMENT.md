@@ -24,6 +24,25 @@ After the first deployment, sign in again once. Old tokens that point to the
 former ephemeral SQLite database are intentionally rejected and cleared by the
 web client.
 
+## Optional isolated demo accounts
+
+The uploaded local SQLite database is not the production PostgreSQL database.
+Create or repair the two demo accounts directly in production by setting these
+values on the Render web service:
+
+- `ENABLE_DEMO_ACCOUNTS=true`
+- `DEMO_INSTITUTION_SLUG=demo`
+- `DEMO_TEACHER_EMAIL=teacher@demo.com`
+- `DEMO_TEACHER_PASSWORD=<secret value>`
+- `DEMO_STUDENT_EMAIL=student@demo.com`
+- `DEMO_STUDENT_PASSWORD=<secret value>`
+- `RESET_DEMO_PASSWORDS=true`
+
+Deploy once and verify both logins. Then set `RESET_DEMO_PASSWORDS=false` and
+deploy again so future password changes are not overwritten. Never commit the
+two passwords to Git. A publicly known teacher password grants write access to
+the demo tenant and can consume upload and AI quotas.
+
 ## File persistence
 
 PostgreSQL makes users, courses, and source metadata persistent. Uploaded book
