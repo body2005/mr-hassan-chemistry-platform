@@ -84,25 +84,6 @@ export const AuthView: React.FC<AuthViewProps> = ({
     }
   }
 
-  async function handleQuickLogin(role: "teacher" | "student") {
-    setIsSubmitting(true);
-    setError("");
-    setSuccessMsg("");
-    const email = role === "teacher" ? "teacher@demo.com" : "student@demo.com";
-    const pass = "Demo-Pass-2026!";
-    try {
-      const res = await authService.login(email, pass);
-      if (res.success && res.user) {
-        onLoginSuccess(res.user);
-      } else {
-        setIsSubmitting(false);
-        setError(res.error || (lang === "ar" ? "تعذر تسجيل الدخول" : "Login failed"));
-      }
-    } catch {
-      setIsSubmitting(false);
-      setError(lang === "ar" ? "تعذر تسجيل الدخول، يرجى المحاولة ثانية" : "Login error");
-    }
-  }
 
   // Handle Student Registration via authService
   async function handleRegister(e: React.FormEvent) {
@@ -430,54 +411,6 @@ export const AuthView: React.FC<AuthViewProps> = ({
             {/* ===================== VIEW A: SIGN IN FORM ===================== */}
             {activeTab === "signin" ? (
               <form onSubmit={handleSignIn} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-                {/* 1-Click Test Access with Names Only */}
-                <div style={{ background: "rgba(15, 57, 43, 0.06)", border: "1px dashed #059669", borderRadius: "10px", padding: "10px", marginBottom: "4px" }}>
-                  <span style={{ fontSize: "11px", fontWeight: 800, color: "#065f46", display: "block", marginBottom: "6px" }}>
-                    ⚡ {lang === "ar" ? "تسجيل دخول فوري للتجربة:" : "1-Click Test Login:"}
-                  </span>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
-                    <button
-                      type="button"
-                      onClick={() => handleQuickLogin("teacher")}
-                      style={{
-                        background: "#0f392b",
-                        color: "#ffffff",
-                        border: "none",
-                        borderRadius: "8px",
-                        padding: "8px 10px",
-                        fontSize: "12px",
-                        fontWeight: 800,
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: "5px",
-                      }}
-                    >
-                      👨‍🏫 مستر حسن شعبان
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleQuickLogin("student")}
-                      style={{
-                        background: "#059669",
-                        color: "#ffffff",
-                        border: "none",
-                        borderRadius: "8px",
-                        padding: "8px 10px",
-                        fontSize: "12px",
-                        fontWeight: 800,
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: "5px",
-                      }}
-                    >
-                      👨‍🎓 أحمد محمد
-                    </button>
-                  </div>
-                </div>
 
                 <div>
                   <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "5px", textTransform: "uppercase" }}>
@@ -488,7 +421,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                     required
                     value={signInEmail}
                     onChange={(e) => setSignInEmail(e.target.value)}
-                    placeholder={lang === "ar" ? "مثال: teacher@demo.com أو اسم المستخدم" : "e.g. teacher@demo.com or username"}
+                    placeholder={lang === "ar" ? "مثال: teacher@hassanshaban.com أو اسم المستخدم" : "e.g. teacher@hassanshaban.com or username"}
                     style={{
                       width: "100%",
                       padding: "11px 14px",
