@@ -62,6 +62,7 @@ from app.schemas import (
 )
 from app.services import platform_service
 from app.services.audit_service import record_audit
+from app.services.payment_service import can_access_lesson_content, student_can_use_ai_for_lesson
 
 router = APIRouter()
 Db = Annotated[Session, Depends(get_db)]
@@ -78,6 +79,66 @@ def _bad_request(exc: Exception) -> HTTPException:
     if isinstance(exc, PermissionError):
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+def _submission_responses(
+    db: Session, submissions: list[AssignmentSubmission]
+) -> list[AssignmentSubmissionResponse]:
+    if not submissions:
+        return []
+    assignment_ids = {item.assignment_id for item in submissions}
+    student_ids = {item.student_id for item in submissions}
+    assignments = {
+        item.id: item
+        for item in db.scalars(select(Assignment).where(Assignment.id.in_(assignment_ids))).all()
+    }
+    course_ids = {item.course_id for item in assignments.values()}
+    courses = {
+        item.id: item
+        for item in db.scalars(select(Course).where(Course.id.in_(course_ids))).all()
+    }
+    students = {
+        item.id: item
+        for item in db.scalars(select(User).where(User.id.in_(student_ids))).all()
+    }
+    responses: list[AssignmentSubmissionResponse] = []
+    for submission in submissions:
+        assignment = assignments.get(submission.assignment_id)
+        course = courses.get(assignment.course_id) if assignment else None
+        student = students.get(submission.student_id)
+        responses.append(
+            AssignmentSubmissionResponse.model_validate(submission).model_copy(
+                update={
+                    "assignment_title": assignment.title if assignment else None,
+                    "assignment_prompt": assignment.prompt if assignment else None,
+                    "max_score": assignment.max_score if assignment else None,
+                    "course_title": course.title if course else None,
+                    "student_name": student.display_name if student else None,
+                }
+            )
+        )
+    return responses
+
+
+def _lesson_course(db: Session, lesson_id: uuid.UUID) -> tuple[Lesson, Course]:
+    row = db.execute(
+        select(Lesson, Course)
+        .join(CourseModule, Lesson.module_id == CourseModule.id)
+        .join(Course, CourseModule.course_id == Course.id)
+        .where(Lesson.id == lesson_id)
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    return row[0], row[1]
+
+
+def _require_lesson_access(db: Session, user: User, lesson_id: uuid.UUID) -> tuple[Lesson, Course]:
+    lesson, course = _lesson_course(db, lesson_id)
+    if not can_access_lesson_content(db, user, lesson_id):
+        if course.institution_id != user.institution_id:
+            raise HTTPException(status_code=404, detail="Lesson not found")
+        raise HTTPException(status_code=403, detail="Purchase or active enrollment is required")
+    return lesson, course
 
 
 @router.post("/courses/{course_id}/modules", response_model=ModuleResponse, status_code=201)
@@ -102,13 +163,13 @@ async def upload_lesson_video(
     file: UploadFile = File(...),
 ) -> dict:
     enforce_rate_limit(request, bucket="video_upload", limit=5, window_seconds=60)
-    lesson = db.get(Lesson, lesson_id)
-    if not lesson:
+    lesson, course = _lesson_course(db, lesson_id)
+    if user.role != UserRole.PLATFORM_ADMIN and course.institution_id != user.institution_id:
         raise HTTPException(status_code=404, detail="Lesson not found")
-    module = db.get(CourseModule, lesson.module_id)
-    course = db.get(Course, module.course_id) if module else None
-    if not course or (user.role != UserRole.PLATFORM_ADMIN and course.institution_id != user.institution_id):
-        raise HTTPException(status_code=404, detail="Lesson not found")
+    try:
+        platform_service.ensure_course_manager(user, course)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     allowed_extensions = {".mp4", ".webm", ".mov", ".m4v"}
     ext = os.path.splitext(file.filename or "")[1].lower()
@@ -156,19 +217,7 @@ async def upload_lesson_video(
 
 @router.get("/lessons/{lesson_id}/video")
 def stream_lesson_video(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> FileResponse:
-    lesson = db.get(Lesson, lesson_id)
-    module = db.get(CourseModule, lesson.module_id) if lesson else None
-    course = db.get(Course, module.course_id) if module else None
-    if not lesson or not course or (user.role != UserRole.PLATFORM_ADMIN and course.institution_id != user.institution_id):
-        raise HTTPException(status_code=404, detail="Video not found")
-    if user.role == UserRole.STUDENT:
-        enrolled = db.scalar(select(Enrollment).where(
-            Enrollment.course_id == course.id,
-            Enrollment.student_id == user.id,
-            Enrollment.status == EnrollmentStatus.ACTIVE,
-        ))
-        if not enrolled:
-            raise HTTPException(status_code=403, detail="Course enrollment required")
+    lesson, _ = _require_lesson_access(db, user, lesson_id)
     upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "uploads")
     matches = [name for name in os.listdir(upload_dir) if name.startswith(f"{lesson_id}.")]
     if not matches:
@@ -177,10 +226,8 @@ def stream_lesson_video(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> File
 
 
 @router.get("/lessons/{lesson_id}/transcript")
-def get_lesson_transcript(lesson_id: uuid.UUID, db: Db) -> dict:
-    lesson = db.get(Lesson, lesson_id)
-    if not lesson:
-        raise HTTPException(status_code=404, detail="Lesson not found")
+def get_lesson_transcript(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
+    lesson, _ = _require_lesson_access(db, user, lesson_id)
     transcript = db.query(Transcript).filter(Transcript.lesson_id == lesson_id).first()
     if not transcript:
         return {
@@ -205,10 +252,10 @@ def get_lesson_transcript(lesson_id: uuid.UUID, db: Db) -> dict:
 
 
 @router.get("/lessons/{lesson_id}/transcript/segments")
-def get_lesson_transcript_segments(lesson_id: uuid.UUID, db: Db, q: str | None = None) -> dict:
-    lesson = db.get(Lesson, lesson_id)
-    if not lesson:
-        raise HTTPException(status_code=404, detail="Lesson not found")
+def get_lesson_transcript_segments(
+    lesson_id: uuid.UUID, user: CurrentUser, db: Db, q: str | None = None
+) -> dict:
+    lesson, _ = _require_lesson_access(db, user, lesson_id)
 
     query = db.query(TranscriptSegment).filter(TranscriptSegment.lesson_id == lesson_id)
     if q and q.strip():
@@ -241,13 +288,11 @@ def ask_ai_about_lesson(
     request: Request,
     db: Db,
 ) -> dict:
-    lesson = db.get(Lesson, lesson_id)
-    if not lesson:
-        raise HTTPException(status_code=404, detail="Lesson not found")
-
-    module = db.get(CourseModule, lesson.module_id)
-    course_id = module.course_id if module else uuid.uuid4()
+    lesson, course = _require_lesson_access(db, user, lesson_id)
+    course_id = course.id
     enforce_ai_access(db, user, request, {"feature": "lesson_ask", "lesson_id": str(lesson_id)})
+    if user.role == UserRole.STUDENT and not student_can_use_ai_for_lesson(db, user, lesson_id):
+        raise HTTPException(status_code=402, detail="An AI subscription or paid lesson entitlement is required")
     if not can_access_course_knowledge(db, user, course_id):
         raise HTTPException(status_code=403, detail="Course access denied")
 
@@ -271,12 +316,11 @@ def get_lesson_ai_summary(
     request: Request,
     db: Db,
 ) -> dict:
-    lesson = db.get(Lesson, lesson_id)
-    if not lesson:
-        raise HTTPException(status_code=404, detail="Lesson not found")
-    module = db.get(CourseModule, lesson.module_id)
-    course_id = module.course_id if module else uuid.uuid4()
+    lesson, course = _require_lesson_access(db, user, lesson_id)
+    course_id = course.id
     enforce_ai_access(db, user, request, {"feature": "lesson_summary", "lesson_id": str(lesson_id)})
+    if user.role == UserRole.STUDENT and not student_can_use_ai_for_lesson(db, user, lesson_id):
+        raise HTTPException(status_code=402, detail="An AI subscription or paid lesson entitlement is required")
     if not can_access_course_knowledge(db, user, course_id):
         raise HTTPException(status_code=403, detail="Course access denied")
     return generate_grounded_summary(db=db, lesson_id=lesson_id)
@@ -305,6 +349,7 @@ def create_lesson(
         "kind": lesson.kind,
         "position": lesson.position,
         "indexing_status": "not_indexed",
+        "price_egp": float(lesson.price_egp or 0),
     }
 
 
@@ -314,9 +359,11 @@ def reindex_lesson(
     db: Db,
     user: Manager,
 ) -> JSONResponse:
-    lesson = db.get(Lesson, lesson_id)
-    if not lesson:
-        raise HTTPException(status_code=404, detail="Lesson not found")
+    lesson, course = _lesson_course(db, lesson_id)
+    try:
+        platform_service.ensure_course_manager(user, course)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     lesson.indexing_status = IndexingStatus.NOT_INDEXED
     lesson.indexing_error = None
@@ -334,9 +381,7 @@ def get_lesson_indexing_status(
     db: Db,
     user: CurrentUser,
 ) -> dict:
-    lesson = db.get(Lesson, lesson_id)
-    if not lesson:
-        raise HTTPException(status_code=404, detail="Lesson not found")
+    lesson, _ = _require_lesson_access(db, user, lesson_id)
 
     status_val = lesson.indexing_status.value if hasattr(lesson.indexing_status, "value") else str(lesson.indexing_status)
     return {
@@ -353,9 +398,11 @@ async def sync_lesson_rag_endpoint(
     db: Db,
     user: Manager,
 ) -> dict:
-    lesson = db.get(Lesson, lesson_id)
-    if not lesson:
-        raise HTTPException(status_code=404, detail="Lesson not found")
+    lesson, course = _lesson_course(db, lesson_id)
+    try:
+        platform_service.ensure_course_manager(user, course)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     result = await sync_lesson_rag(str(lesson.id), max_retries=3)
     return {
@@ -371,9 +418,11 @@ def reindex_all_course_lessons(
     user: Manager,
     background_tasks: BackgroundTasks,
 ) -> dict:
-    course = db.get(Course, course_id)
-    if not course:
-        raise HTTPException(status_code=404, detail="Course not found")
+    try:
+        course = platform_service.course_for_user(db, user, course_id)
+        platform_service.ensure_course_manager(user, course)
+    except (LookupError, PermissionError) as exc:
+        raise _bad_request(exc) from exc
 
     query = (
         select(Lesson)
@@ -432,6 +481,7 @@ def my_progress(user: Student, db: Db) -> list[LessonProgressResponse]:
 
 @router.post("/progress/lessons/{lesson_id}/complete", response_model=LessonProgressResponse)
 def complete_lesson(lesson_id: uuid.UUID, user: Student, db: Db) -> LessonProgressResponse:
+    _require_lesson_access(db, user, lesson_id)
     progress = db.scalar(
         select(LessonProgress)
         .join(Lesson, Lesson.id == LessonProgress.lesson_id)
@@ -663,7 +713,7 @@ def submit_assignment(
         submission = platform_service.submit_assignment(db, user, assignment_id, payload)
     except (LookupError, PermissionError, ValueError) as exc:
         raise _bad_request(exc) from exc
-    return AssignmentSubmissionResponse.model_validate(submission)
+    return _submission_responses(db, [submission])[0]
 
 
 @router.get(
@@ -695,10 +745,9 @@ def list_submissions(
         query = select(AssignmentSubmission).where(
             AssignmentSubmission.assignment_id == assignment_id
         )
-    return [
-        AssignmentSubmissionResponse.model_validate(item)
-        for item in db.scalars(query.order_by(AssignmentSubmission.version.desc())).all()
-    ]
+    return _submission_responses(
+        db, list(db.scalars(query.order_by(AssignmentSubmission.version.desc())).all())
+    )
 
 
 @router.get("/submissions/me", response_model=list[AssignmentSubmissionResponse])
@@ -711,7 +760,7 @@ def my_submissions(user: Student, db: Db) -> list[AssignmentSubmissionResponse]:
         )
         .order_by(AssignmentSubmission.submitted_at.desc())
     ).all()
-    return [AssignmentSubmissionResponse.model_validate(item) for item in items]
+    return _submission_responses(db, list(items))
 
 
 @router.get("/submissions", response_model=list[AssignmentSubmissionResponse])
@@ -722,7 +771,7 @@ def all_submissions(user: Manager, db: Db) -> list[AssignmentSubmissionResponse]
         .order_by(AssignmentSubmission.submitted_at.desc())
         .limit(500)
     ).all()
-    return [AssignmentSubmissionResponse.model_validate(item) for item in items]
+    return _submission_responses(db, list(items))
 
 
 @router.post("/submissions/{submission_id}/grade", response_model=AssignmentSubmissionResponse)
@@ -747,7 +796,7 @@ def grade_submission(
         after={"score": submission.final_score, "approved": payload.approve},
     )
     db.commit()
-    return AssignmentSubmissionResponse.model_validate(submission)
+    return _submission_responses(db, [submission])[0]
 
 
 @router.get("/notifications", response_model=list[NotificationResponse])

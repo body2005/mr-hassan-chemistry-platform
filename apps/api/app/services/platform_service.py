@@ -75,6 +75,8 @@ def ensure_course_manager(user: User, course: Course) -> None:
         raise PermissionError("Insufficient permissions")
     if user.role != UserRole.PLATFORM_ADMIN and course.institution_id != user.institution_id:
         raise PermissionError("You do not have access to this institution's courses")
+    if user.role == UserRole.TEACHER and course.teacher_id != user.id:
+        raise PermissionError("Teachers can manage only their own courses")
 
 
 def add_module(
@@ -118,6 +120,7 @@ def add_lesson(db: Session, user: User, module_id: uuid.UUID, payload: LessonCre
         content=payload.content.strip() if payload.content else None,
         video_asset_key=payload.video_asset_key,
         video_duration_seconds=payload.video_duration_seconds,
+        price_egp=payload.price_egp,
     )
     db.add(lesson)
     db.commit()

@@ -22,14 +22,24 @@ def upgrade() -> None:
     op.add_column("assessment_sources", sa.Column("review_status", sa.String(length=30), nullable=False, server_default="needs_review"))
     op.add_column("assessment_sources", sa.Column("answer_key_source_id", sa.UUID(), nullable=True))
     op.create_index("ix_assessment_sources_answer_key_source_id", "assessment_sources", ["answer_key_source_id"])
-    op.create_foreign_key(
+    foreign_key_args = (
         "fk_assessment_sources_answer_key_source_id_knowledge_sources",
-        "assessment_sources",
         "knowledge_sources",
         ["answer_key_source_id"],
         ["id"],
-        ondelete="SET NULL",
     )
+    if op.get_bind().dialect.name == "sqlite":
+        with op.batch_alter_table("assessment_sources") as batch_op:
+            batch_op.create_foreign_key(*foreign_key_args, ondelete="SET NULL")
+    else:
+        op.create_foreign_key(
+            foreign_key_args[0],
+            "assessment_sources",
+            foreign_key_args[1],
+            foreign_key_args[2],
+            foreign_key_args[3],
+            ondelete="SET NULL",
+        )
 
     op.add_column("assessment_questions", sa.Column("points", sa.Float(), nullable=False, server_default="1.0"))
     op.add_column("assessment_questions", sa.Column("source_kind", sa.String(length=30), nullable=False, server_default="extracted_question"))
@@ -82,7 +92,14 @@ def downgrade() -> None:
     ]:
         op.drop_column("assessment_questions", column)
 
-    op.drop_constraint("fk_assessment_sources_answer_key_source_id_knowledge_sources", "assessment_sources", type_="foreignkey")
+    if op.get_bind().dialect.name == "sqlite":
+        with op.batch_alter_table("assessment_sources") as batch_op:
+            batch_op.drop_constraint(
+                "fk_assessment_sources_answer_key_source_id_knowledge_sources",
+                type_="foreignkey",
+            )
+    else:
+        op.drop_constraint("fk_assessment_sources_answer_key_source_id_knowledge_sources", "assessment_sources", type_="foreignkey")
     op.drop_index("ix_assessment_sources_answer_key_source_id", table_name="assessment_sources")
     for column in ["answer_key_source_id", "review_status", "processing_status"]:
         op.drop_column("assessment_sources", column)

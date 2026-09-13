@@ -45,14 +45,16 @@ services:
         value: student@demo.com
       - key: DEMO_STUDENT_PASSWORD
         sync: false
-      # One-time switch: enable for one deploy to reset both demo passwords,
-      # then disable it again.
+      # Optional manual reset flag. Enabled demo accounts are also reconciled
+      # against the configured secrets on every deploy to prevent stale hashes.
       - key: RESET_DEMO_PASSWORDS
         sync: false
       - key: DB_POOL_SIZE
         value: "5"
       - key: DB_MAX_OVERFLOW
         value: "10"
+      - key: REDIS_REQUIRED
+        value: "false"
       - key: MAX_CONCURRENT_INGESTIONS
         value: "1"
       - key: MAX_FILE_SIZE_MB
@@ -61,6 +63,18 @@ services:
         value: "1000"
       - key: MAX_BATCH_SIZE_MB
         value: "1000"
+      - key: STUDENT_AI_ACCESS_MODE
+        value: paid_content_or_subscription
+      - key: STUDENT_AI_MONTHLY_PRICE_EGP
+        value: "99"
+      - key: STUDENT_AI_SUBSCRIPTION_DAYS
+        value: "30"
+      - key: PAYMENT_INSTAPAY_ACCOUNT
+        sync: false
+      - key: PAYMENT_VODAFONE_CASH_NUMBER
+        sync: false
+      - key: PAYMENT_BANK_DETAILS
+        sync: false
     autoDeploy: true
 
 databases:

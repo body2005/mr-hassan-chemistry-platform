@@ -1,4 +1,4 @@
-import { apiRequest, uploadWithProgress, ApiClientError } from "./apiClient";
+import { apiRequest, apiUrl, uploadWithProgress, ApiClientError } from "./apiClient";
 /**
  * ============================================================================
  * MATGAR LMS - UNIFIED DATA ACCESS LAYER (DAL)
@@ -19,12 +19,6 @@ import {
   NotificationSchedule,
   StudentVideoWatchLog,
 } from "../types/lms";
-import {
-  INITIAL_COURSES,
-  INITIAL_STUDENTS,
-  INITIAL_NOTIFICATIONS,
-  INITIAL_SUBMISSIONS,
-} from "../data/lmsStore";
 
 export const STORAGE_KEYS = {
   USER: "lms_user",
@@ -63,6 +57,7 @@ type ApiCourse = {
   published_at: string | null;
   created_at: string;
   updated_at: string;
+  price_egp: number;
   modules: Array<{
     id: string;
     title: string;
@@ -78,6 +73,7 @@ type ApiCourse = {
       indexing_status?: "not_indexed" | "in_progress" | "indexed" | "failed";
       indexing_error?: string | null;
       indexed_chunks_count?: number;
+      price_egp?: number;
     }>;
   }>;
 };
@@ -125,6 +121,11 @@ type ApiSubmission = {
   submitted_at: string;
   graded_at: string | null;
   approved_at: string | null;
+  assignment_title: string | null;
+  assignment_prompt: string | null;
+  max_score: number | null;
+  course_title: string | null;
+  student_name: string | null;
 };
 
 type ApiLessonProgress = {
@@ -190,7 +191,8 @@ function mapApiCourse(course: ApiCourse): Course {
           durationFormatted: lesson.video_duration_seconds
             ? `${Math.ceil(lesson.video_duration_seconds / 60)} دقيقة`
             : "",
-          videoUrl: lesson.video_asset_key || "",
+          videoUrl: lesson.video_asset_key ? apiUrl(lesson.video_asset_key) : "",
+          price: Number(lesson.price_egp || 0),
           materials: [],
           uploadedByTeacherName: "",
           uploadedAt: lesson.video_duration_seconds ? course.updated_at : course.created_at,
@@ -199,7 +201,7 @@ function mapApiCourse(course: ApiCourse): Course {
           expectedStruggleRate: 0,
           predictedMisconceptionRate: 0,
           flaggedHardConcepts: [],
-          indexing_status: (lesson.indexing_status as any) || "not_indexed",
+          indexing_status: lesson.indexing_status || "not_indexed",
           indexing_error: lesson.indexing_error || undefined,
           indexed_chunks_count: lesson.indexed_chunks_count || 0,
         })),
@@ -218,6 +220,7 @@ function mapApiCourse(course: ApiCourse): Course {
     totalDurationFormatted: `${lessons.reduce((sum, lesson) => sum + lesson.durationMinutes, 0)} دقيقة`,
     lessons,
     enrolledStudentsCount: 0,
+    price: Number(course.price_egp || 0),
   };
 }
 
@@ -295,15 +298,15 @@ function mapApiSubmission(item: ApiSubmission): AssignmentSubmission {
     id: item.id,
     assignmentId: item.assignment_id,
     studentId: item.student_id,
-    studentName: "",
+    studentName: item.student_name || "—",
     academicYear: "1st_secondary",
     academicYearLabel: "الصف الأول الثانوي",
-    assignmentTitle: "",
-    lessonTitle: "",
-    questionPrompt: "",
+    assignmentTitle: item.assignment_title || "واجب",
+    lessonTitle: item.course_title || "—",
+    questionPrompt: item.assignment_prompt || "—",
     studentAnswer: item.answer_text,
     submittedAt: item.submitted_at,
-    maxScore: 100,
+    maxScore: item.max_score || 100,
     aiScore: item.ai_score || 0,
     finalScore: item.final_score || 0,
     teacherFeedback: item.teacher_feedback || undefined,
@@ -382,7 +385,7 @@ export const authService = {
         }
         return null;
       }
-      return null;
+      throw err;
     }
   },
 
@@ -456,7 +459,9 @@ export const authService = {
   async logout(): Promise<void> {
     try {
       await apiRequest<void>("/auth/logout", { method: "POST" });
-    } catch {}
+    } catch {
+      // Logout is local-first so an unavailable server cannot trap the user in the UI.
+    }
     if (typeof localStorage !== "undefined") {
       localStorage.removeItem("lms_session_token");
       localStorage.removeItem("lms_cached_user");
@@ -474,13 +479,8 @@ export const authService = {
 // ============================================================================
 export const notificationService = {
   async getNotifications(): Promise<NotificationItem[]> {
-    try {
-      const result = await apiRequest<ApiNotification[]>("/notifications");
-      if (Array.isArray(result) && result.length > 0) {
-        return deduplicateNotifications(result.map(mapApiNotification));
-      }
-    } catch {}
-    return INITIAL_NOTIFICATIONS;
+    const result = await apiRequest<ApiNotification[]>("/notifications");
+    return Array.isArray(result) ? deduplicateNotifications(result.map(mapApiNotification)) : [];
   },
 
   async saveNotification(item: NotificationItem): Promise<NotificationItem[]> {
@@ -513,12 +513,8 @@ export const notificationService = {
 // ============================================================================
 export const calendarService = {
   async getCalendarEvents(): Promise<CalendarScheduleEvent[]> {
-    try {
-      const result = await apiRequest<ApiCalendarEvent[]>("/calendar");
-      return result.map(mapApiCalendarEvent);
-    } catch {
-      return [];
-    }
+    const result = await apiRequest<ApiCalendarEvent[]>("/calendar");
+    return result.map(mapApiCalendarEvent);
   },
 
   async saveCalendarEvent(event: CalendarScheduleEvent): Promise<CalendarScheduleEvent[]> {
@@ -567,7 +563,9 @@ export const calendarService = {
           return parsed;
         }
       }
-    } catch {}
+    } catch {
+      // Ignore corrupt browser-only schedule data and return an empty collection.
+    }
     return [];
   },
 
@@ -575,7 +573,9 @@ export const calendarService = {
     try {
       localStorage.setItem("lms_notification_schedules_v1", JSON.stringify(schedules));
       window.dispatchEvent(new Event("lms_schedule_updated"));
-    } catch {}
+    } catch {
+      // Browser storage can be unavailable in private or restricted contexts.
+    }
   },
 };
 
@@ -594,24 +594,8 @@ function parseScheduleClock(value: string): string {
 // ============================================================================
 export const courseService = {
   async getCourses(): Promise<Course[]> {
-    try {
-      const result = await apiRequest<{ items: ApiCourse[] }>("/courses?page=1&page_size=100");
-      if (result && Array.isArray(result.items) && result.items.length > 0) {
-        return result.items.map(mapApiCourse);
-      }
-    } catch {}
-
-    // Offline / Standalone Fallback: Load from localStorage or INITIAL_COURSES
-    if (typeof localStorage !== "undefined") {
-      try {
-        const cached = localStorage.getItem("lms_courses_v2");
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-        }
-      } catch {}
-    }
-    return INITIAL_COURSES;
+    const result = await apiRequest<{ items: ApiCourse[] }>("/courses?page=1&page_size=100");
+    return Array.isArray(result.items) ? result.items.map(mapApiCourse) : [];
   },
 
   async saveCourses(courses: Course[]): Promise<void> {
@@ -622,58 +606,24 @@ export const courseService = {
   },
 
   async getEnrolledCourseIds(): Promise<string[]> {
-    try {
-      const result = await apiRequest<ApiEnrollment[]>("/courses/me/enrollments");
-      if (result && Array.isArray(result) && result.length > 0) {
-        return result.map((enrollment) => enrollment.course_id);
-      }
-    } catch {}
-    if (typeof localStorage !== "undefined") {
-      try {
-        const stored = localStorage.getItem(STORAGE_KEYS.ENROLLED_COURSES);
-        if (stored) return JSON.parse(stored);
-      } catch {}
-    }
-    return [];
+    const result = await apiRequest<ApiEnrollment[]>("/courses/me/enrollments");
+    return Array.isArray(result) ? result.map((enrollment) => enrollment.course_id) : [];
   },
 
   async enrollCourse(courseId: string): Promise<string[]> {
-    try {
-      await apiRequest(`/courses/${courseId}/enroll`, { method: "POST" });
-      return this.getEnrolledCourseIds();
-    } catch {}
-    const current = await this.getEnrolledCourseIds();
-    const updated = Array.from(new Set([...current, courseId]));
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(STORAGE_KEYS.ENROLLED_COURSES, JSON.stringify(updated));
-    }
-    return updated;
+    await apiRequest(`/courses/${courseId}/enroll`, { method: "POST" });
+    return this.getEnrolledCourseIds();
   },
 
   async getLessonProgress(): Promise<ApiLessonProgress[]> {
-    try {
-      return await apiRequest<ApiLessonProgress[]>("/progress/me");
-    } catch {
-      return [];
-    }
+    return apiRequest<ApiLessonProgress[]>("/progress/me");
   },
 
   async completeLesson(lessonId: string): Promise<ApiLessonProgress> {
-    try {
-      return await apiRequest<ApiLessonProgress>(`/progress/lessons/${lessonId}/complete`, { method: "POST" });
-    } catch {
-      return {
-        lesson_id: lessonId,
-        last_position_seconds: 0,
-        watched_duration_seconds: 1200,
-        completion_percent: 100,
-        last_event_at: new Date().toISOString(),
-        completed_at: new Date().toISOString(),
-      };
-    }
+    return apiRequest<ApiLessonProgress>(`/progress/lessons/${lessonId}/complete`, { method: "POST" });
   },
 
-  async createCourse(payload: { code: string; title: string; description?: string }): Promise<ApiCourse> {
+  async createCourse(payload: { code: string; title: string; description?: string; price_egp?: number }): Promise<ApiCourse> {
     return apiRequest<ApiCourse>("/courses", { method: "POST", body: JSON.stringify(payload) });
   },
 
@@ -695,6 +645,7 @@ export const courseService = {
     content?: string;
     video_asset_key?: string;
     video_duration_seconds?: number;
+    price_egp?: number;
   }): Promise<{ id: string }> {
     return apiRequest<{ id: string }>(`/modules/${moduleId}/lessons`, {
       method: "POST",
@@ -819,58 +770,25 @@ export const analyticsService = {
 // ============================================================================
 export const submissionService = {
   async getStudentSubmissions(): Promise<AssignmentSubmission[]> {
-    try {
-      const result = await apiRequest<ApiSubmission[]>("/submissions/me");
-      if (Array.isArray(result) && result.length > 0) return result.map(mapApiSubmission);
-    } catch {}
-    return INITIAL_SUBMISSIONS;
+    const result = await apiRequest<ApiSubmission[]>("/submissions/me");
+    return Array.isArray(result) ? result.map(mapApiSubmission) : [];
   },
 
   async getTeacherSubmissions(): Promise<AssignmentSubmission[]> {
-    try {
-      const result = await apiRequest<ApiSubmission[]>("/submissions");
-      if (Array.isArray(result) && result.length > 0) return result.map(mapApiSubmission);
-    } catch {}
-    return INITIAL_SUBMISSIONS;
+    const result = await apiRequest<ApiSubmission[]>("/submissions");
+    return Array.isArray(result) ? result.map(mapApiSubmission) : [];
   },
 
   async saveSubmission(sub: AssignmentSubmission): Promise<AssignmentSubmission[]> {
-    const list = await this.getTeacherSubmissions();
-    const updated = [sub, ...list.filter((s) => s.id !== sub.id)];
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem("lms_submissions", JSON.stringify(updated));
-    }
-    return updated;
+    throw new ApiClientError("UNSUPPORTED_OPERATION", `Submission ${sub.id} must be created through its assignment endpoint`, 501);
   },
 
   async gradeSubmission(id: string, finalScore: number, teacherFeedback: string, approve = true): Promise<AssignmentSubmission> {
-    try {
-      const result = await apiRequest<ApiSubmission>(`/submissions/${id}/grade`, {
-        method: "POST",
-        body: JSON.stringify({ final_score: finalScore, teacher_feedback: teacherFeedback, approve }),
-      });
-      return mapApiSubmission(result);
-    } catch {}
-    return {
-      id,
-      assignmentId: "asg_1",
-      studentId: "std_301",
-      studentName: "أحمد محمد",
-      academicYear: "3rd_secondary",
-      academicYearLabel: "الصف الثالث الثانوي",
-      assignmentTitle: "واجب منزلي",
-      lessonTitle: "العناصر الانتقالية",
-      questionPrompt: "سؤال الواجب",
-      studentAnswer: "إجابة الواجب",
-      submittedAt: new Date().toISOString(),
-      maxScore: 100,
-      aiScore: finalScore,
-      finalScore,
-      teacherFeedback,
-      aiFeedbackSummary: "تم التقييم بنجاح",
-      criteriaScores: [],
-      status: "graded",
-    };
+    const result = await apiRequest<ApiSubmission>(`/submissions/${id}/grade`, {
+      method: "POST",
+      body: JSON.stringify({ final_score: finalScore, teacher_feedback: teacherFeedback, approve }),
+    });
+    return mapApiSubmission(result);
   },
 };
 
@@ -878,49 +796,22 @@ type ApiManagedUser = Pick<ApiUser, "id" | "email" | "display_name" | "role" | "
 
 export const userService = {
   async getStudents(): Promise<ApiManagedUser[]> {
-    try {
-      const res = await apiRequest<ApiManagedUser[]>("/users?role=student");
-      if (Array.isArray(res) && res.length > 0) return res;
-    } catch {}
-    return INITIAL_STUDENTS.map((s) => ({
-      id: s.id,
-      email: s.email,
-      display_name: s.name,
-      role: "student" as const,
-      is_active: !s.isBlocked,
-      created_at: s.lastActiveDate,
-    }));
+    const res = await apiRequest<ApiManagedUser[]>("/users?role=student");
+    return Array.isArray(res) ? res : [];
   },
 
   async toggleBlock(studentId: string): Promise<ApiManagedUser> {
-    try {
-      return await apiRequest<ApiManagedUser>(`/users/${studentId}/block`, { method: "POST" });
-    } catch {
-      return {
-        id: studentId,
-        email: "student@demo.com",
-        display_name: "أحمد محمد",
-        role: "student",
-        is_active: false,
-        created_at: new Date().toISOString(),
-      };
-    }
+    return apiRequest<ApiManagedUser>(`/users/${studentId}/block`, { method: "POST" });
   },
 
   async deleteStudent(studentId: string): Promise<void> {
-    try {
-      await apiRequest<void>(`/users/${studentId}`, { method: "DELETE" });
-    } catch {}
+    await apiRequest<void>(`/users/${studentId}`, { method: "DELETE" });
   },
 };
 
 export const systemService = {
   async getASRConfig(): Promise<{ kaggle_asr_url: string; mode: string; provider: string }> {
-    try {
-      return await apiRequest<{ kaggle_asr_url: string; mode: string; provider: string }>("/system/asr-config");
-    } catch {
-      return { kaggle_asr_url: "", mode: "local_whisper", provider: "Faster-Whisper Small (Local CPU)" };
-    }
+    return apiRequest<{ kaggle_asr_url: string; mode: string; provider: string }>("/system/asr-config");
   },
 
   async updateASRConfig(kaggleAsrUrl: string): Promise<{ kaggle_asr_url: string; mode: string; provider: string }> {
@@ -930,4 +821,3 @@ export const systemService = {
     });
   },
 };
-

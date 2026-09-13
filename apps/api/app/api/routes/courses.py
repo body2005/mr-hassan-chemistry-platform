@@ -4,11 +4,14 @@ import uuid
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import CurrentUser, OptionalUser, require_roles
 from app.core.database import get_db
 from app.models.user import User, UserRole
+from app.models.course import Enrollment, EnrollmentStatus
+from app.models.payment import EntitlementType, StudentEntitlement
 from app.schemas import (
     CourseCreateRequest,
     CourseResponse,
@@ -17,6 +20,7 @@ from app.schemas import (
     PageResponse,
 )
 from app.services import course_service
+from app.services.payment_service import is_entitlement_active
 
 router = APIRouter(prefix="/courses")
 Db = Annotated[Session, Depends(get_db)]
@@ -25,6 +29,55 @@ CourseManager = Annotated[
     Depends(require_roles(UserRole.TEACHER, UserRole.INSTITUTION_ADMIN, UserRole.PLATFORM_ADMIN)),
 ]
 Student = Annotated[User, Depends(require_roles(UserRole.STUDENT))]
+
+
+def _safe_course_responses(db: Session, user: User | None, courses: list) -> list[CourseResponse]:
+    responses = [CourseResponse.model_validate(course) for course in courses]
+    if user and user.role != UserRole.STUDENT:
+        return responses
+
+    enrolled_course_ids: set[uuid.UUID] = set()
+    course_entitlements: set[uuid.UUID] = set()
+    lesson_entitlements: set[uuid.UUID] = set()
+    if user:
+        enrolled_course_ids = set(
+            db.scalars(
+                select(Enrollment.course_id).where(
+                    Enrollment.student_id == user.id,
+                    Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+                )
+            ).all()
+        )
+        entitlements = db.scalars(
+            select(StudentEntitlement).where(
+                StudentEntitlement.student_id == user.id,
+                StudentEntitlement.institution_id == user.institution_id,
+                StudentEntitlement.revoked_at.is_(None),
+            )
+        ).all()
+        for entitlement in entitlements:
+            if not entitlement.resource_id or not is_entitlement_active(entitlement):
+                continue
+            if entitlement.entitlement_type == EntitlementType.COURSE:
+                course_entitlements.add(entitlement.resource_id)
+            elif entitlement.entitlement_type == EntitlementType.LESSON:
+                lesson_entitlements.add(entitlement.resource_id)
+
+    for course in responses:
+        is_enrolled = course.id in enrolled_course_ids
+        course_is_free = float(course.price_egp or 0) == 0
+        has_course_entitlement = course.id in course_entitlements
+        for module in course.modules:
+            for lesson in module.lessons:
+                has_lesson_access = is_enrolled and (
+                    has_course_entitlement
+                    or lesson.id in lesson_entitlements
+                    or (course_is_free and float(lesson.price_egp or 0) == 0)
+                )
+                if not has_lesson_access:
+                    lesson.content = None
+                    lesson.video_asset_key = None
+    return responses
 
 
 @router.get("", response_model=PageResponse[CourseResponse])
@@ -38,7 +91,7 @@ def list_courses(
 ) -> PageResponse[CourseResponse]:
     courses, total = course_service.list_courses(db, user, page, page_size, search, sort)
     return PageResponse(
-        items=[CourseResponse.model_validate(course) for course in courses],
+        items=_safe_course_responses(db, user, courses),
         pagination=PageInfo(
             page=page,
             page_size=page_size,
@@ -54,7 +107,7 @@ def create_course(payload: CourseCreateRequest, user: CourseManager, db: Db) -> 
         course = course_service.create_course(db, user, payload)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return CourseResponse.model_validate(course)
+    return _safe_course_responses(db, user, [course])[0]
 
 
 @router.get("/{course_id}", response_model=CourseResponse)
@@ -62,7 +115,7 @@ def get_course(course_id: uuid.UUID, user: OptionalUser, db: Db) -> CourseRespon
     course = course_service.get_course(db, user, course_id)
     if course is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found")
-    return CourseResponse.model_validate(course)
+    return _safe_course_responses(db, user, [course])[0]
 
 
 @router.post("/{course_id}/publish", response_model=CourseResponse)
@@ -82,6 +135,8 @@ def enroll(course_id: uuid.UUID, user: Student, db: Db) -> EnrollmentResponse:
         enrollment = course_service.enroll(db, user, course_id)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
     return EnrollmentResponse.model_validate(enrollment)
 
 

@@ -1,4 +1,5 @@
 import React, { memo } from "react";
+import type { LucideIcon } from "lucide-react";
 import {
   Bell,
   BookOpen,
@@ -9,6 +10,7 @@ import {
   Layers,
   UploadCloud,
   Users,
+  WalletCards,
   X,
 } from "lucide-react";
 import { CurrentUser } from "../types/lms";
@@ -25,6 +27,8 @@ export type NavTab =
   | "StudentAnalytics"
   | "Notifications"
   | "Profile"
+  | "Payments"
+  | "PaymentManagement"
   | "Auth";
 
 interface SidebarProps {
@@ -49,32 +53,34 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
   const isStudent = currentUser.role === "student";
   const t = translations[lang];
 
-  const studentNavItems: Array<{ id: NavTab; label: string; sub: string; icon: any }> = [
+  const studentNavItems: Array<{ id: NavTab; label: string; sub: string; icon: LucideIcon }> = [
     { id: "GeneralHome", label: t.navHome, sub: t.navHomeSub, icon: LayoutDashboard },
     { id: "MyCourses", label: t.navMyCourses, sub: t.navMyCoursesSub, icon: BookOpen },
     { id: "MySubmissions", label: t.navMySubmissions, sub: t.navMySubmissionsSub, icon: CheckSquare },
+    { id: "Payments", label: lang === "ar" ? "الدفع والاشتراكات" : "Payments", sub: lang === "ar" ? "تفعيل الدروس والمساعد الذكي" : "Lessons and AI access", icon: WalletCards },
     { id: "Notifications", label: lang === "ar" ? "الإشعارات والمواعيد" : "Notifications & Alerts", sub: lang === "ar" ? "جدول إشعارات صفك والدروس" : "Class alerts & deadlines", icon: Bell },
   ];
 
-  const teacherNavItems: Array<{ id: NavTab; label: string; sub: string; icon: any }> = [
+  const teacherNavItems: Array<{ id: NavTab; label: string; sub: string; icon: LucideIcon }> = [
     { id: "LessonManagement", label: t.navLessonManagement, sub: t.navLessonManagementSub, icon: UploadCloud },
     { id: "AIKnowledgeCenter", label: lang === "ar" ? "مركز المعرفة الذكي" : "AI Knowledge Center", sub: lang === "ar" ? "مصادر وتغذية المنهج الذكي" : "Manage AI teaching sources", icon: BookOpen },
     { id: "QuizGen", label: lang === "ar" ? "صانع وسجل الاختبارات" : "Quizzes & History", sub: lang === "ar" ? "توليد، نشر، وأرشيف الاختبارات" : "Create, publish & quiz history", icon: FileQuestion },
     { id: "Submissions", label: t.navSubmissions, sub: t.navSubmissionsSub, icon: Layers },
     { id: "StudentAnalytics", label: t.navStudentAnalytics, sub: t.navStudentAnalyticsSub, icon: Users },
+    { id: "PaymentManagement", label: lang === "ar" ? "المدفوعات والتسعير" : "Payments & Pricing", sub: lang === "ar" ? "مراجعة التحويلات وتحديد الأسعار" : "Review payments and set prices", icon: WalletCards },
     { id: "Notifications", label: lang === "ar" ? "جدول مواعيد الإشعارات" : "Notification Schedules", sub: lang === "ar" ? "مواعيد الإرسال وجدول كل صف" : "Manage broadcast schedules", icon: Bell },
   ];
 
   const localizedYear =
     isStudent
       ? lang === "ar"
-        ? (currentUser as any).academicYearLabel || "الصف الأول الثانوي"
-        : (currentUser as any).academicYear === "2nd_secondary"
+        ? currentUser.academicYearLabel || "الصف الأول الثانوي"
+        : currentUser.academicYear === "2nd_secondary"
         ? "2nd Secondary Year"
-        : (currentUser as any).academicYear === "3rd_secondary"
+        : currentUser.academicYear === "3rd_secondary"
         ? "3rd Secondary Year"
         : "1st Secondary Year"
-      : (currentUser as any).subject || t.teacherRole;
+      : currentUser.subject || t.teacherRole;
 
   return (
     <>

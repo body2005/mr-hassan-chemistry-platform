@@ -92,7 +92,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
       <div
         className="landing-top-utility-bar"
         style={{
-          background: "linear-gradient(90deg, #09261c 0%, #0f392b 50%, #164f40 100%)",
+          background: "#0f392b",
           color: "#ffffff",
           padding: "8px 24px",
           fontSize: "12px",
@@ -731,7 +731,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
         style={{
           padding: "40px 24px 30px",
           textAlign: "center",
-          background: "linear-gradient(180deg, var(--bg-surface) 0%, var(--bg-primary) 100%)",
+          background: "var(--bg-primary)",
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
@@ -819,7 +819,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
           </p>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "22px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 320px), 1fr))", gap: "22px" }}>
           {courses.map((course) => (
             <div
               key={course.id}
@@ -1013,7 +1013,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
               </p>
             </div>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "20px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", gap: "20px" }}>
               {libraryMaterials.map((mat) => (
                 <div
                   key={mat.id}

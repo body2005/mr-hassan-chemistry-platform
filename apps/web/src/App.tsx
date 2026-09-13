@@ -1,23 +1,20 @@
 import { PageLoadingScreen } from "./components/PageLoadingScreen";
-import { lazy, Suspense, useEffect, useState, useCallback } from "react";
+import { lazy, Suspense, useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Sidebar, NavTab } from "./components/Sidebar";
 import { Header } from "./components/Header";
 import { FloatingAITutor } from "./components/FloatingAITutor";
 import { GlobalUploadWidget } from "./components/GlobalUploadWidget";
-import {
-  INITIAL_COURSES,
-  INITIAL_STUDENT_PROFILE,
-} from "./data/lmsStore";
 import { Course, CurrentUser, NotificationItem } from "./types/lms";
 import { Language } from "./utils/i18n";
 
-import { authService, courseService, notificationService } from "./services/lmsService";
+import { ApiClientError, authService, courseService, notificationService } from "./services/lmsService";
 import { useConfirm } from "./components/ConfirmWizard";
+import { PaymentTarget, StudentEntitlement, paymentService } from "./services/paymentService";
 
 // Views
 import { LandingPageView } from "./views/LandingPageView";
 // View chunk loaders for background prefetching & instant navigation
-export const viewLoaders = {
+const viewLoaders = {
   GeneralHome: () => import("./views/GeneralHomeView"),
   MyCourses: () => import("./views/MyCoursesView"),
   MySubmissions: () => import("./views/MySubmissionsView"),
@@ -28,9 +25,11 @@ export const viewLoaders = {
   StudentAnalytics: () => import("./views/StudentAnalyticsView"),
   Notifications: () => import("./views/NotificationsView"),
   Profile: () => import("./views/ProfileView"),
+  Payments: () => import("./views/PaymentView"),
+  PaymentManagement: () => import("./views/PaymentManagementView"),
 };
 
-export function preloadView(tabName: keyof typeof viewLoaders) {
+function preloadView(tabName: keyof typeof viewLoaders) {
   try {
     const loader = viewLoaders[tabName];
     if (loader) {
@@ -51,6 +50,8 @@ const SubmissionsView = lazy(() => viewLoaders.Submissions().then((m) => ({ defa
 const StudentAnalyticsView = lazy(() => viewLoaders.StudentAnalytics().then((m) => ({ default: m.StudentAnalyticsView })));
 const NotificationsView = lazy(() => viewLoaders.Notifications().then((m) => ({ default: m.NotificationsView })));
 const ProfileView = lazy(() => viewLoaders.Profile().then((m) => ({ default: m.ProfileView })));
+const PaymentView = lazy(() => viewLoaders.Payments().then((m) => ({ default: m.PaymentView })));
+const PaymentManagementView = lazy(() => viewLoaders.PaymentManagement().then((m) => ({ default: m.PaymentManagementView })));
 import { AuthView } from "./views/AuthView";
 
 const VALID_TABS = [
@@ -66,9 +67,22 @@ const VALID_TABS = [
   "StudentAnalytics",
   "Notifications",
   "Profile",
+  "Payments",
+  "PaymentManagement",
 ] as const;
 
 type AllTabs = (typeof VALID_TABS)[number];
+
+const STUDENT_TABS = new Set<AllTabs>(["GeneralHome", "MyCourses", "MySubmissions", "Notifications", "Payments", "Profile"]);
+const STAFF_TABS = new Set<AllTabs>(["LessonManagement", "AIKnowledgeCenter", "QuizGen", "Submissions", "StudentAnalytics", "Notifications", "PaymentManagement", "Profile"]);
+
+function homeTab(user: CurrentUser): AllTabs {
+  return user.role === "student" ? "GeneralHome" : "LessonManagement";
+}
+
+function tabAllowed(tab: AllTabs, user: CurrentUser): boolean {
+  return (user.role === "student" ? STUDENT_TABS : STAFF_TABS).has(tab);
+}
 
 function getTabFromHash(): AllTabs | null {
   const raw = window.location.hash.replace("#", "").trim().toLowerCase();
@@ -85,6 +99,7 @@ function App() {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isInitialRefresh, setIsInitialRefresh] = useState(true);
   const [authLoading, setAuthLoading] = useState(true);
+  const authSyncId = useRef(0);
 
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     const saved = localStorage.getItem("lms_theme");
@@ -104,8 +119,11 @@ function App() {
     return (saved as Language) || "ar";
   });
 
-  const [courses, setCourses] = useState<Course[]>(INITIAL_COURSES);
+  const [courses, setCourses] = useState<Course[]>([]);
   const [enrolledCourseIds, setEnrolledCourseIds] = useState<string[]>([]);
+  const [entitlements, setEntitlements] = useState<StudentEntitlement[]>([]);
+  const [checkoutTarget, setCheckoutTarget] = useState<PaymentTarget | null>(null);
+  const [aiAccessAllowed, setAiAccessAllowed] = useState(false);
 
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
 
@@ -121,10 +139,17 @@ function App() {
     }
 
     async function handleUserSync() {
-      const user = await authService.getCurrentUser();
-      setCurrentUser(user);
-      if (user) await handleNotificationsSync();
-      setAuthLoading(false);
+      const requestId = ++authSyncId.current;
+      try {
+        const user = await authService.getCurrentUser();
+        if (requestId !== authSyncId.current) return;
+        setCurrentUser(user);
+        if (user) await handleNotificationsSync();
+      } catch (error) {
+        console.error("Session verification error", error);
+      } finally {
+        if (requestId === authSyncId.current) setAuthLoading(false);
+      }
     }
 
     async function handleCoursesSync() {
@@ -159,7 +184,9 @@ function App() {
     try {
       const cached = typeof localStorage !== "undefined" ? localStorage.getItem("lms_cached_user") : null;
       user = cached ? (JSON.parse(cached) as CurrentUser) : null;
-    } catch {}
+    } catch {
+      user = null;
+    }
 
     const savedTab = typeof localStorage !== "undefined" ? localStorage.getItem("lms_active_tab") : null;
     if (user) {
@@ -180,19 +207,23 @@ function App() {
   const [menuOpen, setMenuOpen] = useState(false);
 
   // Navigate to Tab and push to Google Chrome history stack
-  const navigateToTab = useCallback((targetTab: AllTabs) => {
+  const navigateToTab = useCallback((requestedTab: AllTabs) => {
+    const targetTab = currentUser && requestedTab !== "Landing" && requestedTab !== "Auth" && !tabAllowed(requestedTab, currentUser)
+      ? homeTab(currentUser)
+      : requestedTab;
     setActiveTab(targetTab);
     localStorage.setItem("lms_active_tab", targetTab);
     const targetHash = `#${targetTab.toLowerCase()}`;
     if (window.location.hash.toLowerCase() !== targetHash) {
       window.location.hash = targetHash;
     }
-  }, []);
+  }, [currentUser]);
 
   useEffect(() => {
     if (currentUser && (activeTab === "Landing" || activeTab === "Auth")) {
-      const target = currentUser.role === "student" ? "GeneralHome" : "LessonManagement";
-      navigateToTab(target);
+      navigateToTab(homeTab(currentUser));
+    } else if (currentUser && !tabAllowed(activeTab, currentUser)) {
+      navigateToTab(homeTab(currentUser));
     }
   }, [currentUser, activeTab, navigateToTab]);
 
@@ -200,10 +231,10 @@ function App() {
   useEffect(() => {
     if (!currentUser) return;
 
-    const isTeacher = currentUser.role === "teacher";
-    const priorityList: Array<keyof typeof viewLoaders> = isTeacher
-      ? ["LessonManagement", "QuizGen", "StudentAnalytics", "AIKnowledgeCenter", "Submissions", "Notifications", "Profile", "GeneralHome", "MyCourses", "MySubmissions"]
-      : ["GeneralHome", "MyCourses", "MySubmissions", "Notifications", "Profile", "LessonManagement", "QuizGen", "StudentAnalytics", "AIKnowledgeCenter", "Submissions"];
+    const isStaff = currentUser.role !== "student";
+    const priorityList: Array<keyof typeof viewLoaders> = isStaff
+      ? ["LessonManagement", "QuizGen", "StudentAnalytics", "AIKnowledgeCenter", "Submissions", "PaymentManagement", "Notifications", "Profile"]
+      : ["GeneralHome", "MyCourses", "MySubmissions", "Payments", "Notifications", "Profile"];
 
     // Filter out current view since it is already rendered
     const viewsToPrefetch = priorityList.filter((tab) => tab !== activeTab);
@@ -224,7 +255,7 @@ function App() {
           .finally(() => {
             if (!isCancelled) {
               if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-                (window as any).requestIdleCallback(prefetchNext, { timeout: 1200 });
+                window.requestIdleCallback(prefetchNext, { timeout: 1200 });
               } else {
                 setTimeout(prefetchNext, 120);
               }
@@ -236,7 +267,7 @@ function App() {
     // Start background prefetch shortly after page mount (700ms)
     const timer = setTimeout(() => {
       if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-        (window as any).requestIdleCallback(prefetchNext, { timeout: 1500 });
+        window.requestIdleCallback(prefetchNext, { timeout: 1500 });
       } else {
         setTimeout(prefetchNext, 150);
       }
@@ -259,8 +290,11 @@ function App() {
     function handleChromeNavigation() {
       const match = getTabFromHash();
       if (match) {
-        setActiveTab(match);
-        localStorage.setItem("lms_active_tab", match);
+        const safeTab = currentUser && match !== "Landing" && match !== "Auth" && !tabAllowed(match, currentUser)
+          ? homeTab(currentUser)
+          : match;
+        setActiveTab(safeTab);
+        localStorage.setItem("lms_active_tab", safeTab);
       }
     }
 
@@ -271,7 +305,7 @@ function App() {
       window.removeEventListener("hashchange", handleChromeNavigation);
       window.removeEventListener("popstate", handleChromeNavigation);
     };
-  }, [activeTab]);
+  }, [activeTab, currentUser]);
 
   // Apply Theme & Direction to Document
   useEffect(() => {
@@ -287,17 +321,29 @@ function App() {
 
   // Load business data from the backend after the server session is known.
   useEffect(() => {
+    void courseService.getCourses().then(setCourses).catch(() => setCourses([]));
     if (!currentUser) {
-      setCourses([]);
       setEnrolledCourseIds([]);
+      setEntitlements([]);
       return;
     }
-    void courseService.getCourses().then(setCourses).catch(() => setCourses([]));
     if (currentUser.role === "student") {
       void courseService.getEnrolledCourseIds().then(setEnrolledCourseIds).catch(() => setEnrolledCourseIds([]));
+      void paymentService.getMyEntitlements().then(setEntitlements).catch(() => setEntitlements([]));
     } else {
       setEnrolledCourseIds([]);
+      setEntitlements([]);
     }
+  }, [currentUser]);
+
+  const refreshStudentAccess = useCallback(() => {
+    if (currentUser?.role !== "student") return;
+    void Promise.all([courseService.getEnrolledCourseIds(), paymentService.getMyEntitlements()])
+      .then(([enrollments, access]) => {
+        setEnrolledCourseIds(enrollments);
+        setEntitlements(access);
+      })
+      .catch(() => undefined);
   }, [currentUser]);
 
   function handleToggleTheme() {
@@ -313,6 +359,11 @@ function App() {
       const updated = await courseService.enrollCourse(courseId);
       setEnrolledCourseIds(updated);
     } catch (error) {
+      if (error instanceof ApiClientError && error.status === 402) {
+        setCheckoutTarget({ productType: "course", productId: courseId });
+        navigateToTab("Payments");
+        return;
+      }
       await confirm({
         title: "تعذر التسجيل في المقرر",
         message: error instanceof Error ? error.message : "حدث خطأ غير متوقع. حاول مرة أخرى.",
@@ -349,6 +400,7 @@ function App() {
     } catch {
       // Clear the local UI even if the session endpoint is temporarily unavailable.
     } finally {
+      authSyncId.current += 1;
       setCurrentUser(null);
       setAuthLoading(false);
       localStorage.removeItem("lms_session_token");
@@ -366,6 +418,32 @@ function App() {
     return enrolledCourseIds.includes(c.id);
   });
 
+  const activeEntitlements = useMemo(() => entitlements.filter((item) => item.active), [entitlements]);
+  const globalAIEntitlement = activeEntitlements.some((item) => item.entitlement_type === "ai_global");
+  const activeCourse = enrolledCoursesList[0];
+  const activeLesson = activeCourse?.lessons.find((lesson) => {
+    if (Number(activeCourse.price || 0) > 0) return activeEntitlements.some((item) => item.entitlement_type === "course" && item.resource_id === activeCourse.id);
+    return Number(lesson.price || 0) === 0 || activeEntitlements.some((item) => item.entitlement_type === "lesson" && item.resource_id === lesson.id);
+  });
+
+  useEffect(() => {
+    if (!currentUser) {
+      setAiAccessAllowed(false);
+      return;
+    }
+    if (currentUser.role !== "student") {
+      setAiAccessAllowed(true);
+      return;
+    }
+    if (!activeLesson) {
+      setAiAccessAllowed(globalAIEntitlement);
+      return;
+    }
+    void paymentService.getAIAccess(activeLesson.id)
+      .then((result) => setAiAccessAllowed(result.allowed))
+      .catch(() => setAiAccessAllowed(false));
+  }, [currentUser, activeLesson, globalAIEntitlement]);
+
   if (isInitialRefresh || (authLoading && !currentUser) || isLoggingIn) {
     return <PageLoadingScreen brandTitle="منصة الكيمياء التعليمية — مستر حسن شعبان" />;
   }
@@ -377,6 +455,7 @@ function App() {
         <AuthView
           initialTab={authInitialTab}
           onLoginSuccess={(user) => {
+            authSyncId.current += 1;
             setIsLoggingIn(true);
             setCurrentUser(user);
             const targetTab = user.role === "student" ? "GeneralHome" : "LessonManagement";
@@ -413,10 +492,12 @@ function App() {
       <Sidebar
         activeTab={activeTab as NavTab}
         onSelectTab={(tab) => navigateToTab(tab)}
-        onHoverTab={(tab) => preloadView(tab as any)}
+        onHoverTab={(tab) => {
+          if (tab in viewLoaders) preloadView(tab as keyof typeof viewLoaders);
+        }}
         menuOpen={menuOpen}
         onCloseMenu={() => setMenuOpen(false)}
-        currentUser={currentUser || INITIAL_STUDENT_PROFILE}
+        currentUser={currentUser}
         lang={lang}
       />
 
@@ -441,27 +522,32 @@ function App() {
         <Suspense fallback={<div className="page-container" style={{ minHeight: "60vh" }} />}>
           {/* Dynamic Route Views */}
           {/* Student Views */}
-          {activeTab === "GeneralHome" && (
+          {activeTab === "GeneralHome" && currentUser.role === "student" && (
           <GeneralHomeView
             courses={courses}
             enrolledCourseIds={enrolledCourseIds}
             onEnrollCourse={handleEnrollCourse}
             onNavigateToMyCourses={() => navigateToTab("MyCourses")}
-            currentUser={currentUser || INITIAL_STUDENT_PROFILE}
+            onCheckout={(target) => { setCheckoutTarget(target); navigateToTab("Payments"); }}
+            currentUser={currentUser}
             lang={lang}
           />
           )}
 
-          {activeTab === "MyCourses" && (
+          {activeTab === "MyCourses" && currentUser.role === "student" && (
           <MyCoursesView
             enrolledCourses={enrolledCoursesList}
             onNavigateToCatalog={() => navigateToTab("GeneralHome")}
             lang={lang}
-            currentUser={currentUser || INITIAL_STUDENT_PROFILE}
+            currentUser={currentUser}
+            purchasedLessonIds={activeEntitlements.filter((item) => item.entitlement_type === "lesson").map((item) => item.resource_id || "")}
+            onCheckout={(target) => { setCheckoutTarget(target); navigateToTab("Payments"); }}
           />
           )}
 
-          {activeTab === "MySubmissions" && <MySubmissionsView />}
+          {activeTab === "MySubmissions" && currentUser.role === "student" && (
+            <MySubmissionsView currentUser={currentUser} />
+          )}
 
         {/* Shared Notifications View */}
           {activeTab === "Notifications" && (
@@ -470,29 +556,41 @@ function App() {
             onMarkNotificationRead={handleMarkNotificationRead}
             onNavigateToTab={(tab) => navigateToTab(tab)}
             onAddNotification={handleAddNotification}
-            currentUser={currentUser || INITIAL_STUDENT_PROFILE}
+            currentUser={currentUser}
             lang={lang}
           />
           )}
 
         {/* Teacher Views */}
-          {activeTab === "LessonManagement" && (
+          {activeTab === "LessonManagement" && currentUser.role !== "student" && (
           <LessonManagementView
-            currentUser={currentUser || INITIAL_STUDENT_PROFILE}
+            currentUser={currentUser}
             courses={courses}
             onCoursesChanged={setCourses}
           />
           )}
 
-          {activeTab === "AIKnowledgeCenter" && (
+          {activeTab === "AIKnowledgeCenter" && currentUser.role !== "student" && (
             <AIKnowledgeCenterView lang={lang} />
           )}
 
-          {activeTab === "QuizGen" && <QuizGeneratorView courses={courses} />}
+          {activeTab === "QuizGen" && currentUser.role !== "student" && <QuizGeneratorView courses={courses} />}
 
-          {activeTab === "Submissions" && <SubmissionsView />}
+          {activeTab === "Submissions" && currentUser.role !== "student" && <SubmissionsView />}
 
-          {activeTab === "StudentAnalytics" && <StudentAnalyticsView />}
+          {activeTab === "StudentAnalytics" && currentUser.role !== "student" && <StudentAnalyticsView />}
+
+          {activeTab === "Payments" && currentUser.role === "student" && (
+            <PaymentView
+              courses={courses}
+              initialTarget={checkoutTarget}
+              onEntitlementsChanged={refreshStudentAccess}
+            />
+          )}
+
+          {activeTab === "PaymentManagement" && currentUser.role !== "student" && (
+            <PaymentManagementView courses={courses} onCoursesChanged={setCourses} />
+          )}
 
         {/* Full-Page Profile Route */}
           {activeTab === "Profile" && currentUser && (
@@ -507,14 +605,20 @@ function App() {
 
       {/* Floating AI Assistant FAB at Bottom-Left in Emerald */}
       <FloatingAITutor
-        currentCourseId={enrolledCoursesList[0]?.id || "chem-1st"}
-        currentCourseTitle={enrolledCoursesList[0]?.title || (lang === "ar" ? "الكيمياء — الصف الأول الثانوي" : "1st Secondary Chemistry")}
-        currentUser={currentUser || undefined}
+        currentCourseId={currentUser.role === "student" ? activeCourse?.id : courses[0]?.id}
+        currentLessonId={currentUser.role === "student" ? activeLesson?.id : undefined}
+        currentCourseTitle={(currentUser.role === "student" ? activeCourse?.title : courses[0]?.title) || (lang === "ar" ? "الكيمياء" : "Chemistry")}
+        currentUser={currentUser}
         lang={lang}
+        accessAllowed={aiAccessAllowed}
+        onRequestAccess={() => {
+          setCheckoutTarget({ productType: "ai_subscription" });
+          navigateToTab("Payments");
+        }}
       />
 
       {/* Global Background Upload Manager Widget - strictly for teachers only */}
-      {currentUser?.role === "teacher" && (
+      {currentUser?.role !== "student" && (
         <GlobalUploadWidget currentUser={currentUser} menuOpen={menuOpen} />
       )}
     </div>

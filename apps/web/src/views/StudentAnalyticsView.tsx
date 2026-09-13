@@ -81,7 +81,7 @@ export const StudentAnalyticsView: React.FC = () => {
     setCustomColumns(customColumns.filter((c) => c.id !== colId));
   }
 
-  function handleUpdateCustomValue(studentId: string, colId: string, value: any) {
+  function handleUpdateCustomValue(studentId: string, colId: string, value: unknown) {
     setStudents((prev) =>
       prev.map((s) => {
         if (s.id === studentId) {
@@ -118,7 +118,7 @@ export const StudentAnalyticsView: React.FC = () => {
       `${s.homeworkSuccessRate}%`,
       `${s.quizSuccessRate}%`,
       s.lastActiveDate,
-      ...yearCustomCols.map((c) => s.customFieldValues[c.id] ?? "—"),
+      ...yearCustomCols.map((c) => String(s.customFieldValues[c.id] ?? "—")),
     ]);
 
     const yearLabel =
@@ -232,14 +232,14 @@ export const StudentAnalyticsView: React.FC = () => {
       {/* Year Selection */}
       <div style={{ display: "flex", gap: "8px", marginBottom: "20px", flexWrap: "wrap", alignItems: "center" }}>
         <span style={{ fontSize: "13px", fontWeight: 800, color: "var(--text-main)", marginInlineEnd: "4px" }}>السنة الدراسية:</span>
-        {[
+        {([
           { id: "1st_secondary", label: "الأول الثانوي" },
           { id: "2nd_secondary", label: "الثاني الثانوي" },
           { id: "3rd_secondary", label: "الثالث الثانوي" },
-        ].map((y) => (
+        ] as const).map((y) => (
           <button
             key={y.id}
-            onClick={() => setSelectedYear(y.id as any)}
+            onClick={() => setSelectedYear(y.id)}
             style={{
               padding: "8px 16px",
               borderRadius: "8px",
@@ -261,7 +261,7 @@ export const StudentAnalyticsView: React.FC = () => {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+          gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))",
           gap: "16px",
           marginBottom: "24px",
           alignItems: "stretch",
@@ -548,7 +548,7 @@ export const StudentAnalyticsView: React.FC = () => {
                       ) : (
                         <input
                           type="text"
-                          value={student.customFieldValues[col.id] || ""}
+                          value={String(student.customFieldValues[col.id] ?? "")}
                           onChange={(e) => handleUpdateCustomValue(student.id, col.id, e.target.value)}
                           placeholder="—"
                           style={{ width: "120px", padding: "4px 8px", border: "1px solid var(--border-color)", borderRadius: "6px", fontSize: "12px", textAlign: "center", background: "var(--bg-surface)", color: "var(--text-main)" }}

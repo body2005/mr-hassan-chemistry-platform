@@ -56,7 +56,7 @@ def readiness_check(db: Annotated[Session, Depends(get_db)]) -> ReadinessRespons
         # Redis is not required for the synchronous auth/course slice, but its state is visible.
         pass
 
-    if settings.app_env == "production" and dependencies["redis"] != "ok":
+    if settings.redis_required and dependencies["redis"] != "ok":
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
@@ -66,7 +66,7 @@ def readiness_check(db: Annotated[Session, Depends(get_db)]) -> ReadinessRespons
         )
 
     return ReadinessResponse(
-        status="ready" if dependencies["redis"] == "ok" else "degraded",
+        status="ready" if dependencies["redis"] == "ok" or not settings.redis_required else "degraded",
         service=settings.app_name,
         environment=settings.app_env,
         dependencies=dependencies,

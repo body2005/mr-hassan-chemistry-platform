@@ -102,13 +102,13 @@ class StudentRiskEngine:
         scaler = StandardScaler()
 
         if model_type == "logistic_regression":
-            base_clf = LogisticRegression(C=0.5, penalty="l2", random_state=42)
+            base_clf = LogisticRegression(C=0.5, random_state=42)
         elif model_type == "random_forest":
             base_clf = RandomForestClassifier(n_estimators=50, max_depth=3, random_state=42)
         elif model_type == "xgboost":
             base_clf = xgb.XGBClassifier(n_estimators=40, max_depth=2, learning_rate=0.05, random_state=42, eval_metric="logloss")
         else:
-            base_clf = LogisticRegression(C=0.8, penalty="l2", random_state=42)
+            base_clf = LogisticRegression(C=0.8, random_state=42)
 
         pipeline = Pipeline([
             ("imputer", imputer),
@@ -118,9 +118,32 @@ class StudentRiskEngine:
 
         pipeline.fit(X[FEATURE_COLUMNS], y)
 
-        # Calibrate probabilities
-        calibrated = CalibratedClassifierCV(estimator=pipeline, method="sigmoid", cv="prefit")
-        calibrated.fit(X[FEATURE_COLUMNS], y)
+        # Integer cross-validation is supported across scikit-learn releases and
+        # avoids the removed ``cv='prefit'`` behavior in recent versions.
+        class_counts = np.bincount(np.asarray(y, dtype=int))
+        minority_count = int(class_counts[class_counts > 0].min())
+        if minority_count >= 2:
+            calibrated = CalibratedClassifierCV(
+                estimator=pipeline,
+                method="sigmoid",
+                cv=min(5, minority_count),
+            )
+            calibrated.fit(X[FEATURE_COLUMNS], y)
+        else:
+            try:
+                from sklearn.frozen import FrozenEstimator
+
+                calibrated = CalibratedClassifierCV(
+                    estimator=FrozenEstimator(pipeline),
+                    method="sigmoid",
+                )
+            except ImportError:
+                calibrated = CalibratedClassifierCV(
+                    estimator=pipeline,
+                    method="sigmoid",
+                    cv="prefit",
+                )
+            calibrated.fit(X[FEATURE_COLUMNS], y)
 
         self._pipeline = pipeline
         self._calibrated_model = calibrated
@@ -185,11 +208,24 @@ class StudentRiskEngine:
             pipe = Pipeline([
                 ("imputer", SimpleImputer(strategy="median")),
                 ("scaler", StandardScaler()),
-                ("clf", LogisticRegression(C=0.5, penalty="l2", random_state=42))
+                ("clf", LogisticRegression(C=0.5, random_state=42))
             ])
             pipe.fit(X_train, y_train)
 
-            cal_cv = CalibratedClassifierCV(estimator=pipe, method="sigmoid", cv="prefit")
+            try:
+                from sklearn.frozen import FrozenEstimator
+
+                cal_cv = CalibratedClassifierCV(
+                    estimator=FrozenEstimator(pipe),
+                    method="sigmoid",
+                )
+            except ImportError:
+                # Compatibility with scikit-learn releases predating FrozenEstimator.
+                cal_cv = CalibratedClassifierCV(
+                    estimator=pipe,
+                    method="sigmoid",
+                    cv="prefit",
+                )
             cal_cv.fit(X_train, y_train)
 
             val_probs = cal_cv.predict_proba(X_val)[:, 1]

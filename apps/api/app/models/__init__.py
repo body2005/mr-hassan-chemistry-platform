@@ -18,6 +18,7 @@ from app.models.platform import (
     RevokedSession,
 )
 from app.models.progress import LessonProgress, VideoEvent
+from app.models.payment import PaymentOrder, StudentEntitlement
 from app.models.user import PasswordResetToken, User
 from app.models.extended import (
     AIJob,
@@ -83,6 +84,8 @@ __all__ = [
     "PasswordResetToken",
     "LessonProgress",
     "VideoEvent",
+    "PaymentOrder",
+    "StudentEntitlement",
     "AIInvocation",
     "Assignment",
     "AssignmentAttempt",

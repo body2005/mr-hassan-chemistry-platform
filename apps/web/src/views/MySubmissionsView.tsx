@@ -1,19 +1,53 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
+  AlertCircle,
   Award,
   Download,
   FileSpreadsheet,
   FileText,
   Printer,
   Sparkles,
+  Loader2,
 } from "lucide-react";
-import { AssignmentSubmission } from "../types/lms";
-import { INITIAL_SUBMISSIONS } from "../data/lmsStore";
+import { AssignmentSubmission, CurrentUser } from "../types/lms";
+import { submissionService } from "../services/lmsService";
 import { exportToCsv, exportToDocx, exportToPrintPdf } from "../utils/exportEngine";
 
-export const MySubmissionsView: React.FC = () => {
-  const [submissions] = useState<AssignmentSubmission[]>(INITIAL_SUBMISSIONS.slice(0, 2));
+export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ currentUser }) => {
+  const [submissions, setSubmissions] = useState<AssignmentSubmission[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false);
+  const averageScore = useMemo(() => {
+    const graded = submissions.filter((item) => item.maxScore > 0 && item.finalScore >= 0);
+    if (!graded.length) return 0;
+    return Math.round(
+      graded.reduce((sum, item) => sum + (item.finalScore / item.maxScore) * 100, 0) /
+        graded.length,
+    );
+  }, [submissions]);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError(null);
+    void submissionService.getStudentSubmissions()
+      .then((items) => {
+        if (active) setSubmissions(items);
+      })
+      .catch((requestError: unknown) => {
+        if (active) {
+          setSubmissions([]);
+          setError(requestError instanceof Error ? requestError.message : "تعذر تحميل التسليمات");
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   function getExportPayload() {
     const headers = ["عنوان الواجب", "الدرس", "تاريخ التسليم", "درجة الـ AI", "الدرجة النهائية", "ملاحظات المعلم"];
@@ -27,14 +61,14 @@ export const MySubmissionsView: React.FC = () => {
     ]);
 
     return {
-      title: "كشف درجات وواجبات الطالب: عمر زيدان عبد الرحمن",
-      subtitle: "الصف الأول الثانوي • مادة الكيمياء",
+      title: `كشف درجات وواجبات الطالب: ${currentUser.name}`,
+      subtitle: "منصة الكيمياء التعليمية",
       headers,
       rows,
       summaryStats: [
         { label: "إجمالي الواجبات المسلمة", value: submissions.length },
-        { label: "متوسط الدرجات", value: "90%" },
-        { label: "حالة التقييم", value: "معتمد من المعلم" },
+        { label: "متوسط الدرجات", value: `${averageScore}%` },
+        { label: "المعتمد من المعلم", value: submissions.filter((item) => item.status === "approved").length },
       ],
     };
   }
@@ -118,7 +152,16 @@ export const MySubmissionsView: React.FC = () => {
       </div>
 
       {/* Submissions List */}
-      <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      {loading && (
+        <div className="empty-state"><Loader2 size={22} className="spin" /> جاري تحميل تسليماتك...</div>
+      )}
+      {!loading && error && (
+        <div className="empty-state" role="alert"><AlertCircle size={22} /> {error}</div>
+      )}
+      {!loading && !error && submissions.length === 0 && (
+        <div className="empty-state">لا توجد واجبات مسلّمة حتى الآن.</div>
+      )}
+      {!loading && !error && <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
         {submissions.map((sub) => (
           <div
             key={sub.id}
@@ -130,7 +173,7 @@ export const MySubmissionsView: React.FC = () => {
               boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
             }}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "12px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "12px", flexWrap: "wrap", gap: "12px" }}>
               <div>
                 <span style={{ fontSize: "11px", fontWeight: 800, color: "#0f392b", background: "#ecfdf5", padding: "3px 8px", borderRadius: "6px" }}>
                   {sub.academicYearLabel} • {sub.submittedAt}
@@ -161,7 +204,7 @@ export const MySubmissionsView: React.FC = () => {
             </div>
 
             {/* AI Rubric Feedback & Teacher Note */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: "12px" }}>
               <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", padding: "12px", borderRadius: "8px", fontSize: "12px" }}>
                 <strong style={{ display: "flex", alignItems: "center", gap: "4px", color: "#166534", marginBottom: "4px" }}>
                   <Sparkles size={14} /> ملاحظات المصحح الذكي (AI):
@@ -176,13 +219,13 @@ export const MySubmissionsView: React.FC = () => {
                   <Award size={14} /> تعليق المعلم:
                 </strong>
                 <p style={{ margin: 0, color: "#1e293b", lineHeight: "1.4" }}>
-                  {sub.teacherFeedback || "إجابة ممتازة وخطوات واضحة."}
+                  {sub.teacherFeedback || "لم يضف المعلم تعليقًا بعد."}
                 </p>
               </div>
             </div>
           </div>
         ))}
-      </div>
+      </div>}
     </div>
   );
 };

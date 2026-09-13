@@ -15,6 +15,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -75,6 +76,7 @@ class Course(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=False,
     )
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    price_egp: Mapped[float] = mapped_column(Numeric(10, 2), default=0, nullable=False)
 
     institution = relationship("Institution", back_populates="courses")
     teacher = relationship("User", back_populates="taught_courses")
@@ -125,6 +127,7 @@ class Lesson(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     indexed_chunks_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     transcript_text: Mapped[str | None] = mapped_column(Text)
     rag_synced: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    price_egp: Mapped[float] = mapped_column(Numeric(10, 2), default=0, nullable=False)
 
     module = relationship("CourseModule", back_populates="lessons")
 

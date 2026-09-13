@@ -12,6 +12,7 @@ import {
   Trash2,
   TrendingUp,
   X,
+  LockKeyhole,
 } from "lucide-react";
 import { AIChatMessage, AIChatSession, CurrentUser } from "../types/lms";
 import { aiClient } from "../services/aiClient";
@@ -23,15 +24,21 @@ import { normalizeFormulaText, containsFormulaOrMath } from "../utils/formulaUti
 interface FloatingAITutorProps {
   currentCourseId?: string;
   currentCourseTitle?: string;
+  currentLessonId?: string;
   currentUser?: CurrentUser;
   lang?: Language;
+  accessAllowed?: boolean;
+  onRequestAccess?: () => void;
 }
 
 export const FloatingAITutor: React.FC<FloatingAITutorProps> = ({
   currentCourseId = "course_active",
   currentCourseTitle = "المقرر الدراسي",
+  currentLessonId,
   currentUser,
   lang = "ar",
+  accessAllowed = true,
+  onRequestAccess,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -43,7 +50,7 @@ export const FloatingAITutor: React.FC<FloatingAITutorProps> = ({
   const t = translations[lang];
   const confirm = useConfirm();
 
-  const isTeacher = currentUser?.role === "teacher";
+  const isTeacher = Boolean(currentUser && currentUser.role !== "student");
   const displayName = currentUser?.name || (isTeacher ? "المعلم" : "يا بطل");
 
   const defaultGreetingSession: AIChatSession = {
@@ -145,6 +152,10 @@ export const FloatingAITutor: React.FC<FloatingAITutorProps> = ({
   async function handleSend(customText?: string) {
     const text = (customText || input).trim();
     if (!text || loading) return;
+    if (!accessAllowed || (!isTeacher && !currentLessonId)) {
+      onRequestAccess?.();
+      return;
+    }
 
     const userMsg: AIChatMessage = {
       id: `usr_${Date.now()}`,
@@ -173,7 +184,8 @@ export const FloatingAITutor: React.FC<FloatingAITutorProps> = ({
     try {
       const resp = await aiClient.chatWithTutor({
         course_id: currentCourseId,
-        student_id: currentUser?.id || "std_user_101",
+        lesson_id: currentLessonId,
+        student_id: currentUser?.id || "",
         user_role: currentUser?.role || "student",
         user_name: currentUser?.name || (isTeacher ? "المعلم" : "الطالب"),
         session_id: activeSession.id,
@@ -198,13 +210,14 @@ export const FloatingAITutor: React.FC<FloatingAITutorProps> = ({
         );
         return withAssistant;
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : "تعذر الاتصال بالخادم";
       const errMsg: AIChatMessage = {
         id: `err_${Date.now()}`,
         role: "assistant",
         content: lang === "ar"
-          ? `عذراً، حدث خطأ أثناء الاتصال بالمعلم الذكي: ${err.message || "تأكد من تشغيل السيرفر"}.`
-          : `Sorry, an error occurred communicating with AI Tutor: ${err.message || "Ensure server is running"}.`,
+          ? `عذراً، حدث خطأ أثناء الاتصال بالمعلم الذكي: ${errorMessage}.`
+          : `Sorry, an error occurred communicating with AI Tutor: ${errorMessage}.`,
         timestamp: "Error",
       };
       setSessions((prev) => {
@@ -224,15 +237,14 @@ export const FloatingAITutor: React.FC<FloatingAITutorProps> = ({
       {!isOpen && (
         <button
           className="floating-ai-fab"
-          onClick={() => setIsOpen(true)}
+          onClick={() => accessAllowed ? setIsOpen(true) : onRequestAccess?.()}
           aria-label="Open AI Assistant"
           style={{
-            background: isTeacher ? "linear-gradient(135deg, #0f392b 0%, #1e3a8a 100%)" : "linear-gradient(135deg, #059669 0%, #0f392b 100%)",
-            boxShadow: "0 6px 20px rgba(5, 150, 105, 0.4)",
+            background: "#047857",
           }}
         >
-          <Sparkles size={18} />
-          <span className="floating-ai-text">{isTeacher ? "مساعد المعلم الذكي" : "المساعد الذكي"}</span>
+          {accessAllowed ? <Sparkles size={18} /> : <LockKeyhole size={18} />}
+          <span className="floating-ai-text">{accessAllowed ? (isTeacher ? "مساعد المعلم الذكي" : "المساعد الذكي") : "فعّل المساعد الذكي"}</span>
         </button>
       )}
 
@@ -240,23 +252,9 @@ export const FloatingAITutor: React.FC<FloatingAITutorProps> = ({
       {isOpen && (
         <div className={`ai-chat-window ${isFullscreen ? "fullscreen" : ""}`}>
           {/* Header */}
-          <div className="chat-header" style={{ background: isTeacher ? "linear-gradient(135deg, #0f392b 0%, #1e3a8a 100%)" : "linear-gradient(135deg, #0f392b 0%, #065f46 100%)" }}>
+          <div className="chat-header" style={{ background: "#0f392b" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <div
-                style={{
-                  width: "34px",
-                  height: "34px",
-                  borderRadius: "10px",
-                  background: isTeacher ? "#dbeafe" : "#dcfce7",
-                  color: isTeacher ? "#1e3a8a" : "#0f392b",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
-                }}
-              >
-                {isTeacher ? <TrendingUp size={18} /> : <Sparkles size={18} />}
-              </div>
+              {isTeacher ? <TrendingUp size={20} /> : <Sparkles size={20} />}
               <div>
                 <strong style={{ fontSize: "14px", display: "block" }}>
                   {isTeacher ? `مساعد المعلم الذكي - ${displayName}` : "المساعد الذكي"}

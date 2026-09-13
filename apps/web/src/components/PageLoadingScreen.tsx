@@ -38,7 +38,7 @@ export const PageLoadingScreen: React.FC<PageLoadingScreenProps> = ({
         position: "fixed",
         inset: 0,
         width: "100vw",
-        height: "100vh",
+        height: "100dvh",
         backgroundColor: bgColor,
         display: "flex",
         flexDirection: "column",

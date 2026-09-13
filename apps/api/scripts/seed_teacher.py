@@ -6,7 +6,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.database import SessionLocal, engine
-from app.core.security import hash_password
+from app.core.security import hash_password, verify_password
 from app.models import Base
 from app.models.institution import Institution
 from app.models.user import User, UserRole
@@ -36,6 +36,7 @@ def _seed_account(
     password: str,
     role: UserRole,
     reset_password: bool,
+    ensure_password_matches: bool = False,
     label: str,
 ) -> None:
     existing = db.query(User).filter(
@@ -52,7 +53,13 @@ def _seed_account(
             existing.is_active = True
             existing.deleted_at = None
             changed = True
-        if reset_password:
+        if existing.username != username:
+            existing.username = username
+            changed = True
+        if existing.display_name != display_name:
+            existing.display_name = display_name
+            changed = True
+        if reset_password or (ensure_password_matches and not verify_password(password, existing.password_hash)):
             existing.password_hash = hash_password(password)
             changed = True
         if changed:
@@ -136,6 +143,7 @@ def seed() -> None:
             password=demo_teacher_password,
             role=UserRole.TEACHER,
             reset_password=reset_demo_passwords,
+            ensure_password_matches=True,
             label="Demo teacher",
         )
         _seed_account(
@@ -147,8 +155,20 @@ def seed() -> None:
             password=demo_student_password,
             role=UserRole.STUDENT,
             reset_password=reset_demo_passwords,
+            ensure_password_matches=True,
             label="Demo student",
         )
+
+        for email, password in (
+            (os.getenv("DEMO_TEACHER_EMAIL", "teacher@demo.com").strip().lower(), demo_teacher_password),
+            (os.getenv("DEMO_STUDENT_EMAIL", "student@demo.com").strip().lower(), demo_student_password),
+        ):
+            seeded = db.query(User).filter(
+                User.institution_id == demo_institution.id,
+                User.email == email,
+            ).first()
+            if not seeded or not verify_password(password, seeded.password_hash):
+                raise RuntimeError(f"Demo credential reconciliation failed for {email}")
 
 
 if __name__ == "__main__":

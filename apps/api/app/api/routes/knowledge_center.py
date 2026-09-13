@@ -9,7 +9,6 @@ source indexing status, document inspection, reindexing, deletion, and knowledge
 from __future__ import annotations
 
 import hashlib
-import inspect
 import os
 import shutil
 import tempfile
@@ -30,7 +29,7 @@ from app.api.dependencies import CurrentUser, get_current_user, require_roles
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.rate_limit import enforce_rate_limit
-from app.models.course import Course, Lesson
+from app.models.course import Course, CourseModule, Lesson
 from app.models.platform import Question
 from app.models.knowledge_center import (
     AssessmentQuestion,
@@ -66,6 +65,7 @@ from app.services.knowledge_center_service import (
 from app.services.knowledge_retriever import search_knowledge_base
 from app.services.ai_access_policy import can_access_course_knowledge, enforce_ai_access
 from app.services.exam_processing import relink_answer_key, validate_assessment_question
+from app.services.payment_service import can_access_lesson_content
 
 router = APIRouter(prefix="/knowledge-center", tags=["knowledge-center"], dependencies=[Depends(get_current_user)])
 Db = Annotated[Session, Depends(get_db)]
@@ -174,29 +174,37 @@ def _parse_uuid(id_str: str | None) -> uuid.UUID | None:
         return None
     try:
         return uuid.UUID(str(id_str))
-    except Exception:
-        return uuid.uuid5(uuid.NAMESPACE_DNS, str(id_str))
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 def _resolve_course_uuid(db: Session, user: User, course_id: str | None) -> uuid.UUID:
     course_uuid = _parse_uuid(course_id)
+    if course_id and not course_uuid:
+        raise HTTPException(status_code=400, detail="Invalid course ID")
     if course_uuid:
-        existing = db.scalar(select(Course).where(Course.id == course_uuid))
-        if existing:
-            return existing.id
+        stmt = select(Course).where(Course.id == course_uuid)
+        if user.role != UserRole.PLATFORM_ADMIN:
+            stmt = stmt.where(Course.institution_id == user.institution_id)
+        existing = db.scalar(stmt)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Course not found")
+        if user.role == UserRole.TEACHER and existing.teacher_id != user.id:
+            raise HTTPException(status_code=404, detail="Course not found")
+        return existing.id
 
-    # Try by user's institution
-    default_course = db.scalar(select(Course).where(Course.institution_id == user.institution_id))
+    stmt = select(Course)
+    if user.role != UserRole.PLATFORM_ADMIN:
+        stmt = stmt.where(Course.institution_id == user.institution_id)
+    if user.role == UserRole.TEACHER:
+        stmt = stmt.where(Course.teacher_id == user.id)
+    default_course = db.scalar(stmt.order_by(Course.created_at.asc()))
     if default_course:
         return default_course.id
 
-    # Try any course in system
-    default_course = db.scalar(select(Course))
-    if default_course:
-        return default_course.id
-
-    # Auto-create if no course exists at all
     from app.models.course import CourseStatus
+    if user.role == UserRole.PLATFORM_ADMIN:
+        raise HTTPException(status_code=404, detail="No course exists")
     new_course = Course(
         institution_id=user.institution_id,
         teacher_id=user.id,
@@ -211,30 +219,22 @@ def _resolve_course_uuid(db: Session, user: User, course_id: str | None) -> uuid
     return new_course.id
 
 
-
-def _get_active_user(db: Session, user: User | None) -> User:
-    if user:
-        return user
-    # Fallback demo teacher for testing without auth headers
-    demo_teacher = db.query(User).filter(User.username == "demo_teacher_kc").first()
-    if not demo_teacher:
-        from app.models.institution import Institution
-        inst = db.query(Institution).first()
-        if not inst:
-            inst = Institution(name="مؤسسة مركز المعرفة الذكية", slug="demo_inst_kc")
-            db.add(inst)
-            db.commit()
-        demo_teacher = User(
-            institution_id=inst.id,
-            username="demo_teacher_kc",
-            email="teacher_demo_kc@lms.edu",
-            password_hash="hash",
-            display_name="مستر حسن شعبان",
-            role=UserRole.TEACHER,
-        )
-        db.add(demo_teacher)
-        db.commit()
-    return demo_teacher
+def _resolve_lesson_uuid(
+    db: Session, course_id: uuid.UUID, lesson_id: str | None
+) -> uuid.UUID | None:
+    if not lesson_id:
+        return None
+    lesson_uuid = _parse_uuid(lesson_id)
+    if not lesson_uuid:
+        raise HTTPException(status_code=400, detail="Invalid lesson ID")
+    lesson = db.scalar(
+        select(Lesson)
+        .join(CourseModule, Lesson.module_id == CourseModule.id)
+        .where(Lesson.id == lesson_uuid, CourseModule.course_id == course_id)
+    )
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found in this course")
+    return lesson.id
 
 
 def _get_kc_temp_dir() -> str:
@@ -295,6 +295,20 @@ def _get_source_for_user(db: Session, source_id: uuid.UUID | None, user: User) -
     source = db.get(KnowledgeSource, source_id) if source_id else None
     if not source or (user.role != UserRole.PLATFORM_ADMIN and source.institution_id != user.institution_id):
         raise HTTPException(status_code=404, detail="Source not found")
+    if user.role == UserRole.TEACHER:
+        course = db.get(Course, source.course_id)
+        if not course or course.teacher_id != user.id:
+            raise HTTPException(status_code=404, detail="Source not found")
+    if user.role == UserRole.STUDENT:
+        if source.source_role == SourceRole.ASSESSMENT:
+            raise HTTPException(status_code=404, detail="Source not found")
+        allowed = (
+            can_access_lesson_content(db, user, source.lesson_id)
+            if source.lesson_id
+            else can_access_course_knowledge(db, user, source.course_id)
+        )
+        if not allowed:
+            raise HTTPException(status_code=403, detail="Course access denied")
     return source
 
 
@@ -340,7 +354,7 @@ async def upload_knowledge_source(
     max_file_bytes = settings.max_file_size_mb * 1024 * 1024
 
     course_uuid = _resolve_course_uuid(db, user, course_id)
-    lesson_uuid = _parse_uuid(lesson_id)
+    lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
 
     tmp_dir = _get_kc_temp_dir()
     safe_name = sanitize_source_filename(file.filename or "uploaded_file")
@@ -412,7 +426,7 @@ async def upload_knowledge_sources_batch(
     max_batch_bytes = settings.max_batch_size_mb * 1024 * 1024
 
     course_uuid = _resolve_course_uuid(db, user, course_id)
-    lesson_uuid = _parse_uuid(lesson_id)
+    lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
 
     # Correction 3: Atomic Staged Operation
     tmp_base = _get_kc_temp_dir()
@@ -508,12 +522,10 @@ async def upload_knowledge_sources_batch(
 def list_knowledge_sources(
     request: Request,
     db: Db,
-    user: CurrentUser = None,
+    user: TeacherOrAdmin,
     course_id: str | None = None,
     lesson_id: str | None = None,
 ) -> list[KnowledgeSourceResponse]:
-    if user is None:
-        user = _get_active_user(db, None)
     stmt = select(KnowledgeSource)
     if user.role != UserRole.PLATFORM_ADMIN:
         stmt = stmt.where(KnowledgeSource.institution_id == user.institution_id)
@@ -561,6 +573,7 @@ def list_knowledge_sources(
 async def mark_sources_interrupted(
     request: Request,
     db: Db,
+    user: TeacherOrAdmin,
 ) -> dict[str, Any]:
     """Marks sources in PROCESSING or QUEUED state as FAILED when site is closed or client disconnects."""
     try:
@@ -575,7 +588,10 @@ async def mark_sources_interrupted(
     for sid in source_ids:
         suuid = _parse_uuid(sid)
         if suuid:
-            src = db.get(KnowledgeSource, suuid)
+            stmt = select(KnowledgeSource).where(KnowledgeSource.id == suuid)
+            if user.role != UserRole.PLATFORM_ADMIN:
+                stmt = stmt.where(KnowledgeSource.institution_id == user.institution_id)
+            src = db.scalar(stmt)
             if src and src.status in (SourceStatus.PROCESSING, SourceStatus.QUEUED):
                 src.status = SourceStatus.FAILED
                 src.error_message = "فشل الفهرسة: تم إغلاق الموقع أثناء المعالجة."
@@ -826,10 +842,8 @@ def reindex_source(source_id: str, db: Db, background_tasks: BackgroundTasks, us
 
 
 @router.post("/sources/{source_id}/stop-indexing")
-def stop_indexing_source(source_id: str, db: Db, user: TeacherOrAdmin = None) -> dict[str, Any]:
+def stop_indexing_source(source_id: str, db: Db, user: TeacherOrAdmin) -> dict[str, Any]:
     """Stops source indexing gracefully without deleting the file from server storage."""
-    if user is None:
-        user = _get_active_user(db, None)
     s_uuid = _parse_uuid(source_id)
     if not s_uuid:
         raise HTTPException(status_code=400, detail="Invalid source ID")
@@ -946,13 +960,11 @@ def stream_source_page_image(
     page_number: int,
     db: Db,
     background_tasks: BackgroundTasks,
-    user: CurrentUser = None,
+    user: CurrentUser,
     scale: float = 1.3,
 ) -> FileResponse:
     from fastapi.responses import FileResponse
 
-    if user is None:
-        user = _get_active_user(db, None)
     s_uuid = _parse_uuid(source_id)
     source = _get_source_for_user(db, s_uuid, user)
     if not os.path.exists(source.storage_path):

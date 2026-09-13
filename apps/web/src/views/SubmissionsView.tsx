@@ -116,7 +116,7 @@ export const SubmissionsView: React.FC = () => {
         s.academicYearLabel,
         `${(s.assignmentSubmissionRatio * 100).toFixed(0)}%`,
         isBelowMin ? "تنبيه: تحت المعدل الأدنى" : "منتظم ومستقر",
-        ...yearCustomCols.map((c) => s.customFieldValues[c.id] ?? "—"),
+        ...yearCustomCols.map((c) => String(s.customFieldValues[c.id] ?? "—")),
       ];
     });
 
@@ -371,7 +371,7 @@ export const SubmissionsView: React.FC = () => {
                       ) : (
                         <input
                           type="text"
-                          value={student.customFieldValues[col.id] || ""}
+                          value={String(student.customFieldValues[col.id] ?? "")}
                           onChange={(e) => handleUpdateCustomValue(student.id, col.id, e.target.value)}
                           placeholder="—"
                           style={{ width: "120px", padding: "4px 8px", border: "1px solid var(--border-color)", borderRadius: "6px", fontSize: "12px", textAlign: "center", background: "var(--bg-surface)", color: "var(--text-main)" }}

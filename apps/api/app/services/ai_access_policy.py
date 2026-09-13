@@ -10,7 +10,8 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.course import Course, Enrollment, EnrollmentStatus
+from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus, Lesson
+from app.services.payment_service import has_course_entitlement
 from app.models.platform import (
     AssignmentAttempt,
     AssignmentAttemptStatus,
@@ -74,13 +75,13 @@ def evaluate_ai_access(db: Session, user: User) -> AIAccessDecision:
 def can_access_course_knowledge(db: Session, user: User, course_id: uuid.UUID) -> bool:
     course = db.get(Course, course_id)
     if not course:
-        return True
+        return False
     if user.role == UserRole.PLATFORM_ADMIN:
         return True
+    if course.institution_id != user.institution_id:
+        return False
     if user.role in {UserRole.TEACHER, UserRole.INSTITUTION_ADMIN}:
-        return True
-    if course.institution_id == user.institution_id:
-        return True
+        return user.role == UserRole.INSTITUTION_ADMIN or course.teacher_id == user.id
     is_enrolled = db.scalar(
         select(Enrollment.id).where(
             Enrollment.course_id == course_id,
@@ -88,9 +89,19 @@ def can_access_course_knowledge(db: Session, user: User, course_id: uuid.UUID) -
             Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
         )
     )
-    if is_enrolled is not None:
+    if is_enrolled is None:
+        return False
+    if has_course_entitlement(db, user, course_id):
         return True
-    return True
+    if float(course.price_egp or 0) > 0:
+        return False
+    paid_lesson = db.scalar(
+        select(Lesson.id)
+        .join(CourseModule, Lesson.module_id == CourseModule.id)
+        .where(CourseModule.course_id == course_id, Lesson.price_egp > 0)
+        .limit(1)
+    )
+    return paid_lesson is None
 
 
 def enforce_ai_access(

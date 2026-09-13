@@ -46,19 +46,35 @@ def upgrade() -> None:
     for table in ("knowledge_assets", "knowledge_units_records", "knowledge_question_records", "assessment_questions"):
         op.add_column(table, sa.Column("outline_node_id", sa.UUID(), nullable=True))
         op.create_index(f"ix_{table}_outline_node_id", table, ["outline_node_id"])
-        op.create_foreign_key(
-            f"fk_{table}_outline_node_id_knowledge_outline_nodes",
-            table,
-            "knowledge_outline_nodes",
-            ["outline_node_id"],
-            ["id"],
-            ondelete="SET NULL",
-        )
+        constraint_name = f"fk_{table}_outline_node_id_knowledge_outline_nodes"
+        if op.get_bind().dialect.name == "sqlite":
+            with op.batch_alter_table(table) as batch_op:
+                batch_op.create_foreign_key(
+                    constraint_name,
+                    "knowledge_outline_nodes",
+                    ["outline_node_id"],
+                    ["id"],
+                    ondelete="SET NULL",
+                )
+        else:
+            op.create_foreign_key(
+                constraint_name,
+                table,
+                "knowledge_outline_nodes",
+                ["outline_node_id"],
+                ["id"],
+                ondelete="SET NULL",
+            )
 
 
 def downgrade() -> None:
     for table in ("assessment_questions", "knowledge_question_records", "knowledge_units_records", "knowledge_assets"):
-        op.drop_constraint(f"fk_{table}_outline_node_id_knowledge_outline_nodes", table, type_="foreignkey")
+        constraint_name = f"fk_{table}_outline_node_id_knowledge_outline_nodes"
+        if op.get_bind().dialect.name == "sqlite":
+            with op.batch_alter_table(table) as batch_op:
+                batch_op.drop_constraint(constraint_name, type_="foreignkey")
+        else:
+            op.drop_constraint(constraint_name, table, type_="foreignkey")
         op.drop_index(f"ix_{table}_outline_node_id", table_name=table)
         op.drop_column(table, "outline_node_id")
 

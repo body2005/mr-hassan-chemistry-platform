@@ -410,14 +410,14 @@ def test_instant_page_streaming_and_caching(db, test_setup):
 
     # Test list_knowledge_sources includes total_pages
     fake_request = Request({"type": "http", "method": "GET", "url": "http://testserver/api/v1/knowledge-center/sources", "headers": []})
-    source_list = list_knowledge_sources(request=fake_request, db=db, course_id=str(course.id))
+    source_list = list_knowledge_sources(request=fake_request, user=teacher, db=db, course_id=str(course.id))
     found = next((s for s in source_list if s.id == str(source.id)), None)
     assert found is not None
     assert found.total_pages is not None
 
     # Test page streaming endpoint
     bg_tasks = BackgroundTasks()
-    resp = stream_source_page_image(source_id=str(source.id), page_number=1, db=db, background_tasks=bg_tasks)
+    resp = stream_source_page_image(source_id=str(source.id), page_number=1, user=teacher, db=db, background_tasks=bg_tasks)
     assert resp.media_type.startswith("image/")
     assert resp.status_code == 200
 
@@ -445,7 +445,7 @@ def test_stop_indexing_preserves_file(db, test_setup):
     assert os.path.exists(source.storage_path)
 
     # Call stop_indexing_source
-    res = stop_indexing_source(source_id=str(source.id), db=db)
+    res = stop_indexing_source(source_id=str(source.id), user=teacher, db=db)
     assert res["status"] == "ok"
 
     # File must still exist on the server!

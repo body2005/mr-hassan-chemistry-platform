@@ -85,6 +85,7 @@ def create_course(db: Session, user: User, payload: CourseCreateRequest) -> Cour
         title=payload.title.strip(),
         description=payload.description.strip() if payload.description else None,
         status=CourseStatus.DRAFT,
+        price_egp=payload.price_egp,
     )
     db.add(course)
     db.commit()
@@ -118,6 +119,11 @@ def enroll(db: Session, user: User, course_id: uuid.UUID) -> Enrollment:
     )
     if course is None:
         raise LookupError("Published course not found")
+    if float(course.price_egp or 0) > 0:
+        from app.services.payment_service import has_course_entitlement
+
+        if not has_course_entitlement(db, user, course.id):
+            raise PermissionError("Payment is required before enrolling in this course")
 
     existing = db.scalar(
         select(Enrollment).where(

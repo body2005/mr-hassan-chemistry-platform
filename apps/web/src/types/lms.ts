@@ -121,6 +121,7 @@ export interface Course {
   totalDurationFormatted: string;
   lessons: VideoLesson[];
   enrolledStudentsCount: number;
+  price?: number;
 }
 
 export interface NotificationSchedule {
@@ -176,7 +177,7 @@ export interface StudentRecord {
   lastActiveDate: string;
   isBlocked?: boolean;
   watchHistory: StudentVideoWatchLog[];
-  customFieldValues: Record<string, any>;
+  customFieldValues: Record<string, unknown>;
 }
 
 export interface AssignmentSubmission {

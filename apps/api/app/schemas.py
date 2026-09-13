@@ -91,6 +91,7 @@ class CourseCreateRequest(BaseModel):
     description: str | None = Field(default=None, max_length=10_000)
     status: CourseStatus = CourseStatus.DRAFT
     teacher_id: uuid.UUID | None = None
+    price_egp: float = Field(default=0, ge=0, le=1_000_000)
 
 
 class ModuleCreateRequest(BaseModel):
@@ -105,6 +106,7 @@ class LessonCreateRequest(BaseModel):
     content: str | None = Field(default=None, max_length=100_000)
     video_asset_key: str | None = Field(default=None, max_length=512)
     video_duration_seconds: int | None = Field(default=None, ge=1, le=24 * 60 * 60)
+    price_egp: float = Field(default=0, ge=0, le=1_000_000)
 
 
 class LessonResponse(BaseModel):
@@ -121,6 +123,7 @@ class LessonResponse(BaseModel):
     indexing_error: str | None = None
     indexed_chunks_count: int = 0
     rag_synced: bool = False
+    price_egp: float = 0
 
 
 class ModuleResponse(BaseModel):
@@ -145,6 +148,7 @@ class CourseResponse(BaseModel):
     published_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    price_egp: float = 0
     modules: list[ModuleResponse] = []
 
 
@@ -426,6 +430,11 @@ class AssignmentSubmissionResponse(BaseModel):
     submitted_at: datetime
     graded_at: datetime | None
     approved_at: datetime | None
+    assignment_title: str | None = None
+    assignment_prompt: str | None = None
+    max_score: float | None = None
+    course_title: str | None = None
+    student_name: str | None = None
 
 
 class GradeSubmissionRequest(BaseModel):

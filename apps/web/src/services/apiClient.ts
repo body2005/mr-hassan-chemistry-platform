@@ -1,4 +1,16 @@
 const API_BASE_URL = (import.meta.env.VITE_API_URL || "/api/v1").replace(/\/$/, "");
+let sessionInvalidationDispatched = false;
+
+export function apiUrl(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  if (normalized.startsWith("/api/v1/")) {
+    const marker = API_BASE_URL.indexOf("/api/v1");
+    const apiOrigin = marker >= 0 ? API_BASE_URL.slice(0, marker) : "";
+    return `${apiOrigin}${normalized}`;
+  }
+  return `${API_BASE_URL}${normalized}`;
+}
 
 type ApiErrorBody = {
   error?: { code?: string; message?: string };
@@ -21,6 +33,23 @@ export interface ApiRequestInit extends RequestInit {
   timeoutMs?: number;
 }
 
+export async function fetchApiBlob(path: string): Promise<Blob> {
+  const headers = new Headers();
+  const token = authToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  let response: Response;
+  try {
+    response = await fetch(apiUrl(path), { headers, credentials: "include" });
+  } catch (error) {
+    throw new ApiClientError("NETWORK_ERROR", "Unable to reach the API", 0, { cause: error });
+  }
+  if (!response.ok) {
+    if (response.status === 401) clearStaleSession(path);
+    throw new ApiClientError(`HTTP_${response.status}`, `Request failed (${response.status})`, response.status);
+  }
+  return response.blob();
+}
+
 function csrfToken(): string | undefined {
   if (typeof document === "undefined") return undefined;
   const raw = document.cookie.split(";").map((v) => v.trim()).find((v) => v.startsWith("matgar_csrf="));
@@ -34,11 +63,14 @@ function authToken(): string | undefined {
 
 function clearStaleSession(path: string): void {
   if (path === "/auth/login" || path === "/auth/register") return;
+  const hadSession = typeof localStorage !== "undefined"
+    && Boolean(localStorage.getItem("lms_session_token") || localStorage.getItem("lms_cached_user"));
   if (typeof localStorage !== "undefined") {
     localStorage.removeItem("lms_session_token");
     localStorage.removeItem("lms_cached_user");
   }
-  if (typeof window !== "undefined") {
+  if (hadSession && !sessionInvalidationDispatched && typeof window !== "undefined") {
+    sessionInvalidationDispatched = true;
     window.dispatchEvent(new Event("lms_user_updated"));
   }
 }
@@ -71,7 +103,7 @@ export async function apiRequest<T>(path: string, init: ApiRequestInit = {}): Pr
 
   let response: Response;
   try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
+    response = await fetch(apiUrl(path), {
       ...requestInit,
       headers,
       credentials: "include",
@@ -106,6 +138,9 @@ export async function apiRequest<T>(path: string, init: ApiRequestInit = {}): Pr
     if (response.status === 401) clearStaleSession(path);
     throw new ApiClientError(code, message, response.status);
   }
+  if (path === "/auth/login" || path === "/auth/register") {
+    sessionInvalidationDispatched = false;
+  }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
@@ -126,7 +161,7 @@ export function uploadWithProgress<T>(
         console.error("onXhrCreated callback error", err);
       }
     }
-    xhr.open("POST", `${API_BASE_URL}${path}`);
+    xhr.open("POST", apiUrl(path));
     xhr.withCredentials = true;
     if (timeoutMs > 0) xhr.timeout = timeoutMs;
     const csrf = csrfToken();
@@ -159,13 +194,16 @@ export function uploadWithProgress<T>(
         let code = `HTTP_${xhr.status}`;
         try {
           if (xhr.responseText && xhr.responseText.trim()) {
-            const err = JSON.parse(xhr.responseText);
+            const err = JSON.parse(xhr.responseText) as {
+              detail?: string | Array<string | { msg?: string }> | { message?: string };
+              error?: { message?: string; code?: string };
+            };
             if (err.detail) {
               if (typeof err.detail === "string") {
                 msg = err.detail;
               } else if (Array.isArray(err.detail)) {
-                msg = err.detail.map((d: any) => (typeof d === "string" ? d : d.msg || JSON.stringify(d))).join(", ");
-              } else if (err.detail.message) {
+                msg = err.detail.map((d) => (typeof d === "string" ? d : d.msg || JSON.stringify(d))).join(", ");
+              } else if (typeof err.detail === "object" && err.detail.message) {
                 msg = err.detail.message;
               }
             } else if (err.error?.message) {

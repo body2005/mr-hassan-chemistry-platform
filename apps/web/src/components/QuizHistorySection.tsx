@@ -196,7 +196,7 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
       {/* Top Banner & Stats */}
       <div
         style={{
-          background: "linear-gradient(135deg, #064e3b 0%, #0f392b 100%)",
+          background: "#0f392b",
           borderRadius: "16px",
           padding: "24px",
           color: "#ffffff",
@@ -463,7 +463,7 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
           {/* Sort By */}
           <select
             value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as any)}
+            onChange={(e) => setSortBy(e.target.value as "newest" | "points" | "questions")}
             style={{
               padding: "9px 12px",
               borderRadius: "10px",
@@ -863,7 +863,7 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "center",
-                background: "linear-gradient(135deg, #064e3b 0%, #0f392b 100%)",
+                background: "#0f392b",
                 color: "#ffffff",
               }}
             >

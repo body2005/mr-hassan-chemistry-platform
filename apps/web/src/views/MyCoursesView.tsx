@@ -31,6 +31,7 @@ import { courseService } from "../services/lmsService";
 import { apiRequest } from "../services/apiClient";
 import { useToast } from "../components/ToastProvider";
 import { FormulaRenderer } from "../components/FormulaRenderer";
+import { PaymentTarget } from "../services/paymentService";
 
 export interface CourseAssignment {
   id: string;
@@ -74,6 +75,8 @@ interface MyCoursesViewProps {
   onNavigateToCatalog: () => void;
   lang: Language;
   currentUser?: CurrentUser;
+  purchasedLessonIds?: string[];
+  onCheckout: (target: PaymentTarget) => void;
 }
 
 export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
@@ -81,6 +84,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   onNavigateToCatalog,
   lang,
   currentUser,
+  purchasedLessonIds = [],
+  onCheckout,
 }) => {
   const t = translations[lang];
   const toast = useToast();
@@ -110,12 +115,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   // Track purchased revision IDs
   const [purchasedRevisionIds] = useState<string[]>([]);
 
-  // Track purchased individual lesson IDs
-  const [purchasedLessonIds] = useState<string[]>([]);
-
   function handleBuyLesson(lesson: VideoLesson) {
-    void lesson;
-    toast({ message: "لا يمكن تفعيل المحتوى المدفوع من المتصفح. يجب إتمام عملية الدفع عبر الخادم.", tone: "warning" });
+    onCheckout({ productType: "lesson", productId: lesson.id });
   }
 
   const [activeBookModal, setActiveBookModal] = useState<EducationalBookItem | null>(null);
@@ -172,12 +173,12 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       setStudentAIAnswer(null);
       setStudentAIQuestion("");
     }
-  }, [activeLessonModal?.id]);
+  }, [activeLessonModal]);
 
   function seekVideoToTime(sec: number) {
     if (videoElementRef.current) {
       videoElementRef.current.currentTime = sec;
-      videoElementRef.current.play().catch(() => {});
+      videoElementRef.current.play().catch(() => undefined);
     }
   }
 
@@ -189,8 +190,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       const res = await courseService.askAIAboutLesson(activeLessonModal.id, studentAIQuestion.trim());
       setStudentAIAnswer(res.answer);
       setStudentAICitations(res.citations || []);
-    } catch (err: any) {
-      setStudentAIAnswer("تعذر الحصول على إجابة حالياً: " + (err?.message || "يرجى المحاولة لاحقاً"));
+    } catch (err: unknown) {
+      setStudentAIAnswer("تعذر الحصول على إجابة حالياً: " + (err instanceof Error ? err.message : "يرجى المحاولة لاحقاً"));
     } finally {
       setIsAskingAI(false);
     }
@@ -542,11 +543,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               </p>
             </div>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "20px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 320px), 1fr))", gap: "20px" }}>
               {courseLessons.map((lesson, idx) => {
                 const isCompleted = completedLessonIds.includes(lesson.id);
-                const price = lesson.price !== undefined ? lesson.price : 50;
-                const isPurchased = !isStudent || price === 0 || purchasedLessonIds.includes(lesson.id);
+                const price = Number(lesson.price || 0);
+                const isPurchased = !isStudent || Number(activeCourse?.price || 0) > 0 || price === 0 || purchasedLessonIds.includes(lesson.id);
 
                 return (
                   <div
@@ -554,9 +555,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     style={{
                       background: "var(--bg-surface)",
                       border: isPurchased ? "1px solid var(--border-color)" : "1.5px dashed #059669",
-                      borderRadius: "16px",
+                      borderRadius: "12px",
                       overflow: "hidden",
-                      boxShadow: "var(--card-shadow)",
+                      boxShadow: "none",
                       display: "flex",
                       flexDirection: "column",
                       justifyContent: "space-between",
@@ -568,9 +569,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       onClick={() => (isPurchased ? setActiveLessonModal(lesson) : handleBuyLesson(lesson))}
                       style={{
                         height: "150px",
-                        background: isPurchased
-                          ? "linear-gradient(135deg, #0f392b 0%, #1e293b 100%)"
-                          : "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
+                        background: isPurchased ? "#0f392b" : "#1e293b",
                         padding: "16px",
                         display: "flex",
                         flexDirection: "column",
@@ -589,7 +588,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       </div>
 
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        <div style={{ width: "48px", height: "48px", borderRadius: "50%", background: "rgba(255,255,255,0.9)", color: "#0f392b", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 14px rgba(0,0,0,0.3)" }}>
+                        <div style={{ width: "48px", height: "48px", borderRadius: "50%", background: "rgba(255,255,255,0.9)", color: "#0f392b", display: "flex", alignItems: "center", justifyContent: "center" }}>
                           {isPurchased ? (
                             <Play size={22} fill="#0f392b" style={{ marginInlineStart: "2px" }} />
                           ) : (
@@ -689,7 +688,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               </button>
             </div>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))", gap: "20px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 330px), 1fr))", gap: "20px" }}>
               {allRevisions
                 .filter((r) => purchasedRevisionIds.includes(r.id))
                 .map((rev) => (
@@ -707,7 +706,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     }}
                   >
                     {/* Header */}
-                    <div style={{ background: "linear-gradient(135deg, #09261c 0%, #1e3a8a 100%)", padding: "20px", color: "white" }}>
+                    <div style={{ background: "#0f392b", padding: "20px", color: "white" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
                         <span style={{ background: "#059669", padding: "3px 10px", borderRadius: "6px", fontSize: "11px", fontWeight: 800 }}>
                           ورشة مراجعة مفعلة
@@ -757,7 +756,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                           fontWeight: 800,
                           fontSize: "13px",
                           gap: "6px",
-                          background: "linear-gradient(135deg, #059669 0%, #0f392b 100%)",
+                          background: "#047857",
                         }}
                       >
                         <Zap size={15} />
@@ -805,7 +804,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                           setShowManualAssignmentForm(false);
                           setManualAssignmentTitle("");
                           setManualAssignmentPrompt("");
-                        } catch (e) { toast({ message: "تعذر إنشاء الواجب", tone: "danger" }); }
+                        } catch { toast({ message: "تعذر إنشاء الواجب", tone: "danger" }); }
                         setManualCreationLoading(false);
                       }}>حفظ</button>
                     </div>
@@ -815,7 +814,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             )}
           </div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: "20px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 340px), 1fr))", gap: "20px" }}>
             {courseAssignments.map((asg) => {
               const isSubmitted = !!submittedAssignmentIds[asg.id];
               const timeInfo = getTimeStatus(asg.availableFrom, asg.dueDate, isSubmitted);
@@ -963,7 +962,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                           setShowManualQuizForm(false);
                           setManualQuizTitle("");
                           setManualQuizQuestion("");
-                        } catch (e) { toast({ message: "تعذر إنشاء الكويز", tone: "danger" }); }
+                        } catch { toast({ message: "تعذر إنشاء الكويز", tone: "danger" }); }
                         setManualCreationLoading(false);
                       }}>حفظ</button>
                     </div>
@@ -973,7 +972,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             )}
           </div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: "20px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 340px), 1fr))", gap: "20px" }}>
             {courseQuizzes.map((quiz) => {
               const isCompleted = !!completedQuizzes[quiz.id];
               const timeInfo = getTimeStatus(quiz.availableFrom, quiz.dueDate, isCompleted);
@@ -1115,7 +1114,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               </button>
             </div>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "20px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 320px), 1fr))", gap: "20px" }}>
               {allBooks
                 .filter((b) => purchasedBookIds.includes(b.id))
                 .map((book) => (
@@ -1172,7 +1171,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                           fontWeight: 800,
                           fontSize: "13px",
                           gap: "6px",
-                          background: "linear-gradient(135deg, #059669 0%, #0f392b 100%)",
+                          background: "#047857",
                         }}
                       >
                         <Download size={15} />

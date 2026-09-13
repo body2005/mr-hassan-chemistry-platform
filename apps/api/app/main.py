@@ -2,6 +2,8 @@ import os
 import secrets
 import time
 import uuid
+import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +16,33 @@ from app.core.metrics import record_request
 from app.core.rate_limit import enforce_rate_limit
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Resume interrupted indexing without using deprecated startup events."""
+    from sqlalchemy import select
+    from app.api.routes.knowledge_center import _LOCAL_INGEST_EXECUTOR, _run_bg_process_source
+    from app.core.database import SessionLocal
+    from app.models.knowledge_center import KnowledgeSource, SourceStatus
+
+    try:
+        with SessionLocal() as db:
+            interrupted_ids = list(
+                db.scalars(
+                    select(KnowledgeSource.id).where(
+                        KnowledgeSource.status.in_([SourceStatus.PROCESSING, SourceStatus.QUEUED])
+                    )
+                ).all()
+            )
+        for source_id in interrupted_ids:
+            _LOCAL_INGEST_EXECUTOR.submit(_run_bg_process_source, source_id)
+        if interrupted_ids:
+            logger.info("Queued %s interrupted indexing task(s) for resume", len(interrupted_ids))
+    except Exception:
+        logger.exception("Unable to resume interrupted indexing tasks at startup")
+    yield
 
 app = FastAPI(
     title=settings.app_name,
@@ -21,6 +50,7 @@ app = FastAPI(
     version="0.1.0",
     docs_url="/docs" if settings.app_env != "production" else None,
     redoc_url=None,
+    lifespan=lifespan,
 )
 
 from app.core.errors import install_error_handlers
@@ -130,8 +160,7 @@ async def security_middleware(request, call_next):
     try:
         response = await call_next(request)
     except Exception as exc:
-        import logging
-        logging.getLogger("matgar.server").exception("Unhandled error processing request %s: %s", request_id, exc)
+        logger.exception("Unhandled error processing request %s: %s", request_id, exc)
         err_res = JSONResponse(
             status_code=500,
             content={"error": {"code": "INTERNAL_SERVER_ERROR", "message": "An internal server error occurred"}, "request_id": request_id},
@@ -184,29 +213,6 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 app.include_router(api_router, prefix=settings.api_v1_prefix)
 install_error_handlers(app)
-
-
-@app.on_event("startup")
-def resume_interrupted_indexing() -> None:
-    """Resume interrupted sources through the same bounded ingestion executor."""
-    from app.core.database import SessionLocal
-    from app.models.knowledge_center import KnowledgeSource, SourceStatus
-    from app.api.routes.knowledge_center import _LOCAL_INGEST_EXECUTOR, _run_bg_process_source
-    from sqlalchemy import select
-
-    try:
-        with SessionLocal() as db:
-            interrupted = db.scalars(
-                select(KnowledgeSource).where(
-                    KnowledgeSource.status.in_([SourceStatus.PROCESSING, SourceStatus.QUEUED])
-                )
-            ).all()
-            if interrupted:
-                print(f"[startup] Found {len(interrupted)} indexing task(s) to resume in background.")
-                for source in interrupted:
-                    _LOCAL_INGEST_EXECUTOR.submit(_run_bg_process_source, source.id)
-    except Exception as exc:
-        print(f"[startup] resume_interrupted_indexing notice: {exc}")
 
 
 @app.get("/", include_in_schema=False)

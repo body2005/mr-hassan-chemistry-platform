@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { Course, CurrentUser, StudentProfile } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
+import { PaymentTarget } from "../services/paymentService";
 
 export interface EducationalBookItem {
   id: string;
@@ -47,6 +48,7 @@ interface GeneralHomeViewProps {
   enrolledCourseIds: string[];
   onEnrollCourse: (courseId: string) => void;
   onNavigateToMyCourses: () => void;
+  onCheckout: (target: PaymentTarget) => void;
   currentUser: CurrentUser;
   lang: Language;
 }
@@ -56,6 +58,7 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
   enrolledCourseIds,
   onEnrollCourse,
   onNavigateToMyCourses,
+  onCheckout,
   currentUser,
   lang,
 }) => {
@@ -126,7 +129,7 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
       {notificationBanner && (
         <div
           style={{
-            background: "linear-gradient(135deg, #059669 0%, #0f392b 100%)",
+            background: "#047857",
             color: "white",
             padding: "14px 20px",
             borderRadius: "12px",
@@ -134,7 +137,7 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
-            boxShadow: "0 4px 14px rgba(5, 150, 105, 0.3)",
+            border: "1px solid #059669",
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "14px", fontWeight: 700 }}>
@@ -285,7 +288,7 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
               <p style={{ margin: 0, fontSize: "13px" }}>سيتم عرض المقررات الدراسية فور رفعها ونشرها من قبل المعلم.</p>
             </div>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))", gap: "18px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 330px), 1fr))", gap: "18px" }}>
               {availableCourses.map((course) => {
               const isEnrolled = enrolledCourseIds.includes(course.id);
               const yearLabel =
@@ -302,18 +305,18 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
                   style={{
                     background: "var(--bg-surface)",
                     border: isEnrolled ? "2px solid #059669" : "1px solid var(--border-color)",
-                    borderRadius: "16px",
+                    borderRadius: "12px",
                     overflow: "hidden",
                     display: "flex",
                     flexDirection: "column",
-                    boxShadow: "var(--card-shadow)",
+                    boxShadow: "none",
                     transition: "all 0.2s ease",
                   }}
                 >
                   {/* Header Banner with Video Lesson Preview/Thumbnail Snippet */}
                   <div
                     style={{
-                      background: "linear-gradient(135deg, #09261c 0%, #0f392b 100%)",
+                      background: "#0f392b",
                       padding: "18px 20px",
                       color: "white",
                       position: "relative",
@@ -357,7 +360,7 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
                           style={{
                             position: "absolute",
                             inset: 0,
-                            background: "linear-gradient(180deg, rgba(9, 38, 28, 0.68) 0%, rgba(15, 57, 43, 0.88) 100%)",
+                            background: "rgba(9, 38, 28, 0.78)",
                           }}
                         />
                       </div>
@@ -417,9 +420,7 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
                       </p>
 
                       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px" }}>
-                        <div style={{ width: "32px", height: "32px", borderRadius: "50%", background: "var(--bg-accent)", color: "#059669", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          <GraduationCap size={16} />
-                        </div>
+                        <GraduationCap size={18} color="#059669" />
                         <div>
                           <strong style={{ fontSize: "13px", display: "block", color: "var(--text-main)" }}>{course.teacherName}</strong>
                           <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>{course.teacherTitle}</span>
@@ -450,7 +451,9 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
                     ) : (
                       <button
                         className="btn-primary"
-                        onClick={() => onEnrollCourse(course.id)}
+                        onClick={() => Number(course.price || 0) > 0
+                          ? onCheckout({ productType: "course", productId: course.id })
+                          : onEnrollCourse(course.id)}
                         style={{
                           width: "100%",
                           justifyContent: "center",
@@ -462,7 +465,7 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
                         }}
                       >
                         <Plus size={15} />
-                        <span>اشترك في المقرر الكامل</span>
+                        <span>{Number(course.price || 0) > 0 ? `شراء المقرر — ${Number(course.price).toLocaleString("ar-EG")} ج.م` : "الانضمام مجانًا"}</span>
                       </button>
                     )}
                   </div>
@@ -505,7 +508,7 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
               <p style={{ margin: 0, fontSize: "13px" }}>سيتم إضافة المذكرات والكتب المعتمدة فور نشرها وتفعيلها.</p>
             </div>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))", gap: "18px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 330px), 1fr))", gap: "18px" }}>
               {availableBooks.map((book) => {
                 const isPurchased = purchasedBookIds.includes(book.id);
 
@@ -618,7 +621,7 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
                             fontSize: "13px",
                             fontWeight: 800,
                             gap: "6px",
-                            background: "linear-gradient(135deg, #059669 0%, #0f392b 100%)",
+                            background: "#047857",
                           }}
                         >
                           <ShoppingBag size={15} />
@@ -665,7 +668,7 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
               <p style={{ margin: 0, fontSize: "13px" }}>سيتم إضافة ورش المراجعة ومعسكرات التدريب فور نشرها من قبل المعلم.</p>
             </div>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))", gap: "18px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 330px), 1fr))", gap: "18px" }}>
               {availableRevisions.map((rev) => {
                 const isPurchased = purchasedRevisionIds.includes(rev.id);
 
@@ -687,7 +690,7 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
                     {/* Header */}
                     <div
                       style={{
-                        background: "linear-gradient(135deg, #09261c 0%, #1e3a8a 100%)",
+                        background: "#0f392b",
                         padding: "20px",
                         color: "white",
                         position: "relative",
@@ -774,7 +777,7 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
                             fontSize: "13px",
                             fontWeight: 800,
                             gap: "6px",
-                            background: "linear-gradient(135deg, #059669 0%, #0f392b 100%)",
+                            background: "#047857",
                           }}
                         >
                           <Zap size={15} />

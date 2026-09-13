@@ -150,14 +150,16 @@ export const AuthView: React.FC<AuthViewProps> = ({
 
   return (
     <div
+      className="auth-page-shell"
       style={{
         width: "100vw",
-        minHeight: "100vh",
-        height: "100vh",
+        minHeight: "100dvh",
+        height: "100dvh",
         margin: 0,
         padding: 0,
         position: "relative",
-        overflow: "hidden",
+        overflowX: "hidden",
+        overflowY: "auto",
         backgroundColor: "var(--bg-surface)",
       }}
     >
@@ -662,7 +664,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                   </label>
                   <select
                     value={regYear}
-                    onChange={(e) => setRegYear(e.target.value as any)}
+                    onChange={(e) => setRegYear(e.target.value as "1st_secondary" | "2nd_secondary" | "3rd_secondary")}
                     style={{
                       width: "100%",
                       padding: "9px 12px",
@@ -785,7 +787,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
             [isRtl ? "left" : "right"]: 0,
             width: "50%",
             height: "100%",
-            background: "linear-gradient(135deg, #09261c 0%, #0f392b 50%, #164f40 100%)",
+            background: "#0f392b",
             color: "#ffffff",
             padding: "60px 48px 30px",
             display: "flex",

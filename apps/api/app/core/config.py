@@ -52,6 +52,17 @@ class Settings(BaseSettings):
     max_request_size_mb: int = Field(default=1000, ge=50, le=4096)
     multipart_overhead_mb: int = Field(default=10, ge=1, le=100)
     max_concurrent_ingestions: int = Field(default=1, ge=1, le=8)
+    redis_required: bool = False
+    student_ai_access_mode: str = Field(
+        default="paid_content_or_subscription",
+        pattern=r"^(open|subscription_only|included_with_content|paid_content_or_subscription)$",
+    )
+    student_ai_monthly_price_egp: float = Field(default=99, ge=1, le=1_000_000)
+    student_ai_subscription_days: int = Field(default=30, ge=1, le=366)
+    payment_instapay_account: str | None = None
+    payment_vodafone_cash_number: str | None = None
+    payment_bank_details: str | None = None
+    payment_receipt_max_mb: int = Field(default=10, ge=1, le=25)
 
     @property
     def secure_cookies(self) -> bool:

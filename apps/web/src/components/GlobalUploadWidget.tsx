@@ -142,7 +142,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
 
   const isMobile = windowWidth < 640;
   // Sidebar width is defined as --sidebar-width: 280px in index.css.
-  // When sidebar is open on tablet/desktop, shift widget right by sidebar width + 24px clean gap.
+  // With the RTL sidebar open, a larger right offset visibly moves the widget left.
   // On mobile (<640px), the sidebar is a full overlay; keep widget visible at bottom-left so it
   // doesn't overlap the drawer and remains accessible.
   const SIDEBAR_WIDTH = 280; // matches --sidebar-width in .sidebar CSS
@@ -181,9 +181,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
             gap: "10px",
             padding: "10px 16px",
             borderRadius: "30px",
-            background: activeTasks.length > 0
-              ? "linear-gradient(135deg, #065f46 0%, #0f392b 100%)"
-              : "#0f172a",
+            background: activeTasks.length > 0 ? "#0f392b" : "#0f172a",
             color: "#ffffff",
             border: "1.5px solid rgba(255,255,255,0.2)",
             boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
@@ -242,7 +240,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
           <div
             style={{
               padding: "12px 16px",
-              background: "linear-gradient(135deg, #0f392b 0%, #1e3a8a 100%)",
+              background: "#0f392b",
               color: "#ffffff",
               display: "flex",
               justifyContent: "space-between",
@@ -451,9 +449,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                           style={{
                             height: "100%",
                             width: `${task.progress}%`,
-                            background: isProcessing
-                              ? "linear-gradient(90deg, #3b82f6, #06b6d4)"
-                              : "linear-gradient(90deg, #10b981, #059669)",
+                            background: isProcessing ? "#2563eb" : "#059669",
                             borderRadius: "3px",
                             transition: "width 0.2s ease",
                           }}

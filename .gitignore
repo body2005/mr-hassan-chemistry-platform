@@ -19,6 +19,7 @@ cookies.txt
 node_modules/
 dist/
 .vercel
+*.tsbuildinfo
 
 # Uploaded media & regenerable caches
 apps/api/uploads/
