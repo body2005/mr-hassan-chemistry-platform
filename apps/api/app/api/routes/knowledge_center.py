@@ -957,10 +957,12 @@ def _serve_file_with_range(
     from app.core.storage import get_storage_provider
 
     storage = get_storage_provider()
-    if not os.path.exists(file_path) and not storage.exists(file_path):
+    local_path = storage.get_local_path(file_path) if hasattr(storage, "get_local_path") else None
+    effective_path = local_path or file_path
+    if not os.path.exists(effective_path) and not storage.exists(file_path):
         raise HTTPException(status_code=404, detail="Source file not found")
 
-    file_size = storage.get_size(file_path) if storage.exists(file_path) else os.path.getsize(file_path)
+    file_size = os.path.getsize(effective_path) if os.path.exists(effective_path) else storage.get_size(file_path)
     range_header = request.headers.get("range") or request.headers.get("Range")
     encoded_filename = quote(filename)
     disposition = "attachment" if as_attachment else "inline"
@@ -979,7 +981,7 @@ def _serve_file_with_range(
                 "Content-Disposition": content_disposition,
             }
             return StreamingResponse(
-                storage.open_stream(file_path, start=start, length=content_length),
+                storage.open_stream(effective_path, start=start, length=content_length),
                 status_code=206,
                 headers=headers,
                 media_type=media_type,
@@ -998,7 +1000,7 @@ def _serve_file_with_range(
         "Content-Disposition": content_disposition,
     }
     return StreamingResponse(
-        storage.open_stream(file_path, start=0, length=file_size),
+        storage.open_stream(effective_path, start=0, length=file_size),
         status_code=200,
         headers=headers,
         media_type=media_type,

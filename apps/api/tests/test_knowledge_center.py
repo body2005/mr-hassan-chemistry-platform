@@ -490,3 +490,36 @@ def test_preview_token_security():
     assert decode_preview_token(expired_token) is None
 
 
+def test_preview_file_byte_range_streaming(test_setup, db):
+    """Verifies that 206 Partial Content range requests work with preview tokens."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+    client = TestClient(app)
+
+    teacher = test_setup["teacher"]
+    course = test_setup["course"]
+    from app.core.security import create_session_token, create_preview_token
+    session_token = create_session_token(teacher)
+
+    sample_content = b"%PDF-1.4 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ %%EOF"
+    source = create_knowledge_source(
+        db=db,
+        user=teacher,
+        course_id=course.id,
+        filename="sample_preview.pdf",
+        file_bytes=sample_content,
+        source_role=SourceRole.KNOWLEDGE,
+    )
+
+    preview_tok = create_preview_token(teacher, source.id)
+
+    resp = client.get(
+        f"/api/v1/knowledge-center/sources/{source.id}/preview-file?token={preview_tok}",
+        headers={"Range": "bytes=0-10", "Authorization": f"Bearer {session_token}"},
+    )
+    assert resp.status_code == 206
+    assert resp.headers.get("content-range") == f"bytes 0-10/{len(sample_content)}"
+    assert resp.content == sample_content[:11]
+
+
+

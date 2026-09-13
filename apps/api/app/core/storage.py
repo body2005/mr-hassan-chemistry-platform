@@ -81,7 +81,13 @@ class LocalStorageProvider(BaseStorageProvider):
             )
 
     def _full_path(self, storage_key: str) -> str:
+        if os.path.exists(storage_key):
+            return os.path.abspath(storage_key)
         norm = os.path.normpath(storage_key).lstrip("/\\")
+        base_name = os.path.basename(self.base_dir.rstrip("/\\"))
+        parts = norm.split(os.sep)
+        if parts and parts[0] == base_name:
+            norm = os.sep.join(parts[1:])
         if ".." in norm.split(os.sep):
             raise ValueError(f"Invalid storage key with traversal: {storage_key}")
         return os.path.join(self.base_dir, norm)
@@ -101,13 +107,15 @@ class LocalStorageProvider(BaseStorageProvider):
         return dest_path
 
     def get_local_path(self, storage_key: str) -> str | None:
-        if os.path.isabs(storage_key) and os.path.exists(storage_key):
-            return storage_key
+        if os.path.exists(storage_key):
+            return os.path.abspath(storage_key)
         path = self._full_path(storage_key)
         return path if os.path.exists(path) else None
 
     def open_stream(self, storage_key: str, start: int = 0, length: int | None = None) -> Generator[bytes, None, None]:
         path = self.get_local_path(storage_key) or self._full_path(storage_key)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Storage file not found: {path}")
         chunk_size = 64 * 1024
         bytes_remaining = length
         with open(path, "rb") as f:
@@ -125,15 +133,24 @@ class LocalStorageProvider(BaseStorageProvider):
                 yield chunk
 
     def get_size(self, storage_key: str) -> int:
+        if os.path.exists(storage_key):
+            return os.path.getsize(storage_key)
         path = self.get_local_path(storage_key) or self._full_path(storage_key)
         return os.path.getsize(path)
 
     def exists(self, storage_key: str) -> bool:
-        if os.path.isabs(storage_key) and os.path.exists(storage_key):
+        if os.path.exists(storage_key):
             return True
-        return os.path.exists(self._full_path(storage_key))
+        path = self.get_local_path(storage_key) or self._full_path(storage_key)
+        return os.path.exists(path)
 
     def delete(self, storage_key: str) -> bool:
+        if os.path.exists(storage_key):
+            try:
+                os.remove(storage_key)
+                return True
+            except OSError:
+                return False
         path = self.get_local_path(storage_key) or self._full_path(storage_key)
         if os.path.exists(path):
             try:
