@@ -14,7 +14,7 @@ from app.core.rate_limit import enforce_rate_limit
 from app.models.course import Course, CourseModule, Lesson
 from app.models.platform import Assignment, AssignmentSubmission, Quiz, QuizAttempt
 from app.models.progress import LessonProgress
-from app.models.user import User
+from app.models.user import User, UserRole
 
 router = APIRouter()
 Db = Annotated[Session, Depends(get_db)]
@@ -44,7 +44,7 @@ async def get_analytics_summary(
     db: Db,
 ) -> AnalyticsSummary:
     enforce_rate_limit(request, bucket="analytics", limit=10, window_seconds=60)
-    students_count = db.execute(select(func.count()).select_from(User).where(User.institution_id == user.institution_id, User.role == "student")).scalar_one() or 0
+    students_count = db.execute(select(func.count(User.id)).select_from(User).where(User.institution_id == user.institution_id, User.role == UserRole.STUDENT)).scalar_one() or 0
 
     lessons_count = db.execute(
         select(func.count(Lesson.id))
@@ -72,15 +72,14 @@ async def get_analytics_summary(
 
     progresses = db.execute(select(LessonProgress).join(Lesson, LessonProgress.lesson_id == Lesson.id).join(CourseModule, Lesson.module_id == CourseModule.id).join(Course, CourseModule.course_id == Course.id).where(Course.institution_id == user.institution_id)).scalars().all()
     if progresses:
-        lesson_completion_rate = round(sum(1 for p in progresses if p.is_completed) / max(len(progresses), 1), 4) * 100
+        completed_count = sum(1 for p in progresses if p.completed_at is not None or (p.completion_percent or 0) >= 90.0)
+        lesson_completion_rate = round((completed_count / max(len(progresses), 1)) * 100, 2)
     else:
         lesson_completion_rate = None
 
     mastery_distribution = {"ممتاز": 0, "جيد جداً": 0, "جيد": 0, "مقبول": 0, "ضعيف": 0}
-    for p in progresses:
-        if not p.is_completed:
-            continue
-        score = p.score or 0
+    for a in attempts:
+        score = a.score or 0
         if score >= 90:
             mastery_distribution["ممتاز"] += 1
         elif score >= 80:
