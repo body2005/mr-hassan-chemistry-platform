@@ -954,9 +954,9 @@ def _serve_file_with_range(
 ) -> Response:
     from fastapi.responses import StreamingResponse
     from urllib.parse import quote
-    from app.core.storage import get_storage
+    from app.core.storage import get_storage_provider
 
-    storage = get_storage()
+    storage = get_storage_provider()
     if not os.path.exists(file_path) and not storage.exists(file_path):
         raise HTTPException(status_code=404, detail="Source file not found")
 

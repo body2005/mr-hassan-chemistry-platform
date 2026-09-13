@@ -306,3 +306,7 @@ def get_storage_provider() -> BaseStorageProvider:
         else:
             _storage_instance = LocalStorageProvider()
     return _storage_instance
+
+
+# Alias for backward compatibility
+get_storage = get_storage_provider
