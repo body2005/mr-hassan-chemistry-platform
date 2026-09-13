@@ -312,8 +312,14 @@ def _get_live_analytics(db: Session, user: User) -> dict[str, Any]:
         else None
     )
 
-    active_ids = {a.student_id for a in quiz_attempts}.union({s.student_id for s in submissions})
+    # A student is counted as "present/active" when the platform has a real
+    # lesson-progress event for them.  This is intentionally labelled as
+    # attendance/engagement in the tutor response: the current schema tracks
+    # learning activity, not classroom roll-call attendance.
+    progress_active_ids = {p.student_id for p in progress_rows if p.last_event_at or p.watched_duration_seconds > 0 or p.completion_percent > 0}
+    active_ids = progress_active_ids.union({a.student_id for a in quiz_attempts}).union({s.student_id for s in submissions})
     inactive_students = [s for s in students if s.id not in active_ids]
+    attendance_percent = round((len(progress_active_ids) / total_students) * 100, 1) if total_students else None
 
     return {
         "total_students": total_students,
@@ -326,6 +332,8 @@ def _get_live_analytics(db: Session, user: User) -> dict[str, Any]:
         "avg_assignment_score": avg_assignment_score,
         "avg_progress": avg_progress,
         "inactive_students": inactive_students,
+        "active_student_count": len(progress_active_ids),
+        "attendance_percent": attendance_percent,
     }
 
 def _find_matching_citations(lesson_rows: list[Any], query: str) -> list[dict[str, Any]]:
@@ -393,8 +401,9 @@ def _build_tutor_answer(
     message_lower = message_clean.lower()
     analytics = _get_live_analytics(db, user)
     lesson_rows = analytics["lesson_rows"]
-    role = (user_role or "").strip().lower()
-    is_teacher = role in {"teacher", "مدرس", "معلم", "admin"} or user.role in {
+    # Never trust a role supplied by the browser.  The authenticated database
+    # user is the sole authority for teacher-only analytics.
+    is_teacher = user.role in {
         UserRole.TEACHER,
         UserRole.INSTITUTION_ADMIN,
         UserRole.PLATFORM_ADMIN,
@@ -451,6 +460,14 @@ def _build_tutor_answer(
             else:
                 lines.append("• مشاهدات الفيديو: لم تسجل بيانات مشاهدة مكتملة بعد.")
 
+            if analytics["attendance_percent"] is not None:
+                lines.append(
+                    f"• نسبة الحضور/التفاعل المسجلة: {analytics['attendance_percent']}% "
+                    f"({analytics['active_student_count']} من {analytics['total_students']} طالب لديهم نشاط مشاهدة مسجل)"
+                )
+            else:
+                lines.append("• نسبة الحضور/التفاعل: لا توجد بيانات مشاهدة مسجلة بعد.")
+
             inactive = analytics["inactive_students"]
             if inactive:
                 inactive_names = [s.display_name or s.username for s in inactive[:5]]
@@ -472,7 +489,31 @@ def _build_tutor_answer(
         )
         return ("".join(ans), True, [])
 
-    # 3. Grounded Refusal when no authorized Knowledge Center sources match
+    # 3. Teacher-only recommendations.  Keep this branch before knowledge
+    # retrieval so a teacher can ask for operational advice even when the
+    # uploaded course documents do not contain the word "اقتراح".
+    if is_teacher and any(
+        word in message_lower
+        for word in ["اقتراح", "نصيحة", "توصية", "تحسين", "خطة", "recommend", "suggest", "advice"]
+    ):
+        attendance = analytics["attendance_percent"]
+        avg_progress = analytics["avg_progress"]
+        recommendations = [
+            "قسّم الدروس الطويلة إلى مقاطع قصيرة مع هدف واضح لكل مقطع.",
+            "أنشئ اختباراً قصيراً بعد كل درس، ثم راجع الأسئلة التي يخطئ فيها معظم الطلاب.",
+        ]
+        if attendance is not None and attendance < 60:
+            recommendations.insert(0, "ابدأ برسائل تذكير وجدول متابعة للطلاب غير النشطين لأن نسبة الحضور/التفاعل الحالية منخفضة.")
+        if avg_progress is not None and avg_progress < 60:
+            recommendations.insert(0, "أضف شرحاً تمهيدياً وأمثلة محلولة قبل الأجزاء التي ينخفض فيها إكمال الفيديو.")
+        return (
+            "اقتراحات مخصصة للمدرس، مبنية على البيانات الحالية فقط:\n" +
+            "\n".join(f"• {item}" for item in recommendations),
+            True,
+            [],
+        )
+
+    # 4. Grounded Refusal when no authorized Knowledge Center sources match
     ans = "يجب أن يكون السؤال في إطار المادة."
     return (ans, False, [])
 
@@ -520,7 +561,22 @@ async def tutor_chat(
     elif not can_access_course_knowledge(db, user, c_uuid):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Course access denied")
 
-    if c_uuid:
+    teacher_ops_query = user.role in {
+        UserRole.TEACHER,
+        UserRole.INSTITUTION_ADMIN,
+        UserRole.PLATFORM_ADMIN,
+    } and any(
+        word in message.lower()
+        for word in [
+            "تقرير", "تحليل", "إحصائيات", "احصائيات", "نسب", "درجات", "معدلات",
+            "انجاز", "إنجاز", "حضور", "حضورهم", "اقتراح", "نصيحة", "توصية",
+            "تحسين", "خطة", "report", "analytics", "recommend", "suggest", "advice",
+        ]
+    )
+
+    # Operational teacher requests are answered from protected analytics below;
+    # do not send them through the student/course RAG path first.
+    if c_uuid and not teacher_ops_query:
         try:
             from app.services.knowledge_retriever import check_grounding_and_answer
             from app.services.conversation_memory import remember_turn, rewrite_followup_query

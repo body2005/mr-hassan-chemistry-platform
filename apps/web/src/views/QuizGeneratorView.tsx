@@ -54,24 +54,9 @@ const DEFAULT_TYPE_CONFIGS: QuestionTypeConfig[] = [
   { id: "image_question", label: "سؤال مرتبط بصورة (Image)", count: 0 },
 ];
 
-const DEFAULT_MANUAL_QUESTIONS: GeneratedQuestion[] = [
-  {
-    id: 1,
-    question_type: "multiple_choice",
-    difficulty: "medium",
-    topic: "الكيمياء",
-    question_text: "اكتب نص السؤال هنا...",
-    points: 5,
-    correct_answer: "الخيار الأول",
-    explanation: "توضيح الإجابة الصحيحة ومعيار التقييم...",
-    options: [
-      { key: "أ", text: "الخيار الأول (الصحيح)", is_correct: true },
-      { key: "ب", text: "الخيار الثاني", is_correct: false },
-      { key: "ج", text: "الخيار الثالث", is_correct: false },
-      { key: "د", text: "الخيار الرابع", is_correct: false },
-    ],
-  },
-];
+// Start a manual assessment empty; the teacher adds the first real question.
+// This keeps sample/example content out of production screens.
+const DEFAULT_MANUAL_QUESTIONS: GeneratedQuestion[] = [];
 
 function formatLocalDate(d: Date): string {
   const y = d.getFullYear();

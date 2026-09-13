@@ -78,9 +78,6 @@ export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ curr
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "24px", flexWrap: "wrap", gap: "16px" }}>
         <div>
-          <span style={{ fontSize: "11px", fontWeight: 800, color: "#0f392b", background: "#ecfdf5", padding: "3px 8px", borderRadius: "6px" }}>
-            كشف الطالب • MY ASSIGNMENTS & QUIZZES
-          </span>
           <h1 style={{ margin: "6px 0 2px", fontSize: "24px", color: "#0f172a" }}>
             واجباتي واختباراتي المصححة
           </h1>

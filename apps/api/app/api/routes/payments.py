@@ -106,6 +106,11 @@ def payment_config(user: Student) -> dict[str, Any]:
 
 @router.post("/orders", status_code=status.HTTP_201_CREATED)
 def create_payment_order(payload: PaymentOrderCreate, user: Student, db: Db) -> dict[str, Any]:
+    if payload.product_type == PaymentProductType.COURSE:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Whole-course checkout is disabled for students; choose an individual lesson or AI subscription.",
+        )
     if not _method_destination(payload.payment_method):
         raise HTTPException(status_code=409, detail="Selected payment method is not configured")
     order = payment_service.create_order(

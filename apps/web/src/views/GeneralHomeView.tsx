@@ -14,7 +14,6 @@ import {
 } from "lucide-react";
 import { Course, CurrentUser, StudentProfile } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
-import { PaymentTarget } from "../services/paymentService";
 
 export interface EducationalBookItem {
   id: string;
@@ -48,7 +47,6 @@ interface GeneralHomeViewProps {
   enrolledCourseIds: string[];
   onEnrollCourse: (courseId: string) => void;
   onNavigateToMyCourses: () => void;
-  onCheckout: (target: PaymentTarget) => void;
   currentUser: CurrentUser;
   lang: Language;
 }
@@ -58,7 +56,6 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
   enrolledCourseIds,
   onEnrollCourse,
   onNavigateToMyCourses,
-  onCheckout,
   currentUser,
   lang,
 }) => {
@@ -451,9 +448,7 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
                     ) : (
                       <button
                         className="btn-primary"
-                        onClick={() => Number(course.price || 0) > 0
-                          ? onCheckout({ productType: "course", productId: course.id })
-                          : onEnrollCourse(course.id)}
+                        onClick={() => onEnrollCourse(course.id)}
                         style={{
                           width: "100%",
                           justifyContent: "center",
@@ -465,7 +460,7 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
                         }}
                       >
                         <Plus size={15} />
-                        <span>{Number(course.price || 0) > 0 ? `شراء المقرر — ${Number(course.price).toLocaleString("ar-EG")} ج.م` : "الانضمام مجانًا"}</span>
+                        <span>{Number(course.price || 0) > 0 ? "اختيار درس للشراء" : "الانضمام مجانًا"}</span>
                       </button>
                     )}
                   </div>

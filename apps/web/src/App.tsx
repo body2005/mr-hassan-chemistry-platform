@@ -360,7 +360,9 @@ function App() {
       setEnrolledCourseIds(updated);
     } catch (error) {
       if (error instanceof ApiClientError && error.status === 402) {
-        setCheckoutTarget({ productType: "course", productId: courseId });
+        // Whole-course checkout is no longer offered to students.  Send them
+        // to the lesson-only checkout picker instead.
+        setCheckoutTarget({ productType: "lesson" });
         navigateToTab("Payments");
         return;
       }
@@ -528,7 +530,6 @@ function App() {
             enrolledCourseIds={enrolledCourseIds}
             onEnrollCourse={handleEnrollCourse}
             onNavigateToMyCourses={() => navigateToTab("MyCourses")}
-            onCheckout={(target) => { setCheckoutTarget(target); navigateToTab("Payments"); }}
             currentUser={currentUser}
             lang={lang}
           />

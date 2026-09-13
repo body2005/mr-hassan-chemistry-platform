@@ -27,7 +27,7 @@ import {
 } from "lucide-react";
 import { courseService } from "../services/lmsService";
 import { Course } from "../types/lms";
-import { apiRequest, ApiClientError } from "../services/apiClient";
+import { apiRequest, apiUrl, ApiClientError, fetchApiBlob } from "../services/apiClient";
 import { uploadManager } from "../services/uploadManager";
 import { useConfirm } from "../components/ConfirmWizard";
 import { useToast } from "../components/ToastProvider";
@@ -94,6 +94,13 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
   // Inspector modal state
   const [inspectSource, setInspectSource] = useState<any | null>(null);
   const [inspectTab, setInspectTab] = useState<"DOCUMENT" | "OUTLINE" | "UNITS" | "ASSESSMENT">("DOCUMENT");
+
+  // The file-view endpoint requires the authenticated bearer token.  Fetching
+  // it as a blob makes the preview work even when an iframe cannot attach that
+  // token (and avoids the old unauthorised /page/1 requests).
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
   // Test AI panel
   const [testQuery, setTestQuery] = useState("");
@@ -191,23 +198,6 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
     if (inputEl) inputEl.value = "";
   };
 
-  // Reindex source
-  const handleReindex = async (sourceId: string) => {
-    updateSources((prev) =>
-      prev.map((s) => (s.id === sourceId ? { ...s, status: "PROCESSING" as const } : s))
-    );
-
-    try {
-      const updated = await apiRequest<KnowledgeSourceItem>(`/knowledge-center/sources/${sourceId}/reindex`, { method: "POST", timeoutMs: 120_000 });
-      updateSources((prev) => prev.map((s) => (s.id === sourceId ? updated : s)));
-      toast({ message: "تمت إعادة الفهرسة وتحديث وحدات المعرفة بنجاح!", tone: "success" });
-    } catch (err) {
-      console.error("Reindex API error", err);
-      toast({ message: "خطأ أثناء الاتصال بالسيرفر لإعادة الفهرسة.", tone: "danger" });
-      void fetchSources();
-    }
-  };
-
   // Delete source
   const handleDelete = async (sourceId: string) => {
     const ok = await confirm({
@@ -295,6 +285,39 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
     }
   }, [inspectSource?.id, inspectSource?.currentPage, inspectSource?.total_pages, inspectSource?.viewMode]);
 
+  useEffect(() => {
+    if (!inspectSource?.file_url) {
+      setPreviewUrl(null);
+      return;
+    }
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
+    setPreviewUrl(null);
+    fetchApiBlob(inspectSource.file_url)
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setPreviewUrl(objectUrl);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.error("File preview error", err);
+          setPreviewError(err instanceof ApiClientError && err.status === 401
+            ? "انتهت جلسة الدخول. سجّل الدخول مرة أخرى لعرض الملف."
+            : "تعذر تحميل الملف للمعاينة.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setPreviewLoading(false);
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [inspectSource?.id, inspectSource?.file_url]);
+
   // Keyboard navigation for page flipping (ArrowLeft / ArrowRight) and Escape to close
   useEffect(() => {
     if (!inspectSource) return;
@@ -320,7 +343,6 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
     setInspectTab("DOCUMENT");
     const found = sources.find((s) => s.id === sourceId);
     const format = (found?.file_format || "").toLowerCase();
-    const isPdf = format === "pdf" || (found?.filename || "").toLowerCase().endsWith(".pdf");
     const fileUrl = found?.file_url || `/api/v1/knowledge-center/sources/${sourceId}/view`;
     const initialPages = found?.total_pages || 1;
 
@@ -334,7 +356,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
       total_pages: initialPages,
       currentPage: 1,
       pageInput: "1",
-      viewMode: isPdf ? "FAST_PAGES" : "ORIGINAL_FILE",
+      viewMode: "ORIGINAL_FILE",
       scale: 1.0,
       pageLoading: false,
       document: null,
@@ -673,7 +695,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
       <div style={{ background: "var(--bg-card, var(--card-bg, rgba(255,255,255,0.04)))", borderRadius: "14px", border: "1px solid var(--border-color, rgba(255,255,255,0.1))", padding: "20px", marginBottom: "32px", color: "var(--text-main, var(--text-color, inherit))" }}>
         <h3 style={{ fontSize: "18px", fontWeight: "700", marginBottom: "16px", display: "flex", alignItems: "center", gap: "8px", color: "var(--text-main, var(--text-color, inherit))" }}>
           <Layers style={{ color: "#2563eb" }} />
-          المصادر المفهرسة في المنهج ({sources.length})
+          المصادر المرفوعة في المنهج ({sources.length})
         </h3>
 
         {loading && sources.length === 0 ? (
@@ -745,19 +767,11 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                         <button
                           type="button"
                           onClick={() => handleInspect(src.id)}
-                          title="معاينة الملف وقراءة محتواه"
-                          style={{ padding: "6px 12px", borderRadius: "6px", background: "rgba(37,99,235,0.15)", border: "1px solid #2563eb", cursor: "pointer", color: "#60a5fa", display: "flex", alignItems: "center", gap: "6px", fontWeight: "600", fontSize: "13px" }}
+                          title="معاينة الملف"
+                          aria-label="معاينة الملف"
+                          style={{ padding: "7px 10px", borderRadius: "6px", background: "rgba(37,99,235,0.15)", border: "1px solid #2563eb", cursor: "pointer", color: "#60a5fa", display: "flex", alignItems: "center", justifyContent: "center" }}
                         >
                           <Eye style={{ width: "16px", height: "16px" }} />
-                          معاينة الملف
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleReindex(src.id)}
-                          title="إعادة الفهرسة"
-                          style={{ padding: "6px 10px", borderRadius: "6px", background: "none", border: "1px solid var(--border-color, rgba(255,255,255,0.15))", cursor: "pointer", color: "var(--text-main, inherit)" }}
-                        >
-                          <RefreshCw style={{ width: "16px", height: "16px" }} />
                         </button>
                         <button
                           type="button"
@@ -964,7 +978,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
               <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
                 {inspectSource.file_url && (
                   <a
-                    href={inspectSource.file_url}
+                    href={previewUrl || apiUrl(inspectSource.file_url)}
                     target="_blank"
                     rel="noopener noreferrer"
                     title="فتح المستند في نافذة كاملة جديدة"
@@ -996,8 +1010,10 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
               </div>
             </div>
 
-            {/* Modal Tabs Header */}
-            <div style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.15)", background: "#1e293b" }}>
+            {/* The preview intentionally shows only the uploaded file.  Indexing
+                units/outline/assessment belong to the background pipeline, not
+                to this simple file viewer. */}
+            <div style={{ display: "none" }} aria-hidden="true">
               <button
                 type="button"
                 onClick={() => setInspectTab("DOCUMENT")}
@@ -1022,7 +1038,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
               </button>
               <button
                 type="button"
-                onClick={() => setInspectTab("UNITS")}
+                onClick={() => setInspectTab("DOCUMENT")}
                 style={{
                   flex: 1,
                   padding: "14px",
@@ -1044,7 +1060,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
               </button>
               <button
                 type="button"
-                onClick={() => setInspectTab("OUTLINE")}
+                onClick={() => setInspectTab("DOCUMENT")}
                 style={{
                   flex: 1,
                   padding: "14px",
@@ -1067,7 +1083,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
               {inspectSource.assessment && (
                 <button
                   type="button"
-                  onClick={() => setInspectTab("ASSESSMENT")}
+                  onClick={() => setInspectTab("DOCUMENT")}
                   style={{
                     flex: 1,
                     padding: "14px",
@@ -1406,17 +1422,25 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                           التبديل إلى عارض الصفحات فائق السرعة
                         </button>
                       </div>
-                      <iframe
-                        src={inspectSource.file_url}
-                        title={inspectSource.filename}
-                        style={{
-                          width: "100%",
-                          height: "100%",
-                          flex: 1,
-                          border: "none",
-                          background: "#ffffff",
-                        }}
-                      />
+                      {previewLoading ? (
+                        <div style={{ flex: 1, display: "grid", placeItems: "center", color: "#cbd5e1" }}>
+                          جاري تحميل الملف للمعاينة...
+                        </div>
+                      ) : previewError ? (
+                        <div style={{ flex: 1, display: "grid", placeItems: "center", color: "#fca5a5", padding: "24px", textAlign: "center" }}>
+                          {previewError}
+                        </div>
+                      ) : previewUrl ? (
+                        <iframe
+                          src={previewUrl}
+                          title={inspectSource.filename}
+                          style={{ width: "100%", height: "100%", flex: 1, border: "none", background: "#ffffff" }}
+                        />
+                      ) : (
+                        <div style={{ flex: 1, display: "grid", placeItems: "center", color: "#94a3b8" }}>
+                          لا يوجد ملف قابل للمعاينة.
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

@@ -766,6 +766,17 @@ main {
   justify-content: space-between;
 }
 
+/* Keep text readable inside the dark-green user message bubble.  The broad
+   dark-mode typography rules above intentionally do not override this. */
+.ai-chat-message-user,
+.ai-chat-message-user * {
+  color: #ffffff !important;
+}
+
+.ai-chat-message-user [style*="opacity"] {
+  color: rgba(255, 255, 255, 0.78) !important;
+}
+
 [data-theme="dark"] .chat-header {
   background: #064e3b;
 }

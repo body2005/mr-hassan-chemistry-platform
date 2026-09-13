@@ -513,6 +513,7 @@ export const FloatingAITutor: React.FC<FloatingAITutorProps> = ({
                 {activeSession.messages.map((m) => (
                   <div
                     key={m.id}
+                    className={`ai-chat-message ${m.role === "user" ? "ai-chat-message-user" : "ai-chat-message-assistant"}`}
                     style={{
                       alignSelf: m.role === "user" ? "flex-end" : "flex-start",
                       maxWidth: isFullscreen ? "75%" : "90%",

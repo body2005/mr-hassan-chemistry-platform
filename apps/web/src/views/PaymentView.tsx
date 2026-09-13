@@ -37,8 +37,15 @@ export function PaymentView({ courses, initialTarget, onEntitlementsChanged }: P
   const toast = useToast();
   const [config, setConfig] = useState<PaymentConfig | null>(null);
   const [orders, setOrders] = useState<PaymentOrder[]>([]);
-  const [productType, setProductType] = useState<PaymentProductType>(initialTarget?.productType || "course");
-  const [productId, setProductId] = useState(initialTarget?.productId || "");
+  // Student checkout is intentionally limited to a single lesson or the
+  // optional AI subscription.  A whole-course target from an old link is
+  // normalised to lesson checkout instead of exposing the removed product.
+  const [productType, setProductType] = useState<PaymentProductType>(
+    initialTarget?.productType === "ai_subscription" ? "ai_subscription" : "lesson",
+  );
+  const [productId, setProductId] = useState(
+    initialTarget?.productType === "lesson" ? initialTarget.productId || "" : "",
+  );
   const [method, setMethod] = useState<PaymentMethod | "">("");
   const [reference, setReference] = useState("");
   const [note, setNote] = useState("");
@@ -63,18 +70,15 @@ export function PaymentView({ courses, initialTarget, onEntitlementsChanged }: P
 
   useEffect(() => {
     if (!initialTarget) return;
-    setProductType(initialTarget.productType);
-    setProductId(initialTarget.productId || "");
+    setProductType(initialTarget.productType === "ai_subscription" ? "ai_subscription" : "lesson");
+    setProductId(initialTarget.productType === "lesson" ? initialTarget.productId || "" : "");
   }, [initialTarget]);
 
   const lessons = useMemo(() => courses.flatMap((course) => course.lessons.map((lesson) => ({ ...lesson, courseTitle: course.title }))), [courses]);
-  const selectedCourse = courses.find((course) => course.id === productId);
   const selectedLesson = lessons.find((lesson) => lesson.id === productId);
   const amount = productType === "ai_subscription"
     ? Number(config?.ai_monthly_price_egp || 0)
-    : productType === "course"
-      ? Number(selectedCourse?.price || 0)
-      : Number(selectedLesson?.price || 0);
+    : Number(selectedLesson?.price || 0);
   const selectedMethod = config?.methods.find((item) => item.id === method);
 
   async function submitPayment() {
@@ -83,7 +87,7 @@ export function PaymentView({ courses, initialTarget, onEntitlementsChanged }: P
       return;
     }
     if (productType !== "ai_subscription" && !productId) {
-      toast({ message: "اختر المقرر أو الدرس", tone: "warning" });
+      toast({ message: "اختر درسًا للدفع", tone: "warning" });
       return;
     }
     if (!receipt) {
@@ -133,7 +137,6 @@ export function PaymentView({ courses, initialTarget, onEntitlementsChanged }: P
           <h2>طلب تفعيل جديد</h2>
           <div className="segmented-control" role="tablist" aria-label="نوع المنتج">
             {([
-              ["course", "مقرر كامل"],
               ["lesson", "درس منفرد"],
               ["ai_subscription", "اشتراك AI"],
             ] as Array<[PaymentProductType, string]>).map(([value, label]) => (
@@ -143,16 +146,6 @@ export function PaymentView({ courses, initialTarget, onEntitlementsChanged }: P
             ))}
           </div>
 
-          {productType === "course" && (
-            <label className="field-label">المقرر
-              <select value={productId} onChange={(event) => setProductId(event.target.value)}>
-                <option value="">اختر مقررًا</option>
-                {courses.filter((course) => Number(course.price || 0) > 0).map((course) => (
-                  <option key={course.id} value={course.id}>{course.title} — {Number(course.price || 0).toLocaleString("ar-EG")} ج.م</option>
-                ))}
-              </select>
-            </label>
-          )}
           {productType === "lesson" && (
             <label className="field-label">الدرس
               <select value={productId} onChange={(event) => setProductId(event.target.value)}>

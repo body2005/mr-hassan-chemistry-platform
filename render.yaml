@@ -18,7 +18,10 @@ services:
           name: chemistry-platform-db
           property: connectionString
       - key: FRONTEND_ORIGINS
-        value: https://mr-hassan-chemistry.vercel.app
+        # Both production Vercel aliases are used by the site.  Keep them
+        # comma-separated so FastAPI's credentialed CORS middleware accepts
+        # requests from either deployment.
+        value: https://mr-hassan-chemistry.vercel.app,https://mr-hassan-chemistry-platform.vercel.app
       - key: COOKIE_CROSS_SITE
         value: "true"
       - key: PYTHON_VERSION
