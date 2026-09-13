@@ -46,11 +46,17 @@ async def get_analytics_summary(
     enforce_rate_limit(request, bucket="analytics", limit=10, window_seconds=60)
     students_count = db.execute(select(func.count()).select_from(User).where(User.institution_id == user.institution_id, User.role == "student")).scalar_one() or 0
 
-    lessons_count = db.execute(select(func.count()).join(CourseModule, Lesson.module_id == CourseModule.id).join(Course, CourseModule.course_id == Course.id).where(Course.institution_id == user.institution_id)).scalar_one() or 0
-    quizzes_count = db.execute(select(func.count()).select_from(Quiz).where(Quiz.institution_id == user.institution_id)).scalar_one() or 0
-    assignments_count = db.execute(select(func.count()).select_from(Assignment).where(Assignment.institution_id == user.institution_id)).scalar_one() or 0
+    lessons_count = db.execute(
+        select(func.count(Lesson.id))
+        .select_from(Lesson)
+        .join(CourseModule, Lesson.module_id == CourseModule.id)
+        .join(Course, CourseModule.course_id == Course.id)
+        .where(Course.institution_id == user.institution_id)
+    ).scalar_one() or 0
+    quizzes_count = db.execute(select(func.count(Quiz.id)).select_from(Quiz).where(Quiz.institution_id == user.institution_id)).scalar_one() or 0
+    assignments_count = db.execute(select(func.count(Assignment.id)).select_from(Assignment).where(Assignment.institution_id == user.institution_id)).scalar_one() or 0
 
-    attempts = db.execute(select(QuizAttempt)).scalars().all()
+    attempts = db.execute(select(QuizAttempt).where(QuizAttempt.institution_id == user.institution_id)).scalars().all()
     if attempts:
         quiz_avg_score = round(sum(a.score or 0 for a in attempts) / len(attempts), 2)
         quiz_completion_rate = round(len(attempts) / max(students_count, 1), 2)
@@ -58,7 +64,7 @@ async def get_analytics_summary(
         quiz_avg_score = None
         quiz_completion_rate = None
 
-    submissions = db.execute(select(AssignmentSubmission)).scalars().all()
+    submissions = db.execute(select(AssignmentSubmission).where(AssignmentSubmission.institution_id == user.institution_id)).scalars().all()
     if submissions:
         assignment_submission_rate = round(len(submissions) / max(students_count, 1), 2)
     else:
