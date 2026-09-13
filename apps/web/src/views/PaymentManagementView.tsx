@@ -94,7 +94,7 @@ export function PaymentManagementView({ courses, onCoursesChanged }: PaymentMana
 
   return <div className="page-container payment-admin-page">
     <header className="section-heading payment-heading">
-      <div><span className="eyebrow">للمدرس فقط</span><h1>المدفوعات والتسعير</h1><p>راجع التحويلات يدويًا وحدد أسعار المقررات والدروس.</p></div>
+      <div><span className="eyebrow">للمدرس فقط</span><h1>المدفوعات والتسعير</h1><p>راجع التحويلات يدويًا وحدد سعر كل درس على حدة.</p></div>
       <div className="payment-total"><span>بانتظار المراجعة الآن</span><strong>{underReviewCount.toLocaleString("ar-EG")}</strong></div>
     </header>
 
@@ -116,9 +116,9 @@ export function PaymentManagementView({ courses, onCoursesChanged }: PaymentMana
     </section>
 
     <section className="panel pricing-panel">
-      <div className="panel-title-row"><div><h2>أسعار المحتوى</h2><p>السعر صفر يعني أن المحتوى مجاني. شراء المقرر يشمل كل دروسه.</p></div></div>
+      <div className="panel-title-row"><div><h2>أسعار الدروس</h2><p>السعر صفر يعني أن الدرس مجاني. كل درس له سعر وصلاحية مستقلة.</p></div></div>
       <div className="pricing-list">{courses.map((course) => <div className="pricing-course" key={course.id}>
-        <div className="pricing-row primary-price"><div><strong>{course.title}</strong><small>المقرر كاملًا</small></div><div className="price-editor"><input type="number" min="0" step="1" value={prices[`course:${course.id}`] ?? "0"} onChange={(event) => setPrices((current) => ({ ...current, [`course:${course.id}`]: event.target.value }))} /><span>ج.م</span><button onClick={() => void savePrice("course", course.id)} disabled={workingId === `course:${course.id}`} aria-label="حفظ سعر المقرر"><Save size={16} /></button></div></div>
+        <div className="pricing-course-heading"><strong>{course.title}</strong><small>الدروس التابعة لهذا الصف</small></div>
         {course.lessons.map((lesson) => <div className="pricing-row" key={lesson.id}><div><span>{lesson.title}</span><small>درس منفرد</small></div><div className="price-editor"><input type="number" min="0" step="1" value={prices[`lesson:${lesson.id}`] ?? "0"} onChange={(event) => setPrices((current) => ({ ...current, [`lesson:${lesson.id}`]: event.target.value }))} /><span>ج.م</span><button onClick={() => void savePrice("lesson", lesson.id)} disabled={workingId === `lesson:${lesson.id}`} aria-label="حفظ سعر الدرس"><Save size={15} /></button></div></div>)}
       </div>)}</div>
     </section>

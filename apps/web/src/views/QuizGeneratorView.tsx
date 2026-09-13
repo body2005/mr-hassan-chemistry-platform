@@ -779,9 +779,11 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
           ? "الصف الثاني الثانوي"
           : "الصف الثالث الثانوي";
 
-      const titleToPublish = creationMode === "manual"
-        ? (manualTitle.trim() || `${isQuiz ? "اختبار" : "واجب"}: ${yearLabel}`)
-        : (draft?.title || `${isQuiz ? "اختبار" : "واجب"}: ${yearLabel}`);
+      // The teacher's title is authoritative for both manual and AI/extracted
+      // assessments. If left blank, keep the generated/extracted title.
+      const titleToPublish = manualTitle.trim()
+        || (creationMode === "ai" ? draft?.title : "")
+        || `${isQuiz ? "اختبار" : "واجب"}: ${yearLabel}`;
 
       // 1. Mark in Calendar Schedule for Teacher & Students
       const newCalendarEvent: CalendarScheduleEvent = {
@@ -1148,20 +1150,20 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
 
           </div>
 
-          {/* MANUAL MODE: Title & Description inputs */}
-          {creationMode === "manual" && (
-            <div style={{ marginBottom: "16px" }}>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
-                عنوان {assessmentType === "quiz" ? "الاختبار" : "الواجب"}:
-              </label>
-              <input
-                type="text"
-                value={manualTitle}
-                onChange={(e) => setManualTitle(e.target.value)}
-                placeholder={`مثال: ${assessmentType === "quiz" ? "اختبار الكيمياء — الروابط والمعادلات الكيميائية" : "واجب تدريبات الحساب الكيميائي والمول"}`}
-                style={{ width: "100%", padding: "8px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", fontSize: "13px", background: "var(--bg-surface)", color: "var(--text-main)", boxSizing: "border-box", marginBottom: "10px" }}
-              />
+          {/* Assessment title is editable for manual, generated, and extracted work. */}
+          <div style={{ marginBottom: "16px" }}>
+            <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
+              اسم {assessmentType === "quiz" ? "الاختبار" : "الواجب"}:
+            </label>
+            <input
+              type="text"
+              value={manualTitle}
+              onChange={(e) => setManualTitle(e.target.value)}
+              placeholder={draft?.title || `مثال: ${assessmentType === "quiz" ? "اختبار الكيمياء — الروابط والمعادلات الكيميائية" : "واجب تدريبات الحساب الكيميائي والمول"}`}
+              style={{ width: "100%", padding: "8px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", fontSize: "13px", background: "var(--bg-surface)", color: "var(--text-main)", boxSizing: "border-box", marginBottom: creationMode === "manual" ? "10px" : 0 }}
+            />
 
+            {creationMode === "manual" && <>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
                 الوصف والتعليمات للطلاب:
               </label>
@@ -1172,8 +1174,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
                 placeholder="اكتب تعليمات الحل أو ملاحظات هامة للطلاب قبل البدء..."
                 style={{ width: "100%", padding: "8px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", fontSize: "12px", lineHeight: "1.4", background: "var(--bg-surface)", color: "var(--text-main)", boxSizing: "border-box" }}
               />
-            </div>
-          )}
+            </>}
+          </div>
 
           {/* AI MODE: Custom Empty Teacher Prompt */}
           {creationMode === "ai" && (
@@ -2569,4 +2571,3 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
     </div>
   );
 };
-

@@ -167,7 +167,11 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
 
     let targetCourseId = selectedCourseId;
     if (!targetCourseId || targetCourseId === "all") {
-      targetCourseId = courses[0]?.id || "f33b77ad-45d0-54c0-80e8-1373a52ec477";
+      targetCourseId = courses[0]?.id || "";
+    }
+    if (!targetCourseId) {
+      toast({ message: "لا يوجد مقرر حقيقي متاح للرفع. أعد تحميل المقررات ثم حاول مرة أخرى.", tone: "warning" });
+      return;
     }
 
     uploadManager.enqueueKnowledgeBatchUpload({
@@ -431,7 +435,11 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
 
   // Test AI Q&A — Calls real backend LLM API with zero hardcoded facts
   const handleTestAI = async () => {
-    if (!testQuery.trim() || !selectedCourseId) return;
+    const testCourseId = courses[0]?.id;
+    if (!testQuery.trim() || !testCourseId) {
+      setTestError("لا يوجد مقرر متاح لاختبار المساعد حاليًا.");
+      return;
+    }
     setTestLoading(true);
     setTestAnswer(null);
     setTestRefusal(false);
@@ -441,7 +449,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
       const data = await apiRequest<any>("/tutor/chat", {
         method: "POST",
         body: JSON.stringify({
-          course_id: selectedCourseId,
+          course_id: testCourseId,
           message: testQuery,
         }),
       });

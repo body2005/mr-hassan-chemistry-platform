@@ -1670,6 +1670,8 @@ img, video, canvas, svg {
 .review-amount span { color: var(--text-muted); font-size: .72rem; }
 .review-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: end; }
 .pricing-course { padding-bottom: 6px; }
+.pricing-course-heading { display: grid; gap: 2px; padding: 12px 0 6px; color: var(--text-main); }
+.pricing-course-heading small { color: var(--text-muted); font-size: .7rem; }
 .pricing-row { padding: 8px 0; padding-inline-start: 18px; }
 .pricing-row.primary-price { padding-inline-start: 0; font-size: .9rem; }
 .pricing-row > div:first-child { display: grid; gap: 2px; color: var(--text-main); }

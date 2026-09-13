@@ -117,10 +117,12 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css" />
         <style>
           @page { size: A4; margin: 20mm; }
-          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #111; margin: 0; padding: 20px; }
+          html, body { direction: rtl; unicode-bidi: plaintext; }
+          body { font-family: 'Noto Naskh Arabic', 'Amiri', 'Segoe UI', Tahoma, sans-serif; line-height: 1.6; color: #111; margin: 0; padding: 20px; text-align: right; }
           .header { border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 20px; }
           .meta-box { display: flex; justify-content: space-between; font-size: 13px; font-weight: bold; margin-bottom: 10px; }
           .student-info { display: flex; justify-content: space-between; font-size: 14px; margin-top: 15px; border-top: 1px dashed #666; padding-top: 10px; }
+          .question, .q-title, .option-item { direction: rtl; unicode-bidi: plaintext; text-align: right; }
           .question { margin-bottom: 24px; padding-bottom: 15px; border-bottom: 1px dotted #ccc; page-break-inside: avoid; }
           .q-title { font-weight: bold; font-size: 15px; margin-bottom: 8px; }
           .points { float: left; font-size: 12px; color: #555; font-weight: normal; }
