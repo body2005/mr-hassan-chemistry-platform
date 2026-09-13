@@ -122,9 +122,9 @@ def can_access_lesson_content(db: Session, user: User, lesson_id: uuid.UUID) -> 
         return False
     if has_course_entitlement(db, user, course.id):
         return True
-    if float(course.price_egp or 0) > 0:
-        return False
-    return float(lesson.price_egp or 0) == 0 or has_lesson_entitlement(db, user, lesson.id)
+    if has_lesson_entitlement(db, user, lesson.id):
+        return True
+    return float(course.price_egp or 0) == 0 and float(lesson.price_egp or 0) == 0
 
 
 def student_can_use_ai_for_lesson(db: Session, student: User, lesson_id: uuid.UUID) -> bool:

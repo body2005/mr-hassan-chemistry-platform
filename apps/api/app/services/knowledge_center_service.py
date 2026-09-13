@@ -229,7 +229,7 @@ def extract_distant_answer_keys(parsed_doc: Any) -> dict[str, str]:
             if is_in_answer_key_section:
                 line_norm = line.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
                 matches = re.findall(
-                    r"(?:س|q|question)?\s*\(?(\d+)\)?\s*[\:\.\-\)]\s*\(?([أ-دA-Da-d]|[^\n\r\,\;]{1,100})\)?",
+                    r"(?:س|q|question)?\s*\(?(\d+)\)?\s*[\:\.\-\)]\s*\(?([أبجدA-Da-d]|[^\n\r\,\;]{1,100})\)?",
                     line_norm,
                     re.IGNORECASE,
                 )
@@ -476,7 +476,7 @@ def classify_and_parse_question(
     ends_with_q_mark = clean_t.endswith("؟") or clean_t.endswith("?")
 
     lines = [l.strip() for l in clean_t.split("\n") if l.strip()]
-    if lines and all(bool(re.match(r"^\(?\d+\)?\s*[\:\.\-\)]\s*[أ-دA-Da-d]\b", l)) for l in lines):
+    if lines and all(bool(re.match(r"^\(?\d+\)?\s*[\:\.\-\)]\s*[أبجدA-Da-d]\b", l)) for l in lines):
         return ("content", None)
 
     option_lines: list[tuple[str, str]] = []
@@ -492,14 +492,14 @@ def classify_and_parse_question(
     }
 
     # OCR-tolerant patterns allowing prefix and suffix delimiters
-    OPT_PATTERN = re.compile(r"^[\(\[]?\s*([أ-دA-Da-d1-4]|i|z|s|\)\()\s*[\)\]\.\:\-\/]\s*(.*)$")
-    OPT_SUFFIX_PATTERN = re.compile(r"^(.*?)\s*[\(\[]\s*([أ-دA-Da-d1-4]|i|z|s|\)\()\s*[\)\]][\.\:\-]?$")
+    OPT_PATTERN = re.compile(r"^[\(\[]?\s*([أبجدA-Da-d1-4]|i|z|s|\)\()\s*[\)\]\.\:\-\/]\s*(.*)$")
+    OPT_SUFFIX_PATTERN = re.compile(r"^(.*?)\s*[\(\[]\s*([أبجدA-Da-d1-4]|i|z|s|\)\()\s*[\)\]][\.\:\-]?$")
     ANS_PATTERN = re.compile(
         r"^(?:الإجاب[ةه](?:\s+الصحيح[ةه])?|الجواب(?:\s+الصحيح)?|الحل(?:\s+الصحيح)?|فكرة\s+الحل|Answer|Key)\s*[\:\.\-\/]?\s*(.*)$",
         re.IGNORECASE,
     )
     INLINE_OPT_PATTERN = re.compile(
-        r"(?:^|\s+)[\(\[]?\s*([أ-دA-D1-4]|i|z)\s*[\)\]\.\:\-\/]\s*(.*?)(?=(?:\s+[\(\[]?\s*[أ-دA-D1-4]|i|z\s*[\)\]\.\:\-\/]|$))"
+        r"(?:^|\s+)[\(\[]?\s*([أبجدA-D1-4]|i|z)\s*[\)\]\.\:\-\/]\s*(.*?)(?=(?:\s+[\(\[]?\s*[أبجدA-D1-4]|i|z\s*[\)\]\.\:\-\/]|$))"
     )
 
     for idx, line in enumerate(lines):
@@ -652,9 +652,9 @@ def assemble_document_questions(
         '4': 'د', 'd': 'د', 'D': 'د', 'د': 'د', 's': 'د', ')(': 'د'
     }
 
-    OPT_PREFIX_RE = re.compile(r"^[\(\[]+\s*([أ-دA-Da-d1-4]|i|z|s|\)\()\s*[\)\]\.\:\-\/]+\s*(.*)$")
-    OPT_SUFFIX_RE = re.compile(r"^(.*?)\s*[\(\[]+\s*([أ-دA-Da-d1-4]|i|z|s|\)\()\s*[\)\]]+[\.\:\-]?$")
-    OPT_ANY_RE = re.compile(r"(?:^|\s)[\(\[]+\s*([أ-دA-Da-d1-4]|i|z|s|\)\()\s*[\)\]]+(?:\s|$)")
+    OPT_PREFIX_RE = re.compile(r"^[\(\[]+\s*([أبجدA-Da-d1-4]|i|z|s|\)\()\s*[\)\]\.\:\-\/]+\s*(.*)$")
+    OPT_SUFFIX_RE = re.compile(r"^(.*?)\s*[\(\[]+\s*([أبجدA-Da-d1-4]|i|z|s|\)\()\s*[\)\]]+[\.\:\-]?$")
+    OPT_ANY_RE = re.compile(r"(?:^|\s)[\(\[]+\s*([أبجدA-Da-d1-4]|i|z|s|\)\()\s*[\)\]]+(?:\s|$)")
 
     DIGIT_START_RE = re.compile(r"^\(?(\d{1,2})\)?[\.\-\:\)]\s+(.*)$")
     DIGIT_END_RE = re.compile(r"^(.*?)\s+[\.\-\:]?\s*(\d{1,2})[\.\-\:]?$")
@@ -664,19 +664,19 @@ def assemble_document_questions(
         if not l_c or len(l_c.split()) > 25:
             return None
         # mirrored bracket suffix like )1( or )أ( or (د) or (د))
-        m = re.match(r"^(.*?)\s*[\(\)\[\]]+\s*([أ-دA-Da-d1-4]|i|z|s)\s*[\(\)\[\]]+[\.\:\-]?$", l_c)
+        m = re.match(r"^(.*?)\s*[\(\)\[\]]+\s*([أبجدA-Da-d1-4]|i|z|s)\s*[\(\)\[\]]+[\.\:\-]?$", l_c)
         if m and len(m.group(1).split()) <= 25:
             k = KEY_NORM.get(m.group(2), m.group(2))
             return (k, m.group(1).strip())
         # number letter bracket like 3ب)
-        m = re.match(r"^(.+?)\s*([أ-د])[\)\]]+$", l_c)
+        m = re.match(r"^(.+?)\s*([أبجد])[\)\]]+$", l_c)
         if m:
             return (m.group(2), m.group(1).strip())
         # suffix with )(
         if l_c.endswith(")("):
             return ("د", l_c[:-2].strip())
         # prefix like (i) or (1) or (أ)
-        m = re.match(r"^[\(\)\[\]]+\s*([أ-دA-Da-d1-4]|i|z|s)\s*[\(\)\[\]\.\:\-\/]+\s*(.*)$", l_c)
+        m = re.match(r"^[\(\)\[\]]+\s*([أبجدA-Da-d1-4]|i|z|s)\s*[\(\)\[\]\.\:\-\/]+\s*(.*)$", l_c)
         if m:
             return (KEY_NORM.get(m.group(1), m.group(1)), m.group(2).strip())
         m = OPT_ANY_RE.search(l_c)
@@ -1556,7 +1556,7 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
                     continue
                 if any(re.search(pat, block.text, re.IGNORECASE) for pat in BLOOM_OBJECTIVE_PATTERNS):
                     continue
-                if lines and all(bool(re.match(r"^\(?\d+\)?\s*[\:\.\-\)]\s*[أ-دA-Da-d]\b", l)) for l in lines):
+                if lines and all(bool(re.match(r"^\(?\d+\)?\s*[\:\.\-\)]\s*[أبجدA-Da-d]\b", l)) for l in lines):
                     continue
 
                 cleaned = clean_spoken_noise(block.text)

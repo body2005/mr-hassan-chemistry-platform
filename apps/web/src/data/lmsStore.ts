@@ -117,4 +117,4 @@ export const INITIAL_SUBMISSIONS: AssignmentSubmission[] = [];
 
 export const INITIAL_CUSTOM_COLUMNS: CustomColumn[] = [];
 export const INITIAL_CHAT_SESSIONS: AIChatSession[] = [];
-export const INITIAL_REGISTERED_STUDENTS: any[] = [];
+export const INITIAL_REGISTERED_STUDENTS: StudentProfile[] = [];

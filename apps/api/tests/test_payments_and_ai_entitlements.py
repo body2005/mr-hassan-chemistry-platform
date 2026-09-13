@@ -84,7 +84,8 @@ def test_paid_course_requires_approved_order(db, monkeypatch) -> None:
     assert public_lesson["video_asset_key"] is None
 
     assert student_client.post(f"/api/v1/courses/{course.id}/enroll").status_code == 402
-    created = student_client.post(
+    # Verify whole-course checkout is rejected with 422 as per business rules
+    course_attempt = student_client.post(
         "/api/v1/payments/orders",
         json={
             "product_type": "course",
@@ -93,8 +94,19 @@ def test_paid_course_requires_approved_order(db, monkeypatch) -> None:
             "payer_reference": "TX-123",
         },
     )
+    assert course_attempt.status_code == 422
+
+    created = student_client.post(
+        "/api/v1/payments/orders",
+        json={
+            "product_type": "lesson",
+            "product_id": str(lesson.id),
+            "payment_method": "instapay",
+            "payer_reference": "TX-123",
+        },
+    )
     assert created.status_code == 201, created.text
-    assert created.json()["amount_egp"] == 250
+    assert created.json()["amount_egp"] == 50
 
     receipt = student_client.post(
         f"/api/v1/payments/orders/{created.json()['id']}/receipt",
@@ -115,7 +127,6 @@ def test_paid_course_requires_approved_order(db, monkeypatch) -> None:
     assert approved.status_code == 200, approved.text
     assert approved.json()["status"] == "paid"
 
-    assert student_client.post(f"/api/v1/courses/{course.id}/enroll").status_code == 200
     paid_course = student_client.get(f"/api/v1/courses/{course.id}").json()
     paid_lesson = paid_course["modules"][0]["lessons"][0]
     assert paid_lesson["content"] == "Private paid lesson content"
@@ -127,15 +138,15 @@ def test_paid_course_requires_approved_order(db, monkeypatch) -> None:
 
 
 def test_student_cannot_review_payment_order(db, monkeypatch) -> None:
-    _, _, student, course, _ = _seed_catalog(db, "student-review")
+    _, _, student, course, lesson = _seed_catalog(db, "student-review")
     monkeypatch.setattr(get_settings(), "payment_instapay_account", "teacher@instapay")
     client = TestClient(app)
     _login(client, student, "student-review", "student-password")
     order = client.post(
         "/api/v1/payments/orders",
         json={
-            "product_type": "course",
-            "product_id": str(course.id),
+            "product_type": "lesson",
+            "product_id": str(lesson.id),
             "payment_method": "instapay",
         },
     ).json()
@@ -175,7 +186,7 @@ def test_ai_subscription_unlocks_ai_but_not_unpurchased_paid_content(db, monkeyp
 
 
 def test_teacher_cannot_approve_another_teachers_course_order(db, monkeypatch) -> None:
-    institution, _, student, course, _ = _seed_catalog(db, "teacher-scope")
+    institution, _, student, course, lesson = _seed_catalog(db, "teacher-scope")
     other_teacher = User(
         institution_id=institution.id,
         username="other-teacher",
@@ -192,8 +203,8 @@ def test_teacher_cannot_approve_another_teachers_course_order(db, monkeypatch) -
     order_id = student_client.post(
         "/api/v1/payments/orders",
         json={
-            "product_type": "course",
-            "product_id": str(course.id),
+            "product_type": "lesson",
+            "product_id": str(lesson.id),
             "payment_method": "instapay",
         },
     ).json()["id"]

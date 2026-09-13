@@ -3,7 +3,6 @@ import type { LucideIcon } from "lucide-react";
 import {
   Bell,
   BookOpen,
-  CheckSquare,
   FileQuestion,
   GraduationCap,
   LayoutDashboard,
@@ -56,7 +55,6 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
   const studentNavItems: Array<{ id: NavTab; label: string; sub: string; icon: LucideIcon }> = [
     { id: "GeneralHome", label: t.navHome, sub: t.navHomeSub, icon: LayoutDashboard },
     { id: "MyCourses", label: t.navMyCourses, sub: t.navMyCoursesSub, icon: BookOpen },
-    { id: "MySubmissions", label: t.navMySubmissions, sub: t.navMySubmissionsSub, icon: CheckSquare },
     { id: "Payments", label: lang === "ar" ? "الدفع والاشتراكات" : "Payments", sub: lang === "ar" ? "تفعيل الدروس والمساعد الذكي" : "Lessons and AI access", icon: WalletCards },
     { id: "Notifications", label: lang === "ar" ? "الإشعارات والمواعيد" : "Notifications & Alerts", sub: lang === "ar" ? "جدول إشعارات صفك والدروس" : "Class alerts & deadlines", icon: Bell },
   ];

@@ -56,13 +56,14 @@ function csrfToken(): string | undefined {
   return raw ? decodeURIComponent(raw.split("=")[1]) : undefined;
 }
 
-function authToken(): string | undefined {
+export function authToken(): string | undefined {
   if (typeof localStorage === "undefined") return undefined;
   return localStorage.getItem("lms_session_token") || undefined;
 }
 
 function clearStaleSession(path: string): void {
-  if (path === "/auth/login" || path === "/auth/register") return;
+  const normalized = path.replace(/^\/api\/v1/, "");
+  if (normalized === "/auth/login" || normalized === "/auth/register") return;
   const hadSession = typeof localStorage !== "undefined"
     && Boolean(localStorage.getItem("lms_session_token") || localStorage.getItem("lms_cached_user"));
   if (typeof localStorage !== "undefined") {

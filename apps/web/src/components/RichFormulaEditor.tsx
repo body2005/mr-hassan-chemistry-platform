@@ -75,7 +75,7 @@ function textToWysiwygHtml(rawText: string): string {
   if (!rawText) return "";
 
   // Split by block math $$...$$, inline math $...$, or standalone reaction lines
-  const regex = /(\$\$[\s\S]*?\$\$|\$(?:\\\$|[^\$\n])+\$)/g;
+  const regex = /(\$\$[\s\S]*?\$\$|\$(?:\\\$|[^$\n])+\$)/g;
   let result = "";
   let last = 0;
   let match: RegExpExecArray | null;
@@ -195,22 +195,16 @@ export const RichFormulaEditor: React.FC<RichFormulaEditorProps> = ({
   const [isFocused, setIsFocused] = useState(false);
   const [selectedNode, setSelectedNode] = useState<{ element: HTMLElement; formula: string } | null>(null);
   const lastEmittedValueRef = useRef<string>(value);
+  const isInitializedRef = useRef(false);
 
-  // Sync incoming value with editor content when changed externally
+  // Sync incoming value with editor content when changed externally or on mount
   useEffect(() => {
-    if (editorRef.current && value !== lastEmittedValueRef.current) {
+    if (editorRef.current && (!isInitializedRef.current || value !== lastEmittedValueRef.current)) {
       editorRef.current.innerHTML = textToWysiwygHtml(value);
       lastEmittedValueRef.current = value;
+      isInitializedRef.current = true;
     }
   }, [value]);
-
-  // Initial load
-  useEffect(() => {
-    if (editorRef.current && !editorRef.current.innerHTML) {
-      editorRef.current.innerHTML = textToWysiwygHtml(value);
-      lastEmittedValueRef.current = value;
-    }
-  }, []);
 
   const handleInput = useCallback(() => {
     if (!editorRef.current) return;

@@ -11,7 +11,7 @@ export default defineConfig({
       name: "extend-http-server-timeouts",
       configureServer(server) {
         if (server.httpServer) {
-          const s = server.httpServer as any;
+          const s = server.httpServer as unknown as Record<string, number>;
           s.requestTimeout = 0;
           s.timeout = 0;
           s.headersTimeout = 0;
@@ -20,7 +20,7 @@ export default defineConfig({
       },
       configurePreviewServer(server) {
         if (server.httpServer) {
-          const s = server.httpServer as any;
+          const s = server.httpServer as unknown as Record<string, number>;
           s.requestTimeout = 0;
           s.timeout = 0;
           s.headersTimeout = 0;

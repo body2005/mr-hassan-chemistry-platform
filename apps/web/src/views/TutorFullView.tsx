@@ -79,13 +79,13 @@ export const TutorFullView: React.FC = () => {
       };
 
       setMessages((prev) => [...prev, assistantTurn]);
-    } catch (err: any) {
+    } catch (err: unknown) {
       setMessages((prev) => [
         ...prev,
         {
           id: `err_${Date.now()}`,
           role: "assistant",
-          content: `عذراً، لم نتمكن من الاتصال بالخادم الآن: ${err.message}`,
+          content: `عذراً، لم نتمكن من الاتصال بالخادم الآن: ${(err as Error)?.message || "حدث خطأ غير متوقع"}`,
           isGrounded: false,
           refusal: true,
           timestamp: "خطأ",
@@ -114,8 +114,8 @@ export const TutorFullView: React.FC = () => {
       });
 
       setIndexMessage(`تم تجهيز وفهرسة ${res.indexed_chunks_count} دروس في قاعدة المعرفة الذكية بنجاح!`);
-    } catch (err: any) {
-      setIndexMessage(`تنبيه: ${err.message}`);
+    } catch (err: unknown) {
+      setIndexMessage(`تنبيه: ${(err as Error)?.message || "حدث خطأ أثناء الفهرسة"}`);
     } finally {
       setIndexing(false);
     }

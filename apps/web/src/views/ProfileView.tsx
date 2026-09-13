@@ -12,11 +12,34 @@ import {
   Users,
   Video,
 } from "lucide-react";
-import { CurrentUser, StudentProfile, TeacherProfile } from "../types/lms";
+import { CurrentUser, StudentProfile, StudentRecord, TeacherProfile } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
 import { userService } from "../services/lmsService";
 import { useConfirm } from "../components/ConfirmWizard";
 import { StudentDetailModal } from "../components/StudentDetailModal";
+
+export interface ManagedStudentItem {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  isBlocked: boolean;
+  academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary";
+  academicYearLabel?: string;
+  nationalId?: string;
+  phone?: string;
+  studentPhone?: string;
+  guardianPhone?: string;
+  overallAttendanceRatio?: number;
+  assignmentSubmissionRatio?: number;
+  averageQuizScore?: number;
+  totalOverallGrade?: number;
+  homeworkSuccessRate?: number;
+  quizSuccessRate?: number;
+  lastActiveDate?: string;
+  customFieldValues?: Record<string, unknown>;
+  watchHistory?: StudentRecord["watchHistory"];
+}
 
 interface ProfileViewProps {
   user: CurrentUser;
@@ -36,11 +59,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const t = translations[lang];
 
   // Teacher Student Management State (حظر وحذف الطلاب)
-  const [registeredStudents, setRegisteredStudents] = useState<any[]>([]);
+  const [registeredStudents, setRegisteredStudents] = useState<ManagedStudentItem[]>([]);
   const [studentSearchTerm, setStudentSearchTerm] = useState("");
   const [studentYearFilter, setStudentYearFilter] = useState<string>("all");
   const [studentActionMsg, setStudentActionMsg] = useState<string | null>(null);
-  const [selectedStudentForDetail, setSelectedStudentForDetail] = useState<any | null>(null);
+  const [selectedStudentForDetail, setSelectedStudentForDetail] = useState<ManagedStudentItem | null>(null);
 
   useEffect(() => {
     void userService.getStudents()
@@ -426,7 +449,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                  {filteredStudents.map((st: any) => {
+                  {filteredStudents.map((st) => {
                     const isBlocked = !!st.isBlocked;
                     return (
                       <div
@@ -657,25 +680,31 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             {
               videoId: "vid_1",
               videoTitle: "الدرس الأول: العناصر الانتقالية وخواصها",
-              totalSeconds: 2400,
-              watchedSeconds: 2160,
+              courseTitle: "الكيمياء العامة",
+              totalDurationSec: 2400,
+              watchedDurationSec: 2160,
               completionPercentage: 90,
+              lastWatchedAt: "2026-08-20 14:30",
+              dropOffTimestampSec: 2160,
               segments: [
-                { startSecond: 0, endSecond: 600, replayCount: 1 },
-                { startSecond: 600, endSecond: 1200, replayCount: 2 },
-                { startSecond: 1200, endSecond: 1800, replayCount: 1 },
-                { startSecond: 1800, endSecond: 2160, replayCount: 1 },
+                { startTimeSec: 0, endTimeSec: 600, watched: true },
+                { startTimeSec: 600, endTimeSec: 1200, watched: true },
+                { startTimeSec: 1200, endTimeSec: 1800, watched: true },
+                { startTimeSec: 1800, endTimeSec: 2160, watched: true },
               ],
             },
             {
               videoId: "vid_2",
               videoTitle: "الدرس الثاني: تفاعلات أكاسيد الحديد والمعادلات",
-              totalSeconds: 1800,
-              watchedSeconds: 1620,
+              courseTitle: "الكيمياء العامة",
+              totalDurationSec: 1800,
+              watchedDurationSec: 1620,
               completionPercentage: 90,
+              lastWatchedAt: "2026-08-22 16:15",
+              dropOffTimestampSec: 1620,
               segments: [
-                { startSecond: 0, endSecond: 900, replayCount: 1 },
-                { startSecond: 900, endSecond: 1620, replayCount: 3 },
+                { startTimeSec: 0, endTimeSec: 900, watched: true },
+                { startTimeSec: 900, endTimeSec: 1620, watched: true },
               ],
             },
           ],

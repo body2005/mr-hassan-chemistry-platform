@@ -157,15 +157,15 @@ export const CustomColumnModal: React.FC<CustomColumnModalProps> = ({
             </label>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
               {[
-                { id: "text", label: "نص - Text" },
-                { id: "number", label: "رقم - Number" },
-                { id: "percentage", label: "نسبة مئوية - Percentage" },
-                { id: "checkbox", label: "خانة اختيار - Checkbox" },
+                { id: "text" as const, label: "نص - Text" },
+                { id: "number" as const, label: "رقم - Number" },
+                { id: "percentage" as const, label: "نسبة مئوية - Percentage" },
+                { id: "checkbox" as const, label: "خانة اختيار - Checkbox" },
               ].map((type) => (
                 <button
                   type="button"
                   key={type.id}
-                  onClick={() => setDataType(type.id as any)}
+                  onClick={() => setDataType(type.id)}
                   style={{
                     padding: "11px",
                     borderRadius: "10px",

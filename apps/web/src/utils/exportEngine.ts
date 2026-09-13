@@ -31,7 +31,7 @@ export async function exportToDocx(payload: ExportDataPayload, filename = "lms_r
     day: "numeric",
   });
 
-  const docChildren: any[] = [
+  const docChildren: (Paragraph | Table)[] = [
     new Paragraph({
       text: payload.title,
       heading: HeadingLevel.HEADING_1,

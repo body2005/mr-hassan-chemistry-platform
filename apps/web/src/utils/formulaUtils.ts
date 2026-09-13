@@ -34,7 +34,7 @@ export function toSubscript(text: string): string {
  * Converts normal digits & signs to Unicode superscripts (e.g. "2+" -> "²⁺")
  */
 export function toSuperscript(text: string): string {
-  return text.replace(/[0-9\+\-]/g, (ch) => SUP_CHARS[ch] || ch);
+  return text.replace(/[0-9+-]/g, (ch) => SUP_CHARS[ch] || ch);
 }
 
 /**
@@ -69,7 +69,8 @@ export function formatChemicalFormula(raw: string): string {
     .replace(/\\rightarrow\b/g, " → ")
     .replace(/\\xrightarrow\s*\{[^}]*\}/g, " → ")
     .replace(/\\(?:text|mathrm|mathbf)\{([^}]+)\}/g, "$1")
-    .replace(/[\$\\]/g, "");
+    .replace(/[$]/g, "")
+    .replace(/\\/g, "");
 
   // 1. Normalize arrows (equilibrium and irreversible)
   text = text.replace(/<==>|<=>/g, " ⇌ ");
@@ -83,8 +84,8 @@ export function formatChemicalFormula(raw: string): string {
   text = text.replace(/Δ\s*H/g, "ΔH");
 
   // 4. Format charge superscripts like ^2+, ^3+, ^-, ^+, 2+, 3+, 2-
-  text = text.replace(/\^([0-9]*[\+\-])/g, (_, ch) => toSuperscript(ch));
-  text = text.replace(/([A-Za-z\)\]])([2-4]?[+-])(?=[\s,\.\)\]]|$)/g, (_, base, ch) => {
+  text = text.replace(/\^([0-9]*[+-])/g, (_, ch) => toSuperscript(ch));
+  text = text.replace(/([A-Za-z)\]])([2-4]?[+-])(?=[\s,.)\]]|$)/g, (_, base, ch) => {
     return base + toSuperscript(ch);
   });
 

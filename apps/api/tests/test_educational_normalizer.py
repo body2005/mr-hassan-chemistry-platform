@@ -161,3 +161,30 @@ def test_quality_validation_gate():
     is_valid_bad, reason = validate_question_quality(bad_q, "كذا", valid_options, None)
     assert not is_valid_bad
     assert "banned colloquial" in reason.lower()
+
+
+def test_normalize_arabic_presentation_forms_and_preserve_chemistry():
+    """Verifies that Arabic presentation forms are normalized while chemical formulas, superscripts, and subscripts are 100% preserved."""
+    from app.services.document_parsers import normalize_arabic_presentation_forms
+
+    # Presentation form glyphs: \uFE8E (Alef final), \uFE8F (Beh isolated), \uFE91 (Beh initial)
+    raw_presentation = "\uFE8E\uFE8F\uFE91"
+    normalized = normalize_arabic_presentation_forms(raw_presentation)
+    assert "\uFE8E" not in normalized
+    assert "ا" in normalized or "ب" in normalized
+
+    # Chemical formulas, subscripts, superscripts and reaction equilibrium arrows MUST remain intact
+    chemical_formula = "N₂ + 3H₂ ⇌ 2NH₃ (SO₄²⁻, Fe³⁺)"
+    normalized_chem = normalize_arabic_presentation_forms(chemical_formula)
+    assert normalized_chem == chemical_formula
+
+    # Bidi marks and SVG remnants must be stripped
+    with_svg_and_bidi = "\u200Eمحلول كيميائي\u200F <svg viewBox='0 0 10 10'><path d='M0 0'/></svg> بتركيز 1 مولار"
+    cleaned = normalize_arabic_presentation_forms(with_svg_and_bidi)
+    assert "<svg" not in cleaned
+    assert "</svg>" not in cleaned
+    assert "\u200E" not in cleaned
+    assert "\u200F" not in cleaned
+    assert "محلول كيميائي" in cleaned
+    assert "بتركيز 1 مولار" in cleaned
+

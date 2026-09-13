@@ -37,8 +37,8 @@ function chemicalToLatex(chem: string): string {
   // 1. Protect existing \xrightarrow[below]{above} or \xrightarrow{above}
   const protectedArrows: string[] = [];
   expr = expr.replace(/\\xrightarrow(?:\[([^\]]*)\])?\{([^}]*)\}/g, (_match, below, above) => {
-    let cleanAbove = (above || "").replace(/\\quad/g, " ").trim();
-    let cleanBelow = (below || "").replace(/\\quad/g, " ").trim();
+    const cleanAbove = (above || "").replace(/\\quad/g, " ").trim();
+    const cleanBelow = (below || "").replace(/\\quad/g, " ").trim();
     if (!cleanAbove && !cleanBelow) return "\\rightarrow ";
     const idx = protectedArrows.length;
     const formattedAbove = formatReactionCondition(cleanAbove);
@@ -117,7 +117,7 @@ function renderKatexHtml(latex: string, displayMode: boolean): string {
     });
   } catch {
     // If KaTeX rendering fails, return clean text without $ or $$ delimiters
-    return latex.replace(/[\$\\]/g, "");
+    return latex.replace(/[$]/g, "").replace(/\\/g, "");
   }
 }
 
@@ -139,7 +139,7 @@ function parseInline(text: string): InlineToken[] {
   // 2. Inline math: $...$ or \(...\)
   // 3. Bold text: **...**
   // 4. Inline code: `...`
-  const tokenRegex = /(\*\*\$(?:\\\$|[^\$\n])+\$\*\*|\*\*\\\([\s\S]*?\\\)\*\*|\$(?:\\\$|[^\$\n])+\$|\\\([\s\S]*?\\\)|(?<!\*)\*\*(?!\*)(.+?)(?<!\*)\*\*(?!\*)|`([^`]+)`)/g;
+  const tokenRegex = /(\*\*\$(?:\\\$|[^$\n])+\$\*\*|\*\*\\\([\s\S]*?\\\)\*\*|\$(?:\\\$|[^$\n])+\$|\\\([\s\S]*?\\\)|(?<!\*)\*\*(?!\*)(.+?)(?<!\*)\*\*(?!\*)|`([^`]+)`)/g;
 
   const tokens: InlineToken[] = [];
   let last = 0;
@@ -237,7 +237,7 @@ function addTextBlocks(textChunk: string, blocks: BlockItem[]) {
     if (!trimmed) return;
 
     // Check for divider
-    if (/^(\-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
       blocks.push({ type: "divider", content: "" });
       return;
     }
@@ -269,7 +269,7 @@ function addTextBlocks(textChunk: string, blocks: BlockItem[]) {
     }
 
     // Check for bullet list item: * or -
-    const bulletMatch = trimmed.match(/^[\*\-]\s+(.+)$/);
+    const bulletMatch = trimmed.match(/^[* -]\s+(.+)$/);
     if (bulletMatch) {
       blocks.push({
         type: "list-item",
@@ -280,7 +280,7 @@ function addTextBlocks(textChunk: string, blocks: BlockItem[]) {
     }
 
     // Check for numbered list item: 1. or 1)
-    const numMatch = trimmed.match(/^(\d+[\.\)])\s+(.+)$/);
+    const numMatch = trimmed.match(/^(\d+[.)])\s+(.+)$/);
     if (numMatch) {
       blocks.push({
         type: "list-item",

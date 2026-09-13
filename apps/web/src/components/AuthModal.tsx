@@ -380,7 +380,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>السنة الدراسية:</label>
                 <select
                   value={stdYear}
-                  onChange={(e) => setStdYear(e.target.value as any)}
+                  onChange={(e) => setStdYear(e.target.value as "1st_secondary" | "2nd_secondary" | "3rd_secondary")}
                   style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: "8px", fontSize: "12px", background: "white" }}
                 >
                   <option value="1st_secondary">الصف الأول الثانوي</option>
@@ -501,7 +501,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>السنة الدراسية التي تدرسها:</label>
               <select
                 value={tchYear}
-                onChange={(e) => setTchYear(e.target.value as any)}
+                onChange={(e) => setTchYear(e.target.value as "1st_secondary" | "2nd_secondary" | "3rd_secondary" | "all")}
                 style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: "8px", fontSize: "12px", background: "white" }}
               >
                 <option value="1st_secondary">الصف الأول الثانوي</option>

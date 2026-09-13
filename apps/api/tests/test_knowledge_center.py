@@ -455,3 +455,38 @@ def test_stop_indexing_preserves_file(db, test_setup):
     db.refresh(source)
     assert source.status in (SourceStatus.STOPPED, SourceStatus.FAILED)
     assert "محفوظ بالسيرفر" in (source.error_message or "")
+
+
+def test_preview_token_security():
+    """Verifies that short-lived preview tokens are signed, verified, and correctly bound to source_id."""
+    from app.core.security import create_preview_token, decode_preview_token
+
+    mock_user = User(
+        id=uuid.uuid4(),
+        institution_id=uuid.uuid4(),
+        email="test_preview@example.com",
+        role=UserRole.TEACHER,
+        display_name="Teacher Preview",
+    )
+    source_id = uuid.uuid4()
+
+    # 1. Valid token
+    token = create_preview_token(mock_user, source_id, expires_in_seconds=300)
+    assert isinstance(token, str)
+    assert len(token) > 20
+
+    # 2. Decode valid token
+    decoded = decode_preview_token(token)
+    assert decoded is not None
+    assert decoded["source_id"] == str(source_id)
+    assert decoded["sub"] == str(mock_user.id)
+
+    # 3. Invalid / tampered token
+    tampered_token = token[:-5] + "ABCDE"
+    assert decode_preview_token(tampered_token) is None
+
+    # 4. Expired token
+    expired_token = create_preview_token(mock_user, source_id, expires_in_seconds=-10)
+    assert decode_preview_token(expired_token) is None
+
+

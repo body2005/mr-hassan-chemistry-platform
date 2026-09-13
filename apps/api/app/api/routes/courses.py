@@ -33,7 +33,40 @@ Student = Annotated[User, Depends(require_roles(UserRole.STUDENT))]
 
 def _safe_course_responses(db: Session, user: User | None, courses: list) -> list[CourseResponse]:
     responses = [CourseResponse.model_validate(course) for course in courses]
+    
+    # Collect all lesson IDs across returned courses
+    all_lesson_ids = [lesson.id for course in responses for module in course.modules for lesson in module.lessons]
+    materials_by_lesson: dict[uuid.UUID, list[LessonMaterialSummary]] = {}
+    if all_lesson_ids:
+        from app.models.knowledge_center import KnowledgeSource, SourceStatus, SourceRole
+        from app.schemas import LessonMaterialSummary
+        sources = db.scalars(
+            select(KnowledgeSource).where(
+                KnowledgeSource.lesson_id.in_(all_lesson_ids),
+                KnowledgeSource.status != SourceStatus.DELETING,
+                KnowledgeSource.source_role != SourceRole.ASSESSMENT,
+            )
+        ).all()
+        for s in sources:
+            if not s.lesson_id:
+                continue
+            materials_by_lesson.setdefault(s.lesson_id, []).append(
+                LessonMaterialSummary(
+                    id=s.id,
+                    filename=s.filename,
+                    file_format=s.file_format,
+                    size_bytes=s.size_bytes,
+                    source_role=s.source_role,
+                    download_url=f"/api/v1/knowledge-center/sources/{s.id}/download",
+                    created_at=s.created_at,
+                )
+            )
+
     if user and user.role != UserRole.STUDENT:
+        for course in responses:
+            for module in course.modules:
+                for lesson in module.lessons:
+                    lesson.materials = materials_by_lesson.get(lesson.id, [])
         return responses
 
     enrolled_course_ids: set[uuid.UUID] = set()
@@ -74,9 +107,12 @@ def _safe_course_responses(db: Session, user: User | None, courses: list) -> lis
                     or lesson.id in lesson_entitlements
                     or (course_is_free and float(lesson.price_egp or 0) == 0)
                 )
-                if not has_lesson_access:
+                if has_lesson_access:
+                    lesson.materials = materials_by_lesson.get(lesson.id, [])
+                else:
                     lesson.content = None
                     lesson.video_asset_key = None
+                    lesson.materials = []
     return responses
 
 

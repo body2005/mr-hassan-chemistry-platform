@@ -71,7 +71,7 @@ export const SubmissionsView: React.FC = () => {
     setCustomColumns(customColumns.filter((c) => c.id !== colId));
   }
 
-  function handleUpdateCustomValue(studentId: string, colId: string, value: any) {
+  function handleUpdateCustomValue(studentId: string, colId: string, value: string | number | boolean) {
     setStudents((prev) =>
       prev.map((s) => {
         if (s.id === studentId) {
@@ -236,13 +236,13 @@ export const SubmissionsView: React.FC = () => {
         <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ fontSize: "13px", fontWeight: 800, color: "var(--text-main)", marginInlineEnd: "4px" }}>السنة الدراسية:</span>
           {[
-            { id: "1st_secondary", label: "الأول الثانوي" },
-            { id: "2nd_secondary", label: "الثاني الثانوي" },
-            { id: "3rd_secondary", label: "الثالث الثانوي" },
+            { id: "1st_secondary" as const, label: "الأول الثانوي" },
+            { id: "2nd_secondary" as const, label: "الثاني الثانوي" },
+            { id: "3rd_secondary" as const, label: "الثالث الثانوي" },
           ].map((y) => (
             <button
               key={y.id}
-              onClick={() => setSelectedYear(y.id as any)}
+              onClick={() => setSelectedYear(y.id)}
               style={{
                 padding: "7px 14px",
                 borderRadius: "8px",

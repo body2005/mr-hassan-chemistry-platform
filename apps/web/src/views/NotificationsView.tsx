@@ -16,7 +16,7 @@ import {
   XCircle,
   CheckCircle2,
 } from "lucide-react";
-import { CurrentUser, NotificationItem, NotificationSchedule } from "../types/lms";
+import { CurrentUser, NotificationItem, NotificationSchedule, StudentProfile } from "../types/lms";
 import { NavTab } from "../components/Sidebar";
 import { calendarService, notificationService } from "../services/lmsService";
 
@@ -156,7 +156,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   currentUser,
 }) => {
   const isTeacher = currentUser.role === "teacher";
-  const studentYear = ((currentUser as any).academicYear as "1st_secondary" | "2nd_secondary" | "3rd_secondary") || "1st_secondary";
+  const studentYear = ((currentUser as StudentProfile).academicYear as "1st_secondary" | "2nd_secondary" | "3rd_secondary") || "1st_secondary";
   const initialGrade = !isTeacher ? studentYear : "1st_secondary";
 
   const [selectedGrade, setSelectedGrade] = useState<"1st_secondary" | "2nd_secondary" | "3rd_secondary">(initialGrade);
@@ -277,7 +277,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       dueDate: broadcastDueDate.trim() || undefined,
       createdAt: "الآن",
       read: false,
-      actionTab: broadcastActionTab as any,
+      actionTab: broadcastActionTab,
     };
 
     if (onAddNotification) onAddNotification(newNotif);
@@ -561,7 +561,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       }
     } else {
       // For Student: show notifications for active selected grade tab or their own academic year or general ("all")
-      const studentYear = (currentUser as any).academicYear;
+      const studentYear = (currentUser as StudentProfile).academicYear;
       const activeGrade = selectedGrade || studentYear;
       if (n.targetYear && n.targetYear !== activeGrade && n.targetYear !== studentYear && n.targetYear !== "all") {
         return false;
@@ -659,7 +659,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                   <select
                     id="audience-selector"
                     value={teacherTargetAudience}
-                    onChange={(e) => setTeacherTargetAudience(e.target.value as any)}
+                    onChange={(e) => setTeacherTargetAudience(e.target.value as "all" | "1st_secondary" | "2nd_secondary" | "3rd_secondary")}
                     style={{
                       padding: "6px 12px",
                       borderRadius: "8px",
@@ -726,15 +726,15 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
 
               {/* Filter Pills */}
               <div style={{ display: "flex", gap: "6px" }}>
-                {[
+                {([
                   { id: "all", label: "الكل" },
                   { id: "assignment", label: "الواجبات" },
                   { id: "quiz", label: "الاختبارات" },
                   { id: "system", label: "الدروس" },
-                ].map((f) => (
+                ] as const).map((f) => (
                   <button
                     key={f.id}
-                    onClick={() => setActiveFilter(f.id as any)}
+                    onClick={() => setActiveFilter(f.id)}
                     style={{
                       padding: "4px 12px",
                       borderRadius: "8px",
@@ -1381,7 +1381,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                   </label>
                   <select
                     value={wizardState.contentType}
-                    onChange={(e) => setWizardState((prev) => ({ ...prev, contentType: e.target.value as any }))}
+                    onChange={(e) => setWizardState((prev) => ({ ...prev, contentType: e.target.value as "lesson" | "assignment" | "quiz" | "general" }))}
                     style={{
                       width: "100%",
                       padding: "9px 12px",
@@ -1602,26 +1602,6 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                     <button
                       type="button"
-                      onClick={handleSaveWizardSchedule}
-                      disabled={!wizardState.dayTitle.trim()}
-                      style={{
-                        padding: "9px 18px",
-                        borderRadius: "8px",
-                        border: "none",
-                        background: "#059669",
-                        color: "#ffffff",
-                        fontSize: "12.5px",
-                        fontWeight: 800,
-                        cursor: "pointer",
-                        opacity: !wizardState.dayTitle.trim() ? 0.6 : 1,
-                        boxShadow: "0 2px 6px rgba(5, 150, 105, 0.3)",
-                      }}
-                    >
-                      حفظ وتثبيت الموعد فوراً
-                    </button>
-
-                    <button
-                      type="button"
                       onClick={() => setWizardState((prev) => ({ ...prev, step: 2 }))}
                       disabled={!wizardState.dayTitle.trim()}
                       style={{
@@ -1656,7 +1636,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                       <small style={{ display: "block", color: "var(--text-muted)", fontSize: "11px", marginBottom: "3px" }}>الفترة:</small>
                       <select
                         value={wizardState.timePeriod}
-                        onChange={(e) => setWizardState((prev) => ({ ...prev, timePeriod: e.target.value as any }))}
+                        onChange={(e) => setWizardState((prev) => ({ ...prev, timePeriod: e.target.value as "ص" | "م" }))}
                         style={{
                           width: "100%",
                           padding: "9px 12px",
@@ -1882,7 +1862,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                 </label>
                 <select
                   value={broadcastTargetGrade}
-                  onChange={(e) => setBroadcastTargetGrade(e.target.value as any)}
+                  onChange={(e) => setBroadcastTargetGrade(e.target.value as "all" | "1st_secondary" | "2nd_secondary" | "3rd_secondary")}
                   style={{
                     width: "100%",
                     padding: "9px 12px",
@@ -1907,7 +1887,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                 </label>
                 <select
                   value={broadcastType}
-                  onChange={(e) => setBroadcastType(e.target.value as any)}
+                  onChange={(e) => setBroadcastType(e.target.value as "system" | "assignment" | "quiz" | "warning")}
                   style={{
                     width: "100%",
                     padding: "9px 12px",

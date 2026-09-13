@@ -76,7 +76,29 @@ class Settings(BaseSettings):
 
     @property
     def cors_origins(self) -> list[str]:
-        return [origin.strip() for origin in self.frontend_origins.split(",") if origin.strip()]
+        raw = (self.frontend_origins or "").strip()
+        origins: list[str] = []
+        if raw.startswith("[") and raw.endswith("]"):
+            import json
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    origins = [str(item).strip() for item in parsed if str(item).strip()]
+            except Exception:
+                pass
+        if not origins and raw:
+            origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+        default_exact = [
+            "https://mr-hassan-chemistry-platform.vercel.app",
+            "https://mr-hassan-chemistry.vercel.app",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ]
+        for d in default_exact:
+            if d not in origins:
+                origins.append(d)
+        return origins
 
     @property
     def sqlalchemy_database_url(self) -> str:

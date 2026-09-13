@@ -11,7 +11,7 @@ except ImportError:
 
 from typing import Generic, TypeVar
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app.models.course import CourseStatus, EnrollmentStatus, LessonKind, IndexingStatus
 from app.models.platform import (
@@ -109,6 +109,18 @@ class LessonCreateRequest(BaseModel):
     price_egp: float = Field(default=0, ge=0, le=1_000_000)
 
 
+class LessonMaterialSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    filename: str
+    file_format: str
+    size_bytes: int
+    source_role: str
+    download_url: str
+    created_at: datetime
+
+
 class LessonResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -124,6 +136,7 @@ class LessonResponse(BaseModel):
     indexed_chunks_count: int = 0
     rag_synced: bool = False
     price_egp: float = 0
+    materials: list[LessonMaterialSummary] = []
 
 
 class ModuleResponse(BaseModel):
@@ -322,13 +335,27 @@ class QuestionResponse(BaseModel):
 
 class QuizCreateRequest(BaseModel):
     course_id: uuid.UUID
-    title: str = Field(min_length=2, max_length=200)
+    title: str = Field(default="", max_length=200)
+    quiz_title: str | None = Field(default=None, max_length=200)
     duration_seconds: int | None = Field(default=None, ge=30, le=24 * 60 * 60)
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     randomize_questions: bool = False
     attempts_allowed: int = Field(default=1, ge=1, le=10)
     question_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_title(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            t = (data.get("title") or data.get("quiz_title") or "").strip()
+            if not t:
+                raise ValueError("اسم الاختبار (quiz_title) إجباري ولا يمكن تركه فارغاً")
+            if len(t) < 2:
+                raise ValueError("اسم الاختبار يجب أن يحتوي على حرفين على الأقل")
+            data["title"] = t
+            data["quiz_title"] = t
+        return data
 
 
 class QuizResponse(BaseModel):
@@ -337,6 +364,7 @@ class QuizResponse(BaseModel):
     id: uuid.UUID
     course_id: uuid.UUID
     title: str
+    quiz_title: str | None = None
     status: QuizStatus
     version: int
     duration_seconds: int | None
@@ -346,6 +374,12 @@ class QuizResponse(BaseModel):
     randomize_questions: bool
     attempts_allowed: int
     created_at: datetime
+
+    @model_validator(mode="after")
+    def populate_quiz_title(self) -> "QuizResponse":
+        if not self.quiz_title:
+            self.quiz_title = self.title
+        return self
 
 
 class QuizAttemptResponse(BaseModel):
@@ -388,10 +422,24 @@ class QuizAttemptSubmitRequest(BaseModel):
 
 class AssignmentCreateRequest(BaseModel):
     course_id: uuid.UUID
-    title: str = Field(min_length=2, max_length=200)
+    title: str = Field(default="", max_length=200)
+    assignment_title: str | None = Field(default=None, max_length=200)
     prompt: str = Field(min_length=2, max_length=20_000)
     due_at: datetime | None = None
     max_score: float = Field(default=100.0, gt=0, le=100_000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_title(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            t = (data.get("title") or data.get("assignment_title") or "").strip()
+            if not t:
+                raise ValueError("اسم الواجب (assignment_title) إجباري ولا يمكن تركه فارغاً")
+            if len(t) < 2:
+                raise ValueError("اسم الواجب يجب أن يحتوي على حرفين على الأقل")
+            data["title"] = t
+            data["assignment_title"] = t
+        return data
 
 
 class AssignmentResponse(BaseModel):
@@ -400,11 +448,18 @@ class AssignmentResponse(BaseModel):
     id: uuid.UUID
     course_id: uuid.UUID
     title: str
+    assignment_title: str | None = None
     prompt: str
     due_at: datetime | None
     max_score: float
     status: AssignmentStatus
     created_at: datetime
+
+    @model_validator(mode="after")
+    def populate_assignment_title(self) -> "AssignmentResponse":
+        if not self.assignment_title:
+            self.assignment_title = self.title
+        return self
 
 
 class AssignmentSubmissionCreateRequest(BaseModel):

@@ -46,6 +46,7 @@ interface SelectedMaterialFile {
   name: string;
   sizeFormatted: string;
   fileType: "pdf" | "video" | "doc";
+  file?: File;
 }
 
 interface LessonManagementViewProps {
@@ -123,6 +124,37 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         courseId: activeCourse?.id,
       });
       notify(`جاري رفع وتحديث فيديو "${lessonTitle}" في الخلفية إلى السحابة... يمكنك الاستمرار بالعمل بحرية.`);
+      e.target.value = "";
+    }
+  }
+
+  const individualMaterialInputRef = useRef<HTMLInputElement>(null);
+  const targetLessonIdForMaterialRef = useRef<string | null>(null);
+
+  function triggerAttachMaterialToLesson(lessonId: string) {
+    targetLessonIdForMaterialRef.current = lessonId;
+    individualMaterialInputRef.current?.click();
+  }
+
+  async function handleIndividualMaterialChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files;
+    const lessonId = targetLessonIdForMaterialRef.current;
+    if (files && files.length > 0 && lessonId && activeCourse) {
+      const lesson = activeLessons.find((l) => l.id === lessonId);
+      const lessonTitle = lesson?.title || "الدرس";
+      uploadManager.enqueueKnowledgeBatchUpload({
+        files: Array.from(files),
+        courseId: activeCourse.id,
+        lessonId,
+        lessonTitle,
+        onSuccess: () => {
+          courseService.getCourses().then((refreshed) => {
+            setCourses(refreshed);
+            onCoursesChanged(refreshed);
+          });
+        },
+      });
+      notify(`جاري رفع ${files.length} ملفات مذكرة للدرس "${lessonTitle}" في الخلفية إلى السحابة...`);
       e.target.value = "";
     }
   }
@@ -270,6 +302,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
           name: f.name,
           sizeFormatted: `${sizeMB} MB`,
           fileType: ext === "pdf" ? "pdf" : "doc",
+          file: f,
         };
       });
       setAttachedFiles((prev) => [...prev, ...newMaterials]);
@@ -397,11 +430,34 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
           file: selectedVideoFile,
           courseId: course.id,
         });
+      }
+
+      const noteFiles = attachedFiles.map((f) => f.file).filter((f): f is File => Boolean(f));
+      if (noteFiles.length > 0) {
+        uploadManager.enqueueKnowledgeBatchUpload({
+          files: noteFiles,
+          courseId: course.id,
+          lessonId: addedLesson.id,
+          lessonTitle: savedTitle,
+          onSuccess: () => {
+            courseService.getCourses().then((refreshed) => {
+              setCourses(refreshed);
+              onCoursesChanged(refreshed);
+            });
+          },
+        });
+      }
+
+      if (videoSourceType === "file" && selectedVideoFile && noteFiles.length > 0) {
+        notify(`تم إنشاء درس "${savedTitle}" بنجاح! جاري رفع الفيديو والمذكرات الآن في الخلفية إلى السحابة... يمكنك التنقل ومتابعة عملك بحرية.`);
+      } else if (videoSourceType === "file" && selectedVideoFile) {
         notify(`تم إنشاء درس "${savedTitle}" بنجاح! جاري رفع الفيديو الآن في الخلفية إلى السحابة... يمكنك التنقل ومتابعة عملك بحرية.`);
+      } else if (noteFiles.length > 0) {
+        notify(`تم إنشاء درس "${savedTitle}" بنجاح! جاري رفع المذكرات الآن في الخلفية إلى السحابة... يمكنك التنقل ومتابعة عملك بحرية.`);
       } else if (directCloudUrl) {
         notify(`تم حفظ درس "${savedTitle}" بنجاح مع رابط الفيديو السحابي المباشر!`);
       } else {
-        notify(`تم حفظ درس "${savedTitle}" والمرفقات بنجاح!`);
+        notify(`تم حفظ درس "${savedTitle}" بنجاح!`);
       }
 
       const refreshed = await courseService.getCourses();
@@ -1634,7 +1690,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                     <button
                       type="button"
                       onClick={() => {
-                        lessonAttachRef.current?.click();
+                        triggerAttachMaterialToLesson(lesson.id);
                       }}
                       style={{
                         background: "none",
@@ -1654,7 +1710,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
 
                   {lesson.materials && lesson.materials.length > 0 ? (
                     <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-                      {lesson.materials.map((mat: any) => (
+                      {lesson.materials.map((mat) => (
                         <div
                           key={mat.id}
                           style={{
@@ -1951,6 +2007,22 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
           </div>
         </div>
       )}
+
+      <input
+        type="file"
+        ref={individualVideoInputRef}
+        accept="video/*"
+        onChange={handleIndividualVideoChange}
+        style={{ display: "none" }}
+      />
+      <input
+        type="file"
+        ref={individualMaterialInputRef}
+        multiple
+        accept=".pdf,.doc,.docx,.ppt,.pptx"
+        onChange={handleIndividualMaterialChange}
+        style={{ display: "none" }}
+      />
 
       {toast && (
         <div className="wizard-toast" role="status">

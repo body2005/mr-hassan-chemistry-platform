@@ -58,6 +58,34 @@ def decode_session_token(token: str) -> dict[str, Any] | None:
     return payload
 
 
+def create_preview_token(user: User, source_id: uuid.UUID, expires_in_seconds: int = 900) -> str:
+    settings = get_settings()
+    now = datetime.now(UTC)
+    payload: dict[str, Any] = {
+        "sub": str(user.id),
+        "institution_id": str(user.institution_id),
+        "role": user.role.value,
+        "source_id": str(source_id),
+        "type": "preview",
+        "jti": str(uuid.uuid4()),
+        "iat": now,
+        "exp": now + timedelta(seconds=expires_in_seconds),
+    }
+    return jwt.encode(payload, settings.secret_key, algorithm="HS256")
+
+
+def decode_preview_token(token: str) -> dict[str, Any] | None:
+    settings = get_settings()
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+    except jwt.PyJWTError:
+        return None
+
+    if payload.get("type") != "preview" or not payload.get("sub") or not payload.get("source_id"):
+        return None
+    return payload
+
+
 def create_password_reset_token() -> tuple[str, str]:
     raw_token = secrets.token_urlsafe(32)
     return raw_token, hash_token(raw_token)

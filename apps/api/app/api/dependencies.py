@@ -24,7 +24,12 @@ def _extract_token(request: Request, session_cookie: str | None = None) -> str |
     auth = request.headers.get("Authorization") or request.headers.get("authorization")
     if auth and auth.lower().startswith("bearer "):
         return auth[7:].strip()
-    return session_cookie or None
+    if session_cookie:
+        return session_cookie
+    query_token = request.query_params.get("token")
+    if query_token:
+        return query_token.strip()
+    return None
 
 
 def get_current_user(

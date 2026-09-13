@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   AlertCircle,
   ArrowDown,
@@ -105,7 +105,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
     () => initialDraft?.selectedAcademicYear || "1st_secondary"
   );
   const currentCourse = courses.find((c) => c.academicYear === selectedAcademicYear);
-  const courseLessons = currentCourse?.lessons || [];
+  const courseLessons = useMemo(() => currentCourse?.lessons || [], [currentCourse]);
 
   // Selected Lesson IDs
   const [selectedLessonIds, setSelectedLessonIds] = useState<string[]>(() => {
@@ -129,7 +129,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
     } else {
       setSelectedLessonIds([]);
     }
-  }, [selectedAcademicYear, courses.length]);
+  }, [courseLessons, initialDraft?.selectedLessonIds]);
 
   // Activity Type: Quiz vs Assignment
   const [assessmentType, setAssessmentType] = useState<"quiz" | "assignment">(() => initialDraft?.assessmentType || "quiz");
@@ -275,7 +275,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
         tone: "info",
       });
     }
-  }, []);
+  }, [initialDraft, toast]);
 
   // ================= AUTO-SAVE PERSISTENCE FOR UN-UPLOADED QUIZ =================
   useEffect(() => {
@@ -434,7 +434,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
           lesson_contents: lessonPassages.length > 0 ? lessonPassages : [promptContext],
           question_count: totalQuestions,
           allowed_types: allowedTypesList.length > 0 ? allowedTypesList : ["multiple_choice", "essay"],
-          type_allocations: typeConfigs as any,
+          type_allocations: typeConfigs,
           topics: targetLessons.length > 0 ? targetLessons.map((l) => l.title) : [currentCourse?.title || "محتوى الدرس"],
           quiz_mode: quizMode,
         },
@@ -442,8 +442,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
       );
 
       setDraft(resp);
-    } catch (err: any) {
-      setError(err.message || "عذراً، حدث خطأ أثناء توليد مسودة الاختبار. تأكد من تشغيل خادم الذكاء الاصطناعي ورفع محتوى الدرس.");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "عذراً، حدث خطأ أثناء توليد مسودة الاختبار. تأكد من تشغيل خادم الذكاء الاصطناعي ورفع محتوى الدرس.");
     } finally {
       setLoading(false);
     }
@@ -474,8 +474,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
         message: `تم استخراج ${resp.questions.length} سؤال بنجاح من ملف "${file.name}"!`,
         tone: "success",
       });
-    } catch (err: any) {
-      const errMsg = err?.message || "فشل استخراج الأسئلة من الملف. يرجى التأكد من صحة الملف وصيغته.";
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : "فشل استخراج الأسئلة من الملف. يرجى التأكد من صحة الملف وصيغته.";
       setError(errMsg);
       toast({
         message: errMsg,
@@ -514,7 +514,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
           lesson_contents: lessonPassages.length > 0 ? lessonPassages : [""],
           question_count: totalQuestions,
           allowed_types: allowedTypesList.length > 0 ? allowedTypesList : ["multiple_choice", "essay"],
-          type_allocations: typeConfigs as any,
+          type_allocations: typeConfigs,
           topics: targetLessons.length > 0 ? targetLessons.map((l) => l.title) : [currentCourse?.title || "محتوى الدرس"],
           quiz_mode: quizMode,
           exclude_stems: existingStems,
@@ -542,8 +542,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
         total_points: newTotal,
         is_complete: resp.is_complete !== false,
       });
-    } catch (err: any) {
-      setError(err.message || "حدث خطأ أثناء توليد المزيد من الأسئلة.");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "حدث خطأ أثناء توليد المزيد من الأسئلة.");
     } finally {
       setLoading(false);
     }
@@ -838,8 +838,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
         message: `تم اعتماد ونشر ${isQuiz ? "الاختبار" : "الواجب"} وإدراجه في سجل الاختبارات المرفوعة وجدول الطلاب بنجاح!`,
         tone: "success",
       });
-    } catch (err: any) {
-      setError(err?.message || "حدث خطأ أثناء حفظ ونشر الاختبار.");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "حدث خطأ أثناء حفظ ونشر الاختبار.");
     } finally {
       setIsPublishing(false);
     }
@@ -1633,7 +1633,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
               <p style={{ margin: "0 0 18px", fontSize: "13px", maxWidth: "420px", marginInline: "auto" }}>
                 {quizMode === "extract"
                   ? "قم برفع ملف الامتحان أو بنك الأسئلة أدناه لاستخراج جميع الأسئلة والخيارات والرسومات وتعديلها فوراً."
-                  : `حدد إعدادات الأسئلة ومواعيد الإتاحة واضغط \"اصنع ${assessmentType === "quiz" ? "الاختبار" : "الواجب"} بالذكاء الاصطناعي\" أو ارفع ملف أسئلة للاستخراج الفوري.`}
+                  : `حدد إعدادات الأسئلة ومواعيد الإتاحة واضغط "اصنع ${assessmentType === "quiz" ? "الاختبار" : "الواجب"} بالذكاء الاصطناعي" أو ارفع ملف أسئلة للاستخراج الفوري.`}
               </p>
 
               {(quizMode === "extract" || quizMode === "mix") && (
@@ -1846,7 +1846,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
                           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                             <select
                               value={normalizeQuestionType(q.question_type)}
-                              onChange={(e) => updateQuestionType(q.id, e.target.value as any)}
+                              onChange={(e) => updateQuestionType(q.id, e.target.value as "multiple_choice" | "essay" | "true_false" | "fill_in_blank")}
                               style={{
                                 padding: "3px 8px",
                                 borderRadius: "6px",

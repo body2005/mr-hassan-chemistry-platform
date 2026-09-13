@@ -56,8 +56,8 @@ export const EssayGraderView: React.FC = () => {
         false
       );
       setResult(resp);
-    } catch (err: any) {
-      setError(err.message || "عذراً، حدث خطأ أثناء تصحيح الإجابة.");
+    } catch (err: unknown) {
+      setError((err as Error)?.message || "عذراً، حدث خطأ أثناء تصحيح الإجابة.");
     } finally {
       setLoading(false);
     }

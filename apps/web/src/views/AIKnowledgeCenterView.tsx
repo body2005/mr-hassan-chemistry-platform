@@ -27,7 +27,7 @@ import {
 } from "lucide-react";
 import { courseService } from "../services/lmsService";
 import { Course } from "../types/lms";
-import { apiRequest, apiUrl, ApiClientError, fetchApiBlob } from "../services/apiClient";
+import { apiRequest, apiUrl, ApiClientError, fetchApiBlob, authToken } from "../services/apiClient";
 import { uploadManager } from "../services/uploadManager";
 import { useConfirm } from "../components/ConfirmWizard";
 import { useToast } from "../components/ToastProvider";
@@ -54,6 +54,31 @@ interface KnowledgeSourceItem {
   error_message?: string | null;
   file_url?: string | null;
   created_at: string;
+}
+
+interface InspectSourceState {
+  id: string;
+  filename: string;
+  file_format: string;
+  file_url: string;
+  size_bytes: number | null;
+  total_pages: number;
+  currentPage: number;
+  pageInput: string;
+  viewMode: "ORIGINAL_FILE" | "FAST_PAGES";
+  scale: number | "fit";
+  pageLoading: boolean;
+  document: {
+    title?: string;
+    doc_type?: string;
+    total_pages?: number | null;
+    total_slides?: number | null;
+    hierarchy?: unknown;
+  } | null;
+  units: unknown[];
+  outline: unknown[];
+  images: unknown[];
+  loadingUnits: boolean;
 }
 
 interface AIKnowledgeCenterViewProps {
@@ -92,12 +117,10 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
   const uploadProgress = currentKnowledgeTask ? currentKnowledgeTask.progress : null;
 
   // Inspector modal state
-  const [inspectSource, setInspectSource] = useState<any | null>(null);
-  const [inspectTab, setInspectTab] = useState<"DOCUMENT" | "OUTLINE" | "UNITS" | "ASSESSMENT">("DOCUMENT");
+  const [inspectSource, setInspectSource] = useState<InspectSourceState | null>(null);
+  const [previewToken, setPreviewToken] = useState<string | null>(null);
 
-  // The file-view endpoint requires the authenticated bearer token.  Fetching
-  // it as a blob makes the preview work even when an iframe cannot attach that
-  // token (and avoids the old unauthorised /page/1 requests).
+  // Authenticated file view token & blob preview
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -221,7 +244,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
 
   // Navigation helpers for fast document viewer
   const goToNextPage = useCallback(() => {
-    setInspectSource((prev: any) => {
+    setInspectSource((prev) => {
       if (!prev) return null;
       if (prev.currentPage >= (prev.total_pages || 1)) return prev;
       const next = prev.currentPage + 1;
@@ -230,7 +253,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
   }, []);
 
   const goToPrevPage = useCallback(() => {
-    setInspectSource((prev: any) => {
+    setInspectSource((prev) => {
       if (!prev) return null;
       if (prev.currentPage <= 1) return prev;
       const next = prev.currentPage - 1;
@@ -239,7 +262,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
   }, []);
 
   const jumpToPage = useCallback((targetPage: number) => {
-    setInspectSource((prev: any) => {
+    setInspectSource((prev) => {
       if (!prev) return null;
       const maxP = Math.max(1, prev.total_pages || 1);
       const valid = Math.max(1, Math.min(maxP, targetPage));
@@ -248,7 +271,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
   }, []);
 
   const handleZoomIn = useCallback(() => {
-    setInspectSource((prev: any) => {
+    setInspectSource((prev) => {
       if (!prev) return null;
       const current = typeof prev.scale === "number" ? prev.scale : 1.0;
       return { ...prev, scale: Math.min(2.5, Math.round((current + 0.15) * 100) / 100) };
@@ -256,7 +279,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
   }, []);
 
   const handleZoomOut = useCallback(() => {
-    setInspectSource((prev: any) => {
+    setInspectSource((prev) => {
       if (!prev) return null;
       const current = typeof prev.scale === "number" ? prev.scale : 1.0;
       return { ...prev, scale: Math.max(0.5, Math.round((current - 0.15) * 100) / 100) };
@@ -264,26 +287,28 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
   }, []);
 
   const handleZoomReset = useCallback(() => {
-    setInspectSource((prev: any) => (prev ? { ...prev, scale: 1.0 } : null));
+    setInspectSource((prev) => (prev ? { ...prev, scale: 1.0 } : null));
   }, []);
 
   const handleZoomFit = useCallback(() => {
-    setInspectSource((prev: any) => (prev ? { ...prev, scale: prev.scale === "fit" ? 1.0 : "fit" } : null));
+    setInspectSource((prev) => (prev ? { ...prev, scale: prev.scale === "fit" ? 1.0 : "fit" } : null));
   }, []);
 
   // Pre-load next and previous page images in browser cache
   useEffect(() => {
     if (!inspectSource || inspectSource.viewMode !== "FAST_PAGES") return;
     const { id, currentPage, total_pages } = inspectSource;
+    const activeToken = previewToken || authToken();
+    const tokenQuery = activeToken ? `?token=${encodeURIComponent(activeToken)}` : "";
     if (currentPage < (total_pages || 1)) {
       const nextImg = new Image();
-      nextImg.src = `/api/v1/knowledge-center/sources/${id}/page/${currentPage + 1}`;
+      nextImg.src = apiUrl(`/knowledge-center/sources/${id}/preview-page/${currentPage + 1}${tokenQuery}`);
     }
     if (currentPage > 1) {
       const prevImg = new Image();
-      prevImg.src = `/api/v1/knowledge-center/sources/${id}/page/${currentPage - 1}`;
+      prevImg.src = apiUrl(`/knowledge-center/sources/${id}/preview-page/${currentPage - 1}${tokenQuery}`);
     }
-  }, [inspectSource?.id, inspectSource?.currentPage, inspectSource?.total_pages, inspectSource?.viewMode]);
+  }, [inspectSource, previewToken]);
 
   useEffect(() => {
     if (!inspectSource?.file_url) {
@@ -318,6 +343,11 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
     };
   }, [inspectSource?.id, inspectSource?.file_url]);
 
+  const closeInspectModal = useCallback(() => {
+    setInspectSource(null);
+    setPreviewToken(null);
+  }, []);
+
   // Keyboard navigation for page flipping (ArrowLeft / ArrowRight) and Escape to close
   useEffect(() => {
     if (!inspectSource) return;
@@ -326,7 +356,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
       if (["INPUT", "TEXTAREA"].includes((e.target as HTMLElement)?.tagName)) return;
 
       if (e.key === "Escape") {
-        setInspectSource(null);
+        closeInspectModal();
       } else if (e.key === "ArrowLeft" || e.key === "PageDown") {
         goToNextPage();
       } else if (e.key === "ArrowRight" || e.key === "PageUp") {
@@ -336,11 +366,11 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [inspectSource, goToNextPage, goToPrevPage]);
+  }, [inspectSource, goToNextPage, goToPrevPage, closeInspectModal]);
 
   // Inspect source: Instant Modal Opening & Background Unit Loading
   const handleInspect = (sourceId: string) => {
-    setInspectTab("DOCUMENT");
+    setPreviewToken(null);
     const found = sources.find((s) => s.id === sourceId);
     const format = (found?.file_format || "").toLowerCase();
     const fileUrl = found?.file_url || `/api/v1/knowledge-center/sources/${sourceId}/view`;
@@ -366,10 +396,29 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
       loadingUnits: true,
     });
 
+    // Request short-lived preview token for authenticated direct streaming
+    apiRequest<{ preview_token: string }>(`/knowledge-center/sources/${sourceId}/preview-token`, {
+      method: "POST",
+    })
+      .then((tokenData) => {
+        if (tokenData?.preview_token) {
+          setPreviewToken(tokenData.preview_token);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to obtain preview token", err);
+      });
+
     // 2. Fetch units and details asynchronously in background
-    apiRequest<any>(`/knowledge-center/sources/${sourceId}`)
+    apiRequest<{
+      filename?: string;
+      document?: { total_pages?: number | null; [key: string]: unknown };
+      units?: unknown[];
+      outline?: unknown[];
+      images?: unknown[];
+    }>(`/knowledge-center/sources/${sourceId}`)
       .then((detailData) => {
-        setInspectSource((prev: any) => {
+        setInspectSource((prev) => {
           if (!prev || prev.id !== sourceId) return prev;
           const totalPages = detailData?.document?.total_pages || prev.total_pages || 1;
           return {
@@ -380,79 +429,14 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
             units: detailData?.units || [],
             outline: detailData?.outline || [],
             images: detailData?.images || [],
-            assessment: detailData?.assessment ?? null,
-            assessmentLoading: !!detailData?.assessment,
             loadingUnits: false,
           };
-        });
-        if (detailData?.assessment?.id) {
-          return apiRequest<any>(`/knowledge-center/assessments/${detailData.assessment.id}`);
-        }
-        return null;
-      })
-      .then((assessmentData) => {
-        if (!assessmentData) return;
-        setInspectSource((prev: any) => {
-          if (!prev) return prev;
-          return { ...prev, assessment: assessmentData, assessmentLoading: false };
         });
       })
       .catch((err) => {
         console.error("Inspect background error", err);
-        setInspectSource((prev: any) => (prev && prev.id === sourceId ? { ...prev, loadingUnits: false, assessmentLoading: false } : prev));
+        setInspectSource((prev) => (prev && prev.id === sourceId ? { ...prev, loadingUnits: false } : prev));
       });
-  };
-
-  const updateAssessmentQuestionDraft = (questionId: string, changes: Record<string, unknown>) => {
-    setInspectSource((prev: any) => {
-      if (!prev?.assessment?.questions) return prev;
-      return {
-        ...prev,
-        assessment: {
-          ...prev.assessment,
-          questions: prev.assessment.questions.map((q: any) => (
-            q.id === questionId ? { ...q, ...changes } : q
-          )),
-        },
-      };
-    });
-  };
-
-  const saveAssessmentQuestion = async (question: any) => {
-    try {
-      await apiRequest<any>(`/knowledge-center/assessment-questions/${question.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          question_text: question.question_text,
-          question_type: question.question_type,
-          options_json: question.options_json,
-          correct_answer: question.correct_answer,
-          explanation: question.explanation,
-          points: question.points,
-          review_status: question.review_status,
-        }),
-      });
-      toast("تم حفظ مراجعة السؤال.", "success");
-    } catch (err) {
-      console.error("Save assessment question error", err);
-      toast("تعذر حفظ السؤال.", "danger");
-    }
-  };
-
-  const approveAssessment = async () => {
-    const assessmentId = inspectSource?.assessment?.id;
-    if (!assessmentId) return;
-    try {
-      const data = await apiRequest<any>(`/knowledge-center/assessments/${assessmentId}/approve`, { method: "POST" });
-      setInspectSource((prev: any) => prev ? {
-        ...prev,
-        assessment: { ...prev.assessment, review_status: data.review_status },
-      } : prev);
-      toast(`تم اعتماد ${data.created_questions} سؤال وإضافتها لبنك الأسئلة.`, "success");
-    } catch (err) {
-      console.error("Approve assessment error", err);
-      toast("لا يمكن اعتماد التقييم قبل حل كل أخطاء المراجعة.", "danger");
-    }
   };
 
   // Test AI Q&A — Calls real backend LLM API with zero hardcoded facts
@@ -468,14 +452,14 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
     setTestError(null);
 
     try {
-      const data = await apiRequest<any>("/tutor/chat", {
+      const data = await apiRequest<{ answer?: string; refusal?: boolean }>("/tutor/chat", {
         method: "POST",
         body: JSON.stringify({
           course_id: testCourseId,
           message: testQuery,
         }),
       });
-      setTestAnswer(data.answer);
+      setTestAnswer(data.answer || null);
       setTestRefusal(data.refusal || false);
     } catch (err) {
       console.error("Test AI API error", err);
@@ -978,7 +962,14 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
               <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
                 {inspectSource.file_url && (
                   <a
-                    href={previewUrl || apiUrl(inspectSource.file_url)}
+                    href={
+                      previewUrl ||
+                      apiUrl(
+                        `/knowledge-center/sources/${inspectSource.id}/preview-file${
+                          previewToken || authToken() ? `?token=${encodeURIComponent(previewToken || authToken() || "")}` : ""
+                        }`
+                      )
+                    }
                     target="_blank"
                     rel="noopener noreferrer"
                     title="فتح المستند في نافذة كاملة جديدة"
@@ -1002,7 +993,8 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                   </a>
                 )}
                 <button
-                  onClick={() => setInspectSource(null)}
+                  type="button"
+                  onClick={closeInspectModal}
                   style={{ background: "none", border: "none", fontSize: "24px", cursor: "pointer", color: "#ffffff", padding: "4px 8px" }}
                 >
                   ✕
@@ -1010,608 +1002,354 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
               </div>
             </div>
 
-            {/* The preview intentionally shows only the uploaded file.  Indexing
-                units/outline/assessment belong to the background pipeline, not
-                to this simple file viewer. */}
-            <div style={{ display: "none" }} aria-hidden="true">
-              <button
-                type="button"
-                onClick={() => setInspectTab("DOCUMENT")}
-                style={{
-                  flex: 1,
-                  padding: "14px",
-                  border: "none",
-                  borderBottom: inspectTab === "DOCUMENT" ? "3px solid #38bdf8" : "none",
-                  background: inspectTab === "DOCUMENT" ? "rgba(56,189,248,0.15)" : "transparent",
-                  color: inspectTab === "DOCUMENT" ? "#38bdf8" : "#94a3b8",
-                  fontWeight: "700",
-                  fontSize: "14px",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: "8px",
-                }}
-              >
-                <FileText style={{ width: "18px", height: "18px" }} />
-                📄 عرض صفحات ومستند الملف
-              </button>
-              <button
-                type="button"
-                onClick={() => setInspectTab("DOCUMENT")}
-                style={{
-                  flex: 1,
-                  padding: "14px",
-                  border: "none",
-                  borderBottom: inspectTab === "UNITS" ? "3px solid #38bdf8" : "none",
-                  background: inspectTab === "UNITS" ? "rgba(56,189,248,0.15)" : "transparent",
-                  color: inspectTab === "UNITS" ? "#38bdf8" : "#94a3b8",
-                  fontWeight: "700",
-                  fontSize: "14px",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: "8px",
-                }}
-              >
-                <Layers style={{ width: "18px", height: "18px" }} />
-                🧩 المفاهيم والوحدات المفهرسة ({inspectSource.units?.length || 0})
-              </button>
-              <button
-                type="button"
-                onClick={() => setInspectTab("DOCUMENT")}
-                style={{
-                  flex: 1,
-                  padding: "14px",
-                  border: "none",
-                  borderBottom: inspectTab === "OUTLINE" ? "3px solid #38bdf8" : "none",
-                  background: inspectTab === "OUTLINE" ? "rgba(56,189,248,0.15)" : "transparent",
-                  color: inspectTab === "OUTLINE" ? "#38bdf8" : "#94a3b8",
-                  fontWeight: "700",
-                  fontSize: "14px",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: "8px",
-                }}
-              >
-                <BookOpen style={{ width: "18px", height: "18px" }} />
-                هيكل الكتاب والصور ({inspectSource.outline?.length || 0})
-              </button>
-              {inspectSource.assessment && (
-                <button
-                  type="button"
-                  onClick={() => setInspectTab("DOCUMENT")}
-                  style={{
-                    flex: 1,
-                    padding: "14px",
-                    border: "none",
-                    borderBottom: inspectTab === "ASSESSMENT" ? "3px solid #38bdf8" : "none",
-                    background: inspectTab === "ASSESSMENT" ? "rgba(56,189,248,0.15)" : "transparent",
-                    color: inspectTab === "ASSESSMENT" ? "#38bdf8" : "#94a3b8",
-                    fontWeight: "700",
-                    fontSize: "14px",
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: "8px",
-                  }}
-                >
-                  <CheckCircle style={{ width: "18px", height: "18px" }} />
-                  مراجعة أسئلة التقييم ({inspectSource.assessment?.questions?.length || 0})
-                </button>
-              )}
-            </div>
-
-            {/* Modal Body: Fast Page Reader or Units Tab */}
+            {/* Modal Body: Fast Page Reader or Embedded Browser Viewer */}
             <div style={{ flex: 1, overflow: "hidden", padding: "0", background: "#0b0f19", display: "flex", flexDirection: "column" }}>
-              {inspectTab === "DOCUMENT" ? (
-                <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
-                  {inspectSource.viewMode === "FAST_PAGES" ? (
-                    <>
-                      {/* Reader Navigation & Zoom Toolbar */}
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          padding: "10px 20px",
-                          background: "#111827",
-                          borderBottom: "1px solid rgba(255,255,255,0.1)",
-                          flexWrap: "wrap",
-                          gap: "10px",
-                        }}
-                      >
-                        {/* Page Navigation */}
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                          <button
-                            type="button"
-                            onClick={goToPrevPage}
-                            disabled={inspectSource.currentPage <= 1}
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: "4px",
-                              padding: "6px 14px",
-                              borderRadius: "6px",
-                              background: inspectSource.currentPage <= 1 ? "rgba(255,255,255,0.05)" : "#2563eb",
-                              color: inspectSource.currentPage <= 1 ? "#64748b" : "#ffffff",
-                              border: "none",
-                              cursor: inspectSource.currentPage <= 1 ? "not-allowed" : "pointer",
-                              fontWeight: "700",
-                              fontSize: "13px",
-                            }}
-                          >
-                            <ChevronRight style={{ width: "16px", height: "16px" }} />
-                            السابق
-                          </button>
-
-                          {/* Quick -10 Jump */}
-                          {(inspectSource.total_pages || 1) > 15 && (
-                            <button
-                              type="button"
-                              onClick={() => jumpToPage(inspectSource.currentPage - 10)}
-                              disabled={inspectSource.currentPage <= 1}
-                              title="الرجوع 10 صفحات"
-                              style={{
-                                padding: "4px 8px",
-                                borderRadius: "4px",
-                                background: "rgba(255,255,255,0.08)",
-                                color: "#94a3b8",
-                                border: "1px solid rgba(255,255,255,0.1)",
-                                cursor: inspectSource.currentPage <= 1 ? "not-allowed" : "pointer",
-                                fontSize: "12px",
-                                fontWeight: "600",
-                              }}
-                            >
-                              -10
-                            </button>
-                          )}
-
-                          {/* Page Input Counter */}
-                          <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#f8fafc", fontSize: "13px", fontWeight: "600" }}>
-                            <span>صفحة</span>
-                            <input
-                              type="text"
-                              value={inspectSource.pageInput ?? String(inspectSource.currentPage)}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setInspectSource((prev: any) => prev ? { ...prev, pageInput: val } : null);
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") {
-                                  const p = parseInt(inspectSource.pageInput, 10);
-                                  if (!isNaN(p)) jumpToPage(p);
-                                }
-                              }}
-                              onBlur={() => {
-                                const p = parseInt(inspectSource.pageInput, 10);
-                                if (!isNaN(p)) jumpToPage(p);
-                              }}
-                              style={{
-                                width: "55px",
-                                textAlign: "center",
-                                padding: "4px 6px",
-                                borderRadius: "6px",
-                                border: "1px solid #38bdf8",
-                                background: "#1e293b",
-                                color: "#38bdf8",
-                                fontWeight: "700",
-                                fontSize: "14px",
-                              }}
-                            />
-                            <span>من {inspectSource.total_pages || 1}</span>
-                          </div>
-
-                          {/* Quick +10 Jump */}
-                          {(inspectSource.total_pages || 1) > 15 && (
-                            <button
-                              type="button"
-                              onClick={() => jumpToPage(inspectSource.currentPage + 10)}
-                              disabled={inspectSource.currentPage >= (inspectSource.total_pages || 1)}
-                              title="التقدم 10 صفحات"
-                              style={{
-                                padding: "4px 8px",
-                                borderRadius: "4px",
-                                background: "rgba(255,255,255,0.08)",
-                                color: "#94a3b8",
-                                border: "1px solid rgba(255,255,255,0.1)",
-                                cursor: inspectSource.currentPage >= (inspectSource.total_pages || 1) ? "not-allowed" : "pointer",
-                                fontSize: "12px",
-                                fontWeight: "600",
-                              }}
-                            >
-                              +10
-                            </button>
-                          )}
-
-                          <button
-                            type="button"
-                            onClick={goToNextPage}
-                            disabled={inspectSource.currentPage >= (inspectSource.total_pages || 1)}
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: "4px",
-                              padding: "6px 14px",
-                              borderRadius: "6px",
-                              background: inspectSource.currentPage >= (inspectSource.total_pages || 1) ? "rgba(255,255,255,0.05)" : "#2563eb",
-                              color: inspectSource.currentPage >= (inspectSource.total_pages || 1) ? "#64748b" : "#ffffff",
-                              border: "none",
-                              cursor: inspectSource.currentPage >= (inspectSource.total_pages || 1) ? "not-allowed" : "pointer",
-                              fontWeight: "700",
-                              fontSize: "13px",
-                            }}
-                          >
-                            التالي
-                            <ChevronLeft style={{ width: "16px", height: "16px" }} />
-                          </button>
-                        </div>
-
-                        {/* Zoom and Mode Controls */}
-                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                          {/* Fast Speed Tag */}
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: "5px",
-                              fontSize: "12px",
-                              color: "#34d399",
-                              background: "rgba(16,185,129,0.12)",
-                              padding: "4px 10px",
-                              borderRadius: "20px",
-                              border: "1px solid rgba(16,185,129,0.3)",
-                              fontWeight: "600",
-                            }}
-                          >
-                            <Zap style={{ width: "14px", height: "14px" }} />
-                            عرض فوري مباشر
-                          </div>
-
-                          {/* Zoom Controls */}
-                          <div style={{ display: "flex", alignItems: "center", gap: "4px", background: "#1e293b", padding: "3px 6px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.1)" }}>
-                            <button
-                              type="button"
-                              onClick={handleZoomOut}
-                              title="تصغير"
-                              style={{ background: "none", border: "none", color: "#f8fafc", cursor: "pointer", padding: "4px", display: "flex", alignItems: "center" }}
-                            >
-                              <ZoomOut style={{ width: "15px", height: "15px" }} />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={handleZoomReset}
-                              title="إعادة الحجم الافتراضي"
-                              style={{ background: "none", border: "none", color: "#38bdf8", cursor: "pointer", fontSize: "12px", fontWeight: "700", padding: "0 6px", display: "flex", alignItems: "center", gap: "3px" }}
-                            >
-                              <RotateCcw style={{ width: "12px", height: "12px" }} />
-                              {typeof inspectSource.scale === "number" ? `${Math.round(inspectSource.scale * 100)}%` : "تناسب"}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={handleZoomIn}
-                              title="تكبير"
-                              style={{ background: "none", border: "none", color: "#f8fafc", cursor: "pointer", padding: "4px", display: "flex", alignItems: "center" }}
-                            >
-                              <ZoomIn style={{ width: "15px", height: "15px" }} />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={handleZoomFit}
-                              title="تناسب العرض"
-                              style={{ background: "none", border: "none", color: "#cbd5e1", cursor: "pointer", padding: "4px", display: "flex", alignItems: "center" }}
-                            >
-                              <Maximize2 style={{ width: "14px", height: "14px" }} />
-                            </button>
-                          </div>
-
-                          {/* Fallback to full file if requested */}
-                          <button
-                            type="button"
-                            onClick={() => setInspectSource((prev: any) => prev ? { ...prev, viewMode: "ORIGINAL_FILE" } : null)}
-                            title="التبديل إلى عارض المتصفح الأصلي الكامل"
-                            style={{
-                              padding: "5px 10px",
-                              borderRadius: "6px",
-                              background: "rgba(255,255,255,0.06)",
-                              border: "1px solid rgba(255,255,255,0.15)",
-                              color: "#cbd5e1",
-                              fontSize: "12px",
-                              fontWeight: "600",
-                              cursor: "pointer",
-                            }}
-                          >
-                            عارض PDF الكامل
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Main Scrollable Canvas for Fast Page Streaming */}
-                      <div
-                        style={{
-                          flex: 1,
-                          overflowY: "auto",
-                          overflowX: "auto",
-                          padding: "24px 16px",
-                          display: "flex",
-                          justifyContent: "center",
-                          alignItems: "flex-start",
-                          background: "#090d16",
-                          position: "relative",
-                        }}
-                      >
-                        <div
-                          style={{
-                            maxWidth: inspectSource.scale === "fit" ? "100%" : `${(typeof inspectSource.scale === "number" ? inspectSource.scale : 1.0) * 880}px`,
-                            width: inspectSource.scale === "fit" ? "100%" : "auto",
-                            position: "relative",
-                            transition: "width 0.15s ease",
-                          }}
-                        >
-                          <img
-                            key={`${inspectSource.id}-p${inspectSource.currentPage}`}
-                            src={`/api/v1/knowledge-center/sources/${inspectSource.id}/page/${inspectSource.currentPage}`}
-                            alt={`الصفحة ${inspectSource.currentPage}`}
-                            onLoad={() => setInspectSource((prev: any) => prev ? { ...prev, pageLoading: false } : null)}
-                            onError={() => setInspectSource((prev: any) => prev ? { ...prev, pageLoading: false } : null)}
-                            style={{
-                              width: "100%",
-                              height: "auto",
-                              display: "block",
-                              borderRadius: "8px",
-                              boxShadow: "0 12px 40px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.1)",
-                              background: "#ffffff",
-                            }}
-                          />
-
-                          {/* Subtle loading badge while next page image is loading */}
-                          {inspectSource.pageLoading && (
-                            <div
-                              style={{
-                                position: "absolute",
-                                top: "12px",
-                                left: "12px",
-                                background: "rgba(15,23,42,0.85)",
-                                backdropFilter: "blur(6px)",
-                                border: "1px solid rgba(56,189,248,0.4)",
-                                color: "#38bdf8",
-                                padding: "6px 12px",
-                                borderRadius: "8px",
-                                fontSize: "12px",
-                                fontWeight: "700",
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "6px",
-                                zIndex: 10,
-                              }}
-                            >
-                              <RefreshCw style={{ width: "14px", height: "14px", animation: "spin 1s linear infinite" }} />
-                              جاري تحميل الصفحة {inspectSource.currentPage}...
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </>
-                  ) : (
-                    /* Fallback: Original PDF iframe */
-                    <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
-                      <div style={{ padding: "8px 16px", background: "#111827", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
-                        <span style={{ fontSize: "13px", color: "#94a3b8" }}>عارض المتصفح الكامل للملف الأصلي</span>
+              <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
+                {inspectSource.viewMode === "FAST_PAGES" ? (
+                  <>
+                    {/* Reader Navigation & Zoom Toolbar */}
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "10px 20px",
+                        background: "#111827",
+                        borderBottom: "1px solid rgba(255,255,255,0.1)",
+                        flexWrap: "wrap",
+                        gap: "10px",
+                      }}
+                    >
+                      {/* Page Navigation */}
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                         <button
                           type="button"
-                          onClick={() => setInspectSource((prev: any) => prev ? { ...prev, viewMode: "FAST_PAGES" } : null)}
+                          onClick={goToPrevPage}
+                          disabled={inspectSource.currentPage <= 1}
                           style={{
-                            padding: "6px 12px",
-                            borderRadius: "6px",
-                            background: "#2563eb",
-                            color: "#ffffff",
-                            border: "none",
-                            fontSize: "12px",
-                            fontWeight: "700",
-                            cursor: "pointer",
                             display: "flex",
                             alignItems: "center",
-                            gap: "6px",
+                            gap: "4px",
+                            padding: "6px 14px",
+                            borderRadius: "6px",
+                            background: inspectSource.currentPage <= 1 ? "rgba(255,255,255,0.05)" : "#2563eb",
+                            color: inspectSource.currentPage <= 1 ? "#64748b" : "#ffffff",
+                            border: "none",
+                            cursor: inspectSource.currentPage <= 1 ? "not-allowed" : "pointer",
+                            fontWeight: "700",
+                            fontSize: "13px",
+                          }}
+                        >
+                          <ChevronRight style={{ width: "16px", height: "16px" }} />
+                          السابق
+                        </button>
+
+                        {/* Quick -10 Jump */}
+                        {(inspectSource.total_pages || 1) > 15 && (
+                          <button
+                            type="button"
+                            onClick={() => jumpToPage(inspectSource.currentPage - 10)}
+                            disabled={inspectSource.currentPage <= 1}
+                            title="الرجوع 10 صفحات"
+                            style={{
+                              padding: "4px 8px",
+                              borderRadius: "4px",
+                              background: "rgba(255,255,255,0.08)",
+                              color: "#94a3b8",
+                              border: "1px solid rgba(255,255,255,0.1)",
+                              cursor: inspectSource.currentPage <= 1 ? "not-allowed" : "pointer",
+                              fontSize: "12px",
+                              fontWeight: "600",
+                            }}
+                          >
+                            -10
+                          </button>
+                        )}
+
+                        {/* Page Input Counter */}
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#f8fafc", fontSize: "13px", fontWeight: "600" }}>
+                          <span>صفحة</span>
+                          <input
+                            type="text"
+                            value={inspectSource.pageInput ?? String(inspectSource.currentPage)}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setInspectSource((prev) => prev ? { ...prev, pageInput: val } : null);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                const p = parseInt(inspectSource.pageInput, 10);
+                                if (!isNaN(p)) jumpToPage(p);
+                              }
+                            }}
+                            onBlur={() => {
+                              const p = parseInt(inspectSource.pageInput, 10);
+                              if (!isNaN(p)) jumpToPage(p);
+                            }}
+                            style={{
+                              width: "55px",
+                              textAlign: "center",
+                              padding: "4px 6px",
+                              borderRadius: "6px",
+                              border: "1px solid #38bdf8",
+                              background: "#1e293b",
+                              color: "#38bdf8",
+                              fontWeight: "700",
+                              fontSize: "14px",
+                            }}
+                          />
+                          <span>من {inspectSource.total_pages || 1}</span>
+                        </div>
+
+                        {/* Quick +10 Jump */}
+                        {(inspectSource.total_pages || 1) > 15 && (
+                          <button
+                            type="button"
+                            onClick={() => jumpToPage(inspectSource.currentPage + 10)}
+                            disabled={inspectSource.currentPage >= (inspectSource.total_pages || 1)}
+                            title="التقدم 10 صفحات"
+                            style={{
+                              padding: "4px 8px",
+                              borderRadius: "4px",
+                              background: "rgba(255,255,255,0.08)",
+                              color: "#94a3b8",
+                              border: "1px solid rgba(255,255,255,0.1)",
+                              cursor: inspectSource.currentPage >= (inspectSource.total_pages || 1) ? "not-allowed" : "pointer",
+                              fontSize: "12px",
+                              fontWeight: "600",
+                            }}
+                          >
+                            +10
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={goToNextPage}
+                          disabled={inspectSource.currentPage >= (inspectSource.total_pages || 1)}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "4px",
+                            padding: "6px 14px",
+                            borderRadius: "6px",
+                            background: inspectSource.currentPage >= (inspectSource.total_pages || 1) ? "rgba(255,255,255,0.05)" : "#2563eb",
+                            color: inspectSource.currentPage >= (inspectSource.total_pages || 1) ? "#64748b" : "#ffffff",
+                            border: "none",
+                            cursor: inspectSource.currentPage >= (inspectSource.total_pages || 1) ? "not-allowed" : "pointer",
+                            fontWeight: "700",
+                            fontSize: "13px",
+                          }}
+                        >
+                          التالي
+                          <ChevronLeft style={{ width: "16px", height: "16px" }} />
+                        </button>
+                      </div>
+
+                      {/* Zoom and Mode Controls */}
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        {/* Fast Speed Tag */}
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "5px",
+                            fontSize: "12px",
+                            color: "#34d399",
+                            background: "rgba(16,185,129,0.12)",
+                            padding: "4px 10px",
+                            borderRadius: "20px",
+                            border: "1px solid rgba(16,185,129,0.3)",
+                            fontWeight: "600",
                           }}
                         >
                           <Zap style={{ width: "14px", height: "14px" }} />
-                          التبديل إلى عارض الصفحات فائق السرعة
-                        </button>
-                      </div>
-                      {previewLoading ? (
-                        <div style={{ flex: 1, display: "grid", placeItems: "center", color: "#cbd5e1" }}>
-                          جاري تحميل الملف للمعاينة...
+                          عرض فوري مباشر
                         </div>
-                      ) : previewError ? (
-                        <div style={{ flex: 1, display: "grid", placeItems: "center", color: "#fca5a5", padding: "24px", textAlign: "center" }}>
-                          {previewError}
-                        </div>
-                      ) : previewUrl ? (
-                        <iframe
-                          src={previewUrl}
-                          title={inspectSource.filename}
-                          style={{ width: "100%", height: "100%", flex: 1, border: "none", background: "#ffffff" }}
-                        />
-                      ) : (
-                        <div style={{ flex: 1, display: "grid", placeItems: "center", color: "#94a3b8" }}>
-                          لا يوجد ملف قابل للمعاينة.
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ) : inspectTab === "OUTLINE" ? (
-                <div style={{ padding: "24px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "12px" }}>
-                  <div style={{ color: "#cbd5e1", fontSize: "13px", lineHeight: 1.6 }}>
-                    الهيكل محفوظ على مستوى الكتاب والوحدة والدرس والموضوع. اختر الصفحة من العارض لفتح مصدرها الأصلي.
-                  </div>
-                  {inspectSource.outline?.length ? inspectSource.outline.map((node: any) => (
-                    <div key={node.id} style={{ padding: "12px 14px", borderRadius: "8px", background: "#1e293b", border: "1px solid rgba(255,255,255,0.12)", marginRight: `${Math.max(0, (({ book: 0, unit: 10, lesson: 22, topic: 34 } as Record<string, number>)[node.kind] || 0))}px` }}>
-                      <div style={{ color: "#38bdf8", fontWeight: 800, fontSize: "14px" }}>{node.title}</div>
-                      <div style={{ color: "#94a3b8", fontSize: "12px", marginTop: "4px" }}>{node.kind} • صفحات {node.start_page || 1}–{node.end_page || node.start_page || 1}</div>
-                    </div>
-                  )) : <p style={{ textAlign: "center", padding: "24px", color: "#94a3b8" }}>لا توجد عناوين صريحة كافية لبناء هيكل هذا الملف بعد.</p>}
-                  {inspectSource.images?.length > 0 && (
-                    <div style={{ marginTop: "8px" }}>
-                      <div style={{ color: "#f8fafc", fontWeight: 800, marginBottom: "8px" }}>الصور المحفوظة وربطها بالصفحة</div>
-                      {inspectSource.images.map((image: any) => (
-                        <div key={image.id} style={{ padding: "10px", marginBottom: "8px", borderRadius: "8px", background: "rgba(56,189,248,0.08)", color: "#cbd5e1", fontSize: "13px" }}>
-                          {image.asset_kind} • صفحة {image.page_number || image.slide_number || 1}{image.ocr_text ? ` • OCR: ${String(image.ocr_text).slice(0, 180)}` : ""}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ) : inspectTab === "UNITS" ? (
-                /* Extracted Knowledge Units Tab */
-                <div style={{ padding: "24px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "14px" }}>
-                  {inspectSource.loadingUnits ? (
-                    <div style={{ textAlign: "center", padding: "50px", color: "#38bdf8", display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
-                      <RefreshCw style={{ width: "28px", height: "28px", animation: "spin 1s linear infinite" }} />
-                      <div style={{ fontSize: "15px", fontWeight: "600" }}>جاري قراءة وتحليل مفاهيم المنهج المستخرجة...</div>
-                    </div>
-                  ) : inspectSource.units && inspectSource.units.length > 0 ? (
-                    inspectSource.units.map((u: any, idx: number) => (
-                      <div
-                        key={idx}
-                        style={{
-                          padding: "18px",
-                          borderRadius: "10px",
-                          border: "1px solid rgba(255,255,255,0.15)",
-                          background: "#1e293b",
-                        }}
-                      >
-                        <div style={{ fontWeight: "700", fontSize: "15px", color: "#38bdf8", marginBottom: "8px" }}>
-                          🧩 {u.concept} {u.page_number ? `(الصفحة ${u.page_number})` : ""}
-                        </div>
-                        <div style={{ fontSize: "14px", color: "#f8fafc", lineHeight: "1.7" }}>
-                          {u.statement}
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <p style={{ textAlign: "center", padding: "40px", color: "#94a3b8" }}>
-                      لا توجد وحدات مفهرسة لهذا الملف بعد.
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <div style={{ padding: "24px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "14px" }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
-                    <div>
-                      <div style={{ color: "#38bdf8", fontWeight: 800, fontSize: "16px" }}>
-                        مراجعة التقييم: {inspectSource.assessment?.title || inspectSource.filename}
-                      </div>
-                      <div style={{ color: "#cbd5e1", fontSize: "13px", marginTop: "4px" }}>
-                        الحالة: {inspectSource.assessment?.review_status || "needs_review"}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={approveAssessment}
-                      style={{ padding: "9px 16px", borderRadius: "8px", border: "1px solid #34d399", background: "rgba(16,185,129,0.18)", color: "#34d399", fontWeight: 800, cursor: "pointer" }}
-                    >
-                      اعتماد وإضافة لبنك الأسئلة
-                    </button>
-                  </div>
 
-                  {inspectSource.assessmentLoading ? (
-                    <div style={{ color: "#38bdf8", textAlign: "center", padding: "40px" }}>جاري تحميل أسئلة التقييم...</div>
-                  ) : inspectSource.assessment?.questions?.length ? (
-                    inspectSource.assessment.questions.map((q: any, idx: number) => (
-                      <div key={q.id} style={{ padding: "16px", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.15)", background: "#1e293b" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", marginBottom: "10px", color: "#cbd5e1", fontSize: "12px", flexWrap: "wrap" }}>
-                          <span>سؤال {idx + 1} • {q.question_type}</span>
-                          <span>مصدر الإجابة: {q.answer_source || "غير محدد"} • {q.answer_status}</span>
-                        </div>
-                        <textarea
-                          value={q.question_text || ""}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            const clean = val.includes("text{") || val.includes("\\") || val.includes("$$") ? normalizeFormulaText(val) : val;
-                            updateAssessmentQuestionDraft(q.id, { question_text: clean });
-                          }}
-                          onPaste={(e) => {
-                            const pasted = e.clipboardData.getData("text");
-                            if (pasted && (pasted.includes("text{") || pasted.includes("\\") || pasted.includes("$$") || pasted.includes("_") || pasted.includes("^"))) {
-                              e.preventDefault();
-                              const clean = normalizeFormulaText(pasted);
-                              const target = e.target as HTMLTextAreaElement;
-                              const start = target.selectionStart || 0;
-                              const end = target.selectionEnd || 0;
-                              const current = q.question_text || "";
-                              const nextVal = current.slice(0, start) + clean + current.slice(end);
-                              updateAssessmentQuestionDraft(q.id, { question_text: nextVal });
-                            }
-                          }}
-                          style={{ width: "100%", minHeight: "82px", padding: "10px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.15)", background: "#0f172a", color: "#f8fafc", resize: "vertical", boxSizing: "border-box" }}
-                        />
-                        {q.question_text && (
-                          <div style={{ marginTop: "6px", marginBottom: "10px", padding: "8px 12px", background: "rgba(15, 23, 42, 0.7)", borderRadius: "6px", border: "1px dashed rgba(56, 189, 248, 0.3)" }}>
-                            <span style={{ fontSize: "11px", color: "#38bdf8", fontWeight: 700, display: "block", marginBottom: "4px" }}>معاينة كالكتاب:</span>
-                            <FormulaRenderer text={q.question_text} />
-                          </div>
-                        )}
-                        <textarea
-                          value={q.correct_answer || ""}
-                          placeholder="الإجابة الصحيحة أو التصحيح المقترح"
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            const clean = val.includes("text{") || val.includes("\\") || val.includes("$$") ? normalizeFormulaText(val) : val;
-                            updateAssessmentQuestionDraft(q.id, { correct_answer: clean });
-                          }}
-                          onPaste={(e) => {
-                            const pasted = e.clipboardData.getData("text");
-                            if (pasted && (pasted.includes("text{") || pasted.includes("\\") || pasted.includes("$$") || pasted.includes("_") || pasted.includes("^"))) {
-                              e.preventDefault();
-                              const clean = normalizeFormulaText(pasted);
-                              const target = e.target as HTMLTextAreaElement;
-                              const start = target.selectionStart || 0;
-                              const end = target.selectionEnd || 0;
-                              const current = q.correct_answer || "";
-                              const nextVal = current.slice(0, start) + clean + current.slice(end);
-                              updateAssessmentQuestionDraft(q.id, { correct_answer: nextVal });
-                            }
-                          }}
-                          style={{ width: "100%", minHeight: "64px", marginTop: "10px", padding: "10px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.15)", background: "#0f172a", color: "#f8fafc", resize: "vertical", boxSizing: "border-box" }}
-                        />
-                        {q.correct_answer && (
-                          <div style={{ marginTop: "6px", marginBottom: "10px", padding: "8px 12px", background: "rgba(15, 23, 42, 0.7)", borderRadius: "6px", border: "1px dashed rgba(52, 211, 153, 0.3)" }}>
-                            <span style={{ fontSize: "11px", color: "#34d399", fontWeight: 700, display: "block", marginBottom: "4px" }}>معاينة الإجابة:</span>
-                            <FormulaRenderer text={q.correct_answer} />
-                          </div>
-                        )}
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginTop: "10px", flexWrap: "wrap" }}>
-                          <select
-                            value={q.review_status || "needs_review"}
-                            onChange={(e) => updateAssessmentQuestionDraft(q.id, { review_status: e.target.value })}
-                            style={{ padding: "8px", borderRadius: "8px", background: "#0f172a", color: "#f8fafc", border: "1px solid rgba(255,255,255,0.15)" }}
-                          >
-                            <option value="needs_review">يحتاج مراجعة</option>
-                            <option value="approved">معتمد</option>
-                            <option value="rejected">مرفوض</option>
-                          </select>
+                        {/* Zoom Controls */}
+                        <div style={{ display: "flex", alignItems: "center", gap: "4px", background: "#1e293b", padding: "3px 6px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.1)" }}>
                           <button
                             type="button"
-                            onClick={() => saveAssessmentQuestion(q)}
-                            style={{ padding: "8px 14px", borderRadius: "8px", border: "1px solid #38bdf8", background: "rgba(56,189,248,0.15)", color: "#38bdf8", fontWeight: 800, cursor: "pointer" }}
+                            onClick={handleZoomOut}
+                            title="تصغير"
+                            style={{ background: "none", border: "none", color: "#f8fafc", cursor: "pointer", padding: "4px", display: "flex", alignItems: "center" }}
                           >
-                            حفظ المراجعة
+                            <ZoomOut style={{ width: "15px", height: "15px" }} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleZoomReset}
+                            title="إعادة الحجم الافتراضي"
+                            style={{ background: "none", border: "none", color: "#38bdf8", cursor: "pointer", fontSize: "12px", fontWeight: "700", padding: "0 6px", display: "flex", alignItems: "center", gap: "3px" }}
+                          >
+                            <RotateCcw style={{ width: "12px", height: "12px" }} />
+                            {typeof inspectSource.scale === "number" ? `${Math.round(inspectSource.scale * 100)}%` : "تناسب"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleZoomIn}
+                            title="تكبير"
+                            style={{ background: "none", border: "none", color: "#f8fafc", cursor: "pointer", padding: "4px", display: "flex", alignItems: "center" }}
+                          >
+                            <ZoomIn style={{ width: "15px", height: "15px" }} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleZoomFit}
+                            title="تناسب العرض"
+                            style={{ background: "none", border: "none", color: "#cbd5e1", cursor: "pointer", padding: "4px", display: "flex", alignItems: "center" }}
+                          >
+                            <Maximize2 style={{ width: "14px", height: "14px" }} />
                           </button>
                         </div>
+
+                        {/* Fallback to full file if requested */}
+                        <button
+                          type="button"
+                          onClick={() => setInspectSource((prev) => prev ? { ...prev, viewMode: "ORIGINAL_FILE" } : null)}
+                          title="التبديل إلى عارض المتصفح الأصلي الكامل"
+                          style={{
+                            padding: "5px 10px",
+                            borderRadius: "6px",
+                            background: "rgba(255,255,255,0.06)",
+                            border: "1px solid rgba(255,255,255,0.15)",
+                            color: "#cbd5e1",
+                            fontSize: "12px",
+                            fontWeight: "600",
+                            cursor: "pointer",
+                          }}
+                        >
+                          عارض PDF الكامل
+                        </button>
                       </div>
-                    ))
-                  ) : (
-                    <p style={{ textAlign: "center", padding: "40px", color: "#94a3b8" }}>
-                      لم يتم استخراج أسئلة تقييم من هذا الملف بعد.
-                    </p>
-                  )}
-                </div>
-              )}
+                    </div>
+
+                    {/* Main Scrollable Canvas for Fast Page Streaming */}
+                    <div
+                      style={{
+                        flex: 1,
+                        overflowY: "auto",
+                        overflowX: "auto",
+                        padding: "24px 16px",
+                        display: "flex",
+                        justifyContent: "center",
+                        alignItems: "flex-start",
+                        background: "#090d16",
+                        position: "relative",
+                      }}
+                    >
+                      <div
+                        style={{
+                          maxWidth: inspectSource.scale === "fit" ? "100%" : `${(typeof inspectSource.scale === "number" ? inspectSource.scale : 1.0) * 880}px`,
+                          width: inspectSource.scale === "fit" ? "100%" : "auto",
+                          position: "relative",
+                          transition: "width 0.15s ease",
+                        }}
+                      >
+                        <img
+                          key={`${inspectSource.id}-p${inspectSource.currentPage}`}
+                          src={apiUrl(
+                            `/knowledge-center/sources/${inspectSource.id}/preview-page/${inspectSource.currentPage}${
+                              previewToken || authToken() ? `?token=${encodeURIComponent(previewToken || authToken() || "")}` : ""
+                            }`
+                          )}
+                          alt={`الصفحة ${inspectSource.currentPage}`}
+                          onLoad={() => setInspectSource((prev) => prev ? { ...prev, pageLoading: false } : null)}
+                          onError={() => setInspectSource((prev) => prev ? { ...prev, pageLoading: false } : null)}
+                          style={{
+                            width: "100%",
+                            height: "auto",
+                            display: "block",
+                            borderRadius: "8px",
+                            boxShadow: "0 12px 40px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.1)",
+                            background: "#ffffff",
+                          }}
+                        />
+
+                        {/* Subtle loading badge while next page image is loading */}
+                        {inspectSource.pageLoading && (
+                          <div
+                            style={{
+                              position: "absolute",
+                              top: "12px",
+                              left: "12px",
+                              background: "rgba(15,23,42,0.85)",
+                              backdropFilter: "blur(6px)",
+                              border: "1px solid rgba(56,189,248,0.4)",
+                              color: "#38bdf8",
+                              padding: "6px 12px",
+                              borderRadius: "8px",
+                              fontSize: "12px",
+                              fontWeight: "700",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "6px",
+                              zIndex: 10,
+                            }}
+                          >
+                            <RefreshCw style={{ width: "14px", height: "14px", animation: "spin 1s linear infinite" }} />
+                            جاري تحميل الصفحة {inspectSource.currentPage}...
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  /* Fallback: Original PDF iframe */
+                  <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
+                    <div style={{ padding: "8px 16px", background: "#111827", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                      <span style={{ fontSize: "13px", color: "#94a3b8" }}>عارض المتصفح الكامل للملف الأصلي</span>
+                      <button
+                        type="button"
+                        onClick={() => setInspectSource((prev) => prev ? { ...prev, viewMode: "FAST_PAGES" } : null)}
+                        style={{
+                          padding: "6px 12px",
+                          borderRadius: "6px",
+                          background: "#2563eb",
+                          color: "#ffffff",
+                          border: "none",
+                          fontSize: "12px",
+                          fontWeight: "700",
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "6px",
+                        }}
+                      >
+                        <Zap style={{ width: "14px", height: "14px" }} />
+                        التبديل إلى عارض الصفحات فائق السرعة
+                      </button>
+                    </div>
+                    {previewLoading ? (
+                      <div style={{ flex: 1, display: "grid", placeItems: "center", color: "#cbd5e1" }}>
+                        جاري تحميل الملف للمعاينة...
+                      </div>
+                    ) : previewError ? (
+                      <div style={{ flex: 1, display: "grid", placeItems: "center", color: "#fca5a5", padding: "24px", textAlign: "center" }}>
+                        {previewError}
+                      </div>
+                    ) : previewUrl || previewToken || authToken() ? (
+                      <iframe
+                        src={
+                          previewUrl ||
+                          apiUrl(
+                            `/knowledge-center/sources/${inspectSource.id}/preview-file${
+                              previewToken || authToken() ? `?token=${encodeURIComponent(previewToken || authToken() || "")}` : ""
+                            }`
+                          )
+                        }
+                        title={inspectSource.filename}
+                        style={{ width: "100%", height: "100%", flex: 1, border: "none", background: "#ffffff" }}
+                      />
+                    ) : (
+                      <div style={{ flex: 1, display: "grid", placeItems: "center", color: "#94a3b8" }}>
+                        لا يوجد ملف قابل للمعاينة.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>

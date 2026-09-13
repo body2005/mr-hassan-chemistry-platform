@@ -508,7 +508,7 @@ def _is_valid_distractor_statement(stmt: str, target_stmt: str) -> bool:
     target_has_arrow = any(a in target_stmt for a in ["->", "→", "<=>", "⇌"])
     if not target_has_arrow and any(a in s for a in ["->", "→", "<=>", "⇌"]):
         return False
-    if re.match(r"^[\(\[]?\s*[أ-دA-Da-d]\s*[\)\]\.\:\-]", s):
+    if re.match(r"^[\(\[]?\s*[أبجدA-Da-d]\s*[\)\]\.\:\-]", s):
         return False
     if any(k in s for k in ["الإجابة الصحيحة", "الحل:", "Answer:", "Key:"]):
         return False

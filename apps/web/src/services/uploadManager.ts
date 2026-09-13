@@ -34,6 +34,17 @@ export interface UploadTask {
   onSuccess?: () => void;
 }
 
+interface ServerKnowledgeSource {
+  id: string;
+  filename: string;
+  size_bytes?: number;
+  progress_percent?: number;
+  status: "QUEUED" | "PROCESSING" | "INDEXED" | "FAILED" | string;
+  error_message?: string | null;
+  course_id?: string;
+  created_at?: string;
+}
+
 const STORAGE_KEY = "lms_global_upload_tasks_v2";
 
 export function formatFileSize(bytes: number): string {
@@ -49,7 +60,7 @@ class UploadManager {
   private listeners: Set<(tasks: UploadTask[]) => void> = new Set();
   private maxConcurrent = 2;
   private isProcessingQueue = false;
-  private syncTimer: any = null;
+  private syncTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     this.tasks = this.loadTasksFromStorage();
@@ -115,8 +126,12 @@ class UploadManager {
     try {
       // Omit non-serializable objects (file, files, xhr, onSuccess)
       const serializable = this.tasks.slice(0, 15).map((t) => {
-        const { file, files, xhr, onSuccess, ...rest } = t;
-        return rest;
+        const copy: Partial<UploadTask> = { ...t };
+        delete copy.file;
+        delete copy.files;
+        delete copy.xhr;
+        delete copy.onSuccess;
+        return copy;
       });
       localStorage.setItem(STORAGE_KEY, JSON.stringify(serializable));
     } catch (err) {
@@ -148,11 +163,11 @@ class UploadManager {
   public async syncWithServer(): Promise<void> {
     if (typeof window === "undefined" || !this.hasAuthenticatedSession()) return;
     try {
-      const sources = await apiRequest<any[]>("/knowledge-center/sources");
+      const sources = await apiRequest<ServerKnowledgeSource[]>("/knowledge-center/sources");
       if (!Array.isArray(sources)) return;
 
       let hasChanges = false;
-      const serverSourcesMap = new Map<string, any>();
+      const serverSourcesMap = new Map<string, ServerKnowledgeSource>();
       sources.forEach((s) => {
         serverSourcesMap.set(s.id, s);
       });
@@ -162,7 +177,11 @@ class UploadManager {
         if (task.type === "knowledge_source" && (task.status === "processing" || task.status === "uploading")) {
           // If task has specific sourceIds
           if (task.sourceIds && task.sourceIds.length > 0) {
-            const matched = task.sourceIds.map((id) => serverSourcesMap.get(id)).filter(Boolean);
+            const matched: ServerKnowledgeSource[] = [];
+            for (const id of task.sourceIds) {
+              const item = serverSourcesMap.get(id);
+              if (item) matched.push(item);
+            }
             if (matched.length > 0) {
               const allIndexed = matched.every((s) => s.status === "INDEXED");
               const anyFailed = matched.find((s) => s.status === "FAILED");
@@ -304,14 +323,19 @@ class UploadManager {
   public enqueueKnowledgeBatchUpload(params: {
     files: File[];
     courseId?: string;
+    lessonId?: string;
+    lessonTitle?: string;
     onSuccess?: () => void;
   }): string {
     const taskId = `knw_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const totalBytes = params.files.reduce((sum, f) => sum + f.size, 0);
     const count = params.files.length;
+    const taskTitle = params.lessonTitle
+      ? `مذكرات درس: ${params.lessonTitle} (${count} ${count === 1 ? "ملف" : "ملفات"})`
+      : `رفع دفعة مستندات (${count} ${count === 1 ? "ملف" : "ملفات"})`;
     const task: UploadTask = {
       id: taskId,
-      title: `رفع دفعة مستندات (${count} ${count === 1 ? "ملف" : "ملفات"})`,
+      title: taskTitle,
       fileName: params.files[0]?.name + (count > 1 ? ` (+${count - 1} ملفات أخرى)` : ""),
       fileSizeBytes: totalBytes,
       formattedSize: formatFileSize(totalBytes),
@@ -319,6 +343,7 @@ class UploadManager {
       status: "queued",
       type: "knowledge_source",
       courseId: params.courseId,
+      lessonId: params.lessonId,
       createdAt: Date.now(),
       files: params.files,
       onSuccess: params.onSuccess,
@@ -394,10 +419,10 @@ class UploadManager {
           })
         );
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       if ((task.status as string) !== "cancelled") {
         task.status = "error";
-        task.error = err?.message || "تعذر إكمال رفع الفيديو. تأكد من سرعة الاتصال بالإنترنت.";
+        task.error = (err as Error)?.message || "تعذر إكمال رفع الفيديو. تأكد من سرعة الاتصال بالإنترنت.";
         this.notify();
         this.persistTasks();
         if (typeof window !== "undefined") {
@@ -430,9 +455,12 @@ class UploadManager {
       if (task.courseId) {
         formData.append("course_id", task.courseId);
       }
+      if (task.lessonId) {
+        formData.append("lesson_id", task.lessonId);
+      }
       formData.append("source_role", "KNOWLEDGE");
 
-      const createdSources = await uploadWithProgress<any[]>(
+      const createdSources = await uploadWithProgress<{ id: string; status: string }[]>(
         "/knowledge-center/sources/upload-batch",
         formData,
         (percent, loaded) => {
@@ -452,18 +480,23 @@ class UploadManager {
         }
       );
 
-      // Data transfer complete! The file is safely stored on the server.
-      // Server-side indexing begins in background.
       task.status = "processing";
-      task.progress = Math.max(10, createdSources?.[0]?.progress_percent || 10);
-      if (Array.isArray(createdSources) && createdSources.length > 0) {
+      task.progress = 100;
+      if (Array.isArray(createdSources)) {
         task.sourceIds = createdSources.map((s) => s.id);
       }
       this.notify();
       this.persistTasks();
 
+      if (task.onSuccess) {
+        task.onSuccess();
+      }
+
       if (typeof window !== "undefined") {
         window.dispatchEvent(new CustomEvent("lms_knowledge_updated"));
+        if (task.courseId && task.lessonId) {
+          window.dispatchEvent(new CustomEvent("lms_courses_updated"));
+        }
         window.dispatchEvent(
           new CustomEvent("lms_toast_notification", {
             detail: {
@@ -476,10 +509,10 @@ class UploadManager {
 
       // Trigger immediate sync
       void this.syncWithServer();
-    } catch (err: any) {
+    } catch (err: unknown) {
       if ((task.status as string) !== "cancelled") {
         task.status = "error";
-        task.error = err?.message || "تعذر رفع الملفات. تأكد من سرعة الاتصال وحجم الملفات.";
+        task.error = (err as Error)?.message || "تعذر رفع الملفات. تأكد من سرعة الاتصال وحجم الملفات.";
         this.notify();
         this.persistTasks();
       }

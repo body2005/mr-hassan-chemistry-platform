@@ -80,12 +80,12 @@ export const TutorDrawer: React.FC<TutorDrawerProps> = ({
       };
 
       setMessages((prev) => [...prev, assistantMsg]);
-    } catch (err: any) {
+    } catch (err: unknown) {
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          content: `عذراً، لم نتمكن من الاتصال بالخادم الآن: ${err.message || "تأكد من تشغيل السيرفر"}.`,
+          content: `عذراً، لم نتمكن من الاتصال بالخادم الآن: ${(err as Error)?.message || "تأكد من تشغيل السيرفر"}.`,
           isGrounded: false,
           refusal: true,
         },
@@ -119,7 +119,7 @@ export const TutorDrawer: React.FC<TutorDrawerProps> = ({
           style={{ border: "1px solid var(--border-color)", borderRadius: "8px", padding: "4px 8px", background: "var(--bg-surface)", fontSize: "12px", color: "var(--text-main)", fontWeight: 700 }}
         >
           {dynamicCourses.length > 0 ? (
-            dynamicCourses.map((c: any) => (
+            dynamicCourses.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.title}
               </option>

@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -311,13 +312,49 @@ def is_valid_data_table(headers: list[str], rows: list[list[str]]) -> tuple[bool
     return True, f"Valid table ({num_rows}x{num_cols})"
 
 
-def clean_arabic_ocr_text(text: str) -> str:
-    """Cleans OCR artifacts, removes rogue Unicode BiDi isolation marks, and context-aware fixes for Tesseract confusions."""
+def normalize_arabic_presentation_forms(text: str) -> str:
+    """
+    Normalizes Arabic Presentation Forms-A (U+FB50–U+FDFF) and Presentation Forms-B (U+FE70–U+FEFC)
+    to standard logical Arabic characters (U+0621–U+064A) using unicodedata NFKC.
+    CRITICAL: Preserves chemical formulas, superscripts, subscripts, and scientific notations
+    (e.g., N₂ + 3H₂ ⇌ 2NH₃, SO₃²⁻, 1 × 10⁻⁷, Fe(s) | Fe²⁺(aq) || Ni²⁺(aq) | Ni) by ONLY
+    normalizing glyphs within the Arabic presentation forms code blocks.
+    Also strips rogue bidi control marks, svg remnants, and UI button leftovers.
+    """
     if not text:
         return ""
-    cleaned = BIDI_CHARS_RE.sub('', text)
+
+    # 1. Selectively normalize ONLY Arabic presentation form codepoints
+    chars = []
+    for ch in text:
+        code = ord(ch)
+        if (0xFB50 <= code <= 0xFDFF) or (0xFE70 <= code <= 0xFEFC):
+            chars.append(unicodedata.normalize("NFKC", ch))
+        else:
+            chars.append(ch)
+    normalized = "".join(chars)
+
+    # 2. Filter bidi control marks
+    normalized = BIDI_CHARS_RE.sub("", normalized)
+
+    # 3. Filter out svg remnants, e.g. svgsvg, <svg ... </svg>, etc.
+    normalized = re.sub(r'(?i)<svg\b[^>]*>[\s\S]*?<\/svg>', ' ', normalized)
+    normalized = re.sub(r'(?i)<\/?(?:svg|path|g|rect|circle|line|polygon|polyline)\b[^>]*>', ' ', normalized)
+    normalized = re.sub(r'\b(?:svgsvg|svgxml|xmlns|viewBox)\b', ' ', normalized, flags=re.IGNORECASE)
+
+    # 4. Filter button leftovers (e.g. "btn-primary", "click here to submit", UI button leftovers)
+    normalized = re.sub(r'\b(?:btn|btn-[a-z0-9_\-]+|button-text|submit-btn)\b', ' ', normalized, flags=re.IGNORECASE)
+
+    return normalized
+
+
+def clean_arabic_ocr_text(text: str) -> str:
+    """Cleans OCR artifacts, normalizes presentation forms, removes rogue Unicode BiDi isolation marks, and context-aware fixes for Tesseract confusions."""
+    if not text:
+        return ""
+    cleaned = normalize_arabic_presentation_forms(text)
     # Only apply Arabic substitutions if text has an Arabic context to avoid corrupting English words (e.g. 'of', 'in', 'to')
-    has_arabic = bool(re.search(r'[\u0600-\u06FF]', text))
+    has_arabic = bool(re.search(r'[\u0600-\u06FF]', cleaned))
     if has_arabic:
         for pat, rep in OCR_ARABIC_CONFUSIONS:
             cleaned = re.sub(pat, rep, cleaned)
@@ -504,10 +541,10 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
 
                 # 2. Extract text blocks & headings
                 OPT_OR_ANS_RE = re.compile(
-                    r"^([\(\[]?\s*([أ-دA-Da-d1-4]|i|z|s|\)\()\s*[\)\]\.\:\-\/]|(?:الإجاب[ةه]|الجواب|الحل|Answer|Key)\b)"
+                    r"^([\(\[]?\s*([أبجدA-Da-d1-4]|i|z|s|\)\()\s*[\)\]\.\:\-\/]|(?:الإجاب[ةه]|الجواب|الحل|Answer|Key)\b)"
                 )
                 OPT_SUFFIX_RE = re.compile(
-                    r"^(.*?)\s*[\(\[]\s*([أ-دA-Da-d1-4]|i|z|s|\)\()\s*[\)\]][\.\:\-]?$"
+                    r"^(.*?)\s*[\(\[]\s*([أبجدA-Da-d1-4]|i|z|s|\)\()\s*[\)\]][\.\:\-]?$"
                 )
                 QUESTION_HEADER_RE = re.compile(
                     r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)|س\s*\d+|Question\s*\d+|Q\d+|^\(?\d{1,3}\)?[\.\-\:\)])\b",
@@ -642,7 +679,7 @@ def parse_docx_document(file_source: bytes | str, filename: str) -> ParsedDocume
 
     page = ParsedPage(page_number=1)
     raw_lines: list[str] = []
-    OPT_OR_ANS_RE = re.compile(r"^([\(\[]?\s*[أ-دA-Da-d]\s*[\)\]\.\:\-\/]|(?:الإجاب[ةه]|الجواب|الحل|Answer|Key)\b)")
+    OPT_OR_ANS_RE = re.compile(r"^([\(\[]?\s*[أبجدA-Da-d]\s*[\)\]\.\:\-\/]|(?:الإجاب[ةه]|الجواب|الحل|Answer|Key)\b)")
 
     # 1. Paragraphs & Headings
     for idx, p in enumerate(doc.paragraphs):
@@ -837,7 +874,7 @@ def parse_txt_document(file_source: bytes | str, filename: str) -> ParsedDocumen
     )
 
     page = ParsedPage(page_number=1, raw_text=text)
-    OPT_OR_ANS_RE = re.compile(r"^([\(\[]?[أ-دA-Da-d][\)\]\.\:\-]|(?:الإجاب[ةه]|الجواب|الحل|Answer|Key)\b)")
+    OPT_OR_ANS_RE = re.compile(r"^([\(\[]?[أبجدA-Da-d][\)\]\.\:\-]|(?:الإجاب[ةه]|الجواب|الحل|Answer|Key)\b)")
 
     lines = [l.strip() for l in text.split("\n") if l.strip()]
     for b_idx, line in enumerate(lines):
@@ -850,7 +887,7 @@ def parse_txt_document(file_source: bytes | str, filename: str) -> ParsedDocumen
         is_heading = bool(markdown_heading) or line.startswith(("==", "--")) or (
             len(line) < 60
             and not line.endswith(".")
-            and not re.match(r"^[\(\[]?(\d+|[أ-دA-Da-d])[\)\]\.\:\-]", line)
+            and not re.match(r"^[\(\[]?(\d+|[أبجدA-Da-d])[\)\]\.\:\-]", line)
             and len(line.split()) <= 6
         )
 

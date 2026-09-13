@@ -111,8 +111,8 @@ export function ConfirmWizardProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export function useConfirm(): PushFn {
+export const useConfirm = (): PushFn => {
   const ctx = useContext(ConfirmContext);
   if (!ctx) throw new Error("useConfirm must be used inside ConfirmWizardProvider");
   return ctx;
-}
+};

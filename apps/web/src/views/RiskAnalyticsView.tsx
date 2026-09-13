@@ -24,7 +24,7 @@ export const RiskAnalyticsView: React.FC = () => {
     try {
       const resp = await aiClient.predictStudentRisk(SAMPLE_STUDENTS_COHORT);
       setScoredResults(resp);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.warn("Progress check error:", err);
     } finally {
       setScoringLoading(false);
@@ -68,7 +68,7 @@ export const RiskAnalyticsView: React.FC = () => {
         ],
       });
       setInsightsResults(resp);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.warn("Insights error:", err);
     } finally {
       setInsightsLoading(false);

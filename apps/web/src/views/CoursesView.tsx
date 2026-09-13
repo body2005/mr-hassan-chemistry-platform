@@ -41,8 +41,8 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
       });
 
       setIndexStatus(`تم تجهيز وفهرسة ${res.indexed_chunks_count} دروس في المساعد الذكي بنجاح!`);
-    } catch (err: any) {
-      setIndexStatus(`تنبيه: ${err.message}`);
+    } catch (err: unknown) {
+      setIndexStatus(`تنبيه: ${(err as Error)?.message || "حدث خطأ أثناء الفهرسة"}`);
     } finally {
       setIndexing(false);
     }

@@ -38,7 +38,14 @@ def metrics() -> Response:
 @router.get("/ready", response_model=ReadinessResponse)
 def readiness_check(db: Annotated[Session, Depends(get_db)]) -> ReadinessResponse:
     settings = get_settings()
-    dependencies = {"database": "ok", "redis": "unavailable"}
+    from app.core.storage import get_storage_provider
+    storage = get_storage_provider()
+    storage_check = storage.check_readiness()
+    dependencies = {
+        "database": "ok",
+        "redis": "unavailable",
+        "storage": str(storage_check["status"]),
+    }
     try:
         db.execute(text("SELECT 1"))
     except SQLAlchemyError as exc:

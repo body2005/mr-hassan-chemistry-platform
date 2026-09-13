@@ -27,7 +27,7 @@ export const SystemStatusView: React.FC = () => {
       ]);
       setHealth(h);
       setMetrics(m);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.warn("Failed to load telemetry:", err);
     } finally {
       setLoading(false);
@@ -41,8 +41,8 @@ export const SystemStatusView: React.FC = () => {
       const res = await aiClient.clearCache();
       setCacheMessage(res.message);
       fetchStatus();
-    } catch (err: any) {
-      setCacheMessage(`Cache clear notice: ${err.message}`);
+    } catch (err: unknown) {
+      setCacheMessage(`Cache clear notice: ${(err as Error)?.message || "Failed"}`);
     } finally {
       setClearingCache(false);
     }

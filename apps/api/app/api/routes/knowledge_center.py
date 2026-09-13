@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
 
 _PDF_RENDER_LOCK = threading.Lock()
 from pydantic import BaseModel, Field
@@ -169,6 +169,13 @@ class AnswerKeyLinkRequest(BaseModel):
     answer_key_source_id: str | None = None
 
 
+class PreviewTokenResponse(BaseModel):
+    preview_token: str
+    expires_in: int
+    preview_url: str
+    page_preview_url_template: str
+
+
 def _parse_uuid(id_str: str | None) -> uuid.UUID | None:
     if not id_str or not str(id_str).strip():
         return None
@@ -179,44 +186,26 @@ def _parse_uuid(id_str: str | None) -> uuid.UUID | None:
 
 
 def _resolve_course_uuid(db: Session, user: User, course_id: str | None) -> uuid.UUID:
+    if not course_id or not str(course_id).strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="course_id is required",
+        )
     course_uuid = _parse_uuid(course_id)
-    if course_id and not course_uuid:
-        raise HTTPException(status_code=400, detail="Invalid course ID")
-    if course_uuid:
-        stmt = select(Course).where(Course.id == course_uuid)
-        if user.role != UserRole.PLATFORM_ADMIN:
-            stmt = stmt.where(Course.institution_id == user.institution_id)
-        existing = db.scalar(stmt)
-        if not existing:
-            raise HTTPException(status_code=404, detail="Course not found")
-        if user.role == UserRole.TEACHER and existing.teacher_id != user.id:
-            raise HTTPException(status_code=404, detail="Course not found")
-        return existing.id
-
-    stmt = select(Course)
+    if not course_uuid:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid course ID format",
+        )
+    stmt = select(Course).where(Course.id == course_uuid)
     if user.role != UserRole.PLATFORM_ADMIN:
         stmt = stmt.where(Course.institution_id == user.institution_id)
-    if user.role == UserRole.TEACHER:
-        stmt = stmt.where(Course.teacher_id == user.id)
-    default_course = db.scalar(stmt.order_by(Course.created_at.asc()))
-    if default_course:
-        return default_course.id
-
-    from app.models.course import CourseStatus
-    if user.role == UserRole.PLATFORM_ADMIN:
-        raise HTTPException(status_code=404, detail="No course exists")
-    new_course = Course(
-        institution_id=user.institution_id,
-        teacher_id=user.id,
-        code="CHEM-3SEC",
-        title="الكيمياء - الصف الثالث الثانوي",
-        description="منهج الكيمياء للثانوية العامة — مستر حسن شعبان",
-        status=CourseStatus.PUBLISHED,
-    )
-    db.add(new_course)
-    db.commit()
-    db.refresh(new_course)
-    return new_course.id
+    existing = db.scalar(stmt)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Course not found")
+    if user.role == UserRole.TEACHER and existing.teacher_id != user.id:
+        raise HTTPException(status_code=404, detail="Course not found")
+    return existing.id
 
 
 def _resolve_lesson_uuid(
@@ -407,7 +396,7 @@ async def upload_knowledge_sources_batch(
     db: Db,
     user: TeacherOrAdmin,
     background_tasks: BackgroundTasks,
-    course_id: str | None = Form(None),
+    course_id: str = Form(...),
     lesson_id: str | None = Form(None),
     source_role: str = Form(SourceRole.KNOWLEDGE),
     assessment_type: str | None = Form(None),
@@ -909,30 +898,236 @@ def delete_source(source_id: str, db: Db, user: TeacherOrAdmin) -> dict[str, Any
     return {"success": True, "deleted_id": source_id, "status": "deleted"}
 
 
-@router.get("/sources/{source_id}/view")
-def view_knowledge_source_file(source_id: str, db: Db, user: CurrentUser) -> FileResponse:
-    from fastapi.responses import FileResponse
-    s_uuid = _parse_uuid(source_id)
-    source = _get_source_for_user(db, s_uuid, user)
-    if not os.path.exists(source.storage_path):
+def _detect_media_type(filename: str, mime_type: str | None = None) -> str:
+    ext = os.path.splitext(filename)[1].lower()
+    if mime_type and mime_type != "application/octet-stream":
+        return mime_type
+    if ext == ".pdf":
+        return "application/pdf"
+    elif ext in [".txt", ".md"]:
+        return "text/plain; charset=utf-8"
+    elif ext in [".png", ".jpg", ".jpeg", ".webp"]:
+        return f"image/{'jpeg' if ext in ['.jpg', '.jpeg'] else ('webp' if ext == '.webp' else 'png')}"
+    elif ext == ".docx":
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    elif ext == ".pptx":
+        return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    return "application/octet-stream"
+
+
+def _parse_range_header(range_header: str | None, total_size: int) -> tuple[int, int] | None:
+    if not range_header or not range_header.startswith("bytes="):
+        return None
+    range_val = range_header.replace("bytes=", "").strip()
+    parts = range_val.split("-")
+    if len(parts) != 2:
+        return None
+    start_str, end_str = parts[0].strip(), parts[1].strip()
+    try:
+        if start_str and end_str:
+            start = int(start_str)
+            end = int(end_str)
+        elif start_str:
+            start = int(start_str)
+            end = total_size - 1
+        elif end_str:
+            length = int(end_str)
+            start = max(0, total_size - length)
+            end = total_size - 1
+        else:
+            return None
+    except ValueError:
+        return None
+
+    if start > end or start >= total_size:
+        return None
+    end = min(end, total_size - 1)
+    return start, end
+
+
+def _serve_file_with_range(
+    request: Request,
+    file_path: str,
+    media_type: str,
+    filename: str,
+    as_attachment: bool = False,
+) -> Response:
+    from fastapi.responses import StreamingResponse
+    from urllib.parse import quote
+    from app.core.storage import get_storage
+
+    storage = get_storage()
+    if not os.path.exists(file_path) and not storage.exists(file_path):
         raise HTTPException(status_code=404, detail="Source file not found")
 
-    ext = os.path.splitext(source.filename)[1].lower()
-    media_type = source.mime_type
-    if not media_type or media_type == "application/octet-stream":
-        if ext == ".pdf":
-            media_type = "application/pdf"
-        elif ext in [".txt", ".md"]:
-            media_type = "text/plain; charset=utf-8"
-        elif ext in [".png", ".jpg", ".jpeg"]:
-            media_type = f"image/{'jpeg' if ext in ['.jpg', '.jpeg'] else 'png'}"
-        else:
-            media_type = "application/pdf"
+    file_size = storage.get_size(file_path) if storage.exists(file_path) else os.path.getsize(file_path)
+    range_header = request.headers.get("range") or request.headers.get("Range")
+    encoded_filename = quote(filename)
+    disposition = "attachment" if as_attachment else "inline"
+    content_disposition = f"{disposition}; filename*=UTF-8''{encoded_filename}"
 
-    return FileResponse(
-        path=source.storage_path,
+    if range_header:
+        parsed_range = _parse_range_header(range_header, file_size)
+        if parsed_range:
+            start, end = parsed_range
+            content_length = end - start + 1
+            headers = {
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(content_length),
+                "Content-Type": media_type,
+                "Content-Disposition": content_disposition,
+            }
+            return StreamingResponse(
+                storage.open_stream(file_path, start=start, length=content_length),
+                status_code=206,
+                headers=headers,
+                media_type=media_type,
+            )
+        else:
+            raise HTTPException(
+                status_code=416,
+                detail="Requested Range Not Satisfiable",
+                headers={"Content-Range": f"bytes */{file_size}"},
+            )
+
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(file_size),
+        "Content-Type": media_type,
+        "Content-Disposition": content_disposition,
+    }
+    return StreamingResponse(
+        storage.open_stream(file_path, start=0, length=file_size),
+        status_code=200,
+        headers=headers,
         media_type=media_type,
-        content_disposition_type="inline",
+    )
+
+
+@router.post("/sources/{source_id}/preview-token", response_model=PreviewTokenResponse)
+def create_source_preview_token(
+    source_id: str,
+    db: Db,
+    user: CurrentUser,
+) -> PreviewTokenResponse:
+    s_uuid = _parse_uuid(source_id)
+    if not s_uuid:
+        raise HTTPException(status_code=400, detail="Invalid source ID")
+    source = _get_source_for_user(db, s_uuid, user)
+    from app.core.security import create_preview_token
+    token = create_preview_token(user=user, source_id=source.id, expires_in_seconds=900)
+    return PreviewTokenResponse(
+        preview_token=token,
+        expires_in=900,
+        preview_url=f"/api/v1/knowledge-center/sources/{source.id}/preview-file?token={token}",
+        page_preview_url_template=f"/api/v1/knowledge-center/sources/{source.id}/preview-page/{{page_number}}?token={token}",
+    )
+
+
+@router.get("/sources/{source_id}/preview-file")
+def preview_knowledge_source_file(
+    source_id: str,
+    request: Request,
+    db: Db,
+    user: CurrentUser,
+) -> Response:
+    s_uuid = _parse_uuid(source_id)
+    if not s_uuid:
+        raise HTTPException(status_code=400, detail="Invalid source ID")
+    source = _get_source_for_user(db, s_uuid, user)
+
+    from app.api.dependencies import _extract_token
+    from app.core.security import decode_preview_token
+    token = _extract_token(request)
+    if token:
+        preview_payload = decode_preview_token(token)
+        if preview_payload and preview_payload.get("source_id") != str(source.id):
+            raise HTTPException(status_code=403, detail="Preview token is not valid for this source")
+
+    media_type = _detect_media_type(source.filename, source.mime_type)
+    return _serve_file_with_range(
+        request=request,
+        file_path=source.storage_path,
+        media_type=media_type,
+        filename=source.filename,
+        as_attachment=False,
+    )
+
+
+@router.get("/sources/{source_id}/download")
+def download_knowledge_source_file(
+    source_id: str,
+    request: Request,
+    db: Db,
+    user: CurrentUser,
+) -> Response:
+    s_uuid = _parse_uuid(source_id)
+    if not s_uuid:
+        raise HTTPException(status_code=400, detail="Invalid source ID")
+    source = _get_source_for_user(db, s_uuid, user)
+
+    media_type = _detect_media_type(source.filename, source.mime_type)
+    return _serve_file_with_range(
+        request=request,
+        file_path=source.storage_path,
+        media_type=media_type,
+        filename=source.filename,
+        as_attachment=True,
+    )
+
+
+@router.get("/sources/{source_id}/preview-page/{page_number}")
+def preview_source_page_image(
+    source_id: str,
+    page_number: int,
+    request: Request,
+    db: Db,
+    background_tasks: BackgroundTasks,
+    user: CurrentUser,
+    scale: float = 1.3,
+) -> Response:
+    s_uuid = _parse_uuid(source_id)
+    if not s_uuid:
+        raise HTTPException(status_code=400, detail="Invalid source ID")
+    source = _get_source_for_user(db, s_uuid, user)
+
+    from app.api.dependencies import _extract_token
+    from app.core.security import decode_preview_token
+    token = _extract_token(request)
+    if token:
+        preview_payload = decode_preview_token(token)
+        if preview_payload and preview_payload.get("source_id") != str(source.id):
+            raise HTTPException(status_code=403, detail="Preview token is not valid for this source")
+
+    return stream_source_page_image(
+        source_id=source_id,
+        page_number=page_number,
+        db=db,
+        background_tasks=background_tasks,
+        user=user,
+        scale=scale,
+    )
+
+
+@router.get("/sources/{source_id}/view")
+def view_knowledge_source_file(
+    source_id: str,
+    request: Request,
+    db: Db,
+    user: CurrentUser,
+) -> Response:
+    s_uuid = _parse_uuid(source_id)
+    if not s_uuid:
+        raise HTTPException(status_code=400, detail="Invalid source ID")
+    source = _get_source_for_user(db, s_uuid, user)
+    media_type = _detect_media_type(source.filename, source.mime_type)
+    return _serve_file_with_range(
+        request=request,
+        file_path=source.storage_path,
+        media_type=media_type,
+        filename=source.filename,
+        as_attachment=False,
     )
 
 

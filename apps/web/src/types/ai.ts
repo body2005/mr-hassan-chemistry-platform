@@ -36,7 +36,7 @@ export interface QuizDraftResponse {
   total_points: number;
   requires_teacher_approval: boolean;
   cached: boolean;
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
 }
 
 export interface CriterionGradingResult {
@@ -94,7 +94,7 @@ export interface BatchRiskResponse {
   predictions: StudentRiskPrediction[];
   total_students: number;
   at_risk_count: number;
-  model_metadata: Record<string, any>;
+  model_metadata: Record<string, unknown>;
 }
 
 export interface AnalyticsInterpretationResponse {

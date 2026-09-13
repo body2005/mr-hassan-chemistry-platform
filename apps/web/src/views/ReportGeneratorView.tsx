@@ -13,8 +13,8 @@ export const ReportGeneratorView: React.FC = () => {
   const [targetAudience, setTargetAudience] = useState("instructors");
   const [totalEnrolled, setTotalEnrolled] = useState(() => {
     try {
-      const users = JSON.parse(localStorage.getItem("lms_registered_users") || "[]");
-      const stCount = users.filter((u: any) => u.role === "student").length;
+      const users = JSON.parse(localStorage.getItem("lms_registered_users") || "[]") as Array<{ role?: string }>;
+      const stCount = users.filter((u) => u.role === "student").length;
       return stCount > 0 ? stCount : 24;
     } catch {
       return 24;
@@ -60,8 +60,8 @@ export const ReportGeneratorView: React.FC = () => {
         false
       );
       setReport(resp);
-    } catch (err: any) {
-      setError(err.message || "عذراً، حدث خطأ أثناء كتابة التقرير.");
+    } catch (err: unknown) {
+      setError((err as Error)?.message || "عذراً، حدث خطأ أثناء كتابة التقرير.");
     } finally {
       setLoading(false);
     }

@@ -9,7 +9,7 @@ import {
   SystemMetricsResponse,
   TutorChatResponse,
 } from "../types/ai";
-import { UserRole } from "../types/lms";
+import { UserRole, QuestionTypeConfig } from "../types/lms";
 import { apiRequest } from "./apiClient";
 
 export class AIServiceError extends Error {
@@ -22,12 +22,7 @@ export class AIServiceError extends Error {
   }
 }
 
-export interface QuestionTypeAllocation {
-  id: "multiple_choice" | "essay" | "true_false" | "fill_in_blank";
-  label: string;
-  count: number;
-  withCorrection?: boolean;
-}
+export type QuestionTypeAllocation = QuestionTypeConfig;
 
 class AIServiceClient {
   private async request<T>(endpoint: string, method: "GET" | "POST" = "POST", body?: unknown, headers: Record<string, string> = {}, timeoutMs = 30_000): Promise<T> {
