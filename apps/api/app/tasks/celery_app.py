@@ -10,7 +10,7 @@ celery_app = Celery(
     backend=os.getenv("CELERY_RESULT_BACKEND", os.getenv("REDIS_URL", "redis://localhost:6379/2")),
     include=["app.tasks.knowledge_ingestion"],
 )
-visibility_timeout = int(os.getenv("CELERY_VISIBILITY_TIMEOUT", "30"))
+visibility_timeout = int(os.getenv("CELERY_VISIBILITY_TIMEOUT", "3600"))
 celery_app.conf.update(
     task_serializer="json",
     result_serializer="json",

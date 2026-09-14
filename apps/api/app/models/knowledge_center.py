@@ -36,18 +36,25 @@ from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin, enum_valu
 
 
 class SourceRole(StrEnum):
-    KNOWLEDGE = "KNOWLEDGE"
+    # Canonical upload roles. Legacy values remain readable so existing rows can
+    # be migrated forward without breaking historical audit records.
+    COURSE_KNOWLEDGE = "COURSE_KNOWLEDGE"
+    LESSON_MATERIAL = "LESSON_MATERIAL"
+    QUIZ_IMPORT = "QUIZ_IMPORT"
     ASSESSMENT = "ASSESSMENT"
+
+    # Legacy roles (not accepted by new upload endpoints).
+    KNOWLEDGE = "KNOWLEDGE"
     ANSWER_KEY = "ANSWER_KEY"
     REFERENCE = "REFERENCE"
     MEDIA = "MEDIA"
     VIDEO_TRANSCRIPT = "VIDEO_TRANSCRIPT"
     TEACHER_NOTE = "TEACHER_NOTE"
-    COURSE_KNOWLEDGE = "COURSE_KNOWLEDGE"
-    LESSON_MATERIAL = "LESSON_MATERIAL"
 
 
 class SourceStatus(StrEnum):
+    UPLOADING = "UPLOADING"
+    UPLOADED = "UPLOADED"
     QUEUED = "QUEUED"
     PROCESSING = "PROCESSING"
     INDEXED = "INDEXED"
@@ -87,13 +94,18 @@ class KnowledgeSource(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     storage_path: Mapped[str] = mapped_column(String(500), nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
-    source_role: Mapped[str] = mapped_column(String(30), default=SourceRole.KNOWLEDGE, nullable=False)
+    source_role: Mapped[str] = mapped_column(String(30), default=SourceRole.COURSE_KNOWLEDGE, nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     checksum: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
 
     status: Mapped[str] = mapped_column(String(30), default=SourceStatus.QUEUED, nullable=False)
+    upload_percent: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    indexing_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     progress_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    processing_generation: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    processing_attempt_id: Mapped[uuid.UUID] = mapped_column(default=uuid.uuid4, nullable=False)
+    active_task_id: Mapped[str | None] = mapped_column(String(255))
     error_message: Mapped[str | None] = mapped_column(Text)
 
     unit_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

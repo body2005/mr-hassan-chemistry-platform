@@ -33,7 +33,7 @@ class AIServiceClient {
   // 1. QUIZ GENERATION
   // ================================================================
   async generateQuiz(payload: {
-    course_id?: string;
+    course_id: string;
     lesson_ids?: string[];
     outline_node_id?: string;
     include_prerequisite_lessons?: boolean;
@@ -46,17 +46,16 @@ class AIServiceClient {
     target_points_per_question?: number;
     quiz_mode?: "mix" | "extract" | "generate";
     exclude_stems?: string[];
+    title?: string;
   }, bypassCache = false): Promise<QuizDraftResponse> {
     const validContents = (payload.lesson_contents || []).filter(
       (c) => typeof c === "string" && c.trim().length > 0
     );
 
-    const hasAnyTopic = Array.isArray(payload.topics) && payload.topics.some((t) => typeof t === "string" && t.trim().length > 0);
-
-    if (validContents.length === 0 && !hasAnyTopic && !payload.course_id) {
+    if (!payload.course_id) {
       throw new AIServiceError(
         "quiz_generation",
-        "يرجى تحديد أو رفع درس بمحتوى صالح لتوليد أسئلة الاختبار منه.",
+        "يرجى اختيار مقرر صالح قبل توليد الاختبار.",
       );
     }
 
@@ -95,12 +94,12 @@ class AIServiceClient {
   // ================================================================
   async extractQuizFromFile(
     file: File,
-    courseId?: string,
+    courseId: string,
     lessonId?: string
   ): Promise<QuizDraftResponse> {
     const formData = new FormData();
     formData.append("file", file);
-    if (courseId) formData.append("course_id", courseId);
+    formData.append("course_id", courseId);
     if (lessonId) formData.append("lesson_id", lessonId);
 
     return apiRequest<QuizDraftResponse>("/quiz/extract-from-file", {

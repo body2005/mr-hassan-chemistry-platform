@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.main import app
 from app.models.course import Course, CourseModule, CourseStatus, Lesson, Enrollment, EnrollmentStatus
-from app.models.knowledge_center import KnowledgeSource, SourceRole, SourceStatus
+from app.models.knowledge_center import KnowledgeSource, KnowledgeUnitRecord, SourceRole, SourceStatus
 from app.models.institution import Institution
 from app.models.user import User, UserRole
 from app.api.dependencies import get_current_user
@@ -98,6 +98,11 @@ def test_lesson_material_upload_validation(auth_teacher_client, db):
     source_data = res_ok.json()
     assert source_data["source_role"] == "LESSON_MATERIAL"
     assert source_data["lesson_id"] == str(lesson.id)
+    assert source_data["status"] == "QUEUED"
+    assert source_data["upload_percent"] == 100
+    assert source_data["indexing_percent"] == 0
+    assert source_data["processing_generation"] == 1
+    assert source_data["processing_attempt_id"]
 
 
 def test_lesson_material_exclusion_from_general_knowledge_list(auth_teacher_client, db):
@@ -126,7 +131,7 @@ def test_lesson_material_exclusion_from_general_knowledge_list(auth_teacher_clie
         storage_path="storage/kc_test.pdf",
         checksum="kc_checksum_123",
         size_bytes=1000,
-        source_role=SourceRole.KNOWLEDGE,
+        source_role=SourceRole.COURSE_KNOWLEDGE,
         status=SourceStatus.INDEXED,
     )
     # Lesson material source
@@ -175,7 +180,7 @@ def test_unified_source_detail_endpoint(auth_teacher_client, db):
         storage_path="storage/unit1.pdf",
         checksum="unit1_checksum",
         size_bytes=2048,
-        source_role=SourceRole.KNOWLEDGE,
+        source_role=SourceRole.COURSE_KNOWLEDGE,
         status=SourceStatus.INDEXED,
         progress_percent=100,
     )
@@ -324,8 +329,8 @@ def test_lesson_material_student_access_and_download(db, tmp_path):
     assert res_dl_forbidden.status_code == 403
 
 
-def test_extract_quiz_from_file_course_fallback(auth_teacher_client, db):
-    """Verifies extract-from-file succeeds even if course_id is omitted by defaulting to the teacher's course."""
+def test_extract_quiz_from_file_requires_explicit_course(auth_teacher_client, db):
+    """Quiz imports never infer a course, even when the teacher has only one."""
     client = auth_teacher_client["client"]
     course = auth_teacher_client["course"]
 
@@ -338,30 +343,35 @@ def test_extract_quiz_from_file_course_fallback(auth_teacher_client, db):
         "الإجابة الصحيحة: أ\n"
     )
 
-    # Call WITHOUT course_id succeeds when exactly 1 course exists
-    res = client.post(
+    res_missing = client.post(
         "/api/v1/quiz/extract-from-file",
         files={"file": ("quiz.txt", io.BytesIO(sample_text.encode("utf-8")), "text/plain")},
     )
-    assert res.status_code == 200, f"Expected 200 with fallback, got {res.status_code}: {res.text}"
+    assert res_missing.status_code == 422
+
+    res = client.post(
+        "/api/v1/quiz/extract-from-file",
+        data={"course_id": str(course.id)},
+        files={"file": ("quiz.txt", io.BytesIO(sample_text.encode("utf-8")), "text/plain")},
+    )
+    assert res.status_code == 200, res.text
     data = res.json()
     assert "questions" in data
     assert len(data["questions"]) >= 1
 
-    # When multiple courses exist for the teacher, omitting course_id must raise 422
-    second_course = Course(
-        institution_id=auth_teacher_client["inst"].id,
-        teacher_id=auth_teacher_client["teacher"].id,
-        code="CHEM-TEST-2",
-        title="Second Course",
-        status=CourseStatus.PUBLISHED,
+    imported = db.scalar(
+        select(KnowledgeSource).where(
+            KnowledgeSource.course_id == course.id,
+            KnowledgeSource.source_role == SourceRole.QUIZ_IMPORT,
+        )
     )
-    db.add(second_course)
-    db.commit()
+    assert imported is not None
+    assert db.scalar(
+        select(KnowledgeUnitRecord)
+        .where(KnowledgeUnitRecord.source_id == imported.id)
+        .limit(1)
+    ) is None
 
-    res_ambiguous = client.post(
-        "/api/v1/quiz/extract-from-file",
-        files={"file": ("quiz.txt", io.BytesIO(sample_text.encode("utf-8")), "text/plain")},
-    )
-    assert res_ambiguous.status_code == 422
-    assert "multiple courses exist" in res_ambiguous.text
+    general = client.get(f"/api/v1/knowledge-center/sources?course_id={course.id}")
+    assert general.status_code == 200
+    assert str(imported.id) not in {item["id"] for item in general.json()}

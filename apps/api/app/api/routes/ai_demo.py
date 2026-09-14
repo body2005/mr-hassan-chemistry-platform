@@ -8,7 +8,7 @@ import re
 import urllib.request
 import uuid
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
@@ -89,6 +89,23 @@ class QuizDraftResponse(BaseModel):
     requires_teacher_approval: bool = True
     cached: bool = False
     metadata: dict[str, Any] | None = None
+
+
+class QuizDraftRequest(BaseModel):
+    course_id: uuid.UUID
+    lesson_ids: list[uuid.UUID] = []
+    outline_node_id: uuid.UUID | None = None
+    include_prerequisite_lessons: bool = False
+    lesson_contents: list[str] = []
+    question_count: int = Field(default=3, ge=1, le=100)
+    allowed_types: list[str] = []
+    type_allocations: list[dict[str, Any]] = []
+    difficulty_distribution: dict[str, int] | None = None
+    topics: list[str] = []
+    target_points_per_question: int | None = Field(default=None, ge=1, le=1000)
+    quiz_mode: Literal["mix", "extract", "generate"] = "mix"
+    exclude_stems: list[str] = []
+    title: str | None = Field(default=None, min_length=2, max_length=200)
 
 class EssayGradingResponse(BaseModel):
     total_score: float
@@ -723,18 +740,19 @@ def list_ai_refusal_logs(
 
 @router.post("/quiz/draft", response_model=QuizDraftResponse)
 async def generate_quiz_draft(
-    payload: dict[str, Any],
+    payload: QuizDraftRequest,
     user: TeacherOrAdmin,
     request: Request,
     db: Db,
 ) -> QuizDraftResponse:
     enforce_rate_limit(request, bucket="ai", limit=10, window_seconds=60)
     enforce_ai_access(db, user, request, {"feature": "quiz_draft"})
-    course_id = payload.get("course_id", "") if isinstance(payload, dict) else ""
-    lesson_contents = payload.get("lesson_contents", []) if isinstance(payload, dict) else []
-    question_count = int(payload.get("question_count", 3)) if isinstance(payload, dict) else 3
-    type_allocations = payload.get("type_allocations", []) if isinstance(payload, dict) else []
-    topics = payload.get("topics", []) if isinstance(payload, dict) else []
+    payload_data = payload.model_dump(mode="json")
+    course_id = payload_data["course_id"]
+    lesson_contents = payload_data["lesson_contents"]
+    question_count = payload_data["question_count"]
+    type_allocations = payload_data["type_allocations"]
+    topics = payload_data["topics"]
 
     from app.services.educational_normalizer import (
         KnowledgeUnit,
@@ -744,8 +762,8 @@ async def generate_quiz_draft(
     from app.services.quiz_engine import generate_quiz
     from app.models.knowledge_center import KnowledgeQuestionRecord, KnowledgeUnitRecord
 
-    quiz_mode = str(payload.get("quiz_mode", "mix")).lower() if isinstance(payload, dict) else "mix"
-    exclude_stems = payload.get("exclude_stems", []) if isinstance(payload, dict) else []
+    quiz_mode = payload_data["quiz_mode"]
+    exclude_stems = payload_data["exclude_stems"]
 
     def _stem_sim(s1: str, s2: str) -> float:
         t1 = set(re.findall(r"\w+", (s1 or "").lower()))
@@ -767,10 +785,10 @@ async def generate_quiz_draft(
     if not c_uuid:
         raise HTTPException(status_code=422, detail="A valid course_id is required")
     _get_manageable_course(db, user, c_uuid)
-    outline_uuid = _uuid(str(payload.get("outline_node_id", ""))) if isinstance(payload, dict) else None
-    include_prerequisites = bool(payload.get("include_prerequisite_lessons", False)) if isinstance(payload, dict) else False
+    outline_uuid = _uuid(str(payload_data.get("outline_node_id", "")))
+    include_prerequisites = payload_data["include_prerequisite_lessons"]
     selected_lesson_uuids = [
-        item for item in (_uuid(str(value)) for value in (payload.get("lesson_ids", []) if isinstance(payload, dict) else []))
+        item for item in (_uuid(str(value)) for value in payload_data["lesson_ids"])
         if item is not None
     ]
 
@@ -971,7 +989,7 @@ async def generate_quiz_draft(
 
     total_points = sum(q.points for q in final_questions)
     return QuizDraftResponse(
-        title=f"اختبار تقييمي: {main_topic}",
+        title=payload_data.get("title") or f"اختبار تقييمي: {main_topic}",
         description=f"اختبار تقييمي شامل مبني بدقة تربوية على مذكرات ومستندات درس ({main_topic}).",
         total_points=total_points,
         questions=final_questions,
@@ -999,7 +1017,7 @@ async def extract_quiz_from_file(
     db: Db,
     user: TeacherOrAdmin,
     file: UploadFile = File(...),
-    course_id: str | None = Form(None),
+    course_id: str = Form(...),
     lesson_id: str | None = Form(None),
 ) -> QuizDraftResponse:
     """Extract questions directly from an uploaded exam / question file (PDF, Word, TXT, JSON, etc.)"""
@@ -1012,28 +1030,7 @@ async def extract_quiz_from_file(
 
     max_exam_bytes = 50 * 1024 * 1024
     filename = sanitize_source_filename(file.filename or "exam_file.txt")
-    if not course_id or not str(course_id).strip():
-        # Strictly enforce unambiguous course selection:
-        # If the user has exactly 1 course in the institution, resolve it automatically.
-        # If the user has 0 courses or >1 course, require course_id explicitly.
-        stmt = select(Course).where(Course.institution_id == user.institution_id)
-        if user.role == UserRole.TEACHER:
-            stmt = stmt.where(Course.teacher_id == user.id)
-        user_courses = db.scalars(stmt).all()
-        if len(user_courses) == 1:
-            course_uuid = user_courses[0].id
-        elif len(user_courses) == 0:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="course_id is required. No courses found for user in this institution.",
-            )
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="course_id is required because multiple courses exist. Please specify course_id explicitly.",
-            )
-    else:
-        course_uuid = _resolve_course_uuid(db, user, course_id)
+    course_uuid = _resolve_course_uuid(db, user, course_id)
     lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
     staging_file = os.path.join(
         _get_kc_temp_dir(), f"exam_stage_{uuid.uuid4().hex[:12]}_{filename}"
@@ -1055,7 +1052,7 @@ async def extract_quiz_from_file(
             staged_file_path=staging_file,
             checksum=checksum,
             size_bytes=size_bytes,
-            source_role=SourceRole.ASSESSMENT,
+            source_role=SourceRole.QUIZ_IMPORT,
             mime_type=file.content_type,
             metadata={"assessment_type": "exam", "extracted_in_quiz_maker": True},
         )

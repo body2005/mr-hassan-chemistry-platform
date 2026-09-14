@@ -1364,19 +1364,42 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     );
                   }
                   return (
-                    <video
-                      ref={videoElementRef}
-                      src={activeLessonModal.videoUrl}
-                      controls
-                      controlsList="nodownload nofullscreen noremoteplayback"
-                      disablePictureInPicture
-                      disableRemotePlayback
-                      onContextMenu={(e) => e.preventDefault()}
-                      playsInline
-                      preload="metadata"
-                      style={{ width: "100%", height: "100%", objectFit: "contain", userSelect: "none" }}
-                      aria-label={activeLessonModal.title}
-                    />
+                    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+                      <video
+                        ref={videoElementRef}
+                        src={activeLessonModal.videoUrl}
+                        controls
+                        controlsList="nodownload noremoteplayback"
+                        disablePictureInPicture
+                        disableRemotePlayback
+                        onContextMenu={(e) => e.preventDefault()}
+                        playsInline
+                        preload="metadata"
+                        style={{ width: "100%", height: "100%", objectFit: "contain", userSelect: "none" }}
+                        aria-label={activeLessonModal.title}
+                      />
+                      {/* Dynamic Moving Watermark: Student Name + Masked ID (Privacy Compliant, No Phone) */}
+                      {currentUser && (
+                        <div
+                          style={{
+                            position: "absolute",
+                            top: "16%",
+                            right: "14%",
+                            color: "rgba(255, 255, 255, 0.45)",
+                            fontSize: "12.5px",
+                            fontWeight: 700,
+                            fontFamily: "monospace",
+                            pointerEvents: "none",
+                            userSelect: "none",
+                            letterSpacing: "0.5px",
+                            textShadow: "1px 1px 3px rgba(0,0,0,0.85)",
+                            zIndex: 10,
+                          }}
+                        >
+                          {currentUser.name || "طالب معتمد"} • {currentUser.id.slice(0, 8)}
+                        </div>
+                      )}
+                    </div>
                   );
                 })()
               ) : (

@@ -339,6 +339,16 @@ def normalize_arabic_presentation_forms(text: str) -> str:
     # 2. Filter bidi control marks
     normalized = BIDI_CHARS_RE.sub("", normalized)
 
+    # PDF extractors may detach an Arabic combining mark from its base letter
+    # (for example, ``مبتدئ ًا``). Join only whitespace before Arabic marks so
+    # Latin text, chemical formula spacing, superscripts, and subscripts remain
+    # untouched.
+    normalized = re.sub(
+        r"(?<=[\u0600-\u06FF])\s+(?=[\u064B-\u065F\u0670])",
+        "",
+        normalized,
+    )
+
     # 3. Filter out svg remnants, e.g. svgsvg, <svg ... </svg>, etc.
     normalized = re.sub(r'(?i)<svg\b[^>]*>[\s\S]*?<\/svg>', ' ', normalized)
     normalized = re.sub(r'(?i)<\/?(?:svg|path|g|rect|circle|line|polygon|polyline)\b[^>]*>', ' ', normalized)

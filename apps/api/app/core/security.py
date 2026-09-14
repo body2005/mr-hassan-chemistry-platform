@@ -108,6 +108,51 @@ def decode_preview_token(token: str) -> dict[str, Any] | None:
     return payload
 
 
+def create_video_token(
+    user: User,
+    lesson_id: uuid.UUID,
+    expires_in_seconds: int = 300,
+    nonce: str | None = None,
+) -> str:
+    """
+    Creates a tightly scoped, short-lived video streaming token (default 5 minutes).
+    Scoped strictly to lesson_id with aud='video_stream', purpose='video_stream'.
+    """
+    settings = get_settings()
+    now = datetime.now(UTC)
+    payload: dict[str, Any] = {
+        "sub": str(user.id),
+        "user_id": str(user.id),
+        "institution_id": str(user.institution_id) if user.institution_id else None,
+        "role": user.role.value if hasattr(user.role, "value") else str(user.role),
+        "lesson_id": str(lesson_id),
+        "purpose": "video_stream",
+        "aud": "video_stream",
+        "nonce": nonce or uuid.uuid4().hex[:12],
+        "jti": str(uuid.uuid4()),
+        "iat": now,
+        "exp": now + timedelta(seconds=expires_in_seconds),
+    }
+    return jwt.encode(payload, settings.secret_key, algorithm="HS256")
+
+
+def decode_video_token(token: str) -> dict[str, Any] | None:
+    settings = get_settings()
+    try:
+        payload = jwt.decode(
+            token,
+            settings.secret_key,
+            algorithms=["HS256"],
+            audience="video_stream",
+        )
+    except jwt.PyJWTError:
+        return None
+
+    if payload.get("purpose") != "video_stream" or not payload.get("sub") or not payload.get("lesson_id"):
+        return None
+    return payload
+
+
 def create_password_reset_token() -> tuple[str, str]:
     raw_token = secrets.token_urlsafe(32)
     return raw_token, hash_token(raw_token)

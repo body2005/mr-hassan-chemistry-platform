@@ -1369,7 +1369,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                           })()}
                           <div style={{ padding: "8px 12px", background: "#0f392b", color: "#ecfdf5", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px" }}>
                             <span>{lesson.title}</span>
-                            <span style={{ color: "#34d399", fontWeight: 700 }}>دقة HD • تشغيل سلس للمشاهدة والشرح</span>
+                            <span style={{ color: "#34d399", fontWeight: 700 }}>تشغيل فائق الدقة وسلس للمشاهدة والشرح</span>
                           </div>
                         </div>
                       )}

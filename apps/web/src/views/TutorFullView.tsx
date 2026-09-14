@@ -124,7 +124,7 @@ export const TutorFullView: React.FC = () => {
   return (
     <div className="page-content">
       <div style={{ marginBottom: "20px" }}>
-        <p className="eyebrow">مساحة المذاكرة التفاعلية • STUDENT STUDY PARTNER</p>
+        <p className="eyebrow">مساحة المذاكرة التفاعلية - رفيق دراسة الطالب</p>
         <h1 style={{ margin: "4px 0", fontSize: "26px", fontFamily: "Manrope, sans-serif" }}>
           المساعد الذكي للمذاكرة وفهم الدروس
         </h1>

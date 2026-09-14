@@ -605,8 +605,8 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
               }}
             >
               {isTeacher
-                ? "إدارة مواعيد الإشعارات • BROADCAST & NOTIFICATION SCHEDULE"
-                : "مركز الإشعارات والجدول • NOTIFICATIONS & TIMETABLE"}
+                ? "إدارة مواعيد الإشعارات والتنبيهات المجدولة"
+                : "مركز الإشعارات وجدول المواعيد"}
             </span>
             <h1
               style={{

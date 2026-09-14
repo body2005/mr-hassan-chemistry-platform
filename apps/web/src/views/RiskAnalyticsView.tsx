@@ -79,7 +79,7 @@ export const RiskAnalyticsView: React.FC = () => {
     <div className="page-content">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "24px", flexWrap: "wrap", gap: "16px" }}>
         <div>
-          <p className="eyebrow">متابعة المعلم • STUDENT PROGRESS & CLASS INSIGHTS</p>
+          <p className="eyebrow">متابعة المعلم - تقدم الطلاب ومستوى الفصل</p>
           <h1 style={{ margin: "4px 0", fontSize: "26px", fontFamily: "Manrope, sans-serif" }}>
             متابعة مستوى الطلاب وتحليلات الفصل
           </h1>

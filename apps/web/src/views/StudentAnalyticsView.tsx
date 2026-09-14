@@ -147,7 +147,7 @@ export const StudentAnalyticsView: React.FC = () => {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "24px", flexWrap: "wrap", gap: "16px" }}>
         <div>
           <span style={{ fontSize: "11px", fontWeight: 800, color: "var(--text-main)", background: "var(--bg-accent)", padding: "3px 8px", borderRadius: "6px" }}>
-            متابعة الطلاب • COHORT TRACKING & VIDEO TIMELINES
+            متابعة الطلاب - متابعة المجموعات ومخطط المشاهدة
           </span>
           <h1 style={{ margin: "6px 0 2px", fontSize: "24px", color: "var(--text-main)" }}>
             متابعة الطلاب ومخطط المشاهدة

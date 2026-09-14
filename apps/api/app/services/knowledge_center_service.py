@@ -71,6 +71,47 @@ SEMANTIC_CONFIDENCE_THRESHOLD = float(os.getenv("SEMANTIC_CONFIDENCE_THRESHOLD",
 logger = logging.getLogger(__name__)
 
 
+class StaleProcessingAttemptError(RuntimeError):
+    """Raised when an older worker tries to mutate a newer source attempt."""
+
+
+def _assert_current_attempt(
+    db: Session,
+    source_id: uuid.UUID,
+    generation: int,
+    attempt_id: uuid.UUID,
+) -> None:
+    current = db.execute(
+        select(
+            KnowledgeSource.processing_generation,
+            KnowledgeSource.processing_attempt_id,
+        ).where(KnowledgeSource.id == source_id)
+    ).one_or_none()
+    if not current or current[0] != generation or current[1] != attempt_id:
+        db.rollback()
+        raise StaleProcessingAttemptError(
+            f"Stale indexing attempt rejected for source {source_id}"
+        )
+
+
+def _advance_indexing_progress(
+    db: Session,
+    source: KnowledgeSource,
+    generation: int,
+    attempt_id: uuid.UUID,
+    percent: int,
+    status_value: SourceStatus | None = None,
+) -> None:
+    _assert_current_attempt(db, source.id, generation, attempt_id)
+    next_percent = max(source.indexing_percent or 0, min(100, percent))
+    source.indexing_percent = next_percent
+    # Keep the legacy field monotonic for older clients during migration.
+    source.progress_percent = max(source.progress_percent or 0, next_percent)
+    if status_value is not None:
+        source.status = status_value
+    db.commit()
+
+
 def _get_kc_temp_dir() -> str:
     storage_dir = os.getenv("STORAGE_DIR", "storage/knowledge_center")
     tmp = os.path.join(storage_dir, "tmp")
@@ -922,7 +963,7 @@ def create_knowledge_source(
     filename: str,
     file_bytes: bytes | None = None,
     lesson_id: uuid.UUID | None = None,
-    source_role: str = SourceRole.KNOWLEDGE,
+    source_role: str = SourceRole.COURSE_KNOWLEDGE,
     mime_type: str | None = None,
     metadata: dict[str, Any] | None = None,
     staged_file_path: str | None = None,
@@ -960,6 +1001,8 @@ def create_knowledge_source(
     else:
         role_str = str(source_role).split(".")[-1].strip().upper()
         source_role = SourceRole(role_str).value
+    if source_role == SourceRole.KNOWLEDGE:
+        source_role = SourceRole.COURSE_KNOWLEDGE.value
 
     BANNED_MEDIA_EXTENSIONS = {"mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "3gp", "m4v", "mp3", "wav", "aac"}
     if ext in BANNED_MEDIA_EXTENSIONS or (mime_type and any(mime_type.lower().startswith(p) for p in ["video/", "audio/"])):
@@ -1077,7 +1120,12 @@ def create_knowledge_source(
     return source
 
 
-def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSource:
+def process_knowledge_source(
+    db: Session,
+    source_id: uuid.UUID,
+    generation: int | None = None,
+    attempt_id: uuid.UUID | None = None,
+) -> KnowledgeSource:
     """Parses source file, extracts structured Knowledge Units, Questions & Assets, and indexes knowledge."""
     from app.core.storage import get_storage_provider
 
@@ -1086,9 +1134,16 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
     if not source or not storage.exists(source.storage_path):
         raise ValueError("Knowledge source or file not found in storage")
 
-    source.status = SourceStatus.PROCESSING
-    source.progress_percent = 10
-    db.commit()
+    generation = generation if generation is not None else source.processing_generation
+    attempt_id = attempt_id if attempt_id is not None else source.processing_attempt_id
+    _advance_indexing_progress(
+        db,
+        source,
+        generation,
+        attempt_id,
+        10,
+        SourceStatus.PROCESSING,
+    )
 
     # If local file exists, use it directly. Otherwise, stream from remote storage to a temporary worker stage.
     local_path = storage.get_local_path(source.storage_path)
@@ -1105,6 +1160,7 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
 
     try:
         # Ensure idempotency: purge any prior child records for this source before processing
+        _assert_current_attempt(db, source_id, generation, attempt_id)
         db.execute(delete(KnowledgeUnitRecord).where(KnowledgeUnitRecord.source_id == source_id))
         db.execute(delete(KnowledgeQuestionImageLink).where(
             KnowledgeQuestionImageLink.question_record_id.in_(
@@ -1173,9 +1229,9 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
                 q_count += 1
 
             source.question_count = q_count
-            source.status = SourceStatus.INDEXED
-            source.progress_percent = 100
-            db.commit()
+            _advance_indexing_progress(
+                db, source, generation, attempt_id, 100, SourceStatus.INDEXED
+            )
             return source
 
         # Document & Media parsing (PDF, DOCX, PPTX, TXT, Images)
@@ -1184,11 +1240,14 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
                 raise OperationCancelledError(f"Indexing cancelled for source {source_id} on page {current_page}")
             if total_pages > 0 and (current_page % 5 == 0 or current_page == total_pages):
                 pct = min(75, int(10 + (current_page / total_pages) * 65))
-                source.progress_percent = pct
                 try:
-                    db.commit()
+                    _advance_indexing_progress(
+                        db, source, generation, attempt_id, pct, SourceStatus.PROCESSING
+                    )
+                except StaleProcessingAttemptError:
+                    raise
                 except Exception:
-                    pass
+                    db.rollback()
 
         parsed_doc = parse_knowledge_file(
             file_bytes=None,
@@ -1557,7 +1616,7 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
 
                 # For pure assessment sources, or if questions were already assembled at document level,
                 # skip raw block-level question fragment parsing to prevent duplicating/splitting questions.
-                if source.source_role in (SourceRole.ASSESSMENT, SourceRole.ANSWER_KEY) or (doc_assembled_questions and len(doc_assembled_questions) > 0):
+                if source.source_role in (SourceRole.ASSESSMENT, SourceRole.QUIZ_IMPORT, SourceRole.ANSWER_KEY) or (doc_assembled_questions and len(doc_assembled_questions) > 0):
                     status, q_data = "statement", None
                 else:
                     norm_block_stem = re.sub(r"\s+", "", block.text[:40])
@@ -1597,7 +1656,7 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
                     continue
 
                 # Everything not a question is processed as Content
-                if source.source_role in (SourceRole.ASSESSMENT, SourceRole.ANSWER_KEY):
+                if source.source_role in (SourceRole.ASSESSMENT, SourceRole.QUIZ_IMPORT, SourceRole.ANSWER_KEY):
                     continue
                 # Filter out document/exam titles and answer-key sections from becoming KnowledgeUnits
                 lines = [l.strip() for l in block.text.split("\n") if l.strip()]
@@ -1706,7 +1765,7 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
                 ))
         db.flush()
 
-        if source.source_role == SourceRole.ASSESSMENT:
+        if source.source_role in (SourceRole.ASSESSMENT, SourceRole.QUIZ_IMPORT):
             db.flush()
             answer_key_raw = (source.metadata_json or {}).get("answer_key_source_id")
             answer_key_source_id = uuid.UUID(str(answer_key_raw)) if answer_key_raw else None
@@ -1717,8 +1776,17 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
                 answer_key_source_id=answer_key_source_id,
             )
 
-        source.progress_percent = 85
-        db.commit()
+            # Imported assessments are question-bank inputs, never general RAG
+            # evidence. Parsers may temporarily create units from tables or
+            # figures, so remove those units before embedding/indexing.
+            db.execute(
+                delete(KnowledgeUnitRecord).where(
+                    KnowledgeUnitRecord.source_id == source.id
+                )
+            )
+            unit_count = 0
+
+        _advance_indexing_progress(db, source, generation, attempt_id, 85)
 
         if is_source_cancelled(source_id):
             raise OperationCancelledError(f"Indexing cancelled for source {source_id} before embeddings")
@@ -1738,8 +1806,7 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
             for unit, vector in zip(units_to_embed, provider.embed_texts(texts), strict=False):
                 unit.embedding_json = vector
 
-        source.progress_percent = 90
-        db.commit()
+        _advance_indexing_progress(db, source, generation, attempt_id, 90)
 
         if is_source_cancelled(source_id):
             raise OperationCancelledError(f"Indexing cancelled for source {source_id} before vector store upsert")
@@ -1755,15 +1822,14 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
             for unit in indexed_units
         )
 
-        source.progress_percent = 95
-        db.commit()
+        _advance_indexing_progress(db, source, generation, attempt_id, 95)
 
         if is_source_cancelled(source_id):
             raise OperationCancelledError(f"Indexing cancelled for source {source_id} before graph generation")
 
         build_source_knowledge_graph(db, source.id)
 
-        if source.source_role == SourceRole.ASSESSMENT:
+        if source.source_role in (SourceRole.ASSESSMENT, SourceRole.QUIZ_IMPORT):
             meta = source.metadata_json or {}
             materialize_assessment_questions(
                 db=db,
@@ -1776,13 +1842,16 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
         source.image_count = asset_count
         source.table_count = table_count
         source.question_count = question_count
-        source.status = SourceStatus.INDEXED
-        source.progress_percent = 100
-        db.commit()
+        _advance_indexing_progress(
+            db, source, generation, attempt_id, 100, SourceStatus.INDEXED
+        )
         db.refresh(source)
 
         return source
 
+    except StaleProcessingAttemptError:
+        logger.warning("Discarded stale indexing attempt for source %s", source_id)
+        raise
     except OperationCancelledError as exc:
         logger.info(f"Indexing cancelled for source {source_id}: {exc}")
         if is_source_deleting(source_id):
@@ -1793,8 +1862,8 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
         else:
             try:
                 src = db.get(KnowledgeSource, source_id)
-                if src:
-                    src.status = SourceStatus.STOPPED
+                if src and src.processing_generation == generation and src.processing_attempt_id == attempt_id:
+                    src.status = SourceStatus.CANCELLED
                     src.error_message = "تم إيقاف الفهرسة (الملف محفوظ بالسيرفر)"
                     db.commit()
             except Exception:
@@ -1803,7 +1872,12 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
     except Exception as exc:
         try:
             src = db.get(KnowledgeSource, source_id)
-            if src and src.status != SourceStatus.INDEXED:
+            if (
+                src
+                and src.processing_generation == generation
+                and src.processing_attempt_id == attempt_id
+                and src.status != SourceStatus.INDEXED
+            ):
                 src.status = SourceStatus.FAILED
                 src.error_message = str(exc)
                 db.commit()
@@ -1823,28 +1897,25 @@ def reindex_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
     source = db.scalar(select(KnowledgeSource).where(KnowledgeSource.id == source_id))
     if not source:
         raise ValueError("Source not found")
+    if source.status in (SourceStatus.QUEUED, SourceStatus.PROCESSING):
+        raise ValueError("An indexing attempt is already active for this source")
 
-    # Increment version
     source.version += 1
-
-    # Delete previous version units, questions & documents safely
-    db.execute(delete(KnowledgeUnitRecord).where(KnowledgeUnitRecord.source_id == source_id))
-    db.execute(delete(KnowledgeQuestionImageLink).where(
-        KnowledgeQuestionImageLink.question_record_id.in_(
-            select(KnowledgeQuestionRecord.id).where(KnowledgeQuestionRecord.source_id == source_id)
-        )
-    ))
-    db.execute(delete(KnowledgeQuestionRecord).where(KnowledgeQuestionRecord.source_id == source_id))
-    db.execute(delete(KnowledgeAsset).where(KnowledgeAsset.source_id == source_id))
-    db.execute(delete(KnowledgeConceptLink).where(KnowledgeConceptLink.source_id == source_id))
-    db.execute(delete(KnowledgeConceptRelation).where(KnowledgeConceptRelation.source_id == source_id))
-    db.execute(delete(KnowledgeLessonRelation).where(KnowledgeLessonRelation.source_id == source_id))
-    db.execute(delete(KnowledgeOutlineNode).where(KnowledgeOutlineNode.source_id == source_id))
-    db.execute(delete(KnowledgeDocument).where(KnowledgeDocument.source_id == source_id))
-    db.execute(delete(AssessmentSource).where(AssessmentSource.source_id == source_id))
+    source.processing_generation += 1
+    source.processing_attempt_id = uuid.uuid4()
+    source.active_task_id = None
+    source.status = SourceStatus.QUEUED
+    source.indexing_percent = 0
+    source.progress_percent = 0
+    source.error_message = None
     db.commit()
 
-    return process_knowledge_source(db, source_id)
+    return process_knowledge_source(
+        db,
+        source_id,
+        generation=source.processing_generation,
+        attempt_id=source.processing_attempt_id,
+    )
 
 
 def delete_knowledge_source(db: Session, source_id: uuid.UUID) -> bool:

@@ -451,9 +451,9 @@ def test_stop_indexing_preserves_file(db, test_setup):
     # File must still exist on the server!
     assert os.path.exists(source.storage_path)
 
-    # Status must be STOPPED or FAILED with friendly user cancellation message
+    # Status must be CANCELLED or FAILED with friendly user cancellation message
     db.refresh(source)
-    assert source.status in (SourceStatus.STOPPED, SourceStatus.FAILED)
+    assert source.status in (SourceStatus.CANCELLED, SourceStatus.FAILED)
     assert "محفوظ بالسيرفر" in (source.error_message or "")
 
 

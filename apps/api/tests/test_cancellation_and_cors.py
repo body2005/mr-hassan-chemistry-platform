@@ -105,7 +105,7 @@ def test_stop_indexing_endpoint_success_and_idempotency(auth_teacher_client, db)
     # Check DB status
     db.expire_all()
     refreshed = db.get(KnowledgeSource, source_id)
-    assert refreshed.status == SourceStatus.STOPPED
+    assert refreshed.status == SourceStatus.CANCELLED
 
     # 2. Idempotent repeat request
     res2 = client.post(
@@ -310,5 +310,5 @@ def test_process_knowledge_source_respects_cancellation(auth_teacher_client, db,
 
     db.expire_all()
     refreshed = db.get(KnowledgeSource, source_id)
-    assert refreshed.status == SourceStatus.STOPPED
+    assert refreshed.status == SourceStatus.CANCELLED
     clear_source_tracking(source_id)

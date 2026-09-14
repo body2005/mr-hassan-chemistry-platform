@@ -19,7 +19,11 @@ export interface UploadTask {
   fileSizeBytes: number;
   loadedBytes?: number;
   formattedSize: string;
-  progress: number; // 0 to 100
+  progress: number; // Legacy display progress for the active phase
+  uploadPercent: number;
+  indexingPercent: number;
+  processingGeneration?: number;
+  processingAttemptId?: string;
   status: UploadStatus;
   error?: string;
   type: UploadType;
@@ -39,6 +43,10 @@ interface ServerKnowledgeSource {
   filename: string;
   size_bytes?: number;
   progress_percent?: number;
+  upload_percent?: number;
+  indexing_percent?: number;
+  processing_generation?: number;
+  processing_attempt_id?: string;
   status: "QUEUED" | "PROCESSING" | "INDEXED" | "FAILED" | string;
   error_message?: string | null;
   course_id?: string;
@@ -169,16 +177,21 @@ class UploadManager {
       return parsed
         .filter((t) => now - (t.createdAt || 0) < 48 * 3600 * 1000)
         .map((t) => {
+          const normalizedTask = {
+            ...t,
+            uploadPercent: t.uploadPercent ?? (t.status === "processing" || t.status === "completed" ? 100 : t.progress || 0),
+            indexingPercent: t.indexingPercent ?? (t.status === "processing" || t.status === "completed" ? t.progress || 0 : 0),
+          };
           // If task was mid-upload over network when browser was closed, it was interrupted
           if (t.status === "uploading" || t.status === "queued") {
             return {
-              ...t,
+              ...normalizedTask,
               status: "error",
               error: "انقطع نقل الملف لإغلاق المتصفح أثناء الإرسال. يمكنك إعادة المحاولة.",
-            };
+            } as UploadTask;
           }
           // If task was processing on the server, keep it as processing so server sync checks its status!
-          return t;
+          return normalizedTask;
         });
     } catch {
       return [];
@@ -236,12 +249,23 @@ class UploadManager {
             const allIndexed = matched.every((s) => s.status === "INDEXED");
             const anyFailed = matched.find((s) => s.status === "FAILED");
             const avgProgress = Math.round(
-              matched.reduce((acc, s) => acc + (s.progress_percent || 0), 0) / matched.length
+              matched.reduce((acc, s) => acc + (s.indexing_percent ?? s.progress_percent ?? 0), 0) / matched.length
             );
+            const newestGeneration = Math.max(...matched.map((s) => s.processing_generation ?? 1));
+            const attemptKey = matched.map((s) => s.processing_attempt_id || "legacy").sort().join(":");
+            task.uploadPercent = Math.max(task.uploadPercent || 0, ...matched.map((s) => s.upload_percent ?? 100));
+            if (task.processingGeneration !== newestGeneration || task.processingAttemptId !== attemptKey) {
+              task.processingGeneration = newestGeneration;
+              task.processingAttemptId = attemptKey;
+              task.indexingPercent = avgProgress;
+            } else {
+              task.indexingPercent = Math.max(task.indexingPercent || 0, avgProgress);
+            }
 
             if (allIndexed) {
               task.status = "completed";
               task.progress = 100;
+              task.indexingPercent = 100;
               task.completedAt = Date.now();
               task.error = undefined;
               hasChanges = true;
@@ -261,8 +285,8 @@ class UploadManager {
               task.error = anyFailed.error_message || "فشلت عملية الفهرسة بالسيرفر";
               hasChanges = true;
             } else {
-              if (avgProgress > task.progress) {
-                task.progress = avgProgress;
+              if (task.progress !== task.indexingPercent) {
+                task.progress = task.indexingPercent;
                 hasChanges = true;
               }
             }
@@ -324,6 +348,8 @@ class UploadManager {
       fileSizeBytes: params.file.size,
       formattedSize: formatFileSize(params.file.size),
       progress: 0,
+      uploadPercent: 0,
+      indexingPercent: 0,
       status: "queued",
       type: "lesson_video",
       lessonId: params.lessonId,
@@ -364,6 +390,8 @@ class UploadManager {
       fileSizeBytes: totalBytes,
       formattedSize: formatFileSize(totalBytes),
       progress: 0,
+      uploadPercent: 0,
+      indexingPercent: 0,
       status: "queued",
       type: isMaterial ? "lesson_material" : "knowledge_source",
       courseId: params.courseId,
@@ -413,6 +441,7 @@ class UploadManager {
         task.file!,
         (percent) => {
           task.progress = Math.max(1, Math.min(99, percent));
+          task.uploadPercent = Math.max(task.uploadPercent, Math.min(100, percent));
           if (percent >= 100) {
             task.status = "processing";
           }
@@ -426,6 +455,7 @@ class UploadManager {
 
       task.status = "completed";
       task.progress = 100;
+      task.uploadPercent = 100;
       task.completedAt = Date.now();
       task.error = undefined;
       this.notify();
@@ -481,14 +511,15 @@ class UploadManager {
       }
       const role = task.type === "lesson_material" || Boolean(task.lessonId)
         ? "LESSON_MATERIAL"
-        : "KNOWLEDGE";
+        : "COURSE_KNOWLEDGE";
       formData.append("source_role", role);
 
-      const createdSources = await uploadWithProgress<{ id: string; status: string }[]>(
+      const createdSources = await uploadWithProgress<ServerKnowledgeSource[]>(
         "/knowledge-center/sources/upload-batch",
         formData,
         (percent, loaded) => {
           task.progress = Math.max(1, Math.min(99, percent));
+          task.uploadPercent = Math.max(task.uploadPercent, Math.min(100, percent));
           if (typeof loaded === "number") {
             task.loadedBytes = loaded;
           }
@@ -506,9 +537,18 @@ class UploadManager {
       );
 
       task.status = "processing";
-      task.progress = 100;
+      task.uploadPercent = 100;
+      task.indexingPercent = 0;
+      task.progress = 0;
       if (Array.isArray(createdSources)) {
         task.sourceIds = createdSources.map((s) => s.id);
+        task.indexingPercent = Math.round(
+          createdSources.reduce((sum, source) => sum + (source.indexing_percent ?? 0), 0)
+          / Math.max(createdSources.length, 1)
+        );
+        task.progress = task.indexingPercent;
+        task.processingGeneration = Math.max(...createdSources.map((source) => source.processing_generation ?? 1));
+        task.processingAttemptId = createdSources.map((source) => source.processing_attempt_id || "legacy").sort().join(":");
       }
       this.ensurePollingActive();
       this.notify();
@@ -598,6 +638,10 @@ class UploadManager {
 
     task.status = "queued";
     task.progress = 0;
+    task.uploadPercent = 0;
+    task.indexingPercent = 0;
+    task.processingGeneration = undefined;
+    task.processingAttemptId = undefined;
     task.error = undefined;
     this.notify();
     this.persistTasks();

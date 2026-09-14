@@ -222,7 +222,123 @@ def stream_lesson_video(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> File
     matches = [name for name in os.listdir(upload_dir) if name.startswith(f"{lesson_id}.")]
     if not matches:
         raise HTTPException(status_code=404, detail="Video not found")
-    return FileResponse(os.path.join(upload_dir, matches[0]), media_type="video/mp4", filename=matches[0])
+    return FileResponse(
+        os.path.join(upload_dir, matches[0]),
+        media_type="video/mp4",
+        headers={
+            "Content-Disposition": "inline",
+            "Cache-Control": "private, no-cache, no-store",
+            "Referrer-Policy": "strict-origin-when-cross-origin",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.post("/lessons/{lesson_id}/video-token")
+def create_lesson_video_token(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
+    from app.core.security import create_video_token
+    lesson, _ = _require_lesson_access(db, user, lesson_id)
+    token = create_video_token(user=user, lesson_id=lesson.id, expires_in_seconds=300)
+    return {
+        "video_token": token,
+        "manifest_url": f"/api/v1/lessons/{lesson.id}/manifest.m3u8?token={token}",
+        "stream_url": f"/api/v1/lessons/{lesson.id}/stream?token={token}",
+        "expires_in": 300,
+    }
+
+
+@router.get("/lessons/{lesson_id}/manifest.m3u8")
+def get_lesson_hls_manifest(lesson_id: uuid.UUID, token: str) -> Response:
+    from app.core.security import decode_video_token
+    from fastapi.responses import Response
+    payload = decode_video_token(token)
+    if not payload or payload.get("lesson_id") != str(lesson_id):
+        raise HTTPException(status_code=403, detail="Invalid or expired video stream token")
+
+    manifest = (
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-TARGETDURATION:10\n"
+        "#EXT-X-MEDIA-SEQUENCE:0\n"
+        "#EXTINF:10.0,\n"
+        f"/api/v1/lessons/{lesson_id}/segments/0.ts?token={token}\n"
+        "#EXTINF:10.0,\n"
+        f"/api/v1/lessons/{lesson_id}/segments/1.ts?token={token}\n"
+        "#EXT-X-ENDLIST\n"
+    )
+    return Response(
+        content=manifest,
+        media_type="application/vnd.apple.mpegurl",
+        headers={
+            "Cache-Control": "private, no-cache, no-store",
+            "Referrer-Policy": "strict-origin-when-cross-origin",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/lessons/{lesson_id}/segments/{seg_id}.ts")
+def stream_lesson_hls_segment(lesson_id: uuid.UUID, seg_id: str, token: str) -> Response:
+    from app.core.security import decode_video_token
+    from fastapi.responses import Response
+    payload = decode_video_token(token)
+    if not payload or payload.get("lesson_id") != str(lesson_id):
+        raise HTTPException(status_code=403, detail="Invalid or expired video stream token")
+
+    upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "uploads")
+    matches = [name for name in os.listdir(upload_dir) if name.startswith(f"{lesson_id}.")]
+    if not matches:
+        return Response(content=b"\x47" * 188, media_type="video/mp2t", headers={
+            "Cache-Control": "private, no-cache, no-store",
+            "X-Content-Type-Options": "nosniff",
+        })
+
+    filepath = os.path.join(upload_dir, matches[0])
+    chunk_size = 128 * 1024
+    with open(filepath, "rb") as f:
+        data = f.read(chunk_size)
+    return Response(
+        content=data,
+        media_type="video/mp2t",
+        headers={
+            "Cache-Control": "private, no-cache, no-store",
+            "Referrer-Policy": "strict-origin-when-cross-origin",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/lessons/{lesson_id}/stream")
+def stream_lesson_authenticated_range(
+    lesson_id: uuid.UUID,
+    request: Request,
+    db: Db,
+    token: str | None = None,
+) -> FileResponse:
+    from app.core.security import decode_video_token
+    if token:
+        payload = decode_video_token(token)
+        if not payload or payload.get("lesson_id") != str(lesson_id):
+            raise HTTPException(status_code=403, detail="Invalid or expired video stream token")
+    else:
+        raise HTTPException(status_code=401, detail="Authentication required for video stream")
+
+    upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "uploads")
+    matches = [name for name in os.listdir(upload_dir) if name.startswith(f"{lesson_id}.")]
+    if not matches:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    filepath = os.path.join(upload_dir, matches[0])
+    return FileResponse(
+        filepath,
+        media_type="video/mp4",
+        headers={
+            "Content-Disposition": "inline",
+            "Cache-Control": "private, no-cache, no-store",
+            "Referrer-Policy": "strict-origin-when-cross-origin",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/lessons/{lesson_id}/transcript")

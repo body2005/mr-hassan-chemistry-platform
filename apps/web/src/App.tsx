@@ -5,7 +5,7 @@ import { Header } from "./components/Header";
 import { FloatingAITutor } from "./components/FloatingAITutor";
 import { GlobalUploadWidget } from "./components/GlobalUploadWidget";
 import { Course, CurrentUser, NotificationItem } from "./types/lms";
-import { Language } from "./utils/i18n";
+import { useTranslation } from "./utils/i18n";
 
 import { ApiClientError, authService, courseService, notificationService } from "./services/lmsService";
 import { useConfirm } from "./components/ConfirmWizard";
@@ -127,10 +127,7 @@ function App() {
     return () => clearTimeout(timer);
   }, []);
 
-  const [lang, setLang] = useState<Language>(() => {
-    const saved = localStorage.getItem("lms_lang");
-    return (saved as Language) || "ar";
-  });
+  const { lang, toggleLang: handleToggleLang } = useTranslation();
 
   const [courses, setCourses] = useState<Course[]>([]);
   const [enrolledCourseIds, setEnrolledCourseIds] = useState<string[]>([]);
@@ -394,10 +391,6 @@ function App() {
 
   function handleToggleTheme() {
     setTheme((prev) => (prev === "light" ? "dark" : "light"));
-  }
-
-  function handleToggleLang() {
-    setLang((prev) => (prev === "ar" ? "en" : "ar"));
   }
 
   async function handleEnrollCourse(courseId: string) {
