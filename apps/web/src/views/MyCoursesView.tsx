@@ -28,7 +28,7 @@ import { Language, translations } from "../utils/i18n";
 import { EducationalBookItem, RevisionPackageItem } from "./GeneralHomeView";
 import { VideoTelemetryTracker } from "../services/videoTelemetry";
 import { courseService } from "../services/lmsService";
-import { apiRequest } from "../services/apiClient";
+import { apiRequest, apiUrl } from "../services/apiClient";
 import { useToast } from "../components/ToastProvider";
 import { FormulaRenderer } from "../components/FormulaRenderer";
 import { PaymentTarget } from "../services/paymentService";
@@ -1561,9 +1561,19 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                           </div>
 
                           <button
-                            onClick={() => toast(`جاري تنزيل ملف: ${mat.title}`, "success")}
+                            onClick={() => {
+                              toast(`جاري تنزيل ملف: ${mat.title}`, "success");
+                              const downloadUrl = mat.fileUrl.startsWith("http") ? mat.fileUrl : apiUrl(mat.fileUrl);
+                              const link = document.createElement("a");
+                              link.href = downloadUrl;
+                              link.download = mat.title;
+                              link.target = "_blank";
+                              document.body.appendChild(link);
+                              link.click();
+                              document.body.removeChild(link);
+                            }}
                             className="btn-outline"
-                            style={{ padding: "6px 12px", fontSize: "12px", gap: "4px" }}
+                            style={{ padding: "6px 12px", fontSize: "12px", gap: "4px", cursor: "pointer" }}
                           >
                             <Download size={13} />
                             <span>تنزيل المذكرة</span>

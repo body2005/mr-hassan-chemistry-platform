@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import CurrentUser, require_roles
 from app.core.database import get_db
 from app.core.rate_limit import enforce_rate_limit
-from app.models.course import Course, CourseModule, Lesson
+from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus, Lesson
 from app.models.knowledge_center import (
     KnowledgeAsset,
     KnowledgeQuestionImageLink,
@@ -259,10 +259,32 @@ def _request_grading_from_provider(prompt: str) -> dict[str, Any] | None:
     return None
 
 def _get_live_analytics(db: Session, user: User) -> dict[str, Any]:
-    students_query = select(User).where(
-        User.institution_id == user.institution_id,
-        User.role == UserRole.STUDENT,
-    )
+    teacher_course_ids: list[uuid.UUID] | None = None
+    if user.role == UserRole.TEACHER:
+        teacher_course_ids = db.scalars(
+            select(Course.id).where(
+                Course.institution_id == user.institution_id,
+                Course.teacher_id == user.id,
+            )
+        ).all()
+
+    if teacher_course_ids is not None:
+        enrolled_student_ids = db.scalars(
+            select(Enrollment.student_id).where(
+                Enrollment.course_id.in_(teacher_course_ids),
+                Enrollment.status == EnrollmentStatus.ACTIVE,
+            ).distinct()
+        ).all()
+        students_query = select(User).where(
+            User.institution_id == user.institution_id,
+            User.role == UserRole.STUDENT,
+            User.id.in_(enrolled_student_ids) if enrolled_student_ids else False,
+        )
+    else:
+        students_query = select(User).where(
+            User.institution_id == user.institution_id,
+            User.role == UserRole.STUDENT,
+        )
     students = db.execute(students_query).scalars().all()
     total_students = len(students)
 
@@ -273,12 +295,20 @@ def _get_live_analytics(db: Session, user: User) -> dict[str, Any]:
         .where(Course.institution_id == user.institution_id)
         .order_by(Lesson.created_at.desc())
     )
+    if teacher_course_ids is not None:
+        lessons_query = lessons_query.where(Course.id.in_(teacher_course_ids))
+
     lesson_rows = db.execute(lessons_query).all()
     total_lessons = len(lesson_rows)
 
     quiz_attempts_query = select(QuizAttempt).where(
         QuizAttempt.institution_id == user.institution_id
     )
+    if teacher_course_ids is not None:
+        quiz_attempts_query = (
+            quiz_attempts_query.join(Quiz, QuizAttempt.quiz_id == Quiz.id)
+            .where(Quiz.course_id.in_(teacher_course_ids))
+        )
     quiz_attempts = db.execute(quiz_attempts_query).scalars().all()
     submitted_attempts = [a for a in quiz_attempts if a.submitted_at and a.score is not None]
     avg_quiz_score = (
@@ -290,6 +320,11 @@ def _get_live_analytics(db: Session, user: User) -> dict[str, Any]:
     sub_query = select(AssignmentSubmission).where(
         AssignmentSubmission.institution_id == user.institution_id
     )
+    if teacher_course_ids is not None:
+        sub_query = (
+            sub_query.join(Assignment, AssignmentSubmission.assignment_id == Assignment.id)
+            .where(Assignment.course_id.in_(teacher_course_ids))
+        )
     submissions = db.execute(sub_query).scalars().all()
     scored_subs = [s for s in submissions if s.final_score is not None or s.ai_score is not None]
     avg_assignment_score = (
@@ -305,6 +340,11 @@ def _get_live_analytics(db: Session, user: User) -> dict[str, Any]:
     progress_query = select(LessonProgress).where(
         LessonProgress.institution_id == user.institution_id
     )
+    if teacher_course_ids is not None:
+        teacher_lesson_ids = [row[0].id for row in lesson_rows]
+        progress_query = progress_query.where(
+            LessonProgress.lesson_id.in_(teacher_lesson_ids) if teacher_lesson_ids else False
+        )
     progress_rows = db.execute(progress_query).scalars().all()
     avg_progress = (
         round(sum(p.completion_percent for p in progress_rows) / len(progress_rows), 1)
@@ -313,7 +353,7 @@ def _get_live_analytics(db: Session, user: User) -> dict[str, Any]:
     )
 
     # A student is counted as "present/active" when the platform has a real
-    # lesson-progress event for them.  This is intentionally labelled as
+    # lesson-progress event for them. This is intentionally labelled as
     # attendance/engagement in the tutor response: the current schema tracks
     # learning activity, not classroom roll-call attendance.
     progress_active_ids = {p.student_id for p in progress_rows if p.last_event_at or p.watched_duration_seconds > 0 or p.completion_percent > 0}
@@ -972,7 +1012,28 @@ async def extract_quiz_from_file(
 
     max_exam_bytes = 50 * 1024 * 1024
     filename = sanitize_source_filename(file.filename or "exam_file.txt")
-    course_uuid = _resolve_course_uuid(db, user, course_id)
+    if not course_id or not str(course_id).strip():
+        # Strictly enforce unambiguous course selection:
+        # If the user has exactly 1 course in the institution, resolve it automatically.
+        # If the user has 0 courses or >1 course, require course_id explicitly.
+        stmt = select(Course).where(Course.institution_id == user.institution_id)
+        if user.role == UserRole.TEACHER:
+            stmt = stmt.where(Course.teacher_id == user.id)
+        user_courses = db.scalars(stmt).all()
+        if len(user_courses) == 1:
+            course_uuid = user_courses[0].id
+        elif len(user_courses) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="course_id is required. No courses found for user in this institution.",
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="course_id is required because multiple courses exist. Please specify course_id explicitly.",
+            )
+    else:
+        course_uuid = _resolve_course_uuid(db, user, course_id)
     lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
     staging_file = os.path.join(
         _get_kc_temp_dir(), f"exam_stage_{uuid.uuid4().hex[:12]}_{filename}"

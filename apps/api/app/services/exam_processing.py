@@ -19,9 +19,22 @@ from app.models.knowledge_center import (
 from app.services.knowledge_retriever import retrieve_lesson_knowledge
 
 QUESTION_BOUNDARY_RE = re.compile(
-    r"(?m)(?=^\s*(?:س(?:ؤال)?\s*)?(?:Q(?:uestion)?\s*)?\(?\d{1,3}\)?\s*[\.\-\)]|\n\s*(?:Section|القسم|الجزء)\s+[A-Zأ-ي])",
+    r"(?m)(?=^\s*(?:س(?:ؤال)?\s*)?(?:Q(?:uestion)?\s*)?\(?\d{1,3}\)?\s*[\.\-\)](?!\d)|\n\s*(?:Section|القسم|الجزء)\s+[A-Zأ-ي]|(?:^\s*(?:(?:\)?درجات?\s*\d+\(?\s*:\s*)?(?:السؤال|سؤال)\s+(?:الأول|الاول|الثاني|الثانى|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر))))",
     re.IGNORECASE,
 )
+
+ARABIC_ORDINAL_MAP = {
+    "الأول": "1", "الاول": "1",
+    "الثاني": "2", "الثانى": "2",
+    "الثالث": "3",
+    "الرابع": "4",
+    "الخامس": "5",
+    "السادس": "6",
+    "السابع": "7",
+    "الثامن": "8",
+    "التاسع": "9",
+    "العاشر": "10",
+}
 
 
 @dataclass
@@ -49,11 +62,19 @@ def split_assessment_question_blocks(text: str) -> list[str]:
 def _extract_question_number(text: str) -> str | None:
     normalized = text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
     match = re.search(
-        r"(?:^|\n)\s*(?:س(?:ؤال)?\s*)?(?:Q(?:uestion)?\s*)?\(?(\d{1,3})\)?",
+        r"(?:^|\n)\s*(?:س(?:ؤال)?\s*)?(?:Q(?:uestion)?\s*)?\(?(\d{1,3})\)?[\.\-\:\)]?(?!\d)",
         normalized,
         re.IGNORECASE,
     )
-    return match.group(1) if match else None
+    if match:
+        return match.group(1)
+    ordinal_match = re.search(
+        r"(?:السؤال|سؤال)\s+(الأول|الاول|الثاني|الثانى|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر)\b",
+        text,
+    )
+    if ordinal_match:
+        return ARABIC_ORDINAL_MAP.get(ordinal_match.group(1))
+    return None
 
 
 def _answer_key_for_source(db: Session, answer_key_source_id: uuid.UUID | None) -> dict[str, str]:
@@ -182,6 +203,71 @@ def materialize_assessment_questions(
             KnowledgeQuestionRecord.created_at.asc(),
         )
     ).all()
+
+    if not records and source.storage_path:
+        import os
+        from app.core.storage import get_storage_provider
+        storage = get_storage_provider()
+        local_path = storage.get_local_path(source.storage_path) if hasattr(storage, "get_local_path") else None
+        effective_path = local_path or source.storage_path
+        raw_text = ""
+        try:
+            if os.path.exists(effective_path):
+                with open(effective_path, "rb") as fh:
+                    raw_text = fh.read().decode("utf-8", errors="ignore")
+            else:
+                raw_text = b"".join(storage.open_stream(source.storage_path)).decode("utf-8", errors="ignore")
+        except Exception:
+            raw_text = ""
+
+        blocks = split_assessment_question_blocks(raw_text) if raw_text else []
+        for idx, block in enumerate(blocks, 1):
+            lines = [l.strip() for l in block.strip().splitlines() if l.strip()]
+            if not lines:
+                continue
+            stem = lines[0]
+            raw_options = lines[1:] if len(lines) > 1 else []
+            options = []
+            for opt in raw_options:
+                opt_clean = re.sub(r"^[A-Da-dأ-د\d][\.\-\)]\s*", "", opt).strip()
+                options.append({"text": opt_clean or opt})
+            q_type = "multiple_choice" if len(options) >= 2 else "essay"
+            norm = re.sub(r"\s+", "", stem.lower())
+            norm_hash = hashlib.sha256(norm.encode("utf-8")).hexdigest()
+            fingerprint = hashlib.md5(norm.encode("utf-8")).hexdigest()
+            db.add(
+                AssessmentQuestion(
+                    assessment_source_id=assessment.id,
+                    course_id=source.course_id,
+                    lesson_id=source.lesson_id,
+                    outline_node_id=None,
+                    question_text=stem,
+                    question_type=q_type,
+                    difficulty="medium",
+                    learning_objective="understanding",
+                    topic_concept="assessment",
+                    points=1.0,
+                    source_kind="extracted_question",
+                    correct_answer=None,
+                    answer_source=None,
+                    answer_status="needs_review",
+                    answer_provenance_json={},
+                    options_json=options or None,
+                    explanation=None,
+                    source_pages_json=[1],
+                    media_ids_json=[],
+                    review_status="needs_review",
+                    normalized_hash=norm_hash,
+                    semantic_fingerprint=fingerprint,
+                    metadata_json={"question_order": idx},
+                )
+            )
+        assessment.total_questions = len(blocks)
+        assessment.processing_status = "resolved"
+        assessment.review_status = "needs_review"
+        db.flush()
+        return assessment
+
     for record in records:
         resolution = _resolve_answer(db, record, answer_keys)
         hierarchy = (record.metadata_json or {}).get("hierarchy") or {}

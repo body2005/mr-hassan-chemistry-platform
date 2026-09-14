@@ -64,10 +64,10 @@ from app.services.knowledge_center_service import (
 )
 from app.services.knowledge_retriever import search_knowledge_base
 from app.services.ai_access_policy import can_access_course_knowledge, enforce_ai_access
-from app.services.exam_processing import relink_answer_key, validate_assessment_question
+from app.api.dependencies import CurrentUser, DbSession, PreviewAuth, get_current_user, require_roles
 from app.services.payment_service import can_access_lesson_content
 
-router = APIRouter(prefix="/knowledge-center", tags=["knowledge-center"], dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/knowledge-center", tags=["knowledge-center"])
 Db = Annotated[Session, Depends(get_db)]
 TeacherOrAdmin = Annotated[
     User,
@@ -119,18 +119,39 @@ def _run_bg_process_source(source_id: uuid.UUID) -> None:
 
 
 def _enqueue_source_processing(background_tasks: BackgroundTasks, source_id: uuid.UUID) -> None:
-    """Use Celery/Redis when configured; keep local development functional without it."""
-    if os.getenv("USE_CELERY_INGESTION", "").lower() in {"1", "true", "yes"}:
+    """Dispatches processing to Celery worker. Prevents heavy in-process OCR on web API in production."""
+    import logging
+    _log = logging.getLogger(__name__)
+    settings = get_settings()
+    if settings.app_env.lower() in {"test", "testing"} or os.getenv("APP_ENV", "").lower() in {"test", "testing"}:
+        _log.info("Test environment active; skipping background ingestion enqueue for source %s", source_id)
+        return
+
+    is_prod = settings.app_env.lower() in {"production", "production_like"}
+    use_celery = (
+        is_prod
+        or settings.ingestion_backend.lower() == "celery"
+        or os.getenv("USE_CELERY_INGESTION", "").lower() in {"1", "true", "yes"}
+    )
+
+    if use_celery:
         try:
             from app.tasks.knowledge_ingestion import index_source
             index_source.delay(str(source_id))
+            _log.info("Dispatched source %s to Celery worker queue", source_id)
             return
-        except Exception:
-            pass
-    # Submission is a tiny post-response task.  CPU-heavy OCR/indexing runs in
-    # a bounded executor so concurrent uploads cannot exhaust FastAPI's shared
-    # thread pool and make normal API requests unresponsive.
-    background_tasks.add_task(_LOCAL_INGEST_EXECUTOR.submit, _run_bg_process_source, source_id)
+        except Exception as exc:
+            _log.error("Failed to enqueue source %s to Celery: %s", source_id, exc)
+            if is_prod or not settings.allow_local_ingestion:
+                # Strictly prevent running OCR in web API process in production to avoid Render 502 OOM crash
+                _log.warning("Heavy in-process ingestion disallowed in %s. Source %s remains in QUEUED state for worker.", settings.app_env, source_id)
+                return
+
+    # In local development ONLY if explicitly permitted:
+    if settings.allow_local_ingestion:
+        background_tasks.add_task(_LOCAL_INGEST_EXECUTOR.submit, _run_bg_process_source, source_id)
+    else:
+        _log.info("Source %s saved and left in QUEUED state for external worker pickup", source_id)
 
 
 class KnowledgeSourceResponse(BaseModel):
@@ -342,6 +363,12 @@ async def upload_knowledge_source(
     settings = get_settings()
     max_file_bytes = settings.max_file_size_mb * 1024 * 1024
 
+    if source_role == SourceRole.LESSON_MATERIAL and not lesson_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="lesson_id is required for LESSON_MATERIAL",
+        )
+
     course_uuid = _resolve_course_uuid(db, user, course_id)
     lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
 
@@ -413,6 +440,12 @@ async def upload_knowledge_sources_batch(
     settings = get_settings()
     max_file_bytes = settings.max_file_size_mb * 1024 * 1024
     max_batch_bytes = settings.max_batch_size_mb * 1024 * 1024
+
+    if source_role == SourceRole.LESSON_MATERIAL and not lesson_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="lesson_id is required for LESSON_MATERIAL",
+        )
 
     course_uuid = _resolve_course_uuid(db, user, course_id)
     lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
@@ -514,6 +547,7 @@ def list_knowledge_sources(
     user: TeacherOrAdmin,
     course_id: str | None = None,
     lesson_id: str | None = None,
+    source_role: str | None = None,
 ) -> list[KnowledgeSourceResponse]:
     stmt = select(KnowledgeSource)
     if user.role != UserRole.PLATFORM_ADMIN:
@@ -526,6 +560,12 @@ def list_knowledge_sources(
         lesson_uuid = _parse_uuid(lesson_id)
         if lesson_uuid:
             stmt = stmt.where(KnowledgeSource.lesson_id == lesson_uuid)
+    elif not source_role:
+        # Exclude LESSON_MATERIAL from the general knowledge center overview
+        stmt = stmt.where(KnowledgeSource.source_role != SourceRole.LESSON_MATERIAL)
+
+    if source_role and source_role.strip():
+        stmt = stmt.where(KnowledgeSource.source_role == source_role.strip())
 
     sources = db.scalars(stmt.order_by(KnowledgeSource.created_at.desc())).all()
     source_ids = [s.id for s in sources]
@@ -624,11 +664,28 @@ def get_knowledge_source_detail(source_id: str, db: Db, user: CurrentUser) -> di
         .order_by(KnowledgeOutlineNode.position.asc())
     ).all()
 
+    total_pages = doc.total_pages if doc else (1 if source.file_format != "pdf" else None)
+
     return {
         "id": str(source.id),
+        "course_id": str(source.course_id),
+        "lesson_id": str(source.lesson_id) if source.lesson_id else None,
         "filename": source.filename,
-        "status": source.status,
+        "file_format": source.file_format,
+        "size_bytes": source.size_bytes,
         "source_role": source.source_role,
+        "version": source.version,
+        "checksum": source.checksum,
+        "status": source.status,
+        "progress_percent": source.progress_percent,
+        "error_message": source.error_message,
+        "unit_count": source.unit_count,
+        "image_count": source.image_count,
+        "table_count": source.table_count,
+        "question_count": source.question_count,
+        "total_pages": total_pages,
+        "file_url": f"/api/v1/knowledge-center/sources/{source.id}/view",
+        "created_at": source.created_at.isoformat() if source.created_at else None,
         "document": {
             "title": doc.title,
             "doc_type": doc.doc_type,
@@ -979,6 +1036,8 @@ def _serve_file_with_range(
                 "Content-Length": str(content_length),
                 "Content-Type": media_type,
                 "Content-Disposition": content_disposition,
+                "Referrer-Policy": "no-referrer",
+                "X-Content-Type-Options": "nosniff",
             }
             return StreamingResponse(
                 storage.open_stream(effective_path, start=start, length=content_length),
@@ -998,6 +1057,8 @@ def _serve_file_with_range(
         "Content-Length": str(file_size),
         "Content-Type": media_type,
         "Content-Disposition": content_disposition,
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
     }
     return StreamingResponse(
         storage.open_stream(effective_path, start=0, length=file_size),
@@ -1018,10 +1079,10 @@ def create_source_preview_token(
         raise HTTPException(status_code=400, detail="Invalid source ID")
     source = _get_source_for_user(db, s_uuid, user)
     from app.core.security import create_preview_token
-    token = create_preview_token(user=user, source_id=source.id, expires_in_seconds=900)
+    token = create_preview_token(user=user, source_id=source.id, expires_in_seconds=300)
     return PreviewTokenResponse(
         preview_token=token,
-        expires_in=900,
+        expires_in=300,
         preview_url=f"/api/v1/knowledge-center/sources/{source.id}/preview-file?token={token}",
         page_preview_url_template=f"/api/v1/knowledge-center/sources/{source.id}/preview-page/{{page_number}}?token={token}",
     )
@@ -1032,20 +1093,12 @@ def preview_knowledge_source_file(
     source_id: str,
     request: Request,
     db: Db,
-    user: CurrentUser,
+    auth: PreviewAuth,
 ) -> Response:
     s_uuid = _parse_uuid(source_id)
     if not s_uuid:
         raise HTTPException(status_code=400, detail="Invalid source ID")
-    source = _get_source_for_user(db, s_uuid, user)
-
-    from app.api.dependencies import _extract_token
-    from app.core.security import decode_preview_token
-    token = _extract_token(request)
-    if token:
-        preview_payload = decode_preview_token(token)
-        if preview_payload and preview_payload.get("source_id") != str(source.id):
-            raise HTTPException(status_code=403, detail="Preview token is not valid for this source")
+    source = _get_source_for_user(db, s_uuid, auth.user)
 
     media_type = _detect_media_type(source.filename, source.mime_type)
     return _serve_file_with_range(
@@ -1086,28 +1139,20 @@ def preview_source_page_image(
     request: Request,
     db: Db,
     background_tasks: BackgroundTasks,
-    user: CurrentUser,
+    auth: PreviewAuth,
     scale: float = 1.3,
 ) -> Response:
     s_uuid = _parse_uuid(source_id)
     if not s_uuid:
         raise HTTPException(status_code=400, detail="Invalid source ID")
-    source = _get_source_for_user(db, s_uuid, user)
-
-    from app.api.dependencies import _extract_token
-    from app.core.security import decode_preview_token
-    token = _extract_token(request)
-    if token:
-        preview_payload = decode_preview_token(token)
-        if preview_payload and preview_payload.get("source_id") != str(source.id):
-            raise HTTPException(status_code=403, detail="Preview token is not valid for this source")
+    source = _get_source_for_user(db, s_uuid, auth.user)
 
     return stream_source_page_image(
         source_id=source_id,
         page_number=page_number,
         db=db,
         background_tasks=background_tasks,
-        user=user,
+        user=auth.user,
         scale=scale,
     )
 

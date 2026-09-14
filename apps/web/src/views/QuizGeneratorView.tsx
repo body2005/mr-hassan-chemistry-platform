@@ -455,9 +455,10 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
     setExtractingFile(true);
     setError(null);
     try {
+      const targetCourseId = currentCourse?.id || courses[0]?.id;
       const resp = await aiClient.extractQuizFromFile(
         file,
-        currentCourse?.id,
+        targetCourseId,
         selectedLessonIds.length > 0 ? selectedLessonIds[0] : undefined
       );
 

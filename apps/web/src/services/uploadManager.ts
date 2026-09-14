@@ -61,16 +61,80 @@ class UploadManager {
   private maxConcurrent = 2;
   private isProcessingQueue = false;
   private syncTimer: ReturnType<typeof setTimeout> | null = null;
+  private activeAbortController: AbortController | null = null;
 
   constructor() {
     this.tasks = this.loadTasksFromStorage();
     this.initBeforeUnloadHandler();
-    this.startServerSyncLoop();
+    this.initLifecycleListeners();
+    if (this.hasProcessingTasks()) {
+      this.ensurePollingActive();
+    }
   }
 
   private hasAuthenticatedSession(): boolean {
     if (typeof window === "undefined" || !window.localStorage) return false;
     return Boolean(localStorage.getItem("lms_session_token"));
+  }
+
+  public hasProcessingTasks(): boolean {
+    return this.tasks.some((t) => t.status === "processing");
+  }
+
+  private initLifecycleListeners() {
+    if (typeof window !== "undefined") {
+      window.addEventListener("lms_user_updated", () => {
+        if (!this.hasAuthenticatedSession()) {
+          this.stopPolling();
+        } else if (this.hasProcessingTasks()) {
+          this.ensurePollingActive();
+        }
+      });
+      if (typeof document !== "undefined") {
+        document.addEventListener("visibilitychange", () => {
+          if (!document.hidden && this.hasProcessingTasks() && this.hasAuthenticatedSession()) {
+            this.ensurePollingActive();
+            void this.syncWithServer();
+          }
+        });
+      }
+    }
+  }
+
+  public ensurePollingActive() {
+    if (!this.hasAuthenticatedSession() || !this.hasProcessingTasks()) return;
+    if (this.syncTimer) return;
+    this.scheduleNextPoll();
+  }
+
+  public stopPolling() {
+    if (this.syncTimer) {
+      clearTimeout(this.syncTimer);
+      this.syncTimer = null;
+    }
+    if (this.activeAbortController) {
+      this.activeAbortController.abort();
+      this.activeAbortController = null;
+    }
+  }
+
+  private scheduleNextPoll() {
+    if (this.syncTimer) clearTimeout(this.syncTimer);
+    if (!this.hasAuthenticatedSession() || !this.hasProcessingTasks()) {
+      this.syncTimer = null;
+      return;
+    }
+
+    const isHidden = typeof document !== "undefined" && document.hidden;
+    const delay = isHidden ? 30000 : 3500;
+    this.syncTimer = setTimeout(async () => {
+      await this.syncWithServer();
+      if (this.hasProcessingTasks() && this.hasAuthenticatedSession()) {
+        this.scheduleNextPoll();
+      } else {
+        this.syncTimer = null;
+      }
+    }, delay);
   }
 
   private initBeforeUnloadHandler() {
@@ -139,110 +203,69 @@ class UploadManager {
     }
   }
 
-  private startServerSyncLoop() {
-    if (typeof window === "undefined") return;
-
-    // Trigger initial sync shortly after initialization
-    setTimeout(() => {
-      if (this.hasAuthenticatedSession()) void this.syncWithServer();
-    }, 1200);
-
-    const scheduleNext = () => {
-      if (this.syncTimer) clearTimeout(this.syncTimer);
-      const hasProcessing = this.tasks.some((t) => t.status === "processing");
-      const delay = hasProcessing ? 3500 : 15000;
-      this.syncTimer = setTimeout(async () => {
-        if (this.hasAuthenticatedSession()) await this.syncWithServer();
-        scheduleNext();
-      }, delay);
-    };
-
-    scheduleNext();
-  }
-
   public async syncWithServer(): Promise<void> {
-    if (typeof window === "undefined" || !this.hasAuthenticatedSession()) return;
+    if (typeof window === "undefined" || !this.hasAuthenticatedSession() || !this.hasProcessingTasks()) return;
+
+    if (this.activeAbortController) {
+      this.activeAbortController.abort();
+    }
+    this.activeAbortController = new AbortController();
+    const signal = this.activeAbortController.signal;
+
     try {
-      const sources = await apiRequest<ServerKnowledgeSource[]>("/knowledge-center/sources");
-      if (!Array.isArray(sources)) return;
-
       let hasChanges = false;
-      const serverSourcesMap = new Map<string, ServerKnowledgeSource>();
-      sources.forEach((s) => {
-        serverSourcesMap.set(s.id, s);
-      });
 
-      // 1. Update existing tasks with server status
-      for (const task of this.tasks) {
-        if (task.type === "knowledge_source" && (task.status === "processing" || task.status === "uploading")) {
-          // If task has specific sourceIds
-          if (task.sourceIds && task.sourceIds.length > 0) {
-            const matched: ServerKnowledgeSource[] = [];
-            for (const id of task.sourceIds) {
-              const item = serverSourcesMap.get(id);
-              if (item) matched.push(item);
-            }
-            if (matched.length > 0) {
-              const allIndexed = matched.every((s) => s.status === "INDEXED");
-              const anyFailed = matched.find((s) => s.status === "FAILED");
-              const avgProgress = Math.round(
-                matched.reduce((acc, s) => acc + (s.progress_percent || 0), 0) / matched.length
-              );
+      // 1. Check specific source IDs for active tasks
+      const activeTasks = this.tasks.filter(
+        (t) => (t.type === "knowledge_source" || t.type === "lesson_material") && (t.status === "processing" || t.status === "uploading")
+      );
 
-              if (allIndexed) {
-                task.status = "completed";
-                task.progress = 100;
-                task.completedAt = Date.now();
-                task.error = undefined;
-                hasChanges = true;
-                task.onSuccess?.();
-                window.dispatchEvent(new CustomEvent("lms_knowledge_updated"));
-                window.dispatchEvent(
-                  new CustomEvent("lms_toast_notification", {
-                    detail: {
-                      message: `✅ اكتملت فهرسة ملفات "${task.title}" بنجاح في السحابة!`,
-                      tone: "success",
-                    },
-                  })
-                );
-              } else if (anyFailed) {
-                task.status = "error";
-                task.error = anyFailed.error_message || "فشلت عملية الفهرسة بالسيرفر";
-                hasChanges = true;
-              } else {
-                if (avgProgress > task.progress) {
-                  task.progress = avgProgress;
-                  hasChanges = true;
-                }
-              }
+      for (const task of activeTasks) {
+        if (task.sourceIds && task.sourceIds.length > 0) {
+          const matched: ServerKnowledgeSource[] = [];
+          for (const sId of task.sourceIds) {
+            try {
+              const item = await apiRequest<ServerKnowledgeSource>(`/knowledge-center/sources/${sId}`, { signal });
+              if (item && item.id) matched.push(item);
+            } catch {
+              // Ignore individual failure
             }
           }
-        }
-      }
 
-      // 2. Discover any server-side PROCESSING sources not yet tracked in UI
-      // (e.g. user closed browser and reopened, or indexing was started from another window)
-      for (const s of sources) {
-        if (s.status === "PROCESSING" || s.status === "QUEUED") {
-          const alreadyTracked = this.tasks.some(
-            (t) => t.sourceIds?.includes(s.id) || t.id === `srv_${s.id}`
-          );
-          if (!alreadyTracked) {
-            const newTask: UploadTask = {
-              id: `srv_${s.id}`,
-              title: `فهرسة: ${s.filename}`,
-              fileName: s.filename,
-              fileSizeBytes: s.size_bytes || 0,
-              formattedSize: formatFileSize(s.size_bytes || 0),
-              progress: Math.max(10, s.progress_percent || 10),
-              status: "processing",
-              type: "knowledge_source",
-              courseId: s.course_id,
-              sourceIds: [s.id],
-              createdAt: s.created_at ? new Date(s.created_at).getTime() : Date.now(),
-            };
-            this.tasks.unshift(newTask);
-            hasChanges = true;
+          if (matched.length > 0) {
+            const allIndexed = matched.every((s) => s.status === "INDEXED");
+            const anyFailed = matched.find((s) => s.status === "FAILED");
+            const avgProgress = Math.round(
+              matched.reduce((acc, s) => acc + (s.progress_percent || 0), 0) / matched.length
+            );
+
+            if (allIndexed) {
+              task.status = "completed";
+              task.progress = 100;
+              task.completedAt = Date.now();
+              task.error = undefined;
+              hasChanges = true;
+              task.onSuccess?.();
+              window.dispatchEvent(new CustomEvent("lms_knowledge_updated"));
+              if (task.lessonId) window.dispatchEvent(new CustomEvent("lms_courses_updated"));
+              window.dispatchEvent(
+                new CustomEvent("lms_toast_notification", {
+                  detail: {
+                    message: `✅ اكتملت فهرسة ملفات "${task.title}" بنجاح في السحابة!`,
+                    tone: "success",
+                  },
+                })
+              );
+            } else if (anyFailed) {
+              task.status = "error";
+              task.error = anyFailed.error_message || "فشلت عملية الفهرسة بالسيرفر";
+              hasChanges = true;
+            } else {
+              if (avgProgress > task.progress) {
+                task.progress = avgProgress;
+                hasChanges = true;
+              }
+            }
           }
         }
       }
@@ -333,6 +356,7 @@ class UploadManager {
     const taskTitle = params.lessonTitle
       ? `مذكرات درس: ${params.lessonTitle} (${count} ${count === 1 ? "ملف" : "ملفات"})`
       : `رفع دفعة مستندات (${count} ${count === 1 ? "ملف" : "ملفات"})`;
+    const isMaterial = Boolean(params.lessonId);
     const task: UploadTask = {
       id: taskId,
       title: taskTitle,
@@ -341,7 +365,7 @@ class UploadManager {
       formattedSize: formatFileSize(totalBytes),
       progress: 0,
       status: "queued",
-      type: "knowledge_source",
+      type: isMaterial ? "lesson_material" : "knowledge_source",
       courseId: params.courseId,
       lessonId: params.lessonId,
       createdAt: Date.now(),
@@ -369,7 +393,7 @@ class UploadManager {
 
       if (nextTask.type === "lesson_video" && nextTask.file && nextTask.lessonId) {
         this.startVideoUpload(nextTask);
-      } else if (nextTask.type === "knowledge_source" && nextTask.files && nextTask.files.length > 0) {
+      } else if ((nextTask.type === "knowledge_source" || nextTask.type === "lesson_material") && nextTask.files && nextTask.files.length > 0) {
         this.startKnowledgeBatchUpload(nextTask);
       }
     } finally {
@@ -455,10 +479,10 @@ class UploadManager {
       if (task.courseId) {
         formData.append("course_id", task.courseId);
       }
-      if (task.lessonId) {
-        formData.append("lesson_id", task.lessonId);
-      }
-      formData.append("source_role", "KNOWLEDGE");
+      const role = task.type === "lesson_material" || Boolean(task.lessonId)
+        ? "LESSON_MATERIAL"
+        : "KNOWLEDGE";
+      formData.append("source_role", role);
 
       const createdSources = await uploadWithProgress<{ id: string; status: string }[]>(
         "/knowledge-center/sources/upload-batch",
@@ -470,6 +494,7 @@ class UploadManager {
           }
           if (percent >= 100) {
             task.status = "processing";
+            this.ensurePollingActive();
           }
           this.notify();
           this.persistTasks();
@@ -485,6 +510,7 @@ class UploadManager {
       if (Array.isArray(createdSources)) {
         task.sourceIds = createdSources.map((s) => s.id);
       }
+      this.ensurePollingActive();
       this.notify();
       this.persistTasks();
 

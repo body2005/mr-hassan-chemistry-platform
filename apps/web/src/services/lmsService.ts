@@ -74,6 +74,15 @@ type ApiCourse = {
       indexing_error?: string | null;
       indexed_chunks_count?: number;
       price_egp?: number;
+      materials?: Array<{
+        id: string;
+        filename: string;
+        file_format: string;
+        size_bytes: number;
+        source_role: string;
+        download_url: string;
+        created_at: string;
+      }>;
     }>;
   }>;
 };
@@ -193,7 +202,14 @@ function mapApiCourse(course: ApiCourse): Course {
             : "",
           videoUrl: lesson.video_asset_key ? apiUrl(lesson.video_asset_key) : "",
           price: Number(lesson.price_egp || 0),
-          materials: [],
+          materials: (lesson.materials || []).map((m) => ({
+            id: m.id,
+            title: m.filename,
+            fileType: (m.file_format === "pdf" ? "pdf" : "doc") as "pdf" | "video" | "doc",
+            fileUrl: m.download_url,
+            fileSize: `${Math.round(m.size_bytes / 1024)} KB`,
+            uploadedAt: m.created_at,
+          })),
           uploadedByTeacherName: "",
           uploadedAt: lesson.video_duration_seconds ? course.updated_at : course.created_at,
           order: lesson.position,
@@ -378,13 +394,16 @@ export const authService = {
       }
       return user;
     } catch (err: unknown) {
-      if (err instanceof ApiClientError && (err.status === 401 || err.status === 403)) {
+      // ONLY genuine 401 Unauthenticated means the session is expired or invalid
+      if (err instanceof ApiClientError && err.status === 401) {
         if (typeof localStorage !== "undefined") {
           localStorage.removeItem("lms_session_token");
           localStorage.removeItem("lms_cached_user");
         }
         return null;
       }
+      // 403 Forbidden is an authorization error, NOT an unauthenticated session!
+      // 502/503/Network failures are temporary outages; preserve session data and rethrow
       throw err;
     }
   },

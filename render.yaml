@@ -7,7 +7,8 @@ services:
     runtime: python
     rootDir: apps/api
     buildCommand: pip install -r requirements.txt
-    startCommand: alembic upgrade head && python -m scripts.seed_teacher && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    preDeployCommand: alembic upgrade head
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: APP_ENV
         value: production
@@ -78,6 +79,61 @@ services:
         sync: false
       - key: PAYMENT_BANK_DETAILS
         sync: false
+      - key: STORAGE_BACKEND
+        value: "s3"
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_BUCKET_NAME
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: "auto"
+      - key: REDIS_URL
+        sync: false
+      - key: CELERY_BROKER_URL
+        sync: false
+      - key: CELERY_RESULT_BACKEND
+        sync: false
+      - key: USE_CELERY_INGESTION
+        value: "true"
+    autoDeploy: true
+
+  - type: worker
+    name: chemistry-platform-worker
+    runtime: python
+    rootDir: apps/api
+    buildCommand: pip install -r requirements.txt
+    startCommand: celery -A app.tasks.celery_app.celery_app worker --loglevel=info --concurrency=1 --prefetch-multiplier=1 --max-tasks-per-child=1
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: chemistry-platform-db
+          property: connectionString
+      - key: REDIS_URL
+        sync: false
+      - key: CELERY_BROKER_URL
+        sync: false
+      - key: CELERY_RESULT_BACKEND
+        sync: false
+      - key: STORAGE_BACKEND
+        value: "s3"
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_BUCKET_NAME
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: "auto"
+      - key: PYTHON_VERSION
+        value: "3.12.11"
     autoDeploy: true
 
 databases:

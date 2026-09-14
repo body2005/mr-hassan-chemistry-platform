@@ -214,6 +214,8 @@ OCR_ARABIC_CONFUSIONS = [
     (r'(^|[\u0600-\u06FF\s])dab Fi(?=[\u0600-\u06FF\s]|$)', r'\g<1>في هذا'),
     (r'(^|[\u0600-\u06FF\s])أنحديد(?=[\u0600-\u06FF\s]|$)', r'\g<1>الحديد'),
     (r'(^|[\u0600-\u06FF\s])انحديد(?=[\u0600-\u06FF\s]|$)', r'\g<1>الحديد'),
+    (r'(^|[\u0600-\u06FF\s])الأومنيوم(?=[\u0600-\u06FF\s]|$)', r'\g<1>الألومنيوم'),
+    (r'(^|[\u0600-\u06FF\s])أومنيوم(?=[\u0600-\u06FF\s]|$)', r'\g<1>ألومنيوم'),
 ]
 
 
@@ -345,6 +347,10 @@ def normalize_arabic_presentation_forms(text: str) -> str:
     # 4. Filter button leftovers (e.g. "btn-primary", "click here to submit", UI button leftovers)
     normalized = re.sub(r'\b(?:btn|btn-[a-z0-9_\-]+|button-text|submit-btn)\b', ' ', normalized, flags=re.IGNORECASE)
 
+    # 5. Fix common chemistry OCR and typographical errors
+    normalized = re.sub(r'\bالأومنيوم\b', 'الألومنيوم', normalized)
+    normalized = re.sub(r'\bأومنيوم\b', 'ألومنيوم', normalized)
+
     return normalized
 
 
@@ -394,6 +400,10 @@ def ocr_pdf_page(file_bytes: bytes | None = None, page_number: int = 1, lang: st
     except Exception:
         pass
 
+    if os.getenv("PROCESS_TYPE") == "api" or os.getenv("ALLOW_IN_PROCESS_OCR", "").lower() in ("false", "0", "no"):
+        if os.getenv("APP_ENV", "").lower() in ("production", "production_like"):
+            raise RuntimeError("Heavy OCR is strictly disallowed inside the Web API process in production to preserve memory. Work must be handled by Celery worker.")
+
     pdf = None
     try:
         import pypdfium2 as pdfium
@@ -411,9 +421,17 @@ def ocr_pdf_page(file_bytes: bytes | None = None, page_number: int = 1, lang: st
         if page_number < 1 or page_number > len(pdf):
             return ""
         page = pdf[page_number - 1]
-        # Render at scale 1.5 (~150 DPI) for optimal balance between OCR accuracy and speed
+        # Render at scale 1.5 (~150 DPI) with grayscale conversion to optimize memory
         pil_image = page.render(scale=1.5).to_pil()
-        ocr_text = pytesseract.image_to_string(pil_image, lang=lang)
+        gray_image = pil_image.convert("L")
+        try:
+            ocr_text = pytesseract.image_to_string(gray_image, lang=lang)
+        finally:
+            try:
+                gray_image.close()
+                pil_image.close()
+            except Exception:
+                pass
         cleaned = clean_arabic_ocr_text(ocr_text or "")
 
         if cache_file and cleaned:
@@ -450,6 +468,7 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
     )
 
     pdfium_shared = None
+    fitz_doc = None
     pdf_source = file_path if (file_path and os.path.exists(file_path)) else (io.BytesIO(file_bytes) if file_bytes else None)
     if pdf_source is None:
         return parsed_doc
@@ -461,6 +480,16 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
             pdfium_shared = pdfium.PdfDocument(file_bytes)
     except Exception:
         pass
+
+    try:
+        import fitz
+        if file_path and os.path.exists(file_path):
+            fitz_doc = fitz.open(file_path)
+        elif file_bytes:
+            fitz_doc = fitz.open(stream=file_bytes, filetype="pdf")
+    except Exception as fitz_err:
+        logger.debug(f"PyMuPDF could not open PDF for primary text extraction: {fitz_err}")
+        fitz_doc = None
 
     try:
         with pdfplumber.open(pdf_source) as pdf:
@@ -475,6 +504,11 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
                             pdfium_shared.close()
                         except Exception:
                             pass
+                    if fitz_doc:
+                        try:
+                            fitz_doc.close()
+                        except Exception:
+                            pass
                     raise OperationCancelledError(f"PDF indexing cancelled on page {p_idx}")
 
                 if progress_callback:
@@ -484,7 +518,20 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
                         pass
 
                 parsed_page = ParsedPage(page_number=p_idx)
-                page_text = page.extract_text() or ""
+                page_text = ""
+                if fitz_doc and p_idx - 1 < len(fitz_doc):
+                    try:
+                        fitz_text = fitz_doc[p_idx - 1].get_text("text") or ""
+                        if fitz_text and not is_text_garbled(fitz_text):
+                            page_text = normalize_arabic_presentation_forms(fitz_text)
+                    except Exception as fe:
+                        logger.debug(f"fitz text extraction failed on page {p_idx}: {fe}")
+                        page_text = ""
+
+                if not page_text:
+                    raw_extracted = page.extract_text() or ""
+                    if raw_extracted:
+                        page_text = normalize_arabic_presentation_forms(raw_extracted)
 
                 # Check for absent/scanned or garbled/mojibake text layer and fallback to OCR selectively
                 needs_ocr = is_text_garbled(page_text) or (len(page_text.strip()) < 15 and len(page.images) > 0)
@@ -645,6 +692,12 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
                     parsed_doc.all_images.append(parsed_img)
 
                 parsed_doc.pages.append(parsed_page)
+                try:
+                    import psutil
+                    rss_mb = psutil.Process().memory_info().rss / (1024 * 1024)
+                    logger.info("PDF page %s/%s indexed (Peak RSS: %.1f MB)", p_idx, total_pages, rss_mb)
+                except Exception:
+                    pass
 
         if parsed_doc.ocr_pages:
             parsed_doc.metadata["extracted_via_ocr"] = True
@@ -655,6 +708,11 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
         if pdfium_shared is not None and hasattr(pdfium_shared, "close"):
             try:
                 pdfium_shared.close()
+            except Exception:
+                pass
+        if fitz_doc is not None and hasattr(fitz_doc, "close"):
+            try:
+                fitz_doc.close()
             except Exception:
                 pass
 
@@ -1052,6 +1110,10 @@ def ocr_image_bytes(image_bytes: bytes, lang: str = "ara+eng") -> tuple[str, str
                 return extracted, "paddleocr-arabic"
         except Exception:
             logger.debug("PaddleOCR image extraction unavailable; using Tesseract fallback")
+
+    if os.getenv("PROCESS_TYPE") == "api" or os.getenv("ALLOW_IN_PROCESS_OCR", "").lower() in ("false", "0", "no"):
+        if os.getenv("APP_ENV", "").lower() in ("production", "production_like"):
+            raise RuntimeError("Heavy OCR is strictly disallowed inside the Web API process in production to preserve memory. Work must be handled by Celery worker.")
 
     try:
         import pytesseract

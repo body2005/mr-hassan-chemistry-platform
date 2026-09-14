@@ -91,11 +91,24 @@ function getTabFromHash(): AllTabs | null {
   return match || null;
 }
 
+export type AuthStatus = "loading" | "authenticated" | "unauthenticated" | "temporarily_unavailable";
+
 function App() {
   const confirm = useConfirm();
-  // Cached identity is display metadata only. Do not mount authenticated views
-  // until /auth/me has verified the server session.
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  // Cached identity is used for optimistic rendering and offline resilience.
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(() => {
+    try {
+      const cached = typeof localStorage !== "undefined" ? localStorage.getItem("lms_cached_user") : null;
+      return cached ? (JSON.parse(cached) as CurrentUser) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [authStatus, setAuthStatus] = useState<AuthStatus>(() => {
+    const hasToken = typeof localStorage !== "undefined" && Boolean(localStorage.getItem("lms_session_token") || localStorage.getItem("lms_cached_user"));
+    return hasToken ? "loading" : "unauthenticated";
+  });
+  const [retryAttempt, setRetryAttempt] = useState(0);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isInitialRefresh, setIsInitialRefresh] = useState(true);
   const [authLoading, setAuthLoading] = useState(true);
@@ -144,9 +157,31 @@ function App() {
         const user = await authService.getCurrentUser();
         if (requestId !== authSyncId.current) return;
         setCurrentUser(user);
-        if (user) await handleNotificationsSync();
+        if (user) {
+          setAuthStatus("authenticated");
+          setRetryAttempt(0);
+          await handleNotificationsSync();
+        } else {
+          setAuthStatus("unauthenticated");
+          setRetryAttempt(0);
+        }
       } catch (error) {
+        if (requestId !== authSyncId.current) return;
         console.error("Session verification error", error);
+        let cachedUser: CurrentUser | null = null;
+        try {
+          const cached = typeof localStorage !== "undefined" ? localStorage.getItem("lms_cached_user") : null;
+          if (cached) cachedUser = JSON.parse(cached) as CurrentUser;
+        } catch {
+          cachedUser = null;
+        }
+
+        if (cachedUser) {
+          setCurrentUser(cachedUser);
+          setAuthStatus("temporarily_unavailable");
+        } else {
+          setAuthStatus("temporarily_unavailable");
+        }
       } finally {
         if (requestId === authSyncId.current) setAuthLoading(false);
       }
@@ -174,6 +209,17 @@ function App() {
       window.removeEventListener("lms_courses_updated", handleCoursesSync);
     };
   }, []);
+
+  // Exponential backoff retry when auth server is temporarily unavailable
+  useEffect(() => {
+    if (authStatus !== "temporarily_unavailable") return;
+    const delay = Math.min(2000 * Math.pow(1.5, retryAttempt), 30000);
+    const timer = setTimeout(() => {
+      setRetryAttempt((prev) => prev + 1);
+      window.dispatchEvent(new Event("lms_user_updated"));
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [authStatus, retryAttempt]);
 
   // Track active navigation tab with Google Chrome native History & Hash support
   const [activeTab, setActiveTab] = useState<AllTabs>(() => {
@@ -404,6 +450,7 @@ function App() {
     } finally {
       authSyncId.current += 1;
       setCurrentUser(null);
+      setAuthStatus("unauthenticated");
       setAuthLoading(false);
       localStorage.removeItem("lms_session_token");
       localStorage.removeItem("lms_cached_user");
@@ -446,7 +493,7 @@ function App() {
       .catch(() => setAiAccessAllowed(false));
   }, [currentUser, activeLesson, globalAIEntitlement]);
 
-  if (isInitialRefresh || (authLoading && !currentUser) || isLoggingIn) {
+  if (isInitialRefresh || (authLoading && !currentUser && authStatus === "loading") || isLoggingIn) {
     return <PageLoadingScreen brandTitle="منصة الكيمياء التعليمية — مستر حسن شعبان" />;
   }
 
@@ -460,6 +507,8 @@ function App() {
             authSyncId.current += 1;
             setIsLoggingIn(true);
             setCurrentUser(user);
+            setAuthStatus("authenticated");
+            setRetryAttempt(0);
             const targetTab = user.role === "student" ? "GeneralHome" : "LessonManagement";
             navigateToTab(targetTab);
             setTimeout(() => {
@@ -476,20 +525,106 @@ function App() {
     }
 
     return (
-      <LandingPageView
-        courses={courses}
-        onNavigateToAuth={handleNavigateToAuth}
-        lang={lang}
-        onToggleLang={handleToggleLang}
-        theme={theme}
-        onToggleTheme={handleToggleTheme}
-      />
+      <div>
+        {authStatus === "temporarily_unavailable" && (
+          <div
+            role="alert"
+            style={{
+              background: "#b45309",
+              color: "#ffffff",
+              padding: "10px 16px",
+              textAlign: "center",
+              fontSize: "13px",
+              fontWeight: 700,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "12px",
+              position: "sticky",
+              top: 0,
+              zIndex: 99999,
+              boxShadow: "0 2px 8px rgba(0,0,0,0.18)",
+            }}
+          >
+            <span>⚠️ الخدمة غير متاحة مؤقتًا، جاري محاولة إعادة الاتصال بالخادم...</span>
+            <button
+              type="button"
+              onClick={() => {
+                setRetryAttempt(0);
+                window.dispatchEvent(new Event("lms_user_updated"));
+              }}
+              style={{
+                padding: "4px 12px",
+                background: "rgba(255,255,255,0.25)",
+                border: "1px solid rgba(255,255,255,0.4)",
+                borderRadius: "4px",
+                color: "#fff",
+                fontSize: "12px",
+                fontWeight: 800,
+                cursor: "pointer",
+              }}
+            >
+              إعادة المحاولة الآن
+            </button>
+          </div>
+        )}
+        <LandingPageView
+          courses={courses}
+          onNavigateToAuth={handleNavigateToAuth}
+          lang={lang}
+          onToggleLang={handleToggleLang}
+          theme={theme}
+          onToggleTheme={handleToggleTheme}
+        />
+      </div>
     );
   }
 
   // Internal Authenticated Platform View
   return (
     <div className="app-shell">
+      {authStatus === "temporarily_unavailable" && (
+        <div
+          role="alert"
+          style={{
+            background: "#b45309",
+            color: "#ffffff",
+            padding: "10px 16px",
+            textAlign: "center",
+            fontSize: "13px",
+            fontWeight: 700,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "12px",
+            position: "sticky",
+            top: 0,
+            zIndex: 99999,
+            boxShadow: "0 2px 8px rgba(0,0,0,0.18)",
+          }}
+        >
+          <span>⚠️ الخدمة غير متاحة مؤقتًا، جاري محاولة إعادة الاتصال بالخادم... (البيانات المعروضة من الذاكرة المؤقتة)</span>
+          <button
+            type="button"
+            onClick={() => {
+              setRetryAttempt(0);
+              window.dispatchEvent(new Event("lms_user_updated"));
+            }}
+            style={{
+              padding: "4px 12px",
+              background: "rgba(255,255,255,0.25)",
+              border: "1px solid rgba(255,255,255,0.4)",
+              borderRadius: "4px",
+              color: "#fff",
+              fontSize: "12px",
+              fontWeight: 800,
+              cursor: "pointer",
+            }}
+          >
+            إعادة المحاولة الآن
+          </button>
+        </div>
+      )}
       {/* Sidebar Navigation */}
       <Sidebar
         activeTab={activeTab as NavTab}

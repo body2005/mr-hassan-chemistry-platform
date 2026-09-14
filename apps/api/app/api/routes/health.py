@@ -63,7 +63,22 @@ def readiness_check(db: Annotated[Session, Depends(get_db)]) -> ReadinessRespons
         # Redis is not required for the synchronous auth/course slice, but its state is visible.
         pass
 
-    if settings.redis_required and dependencies["redis"] != "ok":
+    # In production, all three core services (DB, Redis, Storage) must be healthy
+    if settings.app_env == "production":
+        is_production_ready = (
+            dependencies["database"] == "ok"
+            and dependencies["redis"] == "ok"
+            and dependencies["storage"] == "ok"
+        )
+        if not is_production_ready:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "message": "Required production dependencies are unavailable",
+                    "dependencies": dependencies,
+                },
+            )
+    elif settings.redis_required and dependencies["redis"] != "ok":
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={

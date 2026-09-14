@@ -70,6 +70,13 @@ STORAGE_DIR = os.getenv("STORAGE_DIR", "storage/knowledge_center")
 SEMANTIC_CONFIDENCE_THRESHOLD = float(os.getenv("SEMANTIC_CONFIDENCE_THRESHOLD", "0.65"))
 logger = logging.getLogger(__name__)
 
+
+def _get_kc_temp_dir() -> str:
+    storage_dir = os.getenv("STORAGE_DIR", "storage/knowledge_center")
+    tmp = os.path.join(storage_dir, "tmp")
+    os.makedirs(tmp, exist_ok=True)
+    return tmp
+
 _CANCELLATION_REGISTRY_LOCK = threading.Lock()
 _CANCEL_REQUESTED_SOURCES: set[uuid.UUID] = set()
 _DELETING_SOURCES: set[uuid.UUID] = set()
@@ -637,11 +644,11 @@ def assemble_document_questions(
     ]
 
     HEADER_RE = re.compile(
-        r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)|س\s*\d+|Question\s*\d+|Q\d+)\b",
+        r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الاول|الثاني|الثانى|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)|س\s*\d+|Question\s*\d+|Q\d+|(?:\)?درجات?\s*\d+\(?\s*:\s*(?:السؤال|سؤال)\s*(?:الأول|الاول|الثاني|الثانى|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر)))\b",
         re.IGNORECASE,
     )
-    MARKS_RE = re.compile(r"[\(\[]\s*(\d+)\s*(?:درجات|درجة|علامات|علامة|marks?|pts?)\s*[\)\]]", re.IGNORECASE)
-    SECTION_RE = re.compile(r"^\s*\[?\s*(?:القسم\s+(?:الأول|الثاني|الثالث|الرابع)|أسئلة\s+الاختيار|الأسئلة\s+المقالية|أولاً|ثانياً|ثالثاً)\b", re.IGNORECASE)
+    MARKS_RE = re.compile(r"[\(\[]\s*(\d+)\s*(?:درجات|درجة|علامات|علامة|marks?|pts?)\s*[\)\]]|(?:\(?درجات\s*(\d+)\)?)", re.IGNORECASE)
+    SECTION_RE = re.compile(r"(?:القسم\s+(?:الأول|الثاني|الثالث|الرابع)|أسئلة\s+الاختيار|الأسئلة\s+المقالية|أولاً|ثانياً|ثالثاً|اختر\s+الإجابة\s+الصحيحة)", re.IGNORECASE)
     ANS_RE = re.compile(r"^(?:فكرة\s+الحل|الحل(?:\s+الصحيح)?|الإجاب[ةه](?:\s+الصحيح[ةه])?|الجواب|Answer|Key)\s*[\:\.\-]?\s*(.*)$", re.IGNORECASE)
     EXAM_END_RE = re.compile(r"(?:مع\s+أطيب\s+التمنيات|انتهت\s+الأسئلة|مع\s+تمنياتنا|بالتوفيق|ﺔﻠﺌﺳألا\s+ﺖﻬﺘﻧا|\.{5,}|={5,})", re.IGNORECASE)
 
@@ -655,13 +662,17 @@ def assemble_document_questions(
     OPT_PREFIX_RE = re.compile(r"^[\(\[]+\s*([أبجدA-Da-d1-4]|i|z|s|\)\()\s*[\)\]\.\:\-\/]+\s*(.*)$")
     OPT_SUFFIX_RE = re.compile(r"^(.*?)\s*[\(\[]+\s*([أبجدA-Da-d1-4]|i|z|s|\)\()\s*[\)\]]+[\.\:\-]?$")
     OPT_ANY_RE = re.compile(r"(?:^|\s)[\(\[]+\s*([أبجدA-Da-d1-4]|i|z|s|\)\()\s*[\)\]]+(?:\s|$)")
+    CHEM_ENTITY_PRECEDING_RE = re.compile(r"(?:مركب|عنصر|حمض|غاز|محلول|فلز|ألكان|ألكين|ألكاين|كاتيون|أنيون|رمز|إلكتروليت)\s*[\(\[]\s*[A-Za-z0-9]+\s*[\)\]]$")
 
-    DIGIT_START_RE = re.compile(r"^\(?(\d{1,2})\)?[\.\-\:\)]\s+(.*)$")
+    DIGIT_START_RE = re.compile(r"^\(?(\d{1,2})\)?[\.\-\:\)](?!\d)\s+(.*)$")
     DIGIT_END_RE = re.compile(r"^(.*?)\s+[\.\-\:]?\s*(\d{1,2})[\.\-\:]?$")
 
     def _parse_opt(line: str) -> tuple[str, str] | None:
         l_c = line.strip()
         if not l_c or len(l_c.split()) > 25:
+            return None
+        # Stem lines ending in colon or question mark are not options
+        if l_c.endswith(":") or l_c.endswith("؟") or l_c.endswith("?"):
             return None
         # mirrored bracket suffix like )1( or )أ( or (د) or (د))
         m = re.match(r"^(.*?)\s*[\(\)\[\]]+\s*([أبجدA-Da-d1-4]|i|z|s)\s*[\(\)\[\]]+[\.\:\-]?$", l_c)
@@ -681,11 +692,15 @@ def assemble_document_questions(
             return (KEY_NORM.get(m.group(1), m.group(1)), m.group(2).strip())
         m = OPT_ANY_RE.search(l_c)
         if m and not l_c.startswith("السؤال"):
-            raw_k = m.group(1)
-            k = KEY_NORM.get(raw_k, raw_k)
-            txt = l_c[:m.start()] + " " + l_c[m.end():]
-            txt = re.sub(r"\s+", " ", txt).strip()
-            return (k, txt)
+            prefix_part = l_c[:m.start()].strip()
+            if not CHEM_ENTITY_PRECEDING_RE.search(prefix_part):
+                raw_k = m.group(1)
+                # In Arabic text context, require [أبجد] to avoid Latin compound notation (e.g. (B)) being treated as option
+                if raw_k in "أبجد" or not any('\u0600' <= c <= '\u06FF' for c in l_c):
+                    k = KEY_NORM.get(raw_k, raw_k)
+                    txt = l_c[:m.start()] + " " + l_c[m.end():]
+                    txt = re.sub(r"\s+", " ", txt).strip()
+                    return (k, txt)
         return None
 
     cur_header = ""
@@ -711,7 +726,7 @@ def assemble_document_questions(
         if not cur_stem_lines and HEADER_RE.match(full_text) and len(full_text.split()) <= 6:
             return
         # 2. Reject admin metadata
-        if any(re.search(p, full_text, re.IGNORECASE) for p in ADMINISTRATIVE_METADATA_PATTERNS) or re.search(r"^(?:جمهورية|وزارة|امتحان\s+شهادة|الزمن\s*:|الدرجة\s+العظمى)", full_text):
+        if any(re.search(p, full_text, re.IGNORECASE) for p in ADMINISTRATIVE_METADATA_PATTERNS) or re.search(r"(?:جمهورية|وزارة|امتحان\s+شهادة|مادة\s+الكيمياء|الزمن\s*:|الدرجة\s+العظمى|درجة\s*\d+\s*:|ساعات\s+.*الدرجة)", full_text):
             _reset()
             return
         # 3. Reject PDF corruption tokens
@@ -797,7 +812,7 @@ def assemble_document_questions(
         page_img_ids = [img.id for img in page.images]
 
         for line in lines:
-            if any(re.search(p, line, re.IGNORECASE) for p in ADMINISTRATIVE_METADATA_PATTERNS) or re.search(r"^(?:جمهورية|وزارة|امتحان\s+شهادة|الزمن\s*:|الدرجة\s+العظمى)", line):
+            if any(re.search(p, line, re.IGNORECASE) for p in ADMINISTRATIVE_METADATA_PATTERNS) or re.search(r"(?:جمهورية|وزارة|امتحان\s+شهادة|مادة\s+الكيمياء|الزمن\s*:|الدرجة\s+العظمى|درجة\s*\d+\s*:|ساعات\s+.*الدرجة)", line):
                 continue
             if EXAM_END_RE.search(line):
                 flush()
@@ -805,7 +820,7 @@ def assemble_document_questions(
 
             if SECTION_RE.search(line):
                 flush()
-                is_essay_mode = ("مقالي" in line)
+                is_essay_mode = ("مقالي" in line or "المقالية" in line)
                 continue
 
             if HEADER_RE.search(line):
@@ -815,7 +830,9 @@ def assemble_document_questions(
                 cur_images.extend(page_img_ids)
                 marks_m = MARKS_RE.search(line)
                 if marks_m:
-                    cur_points = int(marks_m.group(1))
+                    pts = marks_m.group(1) or marks_m.group(2)
+                    if pts:
+                        cur_points = int(pts)
                 continue
 
             ans_m = ANS_RE.match(line)
@@ -1017,8 +1034,22 @@ def create_knowledge_source(
             f.write(file_bytes)
     else:
         raise ValueError("Either file_bytes or staged_file_path must be provided.")
-    if created_storage_paths is not None:
-        created_storage_paths.append(file_path)
+
+    from app.core.storage import get_storage_provider, S3StorageProvider
+    storage = get_storage_provider()
+    if isinstance(storage, S3StorageProvider):
+        storage_key = f"courses/{course_id}/{server_storage_name}"
+        canonical_path = storage.save_file(file_path, storage_key, content_type=mime_type or f"application/{ext}")
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except OSError:
+            pass
+        final_storage_path = canonical_path
+    else:
+        final_storage_path = file_path
+        if created_storage_paths is not None:
+            created_storage_paths.append(file_path)
 
     source = KnowledgeSource(
         institution_id=user.institution_id,
@@ -1028,7 +1059,7 @@ def create_knowledge_source(
         filename=filename,
         file_format=ext,
         mime_type=mime_type or f"application/{ext}",
-        storage_path=file_path,
+        storage_path=final_storage_path,
         size_bytes=size_bytes,
         source_role=source_role,
         version=next_version,
@@ -1048,13 +1079,29 @@ def create_knowledge_source(
 
 def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSource:
     """Parses source file, extracts structured Knowledge Units, Questions & Assets, and indexes knowledge."""
+    from app.core.storage import get_storage_provider
+
     source = db.scalar(select(KnowledgeSource).where(KnowledgeSource.id == source_id))
-    if not source or not os.path.exists(source.storage_path):
-        raise ValueError("Knowledge source or file not found")
+    storage = get_storage_provider()
+    if not source or not storage.exists(source.storage_path):
+        raise ValueError("Knowledge source or file not found in storage")
 
     source.status = SourceStatus.PROCESSING
     source.progress_percent = 10
     db.commit()
+
+    # If local file exists, use it directly. Otherwise, stream from remote storage to a temporary worker stage.
+    local_path = storage.get_local_path(source.storage_path)
+    temp_staging_path = None
+    if local_path and os.path.exists(local_path):
+        effective_file_path = local_path
+    else:
+        temp_dir = _get_kc_temp_dir()
+        temp_staging_path = os.path.join(temp_dir, f"worker_stage_{uuid.uuid4().hex[:8]}_{source.filename}")
+        with open(temp_staging_path, "wb") as f_out:
+            for chunk in storage.open_stream(source.storage_path):
+                f_out.write(chunk)
+        effective_file_path = temp_staging_path
 
     try:
         # Ensure idempotency: purge any prior child records for this source before processing
@@ -1079,7 +1126,7 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
         # Structured assessment banks are parsed directly; document assessments use
         # the normal structure-preserving document parser below, then materialize.
         if source.file_format in ("json", "quiz"):
-            with open(source.storage_path, "rb") as f:
+            with open(effective_file_path, "rb") as f:
                 file_bytes = f.read()
             parsed_questions = parse_assessment_bank(file_bytes, source.filename)
             
@@ -1148,7 +1195,7 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
             filename=source.filename,
             mime_type=source.mime_type,
             progress_callback=on_page_progress,
-            file_path=source.storage_path,
+            file_path=effective_file_path,
             cancel_check=lambda: is_source_cancelled(source_id),
         )
 
@@ -1508,11 +1555,15 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
                     elif re.search(r"^(?:[0-9]+[\-\.\)]\s*|[\-\*•]\s*)(?:يوضح|يتعرف|يذكر|يقارن|يفسر|يشرح|يحدد|يصف|يستنتج|يميز|يعدد|يطبق|يبين|يحلل|يركب|يحسب)\b", b_text) or re.search(r"^(?:يوضح|يتعرف|يذكر|يقارن|يفسر|يشرح|يحدد|يصف|يستنتج|يميز|يعدد|يطبق|يبين|يحلل)\b", b_text):
                         continue
 
-                norm_block_stem = re.sub(r"\s+", "", block.text[:40])
-                if norm_block_stem in assembled_q_stems:
-                    continue
-
-                status, q_data = classify_and_parse_question(block.text, distant_keys)
+                # For pure assessment sources, or if questions were already assembled at document level,
+                # skip raw block-level question fragment parsing to prevent duplicating/splitting questions.
+                if source.source_role in (SourceRole.ASSESSMENT, SourceRole.ANSWER_KEY) or (doc_assembled_questions and len(doc_assembled_questions) > 0):
+                    status, q_data = "statement", None
+                else:
+                    norm_block_stem = re.sub(r"\s+", "", block.text[:40])
+                    if norm_block_stem in assembled_q_stems:
+                        continue
+                    status, q_data = classify_and_parse_question(block.text, distant_keys)
 
                 if status in ("question", "uncertain") and q_data:
                     block.block_type = status
@@ -1712,6 +1763,15 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
 
         build_source_knowledge_graph(db, source.id)
 
+        if source.source_role == SourceRole.ASSESSMENT:
+            meta = source.metadata_json or {}
+            materialize_assessment_questions(
+                db=db,
+                source=source,
+                assessment_type=meta.get("assessment_type", "exam"),
+                answer_key_source_id=meta.get("answer_key_source_id"),
+            )
+
         source.unit_count = unit_count
         source.image_count = asset_count
         source.table_count = table_count
@@ -1750,6 +1810,12 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
         except Exception:
             db.rollback()
         raise exc
+    finally:
+        if temp_staging_path and os.path.exists(temp_staging_path):
+            try:
+                os.remove(temp_staging_path)
+            except OSError:
+                pass
 
 
 def reindex_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSource:

@@ -1,0 +1,72 @@
+﻿name: CI Pipeline
+
+on:
+  push:
+    branches: [ master, main, "fix/**", "feat/**" ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  api-tests:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-ara poppler-utils
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Pytest Test Suite
+        env:
+          DATABASE_URL: sqlite:///./ci_test.db
+          SECRET_KEY: ci-super-secret-key-32-chars-long-minimum!
+          ENVIRONMENT: testing
+          AI_ENABLED: "true"
+          ALLOWED_ORIGINS: "http://localhost:5173,https://mr-hassan-chemistry-platform.vercel.app,https://mr-hassan-chemistry.vercel.app"
+        run: |
+          python -m pytest -v
+
+  web-check:
+    name: Frontend Lint & Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install Web Dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run TypeScript Build
+        run: npm run build
