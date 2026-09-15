@@ -1,3 +1,4 @@
+export * from "./i18nContext";
 export type Language = "ar" | "en";
 
 export interface Translations {
@@ -199,8 +200,8 @@ export const translations: Record<Language, Translations> = {
     brandSubtitle: "المنصة المتخصصة في تدريس مادة الكيمياء للمرحلة الثانوية مع مستر حسن شعبان",
     studentRole: "حساب طالب",
     teacherRole: "المعلم المسؤول",
-    studentMenu: "قائمة الطالب • STUDENT MENU",
-    teacherMenu: "لوحة المعلم • INSTRUCTOR PANEL",
+    studentMenu: "قائمة الطالب",
+    teacherMenu: "لوحة المعلم",
 
     navHome: "الصفحة الرئيسية (مقررات الكيمياء)",
     navHomeSub: "استعراض مقررات الكيمياء المتاحة",
@@ -332,7 +333,7 @@ export const translations: Record<Language, Translations> = {
     viewAiGradingBtn: "عرض إجابة وتصحيح الـ AI",
     notSubmittedYet: "لم يسلم بعد",
 
-    uploadLessonBadge: "إدارة المحتوى • LESSON UPLOAD & DIFFICULTY FORECASTING",
+    uploadLessonBadge: "إدارة المحتوى وتوقعات الصعوبة",
     uploadLessonTitle: "إدارة ورفع دروس الكيمياء وتوقعات صعوبة المنهج",
     uploadLessonSubtitle: "ارفع فيديوهات شروحات الكيمياء والمذكرات، وتعرف على توقعات الذكاء الاصطناعي لأصعب أجزاء المنهج ونسب تعثر الطلاب.",
     metricEngagement: "١. نسبة متابعة الطلاب:",
@@ -379,8 +380,8 @@ export const translations: Record<Language, Translations> = {
     brandSubtitle: "Secondary School Chemistry Education Portal with Mr. Hassan Shaaban",
     studentRole: "Student Account",
     teacherRole: "Certified Instructor",
-    studentMenu: "STUDENT MENU",
-    teacherMenu: "INSTRUCTOR PANEL",
+    studentMenu: "Student Menu",
+    teacherMenu: "Instructor Panel",
 
     navHome: "Home (Chemistry Courses)",
     navHomeSub: "Explore Available Chemistry Courses",
@@ -512,7 +513,7 @@ export const translations: Record<Language, Translations> = {
     viewAiGradingBtn: "View Student Answer & AI Rubric",
     notSubmittedYet: "Not submitted yet",
 
-    uploadLessonBadge: "CONTENT MANAGEMENT • LESSON UPLOAD & DIFFICULTY FORECASTING",
+    uploadLessonBadge: "Content Management & Difficulty Forecasting",
     uploadLessonTitle: "Chemistry Lesson Management & Difficulty Forecasting",
     uploadLessonSubtitle: "Upload Chemistry explanation videos and worksheets, and review AI predictions on difficulty and struggle rates.",
     metricEngagement: "1. Student Engagement Rate:",

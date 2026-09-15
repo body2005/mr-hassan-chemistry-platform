@@ -9,6 +9,12 @@ os.environ["FRONTEND_ORIGINS"] = "http://localhost:5173"
 os.environ["AI_SERVICE_URL"] = "http://127.0.0.1:9"
 os.environ["AI_SERVICE_TIMEOUT"] = "0.05"
 os.environ["OLLAMA_TIMEOUT"] = "0.05"
+os.environ["INGESTION_BACKEND"] = "local"
+os.environ["ALLOW_LOCAL_INGESTION"] = "false"
+os.environ["STORAGE_BACKEND"] = "local"
+
+from app.core.config import get_settings
+get_settings.cache_clear()
 
 import pytest
 from sqlalchemy.orm import Session

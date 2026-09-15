@@ -64,10 +64,10 @@ from app.services.knowledge_center_service import (
 )
 from app.services.knowledge_retriever import search_knowledge_base
 from app.services.ai_access_policy import can_access_course_knowledge, enforce_ai_access
-from app.services.exam_processing import relink_answer_key, validate_assessment_question
+from app.api.dependencies import CurrentUser, DbSession, PreviewAuth, get_current_user, require_roles
 from app.services.payment_service import can_access_lesson_content
 
-router = APIRouter(prefix="/knowledge-center", tags=["knowledge-center"], dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/knowledge-center", tags=["knowledge-center"])
 Db = Annotated[Session, Depends(get_db)]
 TeacherOrAdmin = Annotated[
     User,
@@ -80,7 +80,11 @@ _LOCAL_INGEST_EXECUTOR = ThreadPoolExecutor(
 )
 
 
-def _run_bg_process_source(source_id: uuid.UUID) -> None:
+def _run_bg_process_source(
+    source_id: uuid.UUID,
+    generation: int,
+    attempt_id: uuid.UUID,
+) -> None:
     """Runs knowledge source indexing and OCR in a background worker task with dedicated DB session."""
     import logging
     logger = logging.getLogger(__name__)
@@ -90,14 +94,19 @@ def _run_bg_process_source(source_id: uuid.UUID) -> None:
     try:
         with SessionLocal() as db_session:
             try:
-                process_knowledge_source(db_session, source_id)
+                process_knowledge_source(
+                    db_session,
+                    source_id,
+                    generation=generation,
+                    attempt_id=attempt_id,
+                )
             except OperationCancelledError:
                 logger.info("Background indexing cancelled cooperatively for source %s", source_id)
                 try:
                     from app.models.knowledge_center import KnowledgeSource, SourceStatus
                     src = db_session.get(KnowledgeSource, source_id)
                     if src and not is_source_deleting(source_id):
-                        src.status = SourceStatus.STOPPED
+                        src.status = SourceStatus.CANCELLED
                         src.error_message = "تم إيقاف الفهرسة (الملف محفوظ بالسيرفر)"
                         db_session.commit()
                 except Exception:
@@ -118,19 +127,54 @@ def _run_bg_process_source(source_id: uuid.UUID) -> None:
         clear_source_tracking(source_id)
 
 
-def _enqueue_source_processing(background_tasks: BackgroundTasks, source_id: uuid.UUID) -> None:
-    """Use Celery/Redis when configured; keep local development functional without it."""
-    if os.getenv("USE_CELERY_INGESTION", "").lower() in {"1", "true", "yes"}:
+def _enqueue_source_processing(background_tasks: BackgroundTasks, source: KnowledgeSource) -> None:
+    """Dispatches processing to Celery worker. Prevents heavy in-process OCR on web API in production."""
+    import logging
+    _log = logging.getLogger(__name__)
+    settings = get_settings()
+    if settings.app_env.lower() in {"test", "testing"} or os.getenv("APP_ENV", "").lower() in {"test", "testing"}:
+        _log.info("Test environment active; skipping background ingestion enqueue for source %s", source.id)
+        return
+
+    is_prod = settings.app_env.lower() in {"production", "production_like"}
+    use_celery = (
+        is_prod
+        or settings.ingestion_backend.lower() == "celery"
+        or os.getenv("USE_CELERY_INGESTION", "").lower() in {"1", "true", "yes"}
+    )
+
+    if use_celery:
         try:
             from app.tasks.knowledge_ingestion import index_source
-            index_source.delay(str(source_id))
+            task_id = f"knowledge-source:{source.id}:generation:{source.processing_generation}"
+            index_source.apply_async(
+                args=[
+                    str(source.id),
+                    source.processing_generation,
+                    str(source.processing_attempt_id),
+                ],
+                task_id=task_id,
+            )
+            _log.info("Dispatched source %s generation %s to Celery", source.id, source.processing_generation)
             return
-        except Exception:
-            pass
-    # Submission is a tiny post-response task.  CPU-heavy OCR/indexing runs in
-    # a bounded executor so concurrent uploads cannot exhaust FastAPI's shared
-    # thread pool and make normal API requests unresponsive.
-    background_tasks.add_task(_LOCAL_INGEST_EXECUTOR.submit, _run_bg_process_source, source_id)
+        except Exception as exc:
+            _log.error("Failed to enqueue source %s to Celery: %s", source_id, exc)
+            if is_prod or not settings.allow_local_ingestion:
+                # Strictly prevent running OCR in web API process in production to avoid Render 502 OOM crash
+                _log.warning("Heavy in-process ingestion disallowed in %s. Source %s remains in QUEUED state for worker.", settings.app_env, source.id)
+                return
+
+    # In local development ONLY if explicitly permitted:
+    if settings.allow_local_ingestion:
+        background_tasks.add_task(
+            _LOCAL_INGEST_EXECUTOR.submit,
+            _run_bg_process_source,
+            source.id,
+            source.processing_generation,
+            source.processing_attempt_id,
+        )
+    else:
+        _log.info("Source %s saved and left in QUEUED state for external worker pickup", source.id)
 
 
 class KnowledgeSourceResponse(BaseModel):
@@ -144,6 +188,10 @@ class KnowledgeSourceResponse(BaseModel):
     version: int
     checksum: str
     status: str
+    upload_percent: int
+    indexing_percent: int
+    processing_generation: int
+    processing_attempt_id: str
     progress_percent: int
     unit_count: int
     image_count: int
@@ -226,6 +274,42 @@ def _resolve_lesson_uuid(
     return lesson.id
 
 
+_UPLOAD_SOURCE_ROLES = {
+    SourceRole.COURSE_KNOWLEDGE,
+    SourceRole.LESSON_MATERIAL,
+}
+
+
+def _validate_upload_scope(source_role: str, lesson_id: str | None) -> SourceRole:
+    """Validate the role/lesson contract before accepting any file bytes."""
+    try:
+        normalized_role = SourceRole(str(source_role).strip().upper())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid source_role",
+        ) from exc
+
+    if normalized_role == SourceRole.KNOWLEDGE:
+        normalized_role = SourceRole.COURSE_KNOWLEDGE
+    if normalized_role not in _UPLOAD_SOURCE_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="source_role must be COURSE_KNOWLEDGE or LESSON_MATERIAL; quiz and assessment imports use their dedicated endpoints",
+        )
+    if normalized_role == SourceRole.LESSON_MATERIAL and not lesson_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="lesson_id is required for LESSON_MATERIAL",
+        )
+    if normalized_role == SourceRole.COURSE_KNOWLEDGE and lesson_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="lesson_id is not allowed for COURSE_KNOWLEDGE",
+        )
+    return normalized_role
+
+
 def _get_kc_temp_dir() -> str:
     storage_dir = os.getenv("STORAGE_DIR", "storage/knowledge_center")
     tmp = os.path.join(storage_dir, "tmp")
@@ -289,7 +373,11 @@ def _get_source_for_user(db: Session, source_id: uuid.UUID | None, user: User) -
         if not course or course.teacher_id != user.id:
             raise HTTPException(status_code=404, detail="Source not found")
     if user.role == UserRole.STUDENT:
-        if source.source_role == SourceRole.ASSESSMENT:
+        if source.source_role in {
+            SourceRole.ASSESSMENT,
+            SourceRole.QUIZ_IMPORT,
+            SourceRole.ANSWER_KEY,
+        }:
             raise HTTPException(status_code=404, detail="Source not found")
         allowed = (
             can_access_lesson_content(db, user, source.lesson_id)
@@ -313,6 +401,10 @@ def _source_response(source: KnowledgeSource, total_pages: int | None = None) ->
         version=source.version,
         checksum=source.checksum,
         status=source.status,
+        upload_percent=source.upload_percent,
+        indexing_percent=source.indexing_percent,
+        processing_generation=source.processing_generation,
+        processing_attempt_id=str(source.processing_attempt_id),
         progress_percent=source.progress_percent,
         unit_count=source.unit_count,
         image_count=source.image_count,
@@ -333,7 +425,7 @@ async def upload_knowledge_source(
     background_tasks: BackgroundTasks,
     course_id: str = Form(...),
     lesson_id: str | None = Form(None),
-    source_role: str = Form(SourceRole.KNOWLEDGE),
+    source_role: str = Form(SourceRole.COURSE_KNOWLEDGE),
     assessment_type: str | None = Form(None),
     answer_key_source_id: str | None = Form(None),
     file: UploadFile = File(...),
@@ -341,6 +433,8 @@ async def upload_knowledge_source(
     enforce_rate_limit(request, bucket="upload", limit=50, window_seconds=60)
     settings = get_settings()
     max_file_bytes = settings.max_file_size_mb * 1024 * 1024
+
+    normalized_role = _validate_upload_scope(source_role, lesson_id)
 
     course_uuid = _resolve_course_uuid(db, user, course_id)
     lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
@@ -367,18 +461,20 @@ async def upload_knowledge_source(
             staged_file_path=staging_file,
             checksum=checksum,
             size_bytes=size_bytes,
-            source_role=source_role,
+            source_role=normalized_role,
             mime_type=file.content_type,
             metadata={
                 "assessment_type": assessment_type,
                 "answer_key_source_id": answer_key_source_id,
             },
         )
-        source.status = SourceStatus.PROCESSING
-        source.progress_percent = 10
+        source.status = SourceStatus.QUEUED
+        source.upload_percent = 100
+        source.indexing_percent = 0
+        source.progress_percent = 0
         db.commit()
         db.refresh(source)
-        _enqueue_source_processing(background_tasks, source.id)
+        _enqueue_source_processing(background_tasks, source)
         return _source_response(source)
     except Exception:
         if os.path.exists(staging_file):
@@ -398,7 +494,7 @@ async def upload_knowledge_sources_batch(
     background_tasks: BackgroundTasks,
     course_id: str = Form(...),
     lesson_id: str | None = Form(None),
-    source_role: str = Form(SourceRole.KNOWLEDGE),
+    source_role: str = Form(SourceRole.COURSE_KNOWLEDGE),
     assessment_type: str | None = Form(None),
     answer_key_source_id: str | None = Form(None),
     files: list[UploadFile] = File(...),
@@ -413,6 +509,8 @@ async def upload_knowledge_sources_batch(
     settings = get_settings()
     max_file_bytes = settings.max_file_size_mb * 1024 * 1024
     max_batch_bytes = settings.max_batch_size_mb * 1024 * 1024
+
+    normalized_role = _validate_upload_scope(source_role, lesson_id)
 
     course_uuid = _resolve_course_uuid(db, user, course_id)
     lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
@@ -467,7 +565,7 @@ async def upload_knowledge_sources_batch(
                     staged_file_path=item["staged_path"],
                     checksum=item["checksum"],
                     size_bytes=item["size_bytes"],
-                    source_role=source_role,
+                    source_role=normalized_role,
                     mime_type=item["mime_type"],
                     metadata={
                         "batch_upload": True,
@@ -478,8 +576,10 @@ async def upload_knowledge_sources_batch(
                     created_storage_paths=newly_created_permanent_paths,
                 )
 
-                source.status = SourceStatus.PROCESSING
-                source.progress_percent = 10
+                source.status = SourceStatus.QUEUED
+                source.upload_percent = 100
+                source.indexing_percent = 0
+                source.progress_percent = 0
                 created_sources.append(source)
 
             db.commit()
@@ -496,7 +596,7 @@ async def upload_knowledge_sources_batch(
 
         for source in created_sources:
             db.refresh(source)
-            _enqueue_source_processing(background_tasks, source.id)
+            _enqueue_source_processing(background_tasks, source)
 
         return [_source_response(source) for source in created_sources]
 
@@ -514,18 +614,49 @@ def list_knowledge_sources(
     user: TeacherOrAdmin,
     course_id: str | None = None,
     lesson_id: str | None = None,
+    source_role: str | None = None,
 ) -> list[KnowledgeSourceResponse]:
     stmt = select(KnowledgeSource)
     if user.role != UserRole.PLATFORM_ADMIN:
         stmt = stmt.where(KnowledgeSource.institution_id == user.institution_id)
+    if user.role == UserRole.TEACHER:
+        stmt = stmt.where(KnowledgeSource.teacher_id == user.id)
     if course_id and course_id.strip():
-        course_uuid = _parse_uuid(course_id)
-        if course_uuid:
-            stmt = stmt.where(KnowledgeSource.course_id == course_uuid)
+        course_uuid = _resolve_course_uuid(db, user, course_id)
+        stmt = stmt.where(KnowledgeSource.course_id == course_uuid)
     if lesson_id and lesson_id.strip():
         lesson_uuid = _parse_uuid(lesson_id)
-        if lesson_uuid:
-            stmt = stmt.where(KnowledgeSource.lesson_id == lesson_uuid)
+        if not lesson_uuid:
+            raise HTTPException(status_code=422, detail="Invalid lesson ID format")
+        lesson_course_id = db.scalar(
+            select(CourseModule.course_id)
+            .join(Lesson, Lesson.module_id == CourseModule.id)
+            .where(Lesson.id == lesson_uuid)
+        )
+        if not lesson_course_id:
+            raise HTTPException(status_code=404, detail="Lesson not found")
+        _resolve_course_uuid(db, user, str(lesson_course_id))
+        if course_id and lesson_course_id != course_uuid:
+            raise HTTPException(status_code=404, detail="Lesson not found in this course")
+        stmt = stmt.where(
+            KnowledgeSource.lesson_id == lesson_uuid,
+            KnowledgeSource.source_role == SourceRole.LESSON_MATERIAL,
+        )
+    elif not source_role:
+        # The general Knowledge Center is intentionally course-knowledge only.
+        stmt = stmt.where(
+            KnowledgeSource.source_role.in_(
+                [SourceRole.COURSE_KNOWLEDGE, SourceRole.KNOWLEDGE]
+            )
+        )
+
+    if source_role and source_role.strip():
+        requested_role = source_role.strip().upper()
+        try:
+            normalized_role = SourceRole(requested_role)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Invalid source_role") from exc
+        stmt = stmt.where(KnowledgeSource.source_role == normalized_role)
 
     sources = db.scalars(stmt.order_by(KnowledgeSource.created_at.desc())).all()
     source_ids = [s.id for s in sources]
@@ -544,6 +675,10 @@ def list_knowledge_sources(
             version=s.version,
             checksum=s.checksum,
             status=s.status,
+            upload_percent=s.upload_percent,
+            indexing_percent=s.indexing_percent,
+            processing_generation=s.processing_generation,
+            processing_attempt_id=str(s.processing_attempt_id),
             progress_percent=s.progress_percent,
             unit_count=s.unit_count,
             image_count=s.image_count,
@@ -564,30 +699,13 @@ async def mark_sources_interrupted(
     db: Db,
     user: TeacherOrAdmin,
 ) -> dict[str, Any]:
-    """Marks sources in PROCESSING or QUEUED state as FAILED when site is closed or client disconnects."""
-    try:
-        body = await request.body()
-        import json
-        payload = json.loads(body.decode("utf-8")) if body else {}
-        source_ids = payload.get("source_ids", [])
-    except Exception:
-        source_ids = []
+    """Deprecated no-op kept for old clients.
 
-    marked = 0
-    for sid in source_ids:
-        suuid = _parse_uuid(sid)
-        if suuid:
-            stmt = select(KnowledgeSource).where(KnowledgeSource.id == suuid)
-            if user.role != UserRole.PLATFORM_ADMIN:
-                stmt = stmt.where(KnowledgeSource.institution_id == user.institution_id)
-            src = db.scalar(stmt)
-            if src and src.status in (SourceStatus.PROCESSING, SourceStatus.QUEUED):
-                src.status = SourceStatus.FAILED
-                src.error_message = "فشل الفهرسة: تم إغلاق الموقع أثناء المعالجة."
-                marked += 1
-    if marked > 0:
-        db.commit()
-    return {"status": "ok", "marked": marked}
+    The upload has already reached durable storage before a source is QUEUED.
+    A page unload is not a worker failure and must never mutate the server-side
+    processing attempt.  Workers own terminal state transitions instead.
+    """
+    return {"status": "ok", "marked": 0}
 
 
 @router.get("/sources/{source_id}")
@@ -624,11 +742,32 @@ def get_knowledge_source_detail(source_id: str, db: Db, user: CurrentUser) -> di
         .order_by(KnowledgeOutlineNode.position.asc())
     ).all()
 
+    total_pages = doc.total_pages if doc else (1 if source.file_format != "pdf" else None)
+
     return {
         "id": str(source.id),
+        "course_id": str(source.course_id),
+        "lesson_id": str(source.lesson_id) if source.lesson_id else None,
         "filename": source.filename,
-        "status": source.status,
+        "file_format": source.file_format,
+        "size_bytes": source.size_bytes,
         "source_role": source.source_role,
+        "version": source.version,
+        "checksum": source.checksum,
+        "status": source.status,
+        "upload_percent": source.upload_percent,
+        "indexing_percent": source.indexing_percent,
+        "processing_generation": source.processing_generation,
+        "processing_attempt_id": str(source.processing_attempt_id),
+        "progress_percent": source.progress_percent,
+        "error_message": source.error_message,
+        "unit_count": source.unit_count,
+        "image_count": source.image_count,
+        "table_count": source.table_count,
+        "question_count": source.question_count,
+        "total_pages": total_pages,
+        "file_url": f"/api/v1/knowledge-center/sources/{source.id}/view",
+        "created_at": source.created_at.isoformat() if source.created_at else None,
         "document": {
             "title": doc.title,
             "doc_type": doc.doc_type,
@@ -791,22 +930,31 @@ def reindex_source(source_id: str, db: Db, background_tasks: BackgroundTasks, us
     s_uuid = _parse_uuid(source_id)
     source = _get_source_for_user(db, s_uuid, user)
 
-    source.version += 1
-    source.status = SourceStatus.PROCESSING
-    source.progress_percent = 10
-    source.error_message = None
+    if source.status in {SourceStatus.QUEUED, SourceStatus.PROCESSING}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An indexing attempt is already active for this source",
+        )
 
-    # Purge old units, questions & documents before asynchronous re-parsing
-    db.execute(delete(KnowledgeUnitRecord).where(KnowledgeUnitRecord.source_id == s_uuid))
-    db.execute(delete(KnowledgeQuestionRecord).where(KnowledgeQuestionRecord.source_id == s_uuid))
-    db.execute(delete(KnowledgeAsset).where(KnowledgeAsset.source_id == s_uuid))
-    db.execute(delete(KnowledgeDocument).where(KnowledgeDocument.source_id == s_uuid))
-    db.execute(delete(AssessmentSource).where(AssessmentSource.source_id == s_uuid))
+    source.version += 1
+    previous_attempt_id = source.processing_attempt_id
+    source.processing_generation += 1
+    source.processing_attempt_id = uuid.uuid4()
+    source.active_task_id = None
+    source.status = SourceStatus.QUEUED
+    source.indexing_percent = 0
+    source.progress_percent = 0
+    source.error_message = None
+    source.metadata_json = {
+        **(source.metadata_json or {}),
+        "retry_of_attempt_id": str(previous_attempt_id),
+    }
     db.commit()
     db.refresh(source)
 
-    # Ingest & index source asynchronously in background
-    _enqueue_source_processing(background_tasks, s_uuid)
+    # The worker performs the idempotent replacement only after it has claimed
+    # this generation, so a queued retry never erases the last usable index.
+    _enqueue_source_processing(background_tasks, source)
 
     return KnowledgeSourceResponse(
 
@@ -820,6 +968,10 @@ def reindex_source(source_id: str, db: Db, background_tasks: BackgroundTasks, us
         version=source.version,
         checksum=source.checksum,
         status=source.status,
+        upload_percent=source.upload_percent,
+        indexing_percent=source.indexing_percent,
+        processing_generation=source.processing_generation,
+        processing_attempt_id=str(source.processing_attempt_id),
         progress_percent=source.progress_percent,
         unit_count=source.unit_count,
         image_count=source.image_count,
@@ -851,7 +1003,7 @@ def stop_indexing_source(source_id: str, db: Db, user: TeacherOrAdmin) -> dict[s
     if source.status in (SourceStatus.STOPPED, SourceStatus.CANCELLED, SourceStatus.FAILED):
         return {"status": "ok", "message": "تم إيقاف الفهرسة مسبقاً", "source_status": source.status}
 
-    source.status = SourceStatus.STOPPED
+    source.status = SourceStatus.CANCELLED
     source.error_message = "تم إيقاف الفهرسة (الملف محفوظ بالسيرفر)"
     try:
         db.commit()
@@ -979,6 +1131,8 @@ def _serve_file_with_range(
                 "Content-Length": str(content_length),
                 "Content-Type": media_type,
                 "Content-Disposition": content_disposition,
+                "Referrer-Policy": "no-referrer",
+                "X-Content-Type-Options": "nosniff",
             }
             return StreamingResponse(
                 storage.open_stream(effective_path, start=start, length=content_length),
@@ -998,6 +1152,8 @@ def _serve_file_with_range(
         "Content-Length": str(file_size),
         "Content-Type": media_type,
         "Content-Disposition": content_disposition,
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
     }
     return StreamingResponse(
         storage.open_stream(effective_path, start=0, length=file_size),
@@ -1018,10 +1174,10 @@ def create_source_preview_token(
         raise HTTPException(status_code=400, detail="Invalid source ID")
     source = _get_source_for_user(db, s_uuid, user)
     from app.core.security import create_preview_token
-    token = create_preview_token(user=user, source_id=source.id, expires_in_seconds=900)
+    token = create_preview_token(user=user, source_id=source.id, expires_in_seconds=300)
     return PreviewTokenResponse(
         preview_token=token,
-        expires_in=900,
+        expires_in=300,
         preview_url=f"/api/v1/knowledge-center/sources/{source.id}/preview-file?token={token}",
         page_preview_url_template=f"/api/v1/knowledge-center/sources/{source.id}/preview-page/{{page_number}}?token={token}",
     )
@@ -1032,20 +1188,12 @@ def preview_knowledge_source_file(
     source_id: str,
     request: Request,
     db: Db,
-    user: CurrentUser,
+    auth: PreviewAuth,
 ) -> Response:
     s_uuid = _parse_uuid(source_id)
     if not s_uuid:
         raise HTTPException(status_code=400, detail="Invalid source ID")
-    source = _get_source_for_user(db, s_uuid, user)
-
-    from app.api.dependencies import _extract_token
-    from app.core.security import decode_preview_token
-    token = _extract_token(request)
-    if token:
-        preview_payload = decode_preview_token(token)
-        if preview_payload and preview_payload.get("source_id") != str(source.id):
-            raise HTTPException(status_code=403, detail="Preview token is not valid for this source")
+    source = _get_source_for_user(db, s_uuid, auth.user)
 
     media_type = _detect_media_type(source.filename, source.mime_type)
     return _serve_file_with_range(
@@ -1086,28 +1234,20 @@ def preview_source_page_image(
     request: Request,
     db: Db,
     background_tasks: BackgroundTasks,
-    user: CurrentUser,
+    auth: PreviewAuth,
     scale: float = 1.3,
 ) -> Response:
     s_uuid = _parse_uuid(source_id)
     if not s_uuid:
         raise HTTPException(status_code=400, detail="Invalid source ID")
-    source = _get_source_for_user(db, s_uuid, user)
-
-    from app.api.dependencies import _extract_token
-    from app.core.security import decode_preview_token
-    token = _extract_token(request)
-    if token:
-        preview_payload = decode_preview_token(token)
-        if preview_payload and preview_payload.get("source_id") != str(source.id):
-            raise HTTPException(status_code=403, detail="Preview token is not valid for this source")
+    source = _get_source_for_user(db, s_uuid, auth.user)
 
     return stream_source_page_image(
         source_id=source_id,
         page_number=page_number,
         db=db,
         background_tasks=background_tasks,
-        user=user,
+        user=auth.user,
         scale=scale,
     )
 

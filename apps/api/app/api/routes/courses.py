@@ -44,7 +44,8 @@ def _safe_course_responses(db: Session, user: User | None, courses: list) -> lis
             select(KnowledgeSource).where(
                 KnowledgeSource.lesson_id.in_(all_lesson_ids),
                 KnowledgeSource.status != SourceStatus.DELETING,
-                KnowledgeSource.source_role != SourceRole.ASSESSMENT,
+                KnowledgeSource.source_role == SourceRole.LESSON_MATERIAL,
+                KnowledgeSource.is_current == True,
             )
         ).all()
         for s in sources:

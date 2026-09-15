@@ -62,10 +62,24 @@ class Settings(BaseSettings):
     payment_instapay_account: str | None = None
     payment_vodafone_cash_number: str | None = None
     payment_bank_details: str | None = None
+    storage_backend: str = "local"
+    cookie_secure: bool | None = None
+    ingestion_backend: str = "celery"
+    allow_local_ingestion: bool = False
     payment_receipt_max_mb: int = Field(default=10, ge=1, le=25)
+    trusted_proxies: str = "127.0.0.1,::1"
+    rate_limit_login: int = Field(default=15, ge=1, le=1000)
+    rate_limit_read: int = Field(default=600, ge=1, le=10000)
+    rate_limit_ai: int = Field(default=60, ge=1, le=1000)
+    rate_limit_upload: int = Field(default=60, ge=1, le=1000)
+    rate_limit_quiz_extraction: int = Field(default=30, ge=1, le=1000)
+    rate_limit_api_default: int = Field(default=600, ge=1, le=10000)
+    rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
 
     @property
     def secure_cookies(self) -> bool:
+        if self.cookie_secure is not None:
+            return self.cookie_secure
         return self.app_env.lower() == "production"
 
     @model_validator(mode="after")

@@ -76,7 +76,7 @@ export const EssayGraderView: React.FC = () => {
   return (
     <div className="page-content">
       <div style={{ marginBottom: "24px" }}>
-        <p className="eyebrow">أدوات المعلم • AI ESSAY GRADER</p>
+        <p className="eyebrow">أدوات المعلم - المصحح الذكي للمقالات</p>
         <h1 style={{ margin: "4px 0", fontSize: "26px", fontFamily: "Manrope, sans-serif" }}>
           المصحح الذكي للمقالات والواجبات
         </h1>

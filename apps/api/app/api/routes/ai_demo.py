@@ -8,7 +8,7 @@ import re
 import urllib.request
 import uuid
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import CurrentUser, require_roles
 from app.core.database import get_db
 from app.core.rate_limit import enforce_rate_limit
-from app.models.course import Course, CourseModule, Lesson
+from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus, Lesson
 from app.models.knowledge_center import (
     KnowledgeAsset,
     KnowledgeQuestionImageLink,
@@ -89,6 +89,23 @@ class QuizDraftResponse(BaseModel):
     requires_teacher_approval: bool = True
     cached: bool = False
     metadata: dict[str, Any] | None = None
+
+
+class QuizDraftRequest(BaseModel):
+    course_id: uuid.UUID
+    lesson_ids: list[uuid.UUID] = Field(default_factory=list)
+    outline_node_id: uuid.UUID | None = None
+    include_prerequisite_lessons: bool = False
+    lesson_contents: list[str] = Field(default_factory=list)
+    question_count: int = Field(default=3, ge=1, le=100)
+    allowed_types: list[str] = Field(default_factory=list)
+    type_allocations: list[dict[str, Any]] = Field(default_factory=list)
+    difficulty_distribution: dict[str, int] | None = None
+    topics: list[str] = Field(default_factory=list)
+    target_points_per_question: int | None = Field(default=None, ge=1, le=1000)
+    quiz_mode: Literal["mix", "extract", "generate"] = "mix"
+    exclude_stems: list[str] = Field(default_factory=list)
+    title: str | None = Field(default=None, min_length=2, max_length=200)
 
 class EssayGradingResponse(BaseModel):
     total_score: float
@@ -259,10 +276,32 @@ def _request_grading_from_provider(prompt: str) -> dict[str, Any] | None:
     return None
 
 def _get_live_analytics(db: Session, user: User) -> dict[str, Any]:
-    students_query = select(User).where(
-        User.institution_id == user.institution_id,
-        User.role == UserRole.STUDENT,
-    )
+    teacher_course_ids: list[uuid.UUID] | None = None
+    if user.role == UserRole.TEACHER:
+        teacher_course_ids = db.scalars(
+            select(Course.id).where(
+                Course.institution_id == user.institution_id,
+                Course.teacher_id == user.id,
+            )
+        ).all()
+
+    if teacher_course_ids is not None:
+        enrolled_student_ids = db.scalars(
+            select(Enrollment.student_id).where(
+                Enrollment.course_id.in_(teacher_course_ids),
+                Enrollment.status == EnrollmentStatus.ACTIVE,
+            ).distinct()
+        ).all()
+        students_query = select(User).where(
+            User.institution_id == user.institution_id,
+            User.role == UserRole.STUDENT,
+            User.id.in_(enrolled_student_ids) if enrolled_student_ids else False,
+        )
+    else:
+        students_query = select(User).where(
+            User.institution_id == user.institution_id,
+            User.role == UserRole.STUDENT,
+        )
     students = db.execute(students_query).scalars().all()
     total_students = len(students)
 
@@ -273,12 +312,20 @@ def _get_live_analytics(db: Session, user: User) -> dict[str, Any]:
         .where(Course.institution_id == user.institution_id)
         .order_by(Lesson.created_at.desc())
     )
+    if teacher_course_ids is not None:
+        lessons_query = lessons_query.where(Course.id.in_(teacher_course_ids))
+
     lesson_rows = db.execute(lessons_query).all()
     total_lessons = len(lesson_rows)
 
     quiz_attempts_query = select(QuizAttempt).where(
         QuizAttempt.institution_id == user.institution_id
     )
+    if teacher_course_ids is not None:
+        quiz_attempts_query = (
+            quiz_attempts_query.join(Quiz, QuizAttempt.quiz_id == Quiz.id)
+            .where(Quiz.course_id.in_(teacher_course_ids))
+        )
     quiz_attempts = db.execute(quiz_attempts_query).scalars().all()
     submitted_attempts = [a for a in quiz_attempts if a.submitted_at and a.score is not None]
     avg_quiz_score = (
@@ -290,6 +337,11 @@ def _get_live_analytics(db: Session, user: User) -> dict[str, Any]:
     sub_query = select(AssignmentSubmission).where(
         AssignmentSubmission.institution_id == user.institution_id
     )
+    if teacher_course_ids is not None:
+        sub_query = (
+            sub_query.join(Assignment, AssignmentSubmission.assignment_id == Assignment.id)
+            .where(Assignment.course_id.in_(teacher_course_ids))
+        )
     submissions = db.execute(sub_query).scalars().all()
     scored_subs = [s for s in submissions if s.final_score is not None or s.ai_score is not None]
     avg_assignment_score = (
@@ -305,6 +357,11 @@ def _get_live_analytics(db: Session, user: User) -> dict[str, Any]:
     progress_query = select(LessonProgress).where(
         LessonProgress.institution_id == user.institution_id
     )
+    if teacher_course_ids is not None:
+        teacher_lesson_ids = [row[0].id for row in lesson_rows]
+        progress_query = progress_query.where(
+            LessonProgress.lesson_id.in_(teacher_lesson_ids) if teacher_lesson_ids else False
+        )
     progress_rows = db.execute(progress_query).scalars().all()
     avg_progress = (
         round(sum(p.completion_percent for p in progress_rows) / len(progress_rows), 1)
@@ -313,7 +370,7 @@ def _get_live_analytics(db: Session, user: User) -> dict[str, Any]:
     )
 
     # A student is counted as "present/active" when the platform has a real
-    # lesson-progress event for them.  This is intentionally labelled as
+    # lesson-progress event for them. This is intentionally labelled as
     # attendance/engagement in the tutor response: the current schema tracks
     # learning activity, not classroom roll-call attendance.
     progress_active_ids = {p.student_id for p in progress_rows if p.last_event_at or p.watched_duration_seconds > 0 or p.completion_percent > 0}
@@ -683,18 +740,19 @@ def list_ai_refusal_logs(
 
 @router.post("/quiz/draft", response_model=QuizDraftResponse)
 async def generate_quiz_draft(
-    payload: dict[str, Any],
+    payload: QuizDraftRequest,
     user: TeacherOrAdmin,
     request: Request,
     db: Db,
 ) -> QuizDraftResponse:
     enforce_rate_limit(request, bucket="ai", limit=10, window_seconds=60)
     enforce_ai_access(db, user, request, {"feature": "quiz_draft"})
-    course_id = payload.get("course_id", "") if isinstance(payload, dict) else ""
-    lesson_contents = payload.get("lesson_contents", []) if isinstance(payload, dict) else []
-    question_count = int(payload.get("question_count", 3)) if isinstance(payload, dict) else 3
-    type_allocations = payload.get("type_allocations", []) if isinstance(payload, dict) else []
-    topics = payload.get("topics", []) if isinstance(payload, dict) else []
+    payload_data = payload.model_dump(mode="json")
+    course_id = payload_data["course_id"]
+    lesson_contents = payload_data["lesson_contents"]
+    question_count = payload_data["question_count"]
+    type_allocations = payload_data["type_allocations"]
+    topics = payload_data["topics"]
 
     from app.services.educational_normalizer import (
         KnowledgeUnit,
@@ -704,8 +762,8 @@ async def generate_quiz_draft(
     from app.services.quiz_engine import generate_quiz
     from app.models.knowledge_center import KnowledgeQuestionRecord, KnowledgeUnitRecord
 
-    quiz_mode = str(payload.get("quiz_mode", "mix")).lower() if isinstance(payload, dict) else "mix"
-    exclude_stems = payload.get("exclude_stems", []) if isinstance(payload, dict) else []
+    quiz_mode = payload_data["quiz_mode"]
+    exclude_stems = payload_data["exclude_stems"]
 
     def _stem_sim(s1: str, s2: str) -> float:
         t1 = set(re.findall(r"\w+", (s1 or "").lower()))
@@ -727,12 +785,28 @@ async def generate_quiz_draft(
     if not c_uuid:
         raise HTTPException(status_code=422, detail="A valid course_id is required")
     _get_manageable_course(db, user, c_uuid)
-    outline_uuid = _uuid(str(payload.get("outline_node_id", ""))) if isinstance(payload, dict) else None
-    include_prerequisites = bool(payload.get("include_prerequisite_lessons", False)) if isinstance(payload, dict) else False
+    outline_uuid = _uuid(str(payload_data.get("outline_node_id", "")))
+    include_prerequisites = payload_data["include_prerequisite_lessons"]
     selected_lesson_uuids = [
-        item for item in (_uuid(str(value)) for value in (payload.get("lesson_ids", []) if isinstance(payload, dict) else []))
+        item for item in (_uuid(str(value)) for value in payload_data["lesson_ids"])
         if item is not None
     ]
+    if selected_lesson_uuids:
+        valid_lesson_ids = set(
+            db.scalars(
+                select(Lesson.id)
+                .join(CourseModule, Lesson.module_id == CourseModule.id)
+                .where(
+                    CourseModule.course_id == c_uuid,
+                    Lesson.id.in_(selected_lesson_uuids),
+                )
+            ).all()
+        )
+        if valid_lesson_ids != set(selected_lesson_uuids):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Every lesson_id must belong to the selected course",
+            )
 
     # 1. Fetch pre-existing verbatim exam questions if in 'extract' or 'mix' mode
     if c_uuid and quiz_mode in ("extract", "mix"):
@@ -931,7 +1005,7 @@ async def generate_quiz_draft(
 
     total_points = sum(q.points for q in final_questions)
     return QuizDraftResponse(
-        title=f"اختبار تقييمي: {main_topic}",
+        title=payload_data.get("title") or f"اختبار تقييمي: {main_topic}",
         description=f"اختبار تقييمي شامل مبني بدقة تربوية على مذكرات ومستندات درس ({main_topic}).",
         total_points=total_points,
         questions=final_questions,
@@ -959,7 +1033,7 @@ async def extract_quiz_from_file(
     db: Db,
     user: TeacherOrAdmin,
     file: UploadFile = File(...),
-    course_id: str | None = Form(None),
+    course_id: str = Form(...),
     lesson_id: str | None = Form(None),
 ) -> QuizDraftResponse:
     """Extract questions directly from an uploaded exam / question file (PDF, Word, TXT, JSON, etc.)"""
@@ -994,7 +1068,7 @@ async def extract_quiz_from_file(
             staged_file_path=staging_file,
             checksum=checksum,
             size_bytes=size_bytes,
-            source_role=SourceRole.ASSESSMENT,
+            source_role=SourceRole.QUIZ_IMPORT,
             mime_type=file.content_type,
             metadata={"assessment_type": "exam", "extracted_in_quiz_maker": True},
         )

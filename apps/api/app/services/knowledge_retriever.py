@@ -17,7 +17,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.course import Course, Lesson
@@ -29,6 +29,7 @@ from app.models.knowledge_center import (
     KnowledgeQueryEvent,
     KnowledgeSource,
     KnowledgeUnitRecord,
+    SourceRole,
 )
 from app.models.user import User
 from app.services.document_parsers import clean_arabic_ocr_text
@@ -178,7 +179,25 @@ def retrieve_lesson_knowledge(
 
     if lesson_id:
         stmt = stmt.where(
-            (KnowledgeUnitRecord.lesson_id == lesson_id) | (KnowledgeUnitRecord.lesson_id.is_(None))
+            or_(
+                and_(
+                    KnowledgeSource.source_role.in_(
+                        [SourceRole.COURSE_KNOWLEDGE, SourceRole.KNOWLEDGE]
+                    ),
+                    KnowledgeUnitRecord.lesson_id.is_(None),
+                ),
+                and_(
+                    KnowledgeSource.source_role == SourceRole.LESSON_MATERIAL,
+                    KnowledgeUnitRecord.lesson_id == lesson_id,
+                ),
+            )
+        )
+    else:
+        stmt = stmt.where(
+            KnowledgeSource.source_role.in_(
+                [SourceRole.COURSE_KNOWLEDGE, SourceRole.KNOWLEDGE]
+            ),
+            KnowledgeUnitRecord.lesson_id.is_(None),
         )
     if source_id:
         stmt = stmt.where(KnowledgeUnitRecord.source_id == source_id)

@@ -10,16 +10,25 @@ pytest_full.log
 
 # Environment & secrets
 .env
+.env.*.local
+.env.docker.local
 apps/*/.env
+apps/*/.env.*.local
 !*.env.example
+!*.env.docker.example
 cookies.txt
 *.cookies
+tests/screenshots/
+*.patch
+scratch_*.md
+scratch_*.txt
 
 # Node
 node_modules/
 dist/
 .vercel
 *.tsbuildinfo
+/.playwright-browsers/
 
 # Uploaded media & regenerable caches
 apps/api/uploads/
@@ -56,3 +65,7 @@ COMPLETE_AI_AND_INDEXING_CODE.md
 # Misc
 *.log
 $null
+scratch/
+*.csv
+*.sql
+locust_users.json

@@ -779,6 +779,7 @@ main {
 
 [data-theme="dark"] .chat-header {
   background: #064e3b;
+  color: #ffffff !important;
 }
 
 /* LMS Tables - Guaranteed 1:1 Column Alignment, Sticky Headers & Smooth Scrolling */

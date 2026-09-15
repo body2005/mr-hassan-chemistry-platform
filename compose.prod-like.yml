@@ -1,0 +1,219 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: chemistry_postgres
+    mem_limit: 1024m
+    cpus: 1.0
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-chemistry_platform}
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-chemistry_platform}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+
+  redis:
+    image: redis:7-alpine
+    container_name: chemistry_redis
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    mem_limit: 256m
+    cpus: 0.5
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: chemistry_minio
+    command: server /data --console-address ":9001"
+    mem_limit: 512m
+    cpus: 0.5
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-miniopassword}
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/bin/curl -f http://localhost:9000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    container_name: chemistry_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command: >
+      -c "
+      /usr/bin/mc alias set localminio http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-miniopassword};
+      /usr/bin/mc mb --ignore-existing localminio/$${S3_BUCKET:-chemistry-storage};
+      echo 'MinIO bucket initialized successfully.';
+      exit 0;
+      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-miniopassword}
+      S3_BUCKET: ${S3_BUCKET:-chemistry-storage}
+
+  migration:
+    build:
+      context: apps/api
+      dockerfile: ../../infra/Dockerfile.api
+    container_name: chemistry_migration
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    environment:
+      APP_ENV: production_like
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-chemistry_platform}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: apps/api
+      dockerfile: ../../infra/Dockerfile.api
+    container_name: chemistry_api
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+    mem_limit: 1024m
+    cpus: 1.0
+    environment:
+      APP_ENV: production_like
+      PROCESS_TYPE: api
+      ALLOW_IN_PROCESS_OCR: "false"
+      SECRET_KEY: ${SECRET_KEY:-local-docker-production-secret-key-at-least-32-chars-long}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-chemistry_platform}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      STORAGE_BACKEND: minio
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-miniopassword}
+      S3_BUCKET: ${S3_BUCKET:-chemistry-storage}
+      FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173}
+      COOKIE_SECURE: "false"
+      COOKIE_CROSS_SITE: "false"
+      INGESTION_BACKEND: celery
+      ALLOW_LOCAL_INGESTION: "false"
+      MAX_CONCURRENT_INGESTIONS: 1
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      migration:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+
+  worker:
+    build:
+      context: apps/api
+      dockerfile: ../../infra/Dockerfile.api
+    container_name: chemistry_worker
+    command: celery -A app.tasks.celery_app.celery_app worker --loglevel=info --concurrency=1 --prefetch-multiplier=1 --max-tasks-per-child=1 -Q celery,default,ai,indexing,knowledge_ingestion,notifications,reports,analytics
+    mem_limit: 2048m
+    cpus: 2.0
+    environment:
+      APP_ENV: production_like
+      PROCESS_TYPE: worker
+      SECRET_KEY: ${SECRET_KEY:-local-docker-production-secret-key-at-least-32-chars-long}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-chemistry_platform}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      STORAGE_BACKEND: minio
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-miniopassword}
+      S3_BUCKET: ${S3_BUCKET:-chemistry-storage}
+      COOKIE_SECURE: "false"
+      COOKIE_CROSS_SITE: "false"
+      INGESTION_BACKEND: celery
+      ALLOW_LOCAL_INGESTION: "false"
+      MAX_CONCURRENT_INGESTIONS: 1
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      migration:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+
+  web:
+    build:
+      context: apps/web
+      dockerfile: ../../infra/Dockerfile.web
+      args:
+        VITE_API_URL: /api/v1
+    container_name: chemistry_web
+    mem_limit: 512m
+    cpus: 0.5
+    ports:
+      - "127.0.0.1:8080:80"
+    depends_on:
+      - api
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:

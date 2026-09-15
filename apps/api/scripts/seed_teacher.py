@@ -84,8 +84,6 @@ def _seed_account(
 
 
 def seed() -> None:
-    Base.metadata.create_all(bind=engine)
-
     teacher_email = os.getenv("INITIAL_TEACHER_EMAIL", "").strip().lower()
     teacher_password = os.getenv("INITIAL_TEACHER_PASSWORD", "")
     demo_enabled = _env_flag("ENABLE_DEMO_ACCOUNTS")
@@ -143,7 +141,7 @@ def seed() -> None:
             password=demo_teacher_password,
             role=UserRole.TEACHER,
             reset_password=reset_demo_passwords,
-            ensure_password_matches=True,
+            ensure_password_matches=False,
             label="Demo teacher",
         )
         _seed_account(
@@ -155,20 +153,21 @@ def seed() -> None:
             password=demo_student_password,
             role=UserRole.STUDENT,
             reset_password=reset_demo_passwords,
-            ensure_password_matches=True,
+            ensure_password_matches=False,
             label="Demo student",
         )
 
-        for email, password in (
-            (os.getenv("DEMO_TEACHER_EMAIL", "teacher@demo.com").strip().lower(), demo_teacher_password),
-            (os.getenv("DEMO_STUDENT_EMAIL", "student@demo.com").strip().lower(), demo_student_password),
-        ):
-            seeded = db.query(User).filter(
-                User.institution_id == demo_institution.id,
-                User.email == email,
-            ).first()
-            if not seeded or not verify_password(password, seeded.password_hash):
-                raise RuntimeError(f"Demo credential reconciliation failed for {email}")
+        if reset_demo_passwords:
+            for email, password in (
+                (os.getenv("DEMO_TEACHER_EMAIL", "teacher@demo.com").strip().lower(), demo_teacher_password),
+                (os.getenv("DEMO_STUDENT_EMAIL", "student@demo.com").strip().lower(), demo_student_password),
+            ):
+                seeded = db.query(User).filter(
+                    User.institution_id == demo_institution.id,
+                    User.email == email,
+                ).first()
+                if not seeded or not verify_password(password, seeded.password_hash):
+                    raise RuntimeError(f"Demo credential reconciliation failed for {email}")
 
 
 if __name__ == "__main__":

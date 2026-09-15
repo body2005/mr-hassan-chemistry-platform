@@ -80,12 +80,21 @@ async def security_middleware(request, call_next):
         f"{settings.api_v1_prefix}/ready",
     }:
         try:
-            enforce_rate_limit(
-                request,
-                bucket=f"api:{request.url.path}",
-                limit=300,
-                window_seconds=60,
-            )
+            path = request.url.path
+            if path.startswith(f"{settings.api_v1_prefix}/auth/login"):
+                category = "auth_login"
+            elif "/ai" in path:
+                category = "ai"
+            elif "/upload" in path or "/sources" in path:
+                category = "upload"
+            elif "/quiz" in path or "/exam" in path or "/extract" in path:
+                category = "quiz_extraction"
+            elif request.method == "GET":
+                category = "read"
+            else:
+                category = "default"
+
+            enforce_rate_limit(request, category=category)
         except HTTPException as exc:
             res = JSONResponse(
                 status_code=exc.status_code,
@@ -174,10 +183,10 @@ async def security_middleware(request, call_next):
         int((time.perf_counter() - started) * 1000),
     )
     response.headers["X-Request-ID"] = request_id
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "SAMEORIGIN"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     if settings.secure_cookies:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'self'"
