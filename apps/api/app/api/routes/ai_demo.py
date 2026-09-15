@@ -38,10 +38,12 @@ from app.models.progress import LessonProgress
 from app.models.user import User, UserRole
 from app.services.ai_access_policy import can_access_course_knowledge, enforce_ai_access
 from app.services.knowledge_center_service import (
-    create_knowledge_source,
-    process_knowledge_source,
+    classify_and_parse_question,
+    extract_distant_answer_keys,
+    parse_table_questions,
     sanitize_source_filename,
 )
+from app.services.document_parsers import parse_assessment_bank, parse_knowledge_file
 from app.services.transcript_indexer import index_lesson_video
 from app.services.payment_service import student_can_use_ai_for_lesson
 
@@ -1059,19 +1061,6 @@ async def extract_quiz_from_file(
         )
         if size_bytes == 0:
             raise HTTPException(status_code=400, detail="الملف المرفوع فارغ.")
-        source = create_knowledge_source(
-            db=db,
-            user=user,
-            course_id=course_uuid,
-            lesson_id=lesson_uuid,
-            filename=filename,
-            staged_file_path=staging_file,
-            checksum=checksum,
-            size_bytes=size_bytes,
-            source_role=SourceRole.QUIZ_IMPORT,
-            mime_type=file.content_type,
-            metadata={"assessment_type": "exam", "extracted_in_quiz_maker": True},
-        )
     except Exception:
         if os.path.exists(staging_file):
             try:
@@ -1081,51 +1070,75 @@ async def extract_quiz_from_file(
         db.rollback()
         raise
 
-    process_knowledge_source(db, source.id)
-    db.refresh(source)
-
-    extracted_records = db.scalars(
-        select(KnowledgeQuestionRecord)
-        .where(KnowledgeQuestionRecord.source_id == source.id)
-        .order_by(KnowledgeQuestionRecord.question_order.asc(), KnowledgeQuestionRecord.created_at.asc())
-    ).all()
-
     generated_questions: list[GeneratedQuestion] = []
     q_id = 1
-
-    for rec in extracted_records:
-        opts: list[QuestionOption] = []
-        if rec.options_json and isinstance(rec.options_json, list):
-            for opt in rec.options_json:
-                if isinstance(opt, dict):
-                    opts.append(
-                        QuestionOption(
-                            key=str(opt.get("key", "")),
-                            text=str(opt.get("text", "")),
-                            is_correct=bool(opt.get("is_correct", False)),
-                        )
+    try:
+        extension = os.path.splitext(filename)[1].lower()
+        extracted_candidates: list[dict[str, Any]] = []
+        if extension in {".json", ".quiz"}:
+            with open(staging_file, "rb") as staged:
+                parsed_assessment = parse_assessment_bank(staged.read(), filename)
+            extracted_candidates = [
+                {
+                    "question_text": item.question_text,
+                    "question_type": item.question_type,
+                    "options": item.options,
+                    "correct_answer": item.correct_answer,
+                    "explanation": item.explanation or "",
+                    "topic": item.topic_concept or filename,
+                }
+                for item in parsed_assessment
+            ]
+        else:
+            parsed_document = parse_knowledge_file(
+                filename=filename,
+                mime_type=file.content_type,
+                file_path=staging_file,
+            )
+            answer_keys = extract_distant_answer_keys(parsed_document)
+            extracted_candidates.extend(parse_table_questions(parsed_document, answer_keys))
+            for page in parsed_document.pages:
+                for block in page.blocks:
+                    question_status, question = classify_and_parse_question(
+                        block.text, answer_keys
                     )
+                    if question_status in {"question", "uncertain"} and question:
+                        extracted_candidates.append(question)
+    except Exception as exc:
+        logger.exception("Quiz extraction parser failed for %s", filename)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "QUIZ_EXTRACTION_FAILED",
+                "message": "تعذر قراءة ملف الأسئلة. تأكد من أن الملف صالح ومدعوم.",
+            },
+        ) from exc
+    finally:
+        if os.path.exists(staging_file):
+            try:
+                os.remove(staging_file)
+            except OSError:
+                pass
 
-        image_asset_url = None
-        asset_link = db.scalars(
-            select(KnowledgeQuestionImageLink)
-            .where(KnowledgeQuestionImageLink.question_record_id == rec.id)
-        ).first()
-        if asset_link:
-            asset = db.scalars(
-                select(KnowledgeAsset)
-                .where(KnowledgeAsset.id == asset_link.asset_id)
-            ).first()
-            if asset:
-                image_asset_url = asset.file_path or f"/api/v1/knowledge-center/assets/{asset.id}/view"
-
-        topic = filename
-        points = 5
-        if rec.metadata_json and isinstance(rec.metadata_json, dict):
-            topic = rec.metadata_json.get("topic") or filename
-            points = rec.metadata_json.get("points") or 5
-
-        q_type = rec.question_type or "MCQ"
+    seen_questions: set[str] = set()
+    for rec in extracted_candidates:
+        question_text = str(rec.get("question_text") or "").strip()
+        fingerprint = re.sub(r"\s+", "", question_text).lower()
+        if not question_text or fingerprint in seen_questions:
+            continue
+        seen_questions.add(fingerprint)
+        opts = [
+            QuestionOption(
+                key=str(option.get("key", "")),
+                text=str(option.get("text", "")),
+                is_correct=bool(option.get("is_correct", False)),
+            )
+            for option in (rec.get("options") or [])
+            if isinstance(option, dict)
+        ]
+        topic = str(rec.get("topic") or filename)
+        points = int(rec.get("points") or 5)
+        q_type = str(rec.get("question_type") or "MCQ")
         upper_type = q_type.upper()
         if upper_type in ("MCQ", "MULTIPLE_CHOICE"):
             norm_type = "MCQ"
@@ -1144,13 +1157,11 @@ async def extract_quiz_from_file(
                 question_type=norm_type,
                 difficulty="medium",
                 topic=topic,
-                question_text=rec.question_text,
+                question_text=question_text,
                 options=opts if opts else None,
-                correct_answer=rec.correct_answer or "",
-                explanation=rec.explanation or "",
+                correct_answer=str(rec.get("correct_answer") or ""),
+                explanation=str(rec.get("explanation") or ""),
                 points=points,
-                image_asset_url=image_asset_url,
-                image_asset_ids=rec.image_asset_ids_json,
             )
         )
         q_id += 1
@@ -1159,8 +1170,10 @@ async def extract_quiz_from_file(
     is_plain_text_doc = filename.lower().endswith((".txt", ".text", ".csv"))
     if not generated_questions and is_plain_text_doc:
         try:
-            with open(source.storage_path, "r", encoding="utf-8", errors="ignore") as source_file:
-                lines = [line.strip() for line in source_file if line.strip()]
+            # The staging file was removed after structured parsing. Text files
+            # are parsed by that branch, so reaching this fallback means no
+            # safe question structure was found.
+            lines: list[str] = []
             cur_q_text = ""
             cur_opts: list[QuestionOption] = []
             cur_ans = ""
@@ -1225,7 +1238,7 @@ async def extract_quiz_from_file(
         cached=False,
         metadata={
             "extracted_from_file": filename,
-            "source_id": str(source.id),
+            "extraction_scope": "temporary",
             "question_count": len(generated_questions),
             "generated_at": datetime.utcnow().isoformat(),
         },

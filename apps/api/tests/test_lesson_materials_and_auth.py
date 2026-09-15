@@ -359,19 +359,15 @@ def test_extract_quiz_from_file_requires_explicit_course(auth_teacher_client, db
     assert "questions" in data
     assert len(data["questions"]) >= 1
 
-    imported = db.scalar(
-        select(KnowledgeSource).where(
-            KnowledgeSource.course_id == course.id,
-            KnowledgeSource.source_role == SourceRole.QUIZ_IMPORT,
-        )
-    )
-    assert imported is not None
+    # Quiz extraction is request-scoped. It must not create a KnowledgeSource
+    # or general-RAG units merely to assemble a draft.
     assert db.scalar(
-        select(KnowledgeUnitRecord)
-        .where(KnowledgeUnitRecord.source_id == imported.id)
+        select(KnowledgeSource)
+        .where(KnowledgeSource.course_id == course.id)
         .limit(1)
     ) is None
+    assert db.scalar(select(KnowledgeUnitRecord).limit(1)) is None
 
     general = client.get(f"/api/v1/knowledge-center/sources?course_id={course.id}")
     assert general.status_code == 200
-    assert str(imported.id) not in {item["id"] for item in general.json()}
+    assert general.json() == []

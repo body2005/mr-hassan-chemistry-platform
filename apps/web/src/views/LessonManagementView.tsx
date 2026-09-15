@@ -27,7 +27,7 @@ import { Course, CurrentUser, VideoLesson } from "../types/lms";
 import { exportToCsv, exportToDocx, exportToPrintPdf } from "../utils/exportEngine";
 import { courseService } from "../services/lmsService";
 import { uploadManager } from "../services/uploadManager";
-import { fetchApiBlob } from "../services/apiClient";
+import { apiRequest, apiUrl, fetchApiBlob } from "../services/apiClient";
 import { useConfirm } from "../components/ConfirmWizard";
 
 /** Lightweight in-app toast — replaces window.alert for transient notices. */
@@ -55,6 +55,53 @@ interface LessonManagementViewProps {
   courses: Course[];
   onCoursesChanged: (courses: Course[]) => void;
 }
+
+/** A teacher receives the same short-lived, lesson-scoped playback URL as a
+ * student. Native storage paths never reach a video element. */
+const ManagedLessonVideo: React.FC<{ lesson: VideoLesson }> = ({ lesson }) => {
+  const [streamUrl, setStreamUrl] = useState(lesson.videoUrl);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    setError(null);
+    if (!lesson.requiresProtectedPlayback) {
+      setStreamUrl(lesson.videoUrl);
+      return () => { disposed = true; };
+    }
+    setStreamUrl("");
+    void apiRequest<{ stream_url: string }>(`/lessons/${lesson.id}/video-token`, {
+      method: "POST",
+    })
+      .then(({ stream_url }) => {
+        if (!disposed) setStreamUrl(apiUrl(stream_url));
+      })
+      .catch(() => {
+        if (!disposed) setError("تعذر تجهيز بث الفيديو. أعد المحاولة.");
+      });
+    return () => { disposed = true; };
+  }, [lesson.id, lesson.requiresProtectedPlayback, lesson.videoUrl]);
+
+  if (error) {
+    return <div style={{ padding: "24px", color: "#b91c1c", textAlign: "center" }}>{error}</div>;
+  }
+  if (!streamUrl) {
+    return <div style={{ padding: "24px", color: "#475569", textAlign: "center" }}>جاري تجهيز البث المحمي…</div>;
+  }
+  return (
+    <video
+      src={streamUrl}
+      controls
+      controlsList="nodownload noremoteplayback"
+      disablePictureInPicture
+      disableRemotePlayback
+      onContextMenu={(event) => event.preventDefault()}
+      playsInline
+      preload="metadata"
+      style={{ width: "100%", maxHeight: "360px", display: "block", background: "#000", userSelect: "none" }}
+    />
+  );
+};
 
 export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   currentUser,
@@ -1283,6 +1330,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                 {/* Strictly Per-Lesson Video Player Section */}
                 {(() => {
                   const lessonVideoUrl = lesson.videoUrl;
+                  const hasLessonVideo = Boolean(lessonVideoUrl || lesson.requiresProtectedPlayback);
 
                   return (
                     <div
@@ -1294,13 +1342,13 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                         marginBottom: "16px",
                       }}
                     >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: lessonVideoUrl ? "12px" : "0", flexWrap: "wrap", gap: "10px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: hasLessonVideo ? "12px" : "0", flexWrap: "wrap", gap: "10px" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                           <Film size={18} style={{ color: "#059669" }} />
                           <strong style={{ fontSize: "13px", color: "var(--text-main)" }}>
                             فيديو الشرح: {lesson.title}
                           </strong>
-                          {lessonVideoUrl ? (
+                          {hasLessonVideo ? (
                             <span style={{ fontSize: "11px", color: "#059669", fontWeight: 700, background: "#ecfdf5", padding: "2px 8px", borderRadius: "6px" }}>
                               جاهز للتشغيل
                             </span>
@@ -1329,14 +1377,17 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                           }}
                         >
                           <Upload size={13} />
-                          <span>{lessonVideoUrl ? "تغيير فيديو هذا الدرس" : "رفع فيديو لهذا الدرس"}</span>
+                          <span>{hasLessonVideo ? "تغيير فيديو هذا الدرس" : "رفع فيديو لهذا الدرس"}</span>
                         </button>
                       </div>
 
                       {/* Video Player — Appears ONLY when this specific lesson has a video */}
-                      {lessonVideoUrl && (
+                      {hasLessonVideo && (
                         <div style={{ borderRadius: "10px", overflow: "hidden", border: "1.5px solid #0f392b", background: "#000" }}>
                           {(() => {
+                            if (lesson.requiresProtectedPlayback) {
+                              return <ManagedLessonVideo lesson={lesson} />;
+                            }
                             const ytMatch = lessonVideoUrl.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
                             if (ytMatch && ytMatch[1]) {
                               return (

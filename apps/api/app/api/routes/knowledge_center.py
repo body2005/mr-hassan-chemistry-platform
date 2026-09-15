@@ -1291,6 +1291,44 @@ def _pre_cache_adjacent_pages(storage_path: str, cache_dir: str, start_page: int
         pass
 
 
+def _stream_private_object(storage: Any, storage_key: str, media_type: str) -> Response:
+    """Serve a cached object without disclosing a storage-provider URL."""
+    from fastapi.responses import StreamingResponse
+
+    return StreamingResponse(
+        storage.open_stream(storage_key),
+        media_type=media_type,
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+def _stage_source_for_preview(storage: Any, source: KnowledgeSource) -> tuple[str, str | None]:
+    """Return a local PDF path, staging an S3/MinIO object only while rendering."""
+    local_path = storage.get_local_path(source.storage_path)
+    if local_path and os.path.exists(local_path):
+        return local_path, None
+    if not storage.exists(source.storage_path):
+        raise HTTPException(status_code=404, detail="Source object not found in storage")
+
+    suffix = os.path.splitext(source.filename)[1] or ".bin"
+    fd, temporary_path = tempfile.mkstemp(prefix="preview_", suffix=suffix)
+    try:
+        with os.fdopen(fd, "wb") as staged:
+            for chunk in storage.open_stream(source.storage_path):
+                staged.write(chunk)
+    except Exception:
+        try:
+            os.remove(temporary_path)
+        except OSError:
+            pass
+        raise
+    return temporary_path, temporary_path
+
+
 @router.get("/sources/{source_id}/page/{page_number}")
 def stream_source_page_image(
     source_id: str,
@@ -1301,18 +1339,20 @@ def stream_source_page_image(
     scale: float = 1.3,
 ) -> FileResponse:
     from fastapi.responses import FileResponse
+    from app.core.storage import get_storage_provider
 
     s_uuid = _parse_uuid(source_id)
     source = _get_source_for_user(db, s_uuid, user)
-    if not os.path.exists(source.storage_path):
-        raise HTTPException(status_code=404, detail="Source file not found")
+    storage = get_storage_provider()
+    if not storage.exists(source.storage_path):
+        raise HTTPException(status_code=404, detail="Source object not found in storage")
 
     ext = os.path.splitext(source.filename)[1].lower()
 
     # Direct image sources
     if ext in [".png", ".jpg", ".jpeg", ".webp"]:
         media_type = f"image/{'jpeg' if ext in ['.jpg', '.jpeg'] else ('webp' if ext == '.webp' else 'png')}"
-        return FileResponse(source.storage_path, media_type=media_type, headers={"Cache-Control": "private, max-age=3600"})
+        return _stream_private_object(storage, source.storage_path, media_type)
 
     if ext != ".pdf":
         raise HTTPException(status_code=400, detail="Page streaming is supported for PDF and image sources")
@@ -1320,24 +1360,17 @@ def stream_source_page_image(
     if page_number < 1:
         raise HTTPException(status_code=400, detail="Page number must be >= 1")
 
-    cache_dir = os.path.join("storage", "knowledge_center", "page_cache", str(s_uuid))
-    os.makedirs(cache_dir, exist_ok=True)
     scale_key = int(round(scale * 100))
-    cached_page_file = os.path.join(cache_dir, f"page_{page_number}_{scale_key}.jpg")
+    cached_page_key = f"knowledge_center/preview_pages/{s_uuid}/page_{page_number}_{scale_key}.jpg"
+    if storage.exists(cached_page_key):
+        return _stream_private_object(storage, cached_page_key, "image/jpeg")
 
-    if os.path.exists(cached_page_file) and os.path.getsize(cached_page_file) > 0:
-        if page_number == 1:
-            background_tasks.add_task(_pre_cache_adjacent_pages, source.storage_path, cache_dir, 2, 5, scale)
-        return FileResponse(
-            path=cached_page_file,
-            media_type="image/jpeg",
-            headers={"Cache-Control": "private, max-age=3600"},
-        )
-
+    staged_path: str | None = None
     try:
         import pypdfium2 as pdfium
+        effective_source_path, staged_path = _stage_source_for_preview(storage, source)
         with _PDF_RENDER_LOCK:
-            pdf = pdfium.PdfDocument(source.storage_path)
+            pdf = pdfium.PdfDocument(effective_source_path)
             total = len(pdf)
             if page_number > total:
                 pdf.close()
@@ -1347,20 +1380,22 @@ def stream_source_page_image(
             pil_img = page.render(scale=scale).to_pil()
             pdf.close()
 
-            pil_img.save(cached_page_file, format="JPEG", quality=85, optimize=True)
+            import io
+            rendered = io.BytesIO()
+            pil_img.save(rendered, format="JPEG", quality=85, optimize=True)
+            storage.save_bytes(rendered.getvalue(), cached_page_key, content_type="image/jpeg")
 
-        # Pre-cache next 3 pages in background
-        background_tasks.add_task(_pre_cache_adjacent_pages, source.storage_path, cache_dir, page_number + 1, page_number + 3, scale)
-
-        return FileResponse(
-            path=cached_page_file,
-            media_type="image/jpeg",
-            headers={"Cache-Control": "private, max-age=3600"},
-        )
+        return _stream_private_object(storage, cached_page_key, "image/jpeg")
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to render document page: {str(exc)}")
+    finally:
+        if staged_path:
+            try:
+                os.remove(staged_path)
+            except OSError:
+                pass
 
 
 @router.get("/assets/{asset_id}/view")

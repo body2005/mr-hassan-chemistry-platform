@@ -177,3 +177,24 @@ def test_preview_token_positive_flow_and_headers(setup_preview_test_env, tmp_pat
     assert resp_range.status_code == 206
     assert resp_range.headers["Content-Range"].startswith("bytes 0-10/")
     assert resp_range.content == b"Hello World"
+
+
+def test_preview_page_renders_a_private_pdf_page(setup_preview_test_env):
+    """A valid PDF page renders through the scoped token instead of returning 404."""
+    import os
+    from PIL import Image
+
+    data = setup_preview_test_env
+    teacher = data["teacher"]
+    source = data["source1"]
+    os.makedirs(os.path.dirname(source.storage_path), exist_ok=True)
+    Image.new("RGB", (200, 200), "white").save(source.storage_path, "PDF")
+
+    token = create_preview_token(user=teacher, source_id=source.id, expires_in_seconds=300)
+    client = TestClient(app)
+    response = client.get(
+        f"/api/v1/knowledge-center/sources/{source.id}/preview-page/1?token={token}"
+    )
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("image/jpeg")
+    assert response.content[:2] == b"\xff\xd8"
