@@ -28,6 +28,7 @@ node_modules/
 dist/
 .vercel
 *.tsbuildinfo
+/.playwright-browsers/
 
 # Uploaded media & regenerable caches
 apps/api/uploads/

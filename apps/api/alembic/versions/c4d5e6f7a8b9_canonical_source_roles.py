@@ -23,15 +23,18 @@ def upgrade() -> None:
     if not inspector.has_table("knowledge_sources"):
         return
 
-    # Historical KNOWLEDGE/REFERENCE rows were course-wide unless a lesson was
-    # attached. Preserve every row and relationship while making its scope
-    # explicit for the new authorization and retrieval rules.
+    # A legacy lesson_id only tells us where a source was used; it does not
+    # prove that the file was a lesson attachment.  Classifying every such row
+    # as LESSON_MATERIAL would silently remove historical course knowledge from
+    # the Knowledge Center.  Keep KNOWLEDGE and REFERENCE course-scoped, and
+    # only migrate the semantically explicit TEACHER_NOTE role to a lesson
+    # attachment when it is actually lesson-scoped.
     bind.execute(
         sa.text(
             """
             UPDATE knowledge_sources
                SET source_role = CASE
-                   WHEN lesson_id IS NOT NULL THEN 'LESSON_MATERIAL'
+                   WHEN source_role = 'TEACHER_NOTE' AND lesson_id IS NOT NULL THEN 'LESSON_MATERIAL'
                    ELSE 'COURSE_KNOWLEDGE'
                END
              WHERE source_role IN ('KNOWLEDGE', 'REFERENCE', 'TEACHER_NOTE')

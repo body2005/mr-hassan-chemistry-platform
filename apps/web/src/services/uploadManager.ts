@@ -70,6 +70,7 @@ class UploadManager {
   private isProcessingQueue = false;
   private syncTimer: ReturnType<typeof setTimeout> | null = null;
   private activeAbortController: AbortController | null = null;
+  private consecutivePollFailures = 0;
 
   constructor() {
     this.tasks = this.loadTasksFromStorage();
@@ -124,6 +125,7 @@ class UploadManager {
       this.activeAbortController.abort();
       this.activeAbortController = null;
     }
+    this.consecutivePollFailures = 0;
   }
 
   private scheduleNextPoll() {
@@ -134,7 +136,8 @@ class UploadManager {
     }
 
     const isHidden = typeof document !== "undefined" && document.hidden;
-    const delay = isHidden ? 30000 : 3500;
+    const activeDelay = Math.min(60_000, 3_500 * 2 ** this.consecutivePollFailures);
+    const delay = isHidden ? Math.max(30_000, activeDelay) : activeDelay;
     this.syncTimer = setTimeout(async () => {
       await this.syncWithServer();
       if (this.hasProcessingTasks() && this.hasAuthenticatedSession()) {
@@ -227,6 +230,7 @@ class UploadManager {
 
     try {
       let hasChanges = false;
+      let sourceLookupFailed = false;
 
       // 1. Check specific source IDs for active tasks
       const activeTasks = this.tasks.filter(
@@ -241,7 +245,9 @@ class UploadManager {
               const item = await apiRequest<ServerKnowledgeSource>(`/knowledge-center/sources/${sId}`, { signal });
               if (item && item.id) matched.push(item);
             } catch {
-              // Ignore individual failure
+              // A transient API outage is handled by bounded exponential
+              // backoff below; never mark a durable server-side job failed.
+              sourceLookupFailed = true;
             }
           }
 
@@ -298,8 +304,13 @@ class UploadManager {
         this.notify();
         this.persistTasks();
       }
+      this.consecutivePollFailures = sourceLookupFailed
+        ? Math.min(this.consecutivePollFailures + 1, 5)
+        : 0;
     } catch {
-      // Backend might be momentarily offline or rate-limited; skip silently
+      // Backend might be momentarily offline or rate-limited. Keep the task
+      // and progressively back off, capped at one minute.
+      this.consecutivePollFailures = Math.min(this.consecutivePollFailures + 1, 5);
     }
   }
 

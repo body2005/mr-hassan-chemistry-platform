@@ -93,18 +93,18 @@ class QuizDraftResponse(BaseModel):
 
 class QuizDraftRequest(BaseModel):
     course_id: uuid.UUID
-    lesson_ids: list[uuid.UUID] = []
+    lesson_ids: list[uuid.UUID] = Field(default_factory=list)
     outline_node_id: uuid.UUID | None = None
     include_prerequisite_lessons: bool = False
-    lesson_contents: list[str] = []
+    lesson_contents: list[str] = Field(default_factory=list)
     question_count: int = Field(default=3, ge=1, le=100)
-    allowed_types: list[str] = []
-    type_allocations: list[dict[str, Any]] = []
+    allowed_types: list[str] = Field(default_factory=list)
+    type_allocations: list[dict[str, Any]] = Field(default_factory=list)
     difficulty_distribution: dict[str, int] | None = None
-    topics: list[str] = []
+    topics: list[str] = Field(default_factory=list)
     target_points_per_question: int | None = Field(default=None, ge=1, le=1000)
     quiz_mode: Literal["mix", "extract", "generate"] = "mix"
-    exclude_stems: list[str] = []
+    exclude_stems: list[str] = Field(default_factory=list)
     title: str | None = Field(default=None, min_length=2, max_length=200)
 
 class EssayGradingResponse(BaseModel):
@@ -791,6 +791,22 @@ async def generate_quiz_draft(
         item for item in (_uuid(str(value)) for value in payload_data["lesson_ids"])
         if item is not None
     ]
+    if selected_lesson_uuids:
+        valid_lesson_ids = set(
+            db.scalars(
+                select(Lesson.id)
+                .join(CourseModule, Lesson.module_id == CourseModule.id)
+                .where(
+                    CourseModule.course_id == c_uuid,
+                    Lesson.id.in_(selected_lesson_uuids),
+                )
+            ).all()
+        )
+        if valid_lesson_ids != set(selected_lesson_uuids):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Every lesson_id must belong to the selected course",
+            )
 
     # 1. Fetch pre-existing verbatim exam questions if in 'extract' or 'mix' mode
     if c_uuid and quiz_mode in ("extract", "mix"):

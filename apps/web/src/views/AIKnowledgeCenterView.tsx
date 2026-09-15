@@ -27,7 +27,7 @@ import {
 } from "lucide-react";
 import { courseService } from "../services/lmsService";
 import { Course } from "../types/lms";
-import { apiRequest, apiUrl, ApiClientError, fetchApiBlob, authToken } from "../services/apiClient";
+import { apiRequest, apiUrl, ApiClientError, fetchApiBlob } from "../services/apiClient";
 import { uploadManager } from "../services/uploadManager";
 import { useConfirm } from "../components/ConfirmWizard";
 import { useToast } from "../components/ToastProvider";
@@ -323,8 +323,8 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
   useEffect(() => {
     if (!inspectSource || inspectSource.viewMode !== "FAST_PAGES") return;
     const { id, currentPage, total_pages } = inspectSource;
-    const activeToken = previewToken || authToken();
-    const tokenQuery = activeToken ? `?token=${encodeURIComponent(activeToken)}` : "";
+    if (!previewToken) return;
+    const tokenQuery = `?token=${encodeURIComponent(previewToken)}`;
     if (currentPage < (total_pages || 1)) {
       const nextImg = new Image();
       nextImg.src = apiUrl(`/knowledge-center/sources/${id}/preview-page/${currentPage + 1}${tokenQuery}`);
@@ -1209,25 +1209,29 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                           transition: "width 0.15s ease",
                         }}
                       >
-                        <img
-                          key={`${inspectSource.id}-p${inspectSource.currentPage}`}
-                          src={apiUrl(
-                            `/knowledge-center/sources/${inspectSource.id}/preview-page/${inspectSource.currentPage}${
-                              previewToken || authToken() ? `?token=${encodeURIComponent(previewToken || authToken() || "")}` : ""
-                            }`
-                          )}
-                          alt={`الصفحة ${inspectSource.currentPage}`}
-                          onLoad={() => setInspectSource((prev) => prev ? { ...prev, pageLoading: false } : null)}
-                          onError={() => setInspectSource((prev) => prev ? { ...prev, pageLoading: false } : null)}
-                          style={{
-                            width: "100%",
-                            height: "auto",
-                            display: "block",
-                            borderRadius: "8px",
-                            boxShadow: "0 12px 40px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.1)",
-                            background: "#ffffff",
-                          }}
-                        />
+                        {previewToken ? (
+                          <img
+                            key={`${inspectSource.id}-p${inspectSource.currentPage}`}
+                            src={apiUrl(
+                              `/knowledge-center/sources/${inspectSource.id}/preview-page/${inspectSource.currentPage}?token=${encodeURIComponent(previewToken)}`
+                            )}
+                            alt={`الصفحة ${inspectSource.currentPage}`}
+                            onLoad={() => setInspectSource((prev) => prev ? { ...prev, pageLoading: false } : null)}
+                            onError={() => setInspectSource((prev) => prev ? { ...prev, pageLoading: false } : null)}
+                            style={{
+                              width: "100%",
+                              height: "auto",
+                              display: "block",
+                              borderRadius: "8px",
+                              boxShadow: "0 12px 40px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.1)",
+                              background: "#ffffff",
+                            }}
+                          />
+                        ) : (
+                          <div style={{ minHeight: "260px", display: "grid", placeItems: "center", color: "#cbd5e1" }}>
+                            جاري تجهيز معاينة آمنة للصفحة...
+                          </div>
+                        )}
 
                         {/* Subtle loading badge while next page image is loading */}
                         {inspectSource.pageLoading && (

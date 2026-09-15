@@ -277,8 +277,6 @@ def _resolve_lesson_uuid(
 _UPLOAD_SOURCE_ROLES = {
     SourceRole.COURSE_KNOWLEDGE,
     SourceRole.LESSON_MATERIAL,
-    SourceRole.ASSESSMENT,
-    SourceRole.QUIZ_IMPORT,
 }
 
 
@@ -297,7 +295,7 @@ def _validate_upload_scope(source_role: str, lesson_id: str | None) -> SourceRol
     if normalized_role not in _UPLOAD_SOURCE_ROLES:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="source_role must be COURSE_KNOWLEDGE, LESSON_MATERIAL, ASSESSMENT, or QUIZ_IMPORT",
+            detail="source_role must be COURSE_KNOWLEDGE or LESSON_MATERIAL; quiz and assessment imports use their dedicated endpoints",
         )
     if normalized_role == SourceRole.LESSON_MATERIAL and not lesson_id:
         raise HTTPException(
@@ -701,30 +699,13 @@ async def mark_sources_interrupted(
     db: Db,
     user: TeacherOrAdmin,
 ) -> dict[str, Any]:
-    """Marks sources in PROCESSING or QUEUED state as FAILED when site is closed or client disconnects."""
-    try:
-        body = await request.body()
-        import json
-        payload = json.loads(body.decode("utf-8")) if body else {}
-        source_ids = payload.get("source_ids", [])
-    except Exception:
-        source_ids = []
+    """Deprecated no-op kept for old clients.
 
-    marked = 0
-    for sid in source_ids:
-        suuid = _parse_uuid(sid)
-        if suuid:
-            stmt = select(KnowledgeSource).where(KnowledgeSource.id == suuid)
-            if user.role != UserRole.PLATFORM_ADMIN:
-                stmt = stmt.where(KnowledgeSource.institution_id == user.institution_id)
-            src = db.scalar(stmt)
-            if src and src.status in (SourceStatus.PROCESSING, SourceStatus.QUEUED):
-                src.status = SourceStatus.FAILED
-                src.error_message = "فشل الفهرسة: تم إغلاق الموقع أثناء المعالجة."
-                marked += 1
-    if marked > 0:
-        db.commit()
-    return {"status": "ok", "marked": marked}
+    The upload has already reached durable storage before a source is QUEUED.
+    A page unload is not a worker failure and must never mutate the server-side
+    processing attempt.  Workers own terminal state transitions instead.
+    """
+    return {"status": "ok", "marked": 0}
 
 
 @router.get("/sources/{source_id}")

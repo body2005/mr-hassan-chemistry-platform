@@ -27,6 +27,7 @@ import { Course, CurrentUser, VideoLesson } from "../types/lms";
 import { exportToCsv, exportToDocx, exportToPrintPdf } from "../utils/exportEngine";
 import { courseService } from "../services/lmsService";
 import { uploadManager } from "../services/uploadManager";
+import { fetchApiBlob } from "../services/apiClient";
 import { useConfirm } from "../components/ConfirmWizard";
 
 /** Lightweight in-app toast — replaces window.alert for transient notices. */
@@ -213,7 +214,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   // File Input Refs for Guaranteed Click Triggering
   const videoInputRef = useRef<HTMLInputElement>(null);
   const materialsInputRef = useRef<HTMLInputElement>(null);
-  const lessonAttachRef = useRef<HTMLInputElement>(null);
 
   const activeCourse = courses.find((c) => c.academicYear === selectedYear);
   // Reverse order so the latest uploaded video/lesson is always displayed at the top
@@ -313,11 +313,20 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     setAttachedFiles((prev) => prev.filter((f) => f.id !== id));
   }
 
-  // Attach Material to an Existing Lesson
-  function handleAttachToExistingLesson(e: React.ChangeEvent<HTMLInputElement>) {
-    if (e.target.files?.length) {
-      notify("رفع الملفات سيتم عبر Object Storage بعد تفعيل خدمة الملفات الآمنة.");
-      e.target.value = "";
+  async function downloadLessonMaterial(url: string, filename: string) {
+    try {
+      const blob = await fetchApiBlob(url);
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+      notify(`تم تنزيل المذكرة: ${filename}`);
+    } catch {
+      notify("تعذر تنزيل المذكرة. تحقق من الاتصال والصلاحيات ثم أعد المحاولة.");
     }
   }
 
@@ -521,20 +530,20 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
 
   return (
     <div className="page-container" style={{ maxWidth: "1280px", margin: "0 auto" }}>
-      {/* Hidden File Input for Attaching to Existing Lesson */}
-      <input
-        type="file"
-        ref={lessonAttachRef}
-        onChange={handleAttachToExistingLesson}
-        accept=".pdf,.doc,.docx,.ppt,.pptx"
-        style={{ display: "none" }}
-      />
       {/* Hidden File Input for Per-Lesson Video Upload */}
       <input
         type="file"
         ref={individualVideoInputRef}
         accept="video/*"
         onChange={handleIndividualVideoChange}
+        style={{ display: "none" }}
+      />
+      <input
+        type="file"
+        ref={individualMaterialInputRef}
+        multiple
+        accept=".pdf,.doc,.docx,.ppt,.pptx"
+        onChange={handleIndividualMaterialChange}
         style={{ display: "none" }}
       />
 
@@ -1727,6 +1736,15 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                           <FileText size={13} style={{ color: "#2563eb" }} />
                           <span style={{ fontWeight: 700, color: "var(--text-main)" }}>{mat.title}</span>
                           <span style={{ color: "var(--text-muted)", fontSize: "10px" }}>({mat.fileSize})</span>
+                          <button
+                            type="button"
+                            aria-label={`تنزيل ${mat.title}`}
+                            title="تنزيل المذكرة"
+                            onClick={() => void downloadLessonMaterial(mat.fileUrl, mat.title)}
+                            style={{ background: "transparent", border: "none", color: "#059669", cursor: "pointer", display: "inline-flex", padding: "2px" }}
+                          >
+                            <Download size={13} />
+                          </button>
                         </div>
                       ))}
                     </div>
@@ -2013,14 +2031,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         ref={individualVideoInputRef}
         accept="video/*"
         onChange={handleIndividualVideoChange}
-        style={{ display: "none" }}
-      />
-      <input
-        type="file"
-        ref={individualMaterialInputRef}
-        multiple
-        accept=".pdf,.doc,.docx,.ppt,.pptx"
-        onChange={handleIndividualMaterialChange}
         style={{ display: "none" }}
       />
 
