@@ -44,6 +44,7 @@ if not course:
         teacher_id=teacher.id,
         code="GEO_KC_101",
         title="مقرر الجيولوجيا والتركيبات الصخرية",
+        grade_level="SECONDARY_1",
         status=CourseStatus.PUBLISHED,
     )
     db.add(course)

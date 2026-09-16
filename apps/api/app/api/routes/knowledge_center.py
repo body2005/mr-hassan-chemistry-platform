@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
+from starlette.concurrency import run_in_threadpool
 
 _PDF_RENDER_LOCK = threading.Lock()
 from pydantic import BaseModel, Field
@@ -48,6 +49,7 @@ from app.models.knowledge_center import (
 )
 from app.models.user import User, UserRole
 from app.core.errors import OperationCancelledError
+from app.core.storage import get_storage_provider
 from app.services.knowledge_center_service import (
     clear_source_tracking,
     create_knowledge_source,
@@ -158,7 +160,7 @@ def _enqueue_source_processing(background_tasks: BackgroundTasks, source: Knowle
             _log.info("Dispatched source %s generation %s to Celery", source.id, source.processing_generation)
             return
         except Exception as exc:
-            _log.error("Failed to enqueue source %s to Celery: %s", source_id, exc)
+            _log.error("Failed to enqueue source %s to Celery: %s", source.id, exc)
             if is_prod or not settings.allow_local_ingestion:
                 # Strictly prevent running OCR in web API process in production to avoid Render 502 OOM crash
                 _log.warning("Heavy in-process ingestion disallowed in %s. Source %s remains in QUEUED state for worker.", settings.app_env, source.id)
@@ -321,6 +323,49 @@ def _validate_upload_scope(
     return normalized_role
 
 
+_SOURCE_RENDER_LOCKS: dict[uuid.UUID, threading.Lock] = {}
+_SOURCE_RENDER_LOCKS_GUARD = threading.Lock()
+_REMOTE_PDF_LOCK = threading.Lock()
+
+
+def _get_source_render_lock(source_id: uuid.UUID) -> threading.Lock:
+    with _SOURCE_RENDER_LOCKS_GUARD:
+        if source_id not in _SOURCE_RENDER_LOCKS:
+            _SOURCE_RENDER_LOCKS[source_id] = threading.Lock()
+        return _SOURCE_RENDER_LOCKS[source_id]
+
+
+def _inspect_pdf_page_count_fast(file_path: str) -> int:
+    """Pre-flight verification of PDF integrity and page count with bounded memory."""
+    with open(file_path, "rb") as f:
+        magic = f.read(5)
+        if magic != b"%PDF-":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="الملف تالف أو ليس مستند PDF صالحًا",
+            )
+    try:
+        import pypdfium2 as pdfium
+        pdf = pdfium.PdfDocument(file_path)
+        try:
+            page_count = len(pdf)
+            if page_count <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="مستند PDF لا يحتوي على أي صفحات",
+                )
+            return page_count
+        finally:
+            pdf.close()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"فشل التحقق من صحة ملف PDF: {str(exc)}",
+        ) from exc
+
+
 def _get_kc_temp_dir() -> str:
     storage_dir = os.getenv("STORAGE_DIR", "storage/knowledge_center")
     tmp = os.path.join(storage_dir, "tmp")
@@ -407,6 +452,12 @@ def _get_source_for_user(db: Session, source_id: uuid.UUID | None, user: User) -
 
 
 def _source_response(source: KnowledgeSource, total_pages: int | None = None) -> KnowledgeSourceResponse:
+    eff_pages = total_pages
+    if eff_pages is None:
+        eff_pages = getattr(source, "preview_total_pages", None)
+    if eff_pages is None and source.file_format != "pdf":
+        eff_pages = 1
+
     return KnowledgeSourceResponse(
         id=str(source.id),
         course_id=str(source.course_id) if source.course_id else None,
@@ -428,7 +479,7 @@ def _source_response(source: KnowledgeSource, total_pages: int | None = None) ->
         image_count=source.image_count,
         table_count=source.table_count,
         question_count=source.question_count,
-        total_pages=total_pages,
+        total_pages=eff_pages,
         error_message=source.error_message,
         file_url=f"/api/v1/knowledge-center/sources/{source.id}/view",
         created_at=source.created_at.isoformat(),
@@ -459,7 +510,12 @@ async def upload_knowledge_source(
         if c_uuid:
             c_obj = db.get(Course, c_uuid)
             if c_obj:
-                grade_level_clean = c_obj.grade_level or "SECONDARY_1"
+                if not c_obj.grade_level:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail="المقرر غير مصنف، يرجى تحديد الصف الدراسي للمقرر أولاً",
+                    )
+                grade_level_clean = c_obj.grade_level
     normalized_role = _validate_upload_scope(source_role, lesson_id, grade_level_clean)
 
     course_uuid: uuid.UUID | None = None
@@ -472,10 +528,13 @@ async def upload_knowledge_source(
             )
         course_uuid = _resolve_course_uuid(db, user, course_id)
         lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
-        if not grade_level_clean:
-            course = db.get(Course, course_uuid)
-            if course and course.grade_level:
-                grade_level_clean = course.grade_level
+        course = db.get(Course, course_uuid)
+        if not course or not course.grade_level:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="المقرر غير مصنف، يرجى تحديد الصف الدراسي للمقرر أولاً",
+            )
+        grade_level_clean = course.grade_level
     else:
         if course_id and str(course_id).strip():
             course_uuid = _resolve_course_uuid(db, user, course_id)
@@ -483,6 +542,7 @@ async def upload_knowledge_source(
     tmp_dir = _get_kc_temp_dir()
     safe_name = sanitize_source_filename(file.filename or "uploaded_file")
     staging_file = os.path.join(tmp_dir, f"stage_{uuid.uuid4().hex[:12]}_{safe_name}")
+    created_storage_keys: list[str] = []
 
     try:
         size_bytes, checksum = await _stream_upload_to_file(
@@ -493,7 +553,12 @@ async def upload_knowledge_source(
         if size_bytes == 0:
             raise HTTPException(status_code=400, detail="الملف المرفوع فارغ (0 بايت)")
 
-        source = create_knowledge_source(
+        ext = os.path.splitext(file.filename or safe_name)[1].lower().lstrip(".")
+        preview_pages = None
+        if ext == "pdf":
+            preview_pages = await run_in_threadpool(_inspect_pdf_page_count_fast, staging_file)
+
+        result = create_knowledge_source(
             db=db,
             user=user,
             course_id=course_uuid,
@@ -509,23 +574,41 @@ async def upload_knowledge_source(
                 "assessment_type": assessment_type,
                 "answer_key_source_id": answer_key_source_id,
             },
+            commit=False,
+            created_storage_paths=created_storage_keys,
+            preview_total_pages=preview_pages,
         )
-        source.status = SourceStatus.QUEUED
-        source.upload_percent = 100
-        source.indexing_percent = 0
-        source.progress_percent = 0
-        db.commit()
-        db.refresh(source)
-        _enqueue_source_processing(background_tasks, source)
+        source = result.source
+        if result.created:
+            source.status = SourceStatus.QUEUED
+            source.upload_percent = 100
+            source.indexing_percent = 0
+            source.progress_percent = 0
+            if preview_pages is not None:
+                source.preview_total_pages = preview_pages
+            db.commit()
+            db.refresh(source)
+            _enqueue_source_processing(background_tasks, source)
+        else:
+            db.commit()
+            db.refresh(source)
+
         return _source_response(source)
     except Exception:
+        db.rollback()
+        storage = get_storage_provider()
+        for k in created_storage_keys:
+            try:
+                storage.delete(k)
+            except Exception:
+                pass
+        raise
+    finally:
         if os.path.exists(staging_file):
             try:
                 os.remove(staging_file)
             except OSError:
                 pass
-        db.rollback()
-        raise
 
 
 @router.post("/sources/upload-batch", response_model=list[KnowledgeSourceResponse])
@@ -559,7 +642,12 @@ async def upload_knowledge_sources_batch(
         if c_uuid:
             c_obj = db.get(Course, c_uuid)
             if c_obj:
-                grade_level_clean = c_obj.grade_level or "SECONDARY_1"
+                if not c_obj.grade_level:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail="المقرر غير مصنف، يرجى تحديد الصف الدراسي للمقرر أولاً",
+                    )
+                grade_level_clean = c_obj.grade_level
     normalized_role = _validate_upload_scope(source_role, lesson_id, grade_level_clean)
 
     course_uuid: uuid.UUID | None = None
@@ -572,10 +660,13 @@ async def upload_knowledge_sources_batch(
             )
         course_uuid = _resolve_course_uuid(db, user, course_id)
         lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
-        if not grade_level_clean:
-            course = db.get(Course, course_uuid)
-            if course and course.grade_level:
-                grade_level_clean = course.grade_level
+        course = db.get(Course, course_uuid)
+        if not course or not course.grade_level:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="المقرر غير مصنف، يرجى تحديد الصف الدراسي للمقرر أولاً",
+            )
+        grade_level_clean = course.grade_level
     else:
         if course_id and str(course_id).strip():
             course_uuid = _resolve_course_uuid(db, user, course_id)
@@ -614,13 +705,21 @@ async def upload_knowledge_sources_batch(
         if not staged_items:
             raise HTTPException(status_code=400, detail="كافة الملفات المرفوعة فارغة (0 بايت)")
 
+        # Pre-flight inspect all PDF files BEFORE creating DB rows or permanent storage
+        preview_pages_map: dict[str, int] = {}
+        for item in staged_items:
+            ext = os.path.splitext(item["filename"])[1].lower().lstrip(".")
+            if ext == "pdf":
+                page_count = await run_in_threadpool(_inspect_pdf_page_count_fast, item["staged_path"])
+                preview_pages_map[item["staged_path"]] = page_count
+
         # Phase 2: Move files and create database records atomically
-        created_sources: list[KnowledgeSource] = []
+        created_results: list[Any] = []
         newly_created_permanent_paths: list[str] = []
 
         try:
             for item in staged_items:
-                source = create_knowledge_source(
+                res = create_knowledge_source(
                     db=db,
                     user=user,
                     course_id=course_uuid,
@@ -639,31 +738,36 @@ async def upload_knowledge_sources_batch(
                     },
                     commit=False,
                     created_storage_paths=newly_created_permanent_paths,
+                    preview_total_pages=preview_pages_map.get(item["staged_path"]),
                 )
 
-                source.status = SourceStatus.QUEUED
-                source.upload_percent = 100
-                source.indexing_percent = 0
-                source.progress_percent = 0
-                created_sources.append(source)
+                if res.created:
+                    res.source.status = SourceStatus.QUEUED
+                    res.source.upload_percent = 100
+                    res.source.indexing_percent = 0
+                    res.source.progress_percent = 0
+                    if preview_pages_map.get(item["staged_path"]) is not None:
+                        res.source.preview_total_pages = preview_pages_map[item["staged_path"]]
+
+                created_results.append(res)
 
             db.commit()
         except Exception:
-            # Delete only newly created permanent files, never delete pre-existing deduplicated files
-            for p in newly_created_permanent_paths:
-                if os.path.exists(p):
-                    try:
-                        os.remove(p)
-                    except OSError:
-                        pass
             db.rollback()
+            storage = get_storage_provider()
+            for p in newly_created_permanent_paths:
+                try:
+                    storage.delete(p)
+                except Exception:
+                    pass
             raise
 
-        for source in created_sources:
-            db.refresh(source)
-            _enqueue_source_processing(background_tasks, source)
+        for res in created_results:
+            db.refresh(res.source)
+            if res.created:
+                _enqueue_source_processing(background_tasks, res.source)
 
-        return [_source_response(source) for source in created_sources]
+        return [_source_response(res.source) for res in created_results]
     finally:
         if os.path.exists(batch_stage_dir):
             shutil.rmtree(batch_stage_dir, ignore_errors=True)
@@ -970,14 +1074,26 @@ def knowledge_query_summary(course_id: str, db: Db, user: TeacherOrAdmin) -> dic
 @router.post("/sources/{source_id}/reindex", response_model=KnowledgeSourceResponse)
 def reindex_source(source_id: str, db: Db, background_tasks: BackgroundTasks, user: TeacherOrAdmin) -> KnowledgeSourceResponse:
     s_uuid = _parse_uuid(source_id)
-    source = _get_source_for_user(db, s_uuid, user)
+    if not s_uuid:
+        raise HTTPException(status_code=400, detail="Invalid source ID")
 
+    # Acquire row-level lock within the transaction to prevent concurrent race conditions
+    stmt = select(KnowledgeSource).where(KnowledgeSource.id == s_uuid).with_for_update()
+    if user.role != UserRole.PLATFORM_ADMIN:
+        stmt = stmt.where(KnowledgeSource.institution_id == user.institution_id)
+    source = db.scalar(stmt)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    if user.role == UserRole.TEACHER and source.teacher_id != user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to reindex this source")
+
+    # Re-check status under lock
     if source.status in {SourceStatus.QUEUED, SourceStatus.PROCESSING}:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="An indexing attempt is already active for this source",
-        )
+        # Active: return 200 with current active attempt without re-enqueuing
+        return _source_response(source)
 
+    # Terminal state: bump version & generation once, record previous attempt, commit and enqueue once
     source.version += 1
     previous_attempt_id = source.processing_attempt_id
     source.processing_generation += 1
@@ -994,10 +1110,7 @@ def reindex_source(source_id: str, db: Db, background_tasks: BackgroundTasks, us
     db.commit()
     db.refresh(source)
 
-    # The worker performs the idempotent replacement only after it has claimed
-    # this generation, so a queued retry never erases the last usable index.
     _enqueue_source_processing(background_tasks, source)
-
     return _source_response(source)
 
 
@@ -1326,26 +1439,40 @@ def _stream_private_object(storage: Any, storage_key: str, media_type: str) -> R
 
 
 def _stage_source_for_preview(storage: Any, source: KnowledgeSource) -> tuple[str, str | None]:
-    """Return a local PDF path, staging an S3/MinIO object only while rendering."""
+    """Return a local PDF path, caching remote downloads on disk with bounded TTL."""
     local_path = storage.get_local_path(source.storage_path)
     if local_path and os.path.exists(local_path):
         return local_path, None
     if not storage.exists(source.storage_path):
         raise HTTPException(status_code=404, detail="Source object not found in storage")
 
-    suffix = os.path.splitext(source.filename)[1] or ".bin"
-    fd, temporary_path = tempfile.mkstemp(prefix="preview_", suffix=suffix)
-    try:
-        with os.fdopen(fd, "wb") as staged:
-            for chunk in storage.open_stream(source.storage_path):
-                staged.write(chunk)
-    except Exception:
+    cache_dir = os.path.join(_get_kc_temp_dir(), "remote_pdf_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    cached_file = os.path.join(cache_dir, f"{source.id}_{source.checksum[:16]}.pdf")
+
+    with _REMOTE_PDF_LOCK:
+        now = time.time()
+        if os.path.exists(cached_file) and (now - os.path.getmtime(cached_file)) < 900:  # 15 min TTL
+            return cached_file, None
+
+        temp_download = f"{cached_file}.tmp_{uuid.uuid4().hex[:6]}"
         try:
-            os.remove(temporary_path)
-        except OSError:
-            pass
-        raise
-    return temporary_path, temporary_path
+            with open(temp_download, "wb") as f_out:
+                for chunk in storage.open_stream(source.storage_path):
+                    f_out.write(chunk)
+            if os.path.exists(cached_file):
+                try:
+                    os.remove(cached_file)
+                except OSError:
+                    pass
+            os.rename(temp_download, cached_file)
+        finally:
+            if os.path.exists(temp_download):
+                try:
+                    os.remove(temp_download)
+                except OSError:
+                    pass
+    return cached_file, None
 
 
 @router.get("/sources/{source_id}/page/{page_number}")
@@ -1359,6 +1486,12 @@ def stream_source_page_image(
 ) -> FileResponse:
     from fastapi.responses import FileResponse
     from app.core.storage import get_storage_provider
+
+    if scale < 0.5 or scale > 2.0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="scale must be between 0.5 and 2.0",
+        )
 
     s_uuid = _parse_uuid(source_id)
     source = _get_source_for_user(db, s_uuid, user)
@@ -1379,8 +1512,14 @@ def stream_source_page_image(
     if page_number < 1:
         raise HTTPException(status_code=400, detail="Page number must be >= 1")
 
+    # Fast inspection: check known total pages before downloading remote PDF
+    doc = db.scalar(select(KnowledgeDocument).where(KnowledgeDocument.source_id == source.id))
+    known_total = doc.total_pages if doc else source.preview_total_pages
+    if known_total is not None and page_number > known_total:
+        raise HTTPException(status_code=404, detail=f"Page {page_number} exceeds document total ({known_total})")
+
     scale_key = int(round(scale * 100))
-    cached_page_key = f"knowledge_center/preview_pages/{s_uuid}/page_{page_number}_{scale_key}.jpg"
+    cached_page_key = f"knowledge_center/preview_pages/{s_uuid}/{source.checksum[:16]}_v{source.version}/page_{page_number}_{scale_key}.jpg"
     if storage.exists(cached_page_key):
         return _stream_private_object(storage, cached_page_key, "image/jpeg")
 
@@ -1388,7 +1527,11 @@ def stream_source_page_image(
     try:
         import pypdfium2 as pdfium
         effective_source_path, staged_path = _stage_source_for_preview(storage, source)
-        with _PDF_RENDER_LOCK:
+        source_lock = _get_source_render_lock(s_uuid)
+        with source_lock:
+            if storage.exists(cached_page_key):
+                return _stream_private_object(storage, cached_page_key, "image/jpeg")
+
             pdf = pdfium.PdfDocument(effective_source_path)
             total = len(pdf)
             if page_number > total:
@@ -1398,6 +1541,10 @@ def stream_source_page_image(
             page = pdf[page_number - 1]
             pil_img = page.render(scale=scale).to_pil()
             pdf.close()
+
+            # Bound max pixel dimensions to prevent memory exhaustion
+            if pil_img.width > 3000 or pil_img.height > 3000:
+                pil_img.thumbnail((3000, 3000))
 
             import io
             rendered = io.BytesIO()
@@ -1410,7 +1557,7 @@ def stream_source_page_image(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to render document page: {str(exc)}")
     finally:
-        if staged_path:
+        if staged_path and os.path.exists(staged_path):
             try:
                 os.remove(staged_path)
             except OSError:

@@ -34,6 +34,7 @@ def auth_teacher_client(db):
         teacher_id=teacher.id,
         code="CHEM-TEST",
         title="Chemistry Testing Course",
+        grade_level="SECONDARY_1",
         status=CourseStatus.PUBLISHED,
     )
     db.add(course)
@@ -70,7 +71,13 @@ def test_lesson_material_upload_validation(auth_teacher_client, db):
     db.commit()
     db.refresh(lesson)
 
-    file_content = b"%PDF-1.4 chemistry dummy note"
+    import pypdfium2 as pdfium
+    _pdf = pdfium.PdfDocument.new()
+    _pdf.new_page(width=100, height=100)
+    _buf = io.BytesIO()
+    _pdf.save(_buf)
+    _pdf.close()
+    file_content = _buf.getvalue()
 
     # 1. Uploading LESSON_MATERIAL without lesson_id must fail with 422
     res_fail = client.post(

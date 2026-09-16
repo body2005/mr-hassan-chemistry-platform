@@ -58,6 +58,17 @@ from app.services.embedding_provider import get_embedding_provider
 from app.services.exam_processing import materialize_assessment_questions
 from app.services.book_outline import materialize_book_outline, materialize_lesson_relations, outline_node_for_page
 import threading
+from dataclasses import dataclass
+
+
+@dataclass
+class CreateSourceResult:
+    source: KnowledgeSource
+    created: bool
+    created_storage_key: str | None = None
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self.source, item)
 from app.core.errors import OperationCancelledError
 from app.services.vision_language import analyze_educational_image
 from app.services.knowledge_graph import build_source_knowledge_graph
@@ -95,21 +106,31 @@ def _assert_current_attempt(
 
 
 def _advance_indexing_progress(
-    db: Session,
+    db: Session | None,
     source: KnowledgeSource,
     generation: int,
     attempt_id: uuid.UUID,
     percent: int,
     status_value: SourceStatus | None = None,
 ) -> None:
-    _assert_current_attempt(db, source.id, generation, attempt_id)
-    next_percent = max(source.indexing_percent or 0, min(100, percent))
-    source.indexing_percent = next_percent
-    # Keep the legacy field monotonic for older clients during migration.
-    source.progress_percent = max(source.progress_percent or 0, next_percent)
+    from app.core.database import SessionLocal
+
+    with SessionLocal() as prog_db:
+        src = prog_db.get(KnowledgeSource, source.id)
+        if not src:
+            return
+        _assert_current_attempt(prog_db, src.id, generation, attempt_id)
+        next_percent = max(src.indexing_percent or 0, min(100, percent))
+        src.indexing_percent = next_percent
+        src.progress_percent = max(src.progress_percent or 0, next_percent)
+        if status_value is not None:
+            src.status = status_value
+        prog_db.commit()
+
+    source.indexing_percent = max(source.indexing_percent or 0, min(100, percent))
+    source.progress_percent = max(source.progress_percent or 0, source.indexing_percent)
     if status_value is not None:
         source.status = status_value
-    db.commit()
 
 
 def _get_kc_temp_dir() -> str:
@@ -972,7 +993,8 @@ def create_knowledge_source(
     size_bytes: int | None = None,
     commit: bool = True,
     created_storage_paths: list[str] | None = None,
-) -> KnowledgeSource:
+    preview_total_pages: int | None = None,
+) -> CreateSourceResult:
     """Uploads and creates a new KnowledgeSource record in QUEUED state."""
     filename = sanitize_source_filename(filename)
 
@@ -1028,7 +1050,9 @@ def create_knowledge_source(
         if not course:
             raise ValueError("Course not found in the current institution")
         if not grade_level:
-            grade_level = course.grade_level or "SECONDARY_1"
+            if not course.grade_level:
+                raise ValueError("المقرر غير مصنف، يرجى تحديد الصف الدراسي للمقرر أولاً")
+            grade_level = course.grade_level
     elif source_role == SourceRole.COURSE_KNOWLEDGE.value:
         if course_id:
             course = db.scalar(
@@ -1040,7 +1064,9 @@ def create_knowledge_source(
             if not course:
                 raise ValueError("Course not found in the current institution")
             if not grade_level:
-                grade_level = course.grade_level or "SECONDARY_1"
+                if not course.grade_level:
+                    raise ValueError("المقرر غير مصنف، يرجى تحديد الصف الدراسي للمقرر أولاً")
+                grade_level = course.grade_level
         if not grade_level:
             raise ValueError("grade_level is required for COURSE_KNOWLEDGE")
         valid_grades = {"SECONDARY_1", "SECONDARY_2", "SECONDARY_3"}
@@ -1072,7 +1098,7 @@ def create_knowledge_source(
                 os.remove(staged_file_path)
             except OSError:
                 pass
-        return existing
+        return CreateSourceResult(source=existing, created=False, created_storage_key=None)
 
     # A source with the same logical document key is a new edition. Retrieval
     # uses only the current edition; prior files stay available for audit.
@@ -1132,8 +1158,9 @@ def create_knowledge_source(
         final_storage_path = canonical_path
     else:
         final_storage_path = file_path
-        if created_storage_paths is not None:
-            created_storage_paths.append(file_path)
+
+    if created_storage_paths is not None:
+        created_storage_paths.append(final_storage_path)
 
     source = KnowledgeSource(
         institution_id=user.institution_id,
@@ -1151,6 +1178,7 @@ def create_knowledge_source(
         is_current=True,
         checksum=checksum,
         status=SourceStatus.QUEUED,
+        preview_total_pages=preview_total_pages,
         metadata_json=source_metadata,
     )
     db.add(source)
@@ -1159,7 +1187,26 @@ def create_knowledge_source(
         db.refresh(source)
     else:
         db.flush()
-    return source
+    return CreateSourceResult(source=source, created=True, created_storage_key=final_storage_path)
+
+
+
+def _purge_source_child_records(db: Session, source_id: uuid.UUID) -> None:
+    """Purge prior child records within the active session without committing."""
+    db.execute(delete(KnowledgeUnitRecord).where(KnowledgeUnitRecord.source_id == source_id))
+    db.execute(delete(KnowledgeQuestionImageLink).where(
+        KnowledgeQuestionImageLink.question_record_id.in_(
+            select(KnowledgeQuestionRecord.id).where(KnowledgeQuestionRecord.source_id == source_id)
+        )
+    ))
+    db.execute(delete(KnowledgeQuestionRecord).where(KnowledgeQuestionRecord.source_id == source_id))
+    db.execute(delete(KnowledgeAsset).where(KnowledgeAsset.source_id == source_id))
+    db.execute(delete(KnowledgeConceptLink).where(KnowledgeConceptLink.source_id == source_id))
+    db.execute(delete(KnowledgeConceptRelation).where(KnowledgeConceptRelation.source_id == source_id))
+    db.execute(delete(KnowledgeLessonRelation).where(KnowledgeLessonRelation.source_id == source_id))
+    db.execute(delete(KnowledgeOutlineNode).where(KnowledgeOutlineNode.source_id == source_id))
+    db.execute(delete(KnowledgeDocument).where(KnowledgeDocument.source_id == source_id))
+    db.execute(delete(AssessmentSource).where(AssessmentSource.source_id == source_id))
 
 
 def process_knowledge_source(
@@ -1200,33 +1247,21 @@ def process_knowledge_source(
                 f_out.write(chunk)
         effective_file_path = temp_staging_path
 
+    newly_created_asset_paths: list[str] = []
     try:
-        # Ensure idempotency: purge any prior child records for this source before processing
-        _assert_current_attempt(db, source_id, generation, attempt_id)
-        db.execute(delete(KnowledgeUnitRecord).where(KnowledgeUnitRecord.source_id == source_id))
-        db.execute(delete(KnowledgeQuestionImageLink).where(
-            KnowledgeQuestionImageLink.question_record_id.in_(
-                select(KnowledgeQuestionRecord.id).where(KnowledgeQuestionRecord.source_id == source_id)
-            )
-        ))
-        db.execute(delete(KnowledgeQuestionRecord).where(KnowledgeQuestionRecord.source_id == source_id))
-        db.execute(delete(KnowledgeAsset).where(KnowledgeAsset.source_id == source_id))
-        db.execute(delete(KnowledgeConceptLink).where(KnowledgeConceptLink.source_id == source_id))
-        db.execute(delete(KnowledgeConceptRelation).where(KnowledgeConceptRelation.source_id == source_id))
-        db.execute(delete(KnowledgeLessonRelation).where(KnowledgeLessonRelation.source_id == source_id))
-        db.execute(delete(KnowledgeOutlineNode).where(KnowledgeOutlineNode.source_id == source_id))
-        db.execute(delete(KnowledgeDocument).where(KnowledgeDocument.source_id == source_id))
-        db.execute(delete(AssessmentSource).where(AssessmentSource.source_id == source_id))
-        db.commit()
-
         if is_source_cancelled(source_id):
             raise OperationCancelledError(f"Indexing cancelled for source {source_id}")
+
         # Structured assessment banks are parsed directly; document assessments use
         # the normal structure-preserving document parser below, then materialize.
         if source.file_format in ("json", "quiz"):
             with open(effective_file_path, "rb") as f:
                 file_bytes = f.read()
             parsed_questions = parse_assessment_bank(file_bytes, source.filename)
+
+            _assert_current_attempt(db, source_id, generation, attempt_id)
+            _purge_source_child_records(db, source_id)
+            db.flush()
             
             assess_source = AssessmentSource(
                 source_id=source.id,
@@ -1238,7 +1273,7 @@ def process_knowledge_source(
                 review_status="needs_review",
             )
             db.add(assess_source)
-            db.commit()
+            db.flush()
             db.refresh(assess_source)
 
             q_count = 0
@@ -1271,6 +1306,12 @@ def process_knowledge_source(
                 q_count += 1
 
             source.question_count = q_count
+            source.status = SourceStatus.INDEXED
+            source.indexing_percent = 100
+            source.progress_percent = 100
+            source.error_message = None
+            db.commit()
+            db.refresh(source)
             _advance_indexing_progress(
                 db, source, generation, attempt_id, 100, SourceStatus.INDEXED
             )
@@ -1303,6 +1344,11 @@ def process_knowledge_source(
         if is_source_cancelled(source_id):
             raise OperationCancelledError(f"Indexing cancelled for source {source_id} after document parsing")
 
+        # Parsing succeeded without error: atomically replace child records under single transaction
+        _assert_current_attempt(db, source_id, generation, attempt_id)
+        _purge_source_child_records(db, source_id)
+        db.flush()
+
         doc_rec = KnowledgeDocument(
             source_id=source.id,
             title=parsed_doc.title,
@@ -1313,7 +1359,7 @@ def process_knowledge_source(
             hierarchy_json=parsed_doc.hierarchy,
         )
         db.add(doc_rec)
-        db.commit()
+        db.flush()
         db.refresh(doc_rec)
 
         if is_source_cancelled(source_id):
@@ -1340,7 +1386,7 @@ def process_knowledge_source(
                 context.setdefault(current.node_kind, current.title)
                 current = outline_by_id.get(current.parent_id) if current.parent_id else None
             return node, context
-        db.commit()
+        db.flush()
 
         # 1. Process Assets with single BATCH COMMIT
         asset_count = 0
@@ -1360,6 +1406,7 @@ def process_knowledge_source(
                 try:
                     with open(asset_path, "wb") as img_f:
                         img_f.write(p_img.image_bytes)
+                    newly_created_asset_paths.append(asset_path)
                 except Exception:
                     asset_path = source.storage_path
                 vision_analysis = analyze_educational_image(
@@ -1406,7 +1453,7 @@ def process_knowledge_source(
             asset_count += 1
 
         if asset_count > 0:
-            db.commit()
+            db.flush()
 
         assets_by_page: dict[int, list[KnowledgeAsset]] = {}
         for asset in db.scalars(select(KnowledgeAsset).where(KnowledgeAsset.source_id == source.id)).all():
@@ -1433,7 +1480,7 @@ def process_knowledge_source(
                     )
                 except Exception as exc:
                     logger.debug(f"Failed indexing asset {ca.id} as knowledge unit: {exc}")
-            db.commit()
+            db.flush()
 
         # 2. Extract distant answer keys across document
         distant_keys = extract_distant_answer_keys(parsed_doc)
@@ -1885,10 +1932,15 @@ def process_knowledge_source(
         source.image_count = asset_count
         source.table_count = table_count
         source.question_count = question_count
+        source.status = SourceStatus.INDEXED
+        source.indexing_percent = 100
+        source.progress_percent = 100
+        source.error_message = None
+        db.commit()
+        db.refresh(source)
         _advance_indexing_progress(
             db, source, generation, attempt_id, 100, SourceStatus.INDEXED
         )
-        db.refresh(source)
 
         return source
 
@@ -1913,19 +1965,13 @@ def process_knowledge_source(
                 db.rollback()
         raise exc
     except Exception as exc:
-        try:
-            src = db.get(KnowledgeSource, source_id)
-            if (
-                src
-                and src.processing_generation == generation
-                and src.processing_attempt_id == attempt_id
-                and src.status != SourceStatus.INDEXED
-            ):
-                src.status = SourceStatus.FAILED
-                src.error_message = str(exc)
-                db.commit()
-        except Exception:
-            db.rollback()
+        db.rollback()
+        for ap in newly_created_asset_paths:
+            if os.path.exists(ap):
+                try:
+                    os.remove(ap)
+                except OSError:
+                    pass
         raise exc
     finally:
         if temp_staging_path and os.path.exists(temp_staging_path):
@@ -1988,11 +2034,23 @@ def delete_knowledge_source(db: Session, source_id: uuid.UUID) -> bool:
     db.delete(source)
     db.commit()
 
-    if storage_path and os.path.exists(storage_path):
-        try:
-            os.remove(storage_path)
-        except Exception as exc:
-            logger.warning(f"Could not remove source file {storage_path}: {exc}")
+    from app.core.storage import get_storage_provider
+    try:
+        get_storage_provider().delete(storage_path)
+    except Exception as exc:
+        logger.warning(f"Could not remove source file {storage_path}: {exc}")
+
+    try:
+        cache_dir = os.path.join(_get_kc_temp_dir(), "remote_pdf_cache")
+        if os.path.exists(cache_dir):
+            for f_name in os.listdir(cache_dir):
+                if str(source_id) in f_name:
+                    try:
+                        os.remove(os.path.join(cache_dir, f_name))
+                    except OSError:
+                        pass
+    except Exception:
+        pass
 
     clear_source_tracking(source_id)
     return True

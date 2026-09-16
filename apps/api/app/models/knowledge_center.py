@@ -113,6 +113,7 @@ class KnowledgeSource(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     image_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     table_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     question_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    preview_total_pages: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     metadata_json: Mapped[dict | None] = mapped_column(JSON)
 

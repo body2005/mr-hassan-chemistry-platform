@@ -75,6 +75,7 @@ def test_setup(db):
         teacher_id=teacher.id,
         code="GEO301",
         title="مقرر الجيولوجيا والعلوم البيئية",
+        grade_level="SECONDARY_1",
         status=CourseStatus.PUBLISHED,
     )
     db.add(course)
@@ -259,6 +260,7 @@ def test_cross_course_security_isolation(db, test_setup):
         teacher_id=teacher.id,
         code="CS101",
         title="مقرر برمجة بايثون الحصرية",
+        grade_level="SECONDARY_1",
         status=CourseStatus.PUBLISHED,
     )
     db.add(course_b)

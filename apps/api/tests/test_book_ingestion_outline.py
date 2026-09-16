@@ -49,6 +49,7 @@ def test_book_outline_links_content_to_most_specific_heading(db) -> None:
         teacher_id=teacher.id,
         code="BIO-OUTLINE",
         title="Biology Outline",
+        grade_level="SECONDARY_1",
         status=CourseStatus.PUBLISHED,
     )
     db.add(course)

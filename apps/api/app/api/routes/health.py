@@ -41,10 +41,14 @@ def readiness_check(db: Annotated[Session, Depends(get_db)]) -> ReadinessRespons
     from app.core.storage import get_storage_provider
     storage = get_storage_provider()
     storage_check = storage.check_readiness()
+    ingestion_dispatcher = "ok"
+    if settings.ingestion_backend != "celery" and not settings.allow_local_ingestion:
+        ingestion_dispatcher = "unavailable"
     dependencies = {
         "database": "ok",
         "redis": "unavailable",
         "storage": str(storage_check["status"]),
+        "ingestion_dispatcher": ingestion_dispatcher,
     }
     try:
         db.execute(text("SELECT 1"))

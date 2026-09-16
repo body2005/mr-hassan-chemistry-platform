@@ -180,6 +180,7 @@ try:
             teacher_id=teacher.id,
             title="مقرر الجيولوجيا والعلوم البيئية - امتحان شامل",
             code="GEO101",
+            grade_level="SECONDARY_1",
         )
         db.add(course)
         db.commit()

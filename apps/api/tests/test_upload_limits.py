@@ -93,6 +93,7 @@ def auth_teacher_client(db):
         teacher_id=teacher.id,
         code="CHEM-500",
         title="Chemistry Advanced Lab",
+        grade_level="SECONDARY_1",
         status=CourseStatus.PUBLISHED,
     )
     db.add(course)
@@ -126,8 +127,9 @@ def auth_teacher_client(db):
 
 @pytest.fixture(autouse=True)
 def mock_background_indexing():
-    """Mocks out OCR and heavy indexing during upload limits tests so test suite runs in seconds."""
-    with patch("app.api.routes.knowledge_center._enqueue_source_processing") as enqueue:
+    """Mocks out OCR, fast PDF inspection and heavy indexing during upload limits tests so test suite runs in seconds."""
+    with patch("app.api.routes.knowledge_center._enqueue_source_processing") as enqueue, \
+         patch("app.api.routes.knowledge_center._inspect_pdf_page_count_fast", return_value=1):
         yield enqueue
 
 
