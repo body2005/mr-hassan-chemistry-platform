@@ -16,6 +16,7 @@ from app.models.knowledge_center import (
 )
 from app.models.user import User, UserRole
 from app.services.document_parsers import (
+    fix_reversed_arabic_text,
     normalize_arabic_presentation_forms,
     parse_pdf_document,
 )
@@ -114,6 +115,16 @@ def test_typo_correction_and_boundary_decimals():
     assert _extract_question_number("السؤال الأول: وضح الآتي") == "1"
     assert _extract_question_number("السؤال الثاني: احسب ما يلي") == "2"
     assert _extract_question_number("سؤال 10: اختر") == "10"
+
+
+def test_visual_order_arabic_is_restored_without_corrupting_chemistry_formula():
+    """Legacy PDF visual-order Arabic must become editable logical Arabic."""
+    visual_order = "ةيبرعلا رصم ةيروهمج\nءايميكلا ةدام\nN2(g) + 3H2(g) ⇌ 2NH3(g)"
+    restored = fix_reversed_arabic_text(visual_order)
+
+    assert "جمهورية مصر العربية" in restored
+    assert "مادة الكيمياء" in restored
+    assert "N2(g) + 3H2(g) ⇌ 2NH3(g)" in restored
 
 
 def test_real_exam_end_to_end_ingestion(db):

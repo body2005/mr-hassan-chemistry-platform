@@ -127,7 +127,9 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
     });
   }, []);
 
-  const uploading = activeUploads.length > 0;
+  // Uploading and indexing are separate lifecycles.  A queued/processing
+  // source must never prevent the teacher from starting another batch.
+  const uploading = activeUploads.some((task) => task.status === "uploading");
   const currentKnowledgeTask = activeUploads[0];
   const uploadProgress = currentKnowledgeTask
     ? currentKnowledgeTask.status === "processing"
@@ -820,7 +822,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                           onFocus={(e) => { e.currentTarget.style.outline = "2px solid #2563eb"; }}
                           onBlur={(e) => { e.currentTarget.style.outline = "none"; }}
                         >
-                          <Eye style={{ width: "22px", height: "22px", strokeWidth: 2.25 }} />
+                          <Eye style={{ width: "24px", height: "24px", strokeWidth: 2.25 }} />
                         </button>
                         <button
                           type="button"
@@ -847,7 +849,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                           onFocus={(e) => { e.currentTarget.style.outline = "2px solid #059669"; }}
                           onBlur={(e) => { e.currentTarget.style.outline = "none"; }}
                         >
-                          <Download style={{ width: "22px", height: "22px", strokeWidth: 2.25 }} />
+                          <Download style={{ width: "24px", height: "24px", strokeWidth: 2.25 }} />
                         </button>
                         <button
                           type="button"
@@ -874,7 +876,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                           onFocus={(e) => { e.currentTarget.style.outline = "2px solid #dc2626"; }}
                           onBlur={(e) => { e.currentTarget.style.outline = "none"; }}
                         >
-                          <Trash2 style={{ width: "22px", height: "22px", strokeWidth: 2.25 }} />
+                          <Trash2 style={{ width: "24px", height: "24px", strokeWidth: 2.25 }} />
                         </button>
                       </div>
                     </td>
