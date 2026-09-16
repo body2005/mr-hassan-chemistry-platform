@@ -285,6 +285,22 @@ def _validate_upload_scope(
     return normalized_role
 
 
+def _resolve_lesson_material_grade(
+    db: Session, course: Course, selected_grade_level: str | None
+) -> str:
+    """Persist the page-selected grade for legacy courses before attaching a lesson file."""
+    if course.grade_level:
+        return course.grade_level
+    if selected_grade_level not in {"SECONDARY_1", "SECONDARY_2", "SECONDARY_3"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="يرجى تحديد الصف الدراسي من أزرار هذه الصفحة قبل رفع مذكرة الدرس",
+        )
+    course.grade_level = selected_grade_level
+    db.flush()
+    return selected_grade_level
+
+
 from contextlib import contextmanager
 
 class _RefCountedLock:
@@ -534,12 +550,7 @@ async def upload_knowledge_source(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="course_id is required for LESSON_MATERIAL",
             )
-        if not course_obj.grade_level:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="المقرر غير مصنف، يرجى تحديد الصف الدراسي للمقرر أولاً",
-            )
-        grade_level_clean = course_obj.grade_level
+        grade_level_clean = _resolve_lesson_material_grade(db, course_obj, grade_level_clean)
         lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
 
     tmp_dir = _get_kc_temp_dir()
@@ -669,12 +680,7 @@ async def upload_knowledge_sources_batch(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="course_id is required for LESSON_MATERIAL",
             )
-        if not course_obj.grade_level:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="المقرر غير مصنف، يرجى تحديد الصف الدراسي للمقرر أولاً",
-            )
-        grade_level_clean = course_obj.grade_level
+        grade_level_clean = _resolve_lesson_material_grade(db, course_obj, grade_level_clean)
         lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
 
     tmp_base = _get_kc_temp_dir()

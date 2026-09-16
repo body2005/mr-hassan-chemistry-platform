@@ -715,8 +715,8 @@ def test_scale_out_of_bounds_returns_422(db, setup_teacher_and_course):
     app.dependency_overrides.clear()
 
 
-# 20. المقرر بلا Grade لا يتحول للصف الأول ويعيد 422
-def test_unclassified_course_lesson_material_upload_returns_422(db, setup_teacher_and_course):
+# 20. المقرر القديم يقبل الصف المختار من صفحة الرفع ويحفظه قبل ربط المذكرة.
+def test_unclassified_course_lesson_material_upload_uses_explicit_page_grade(db, setup_teacher_and_course):
     teacher = setup_teacher_and_course["teacher"]
     course_unclassified = setup_teacher_and_course["course_unclassified"]
     lesson_unclass = setup_teacher_and_course["lesson_unclass"]
@@ -735,12 +735,28 @@ def test_unclassified_course_lesson_material_upload_returns_422(db, setup_teache
         files={"file": ("unclassified_lesson.pdf", pdf_bytes, "application/pdf")},
     )
     assert res.status_code == 422
-    assert "المقرر غير مصنف" in res.text
+    assert "تحديد الصف الدراسي" in res.text
 
     # Verify no source created in DB with SECONDARY_1
     found = db.scalar(
         select(KnowledgeSource).where(KnowledgeSource.course_id == course_unclassified.id)
     )
     assert found is None
+
+    batch_res = client.post(
+        "/api/v1/knowledge-center/sources/upload-batch",
+        data={
+            "course_id": str(course_unclassified.id),
+            "lesson_id": str(lesson_unclass.id),
+            "grade_level": "SECONDARY_1",
+            "source_role": "LESSON_MATERIAL",
+        },
+        files=[("files", ("classified_lesson.pdf", _generate_test_pdf(1), "application/pdf"))],
+    )
+    assert batch_res.status_code == 200, batch_res.text
+    assert batch_res.json()[0]["lesson_id"] == str(lesson_unclass.id)
+    assert batch_res.json()[0]["grade_level"] == "SECONDARY_1"
+    db.refresh(course_unclassified)
+    assert course_unclassified.grade_level == "SECONDARY_1"
 
     app.dependency_overrides.clear()

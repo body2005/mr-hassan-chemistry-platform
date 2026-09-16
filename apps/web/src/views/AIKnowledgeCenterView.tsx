@@ -21,7 +21,6 @@ import {
   ZoomOut,
   RotateCcw,
   Maximize2,
-  Zap,
   X,
   Download,
 } from "lucide-react";
@@ -1225,25 +1224,6 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
 
                       {/* Zoom and Mode Controls */}
                       <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                        {/* Fast Speed Tag */}
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "5px",
-                            fontSize: "12px",
-                            color: "#34d399",
-                            background: "rgba(16,185,129,0.12)",
-                            padding: "4px 10px",
-                            borderRadius: "20px",
-                            border: "1px solid rgba(16,185,129,0.3)",
-                            fontWeight: "600",
-                          }}
-                        >
-                          <Zap style={{ width: "14px", height: "14px" }} />
-                          عرض فوري مباشر
-                        </div>
-
                         {/* Zoom Controls */}
                         <div style={{ display: "flex", alignItems: "center", gap: "4px", background: "#1e293b", padding: "3px 6px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.1)" }}>
                           <button
