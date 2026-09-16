@@ -21,6 +21,12 @@ class UserRole(StrEnum):
     PLATFORM_ADMIN = "platform_admin"
 
 
+class GradeLevel(StrEnum):
+    SECONDARY_1 = "SECONDARY_1"
+    SECONDARY_2 = "SECONDARY_2"
+    SECONDARY_3 = "SECONDARY_3"
+
+
 class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "users"
     __table_args__ = (
@@ -40,6 +46,7 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         index=True,
         nullable=False,
     )
+    grade_level: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

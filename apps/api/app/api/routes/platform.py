@@ -141,6 +141,27 @@ def _require_lesson_access(db: Session, user: User, lesson_id: uuid.UUID) -> tup
     return lesson, course
 
 
+def _lesson_upload_dir() -> str:
+    """Return the private video store without exposing its filesystem path."""
+    return os.getenv(
+        "VIDEO_UPLOAD_DIR",
+        os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+            "uploads",
+        ),
+    )
+
+
+def _lesson_video_path(lesson_id: uuid.UUID) -> str:
+    upload_dir = _lesson_upload_dir()
+    if not os.path.isdir(upload_dir):
+        raise HTTPException(status_code=404, detail="Video not found")
+    matches = [name for name in os.listdir(upload_dir) if name.startswith(f"{lesson_id}.")]
+    if not matches:
+        raise HTTPException(status_code=404, detail="Video not found")
+    return os.path.join(upload_dir, matches[0])
+
+
 @router.post("/courses/{course_id}/modules", response_model=ModuleResponse, status_code=201)
 def create_module(
     course_id: uuid.UUID, payload: ModuleCreateRequest, user: Manager, db: Db
@@ -178,7 +199,7 @@ async def upload_lesson_video(
     if file.content_type and not file.content_type.startswith("video/"):
         raise HTTPException(status_code=422, detail="Uploaded file is not a video")
 
-    upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "uploads")
+    upload_dir = _lesson_upload_dir()
     os.makedirs(upload_dir, exist_ok=True)
     filename = f"{lesson_id}{ext}"
     filepath = os.path.join(upload_dir, filename)
@@ -218,11 +239,57 @@ async def upload_lesson_video(
 @router.get("/lessons/{lesson_id}/video")
 def stream_lesson_video(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> FileResponse:
     lesson, _ = _require_lesson_access(db, user, lesson_id)
-    upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "uploads")
-    matches = [name for name in os.listdir(upload_dir) if name.startswith(f"{lesson_id}.")]
-    if not matches:
-        raise HTTPException(status_code=404, detail="Video not found")
-    return FileResponse(os.path.join(upload_dir, matches[0]), media_type="video/mp4", filename=matches[0])
+    return FileResponse(
+        _lesson_video_path(lesson.id),
+        media_type="video/mp4",
+        headers={
+            "Content-Disposition": "inline",
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "private, no-cache, no-store",
+            "Referrer-Policy": "strict-origin-when-cross-origin",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.post("/lessons/{lesson_id}/video-token")
+def create_lesson_video_token(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
+    from app.core.security import create_video_token
+    lesson, _ = _require_lesson_access(db, user, lesson_id)
+    token = create_video_token(user=user, lesson_id=lesson.id, expires_in_seconds=300)
+    return {
+        "video_token": token,
+        "stream_url": f"/api/v1/lessons/{lesson.id}/stream?token={token}",
+        "expires_in": 300,
+    }
+
+
+@router.get("/lessons/{lesson_id}/stream")
+def stream_lesson_authenticated_range(
+    lesson_id: uuid.UUID,
+    request: Request,
+    db: Db,
+    token: str | None = None,
+) -> FileResponse:
+    from app.core.security import decode_video_token
+    if token:
+        payload = decode_video_token(token)
+        if not payload or payload.get("lesson_id") != str(lesson_id):
+            raise HTTPException(status_code=403, detail="Invalid or expired video stream token")
+    else:
+        raise HTTPException(status_code=401, detail="Authentication required for video stream")
+
+    return FileResponse(
+        _lesson_video_path(lesson_id),
+        media_type="video/mp4",
+        headers={
+            "Content-Disposition": "inline",
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "private, no-cache, no-store",
+            "Referrer-Policy": "strict-origin-when-cross-origin",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/lessons/{lesson_id}/transcript")

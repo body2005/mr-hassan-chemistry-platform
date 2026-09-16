@@ -8,11 +8,23 @@ from __future__ import annotations
 import io
 import logging
 import os
+import re
 import shutil
+import time
+import uuid
 from abc import ABC, abstractmethod
-from typing import BinaryIO, Generator
+from typing import Any, BinaryIO, Generator
 
 logger = logging.getLogger(__name__)
+
+
+def generate_safe_object_key(prefix: str, original_filename: str) -> str:
+    """Generates a non-conflicting, traversal-safe object key."""
+    ext = os.path.splitext(original_filename)[1].lower()
+    clean_name = re.sub(r"[^a-zA-Z0-9_\-\.]", "_", os.path.basename(original_filename))
+    uid = uuid.uuid4().hex[:12]
+    clean_prefix = prefix.strip("/\\")
+    return f"{clean_prefix}/{uid}_{clean_name}"
 
 
 class BaseStorageProvider(ABC):
@@ -160,16 +172,22 @@ class LocalStorageProvider(BaseStorageProvider):
                 return False
         return False
 
-    def generate_presigned_url(self, storage_key: str, expires_in: int = 1800) -> str | None:
+    def generate_presigned_url(self, storage_key: str, expires_in: int = 300) -> str | None:
         return None
 
     def check_readiness(self) -> dict[str, str | bool]:
-        test_file = os.path.join(self.base_dir, ".readiness_probe")
+        now = time.time()
+        if hasattr(self, "_probe_cache") and self._probe_cache and (now - self._probe_cache[0]) < 45.0:
+            return self._probe_cache[1]
+
+        test_file = os.path.join(self.base_dir, f".readiness_probe_{uuid.uuid4().hex[:6]}.tmp")
         try:
             with open(test_file, "w") as f:
                 f.write("probe")
+            with open(test_file, "r") as f:
+                content = f.read()
             os.remove(test_file)
-            is_ok = True
+            is_ok = content == "probe"
         except Exception:
             is_ok = False
 
@@ -177,12 +195,14 @@ class LocalStorageProvider(BaseStorageProvider):
         if is_ok and self.is_production and not self.is_persistent_mount:
             status_str = "ephemeral_warning"
 
-        return {
+        res = {
             "provider": "local_filesystem",
             "status": status_str,
             "writable": is_ok,
             "persistent": self.is_persistent_mount,
         }
+        self._probe_cache = (now, res)
+        return res
 
 
 class S3StorageProvider(BaseStorageProvider):
@@ -200,33 +220,54 @@ class S3StorageProvider(BaseStorageProvider):
         self.secret_access_key = secret_access_key or os.getenv("S3_SECRET_ACCESS_KEY", os.getenv("S3_SECRET_KEY"))
         self.region_name = region_name or os.getenv("S3_REGION", "auto")
         self._client = None
+        self._probe_cache: tuple[float, dict[str, Any]] | None = None
 
     def _get_client(self):
         if self._client is None:
             import boto3
             from botocore.config import Config
 
+            is_path_style = bool(re.search(r"minio|localhost|127\.0\.0\.1|:\d+", self.endpoint_url or ""))
             self._client = boto3.client(
                 "s3",
                 endpoint_url=self.endpoint_url,
                 aws_access_key_id=self.access_key_id,
                 aws_secret_access_key=self.secret_access_key,
                 region_name=self.region_name,
-                config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+                config=Config(
+                    signature_version="s3v4",
+                    s3={"addressing_style": "path" if is_path_style else "virtual"},
+                    retries={"max_attempts": 3, "mode": "standard"},
+                ),
             )
         return self._client
 
     def save_file(self, local_source_path: str, storage_key: str, content_type: str | None = None) -> str:
         client = self._get_client()
-        extra_args = {}
+        extra_args: dict[str, Any] = {}
         if content_type:
             extra_args["ContentType"] = content_type
-        client.upload_file(local_source_path, self.bucket_name, storage_key, ExtraArgs=extra_args)
+
+        # Multipart threshold 8MB with bounded concurrency and auto abort on failure
+        from boto3.s3.transfer import TransferConfig
+        transfer_config = TransferConfig(
+            multipart_threshold=8 * 1024 * 1024,
+            max_concurrency=4,
+            multipart_chunksize=8 * 1024 * 1024,
+            use_threads=True,
+        )
+        client.upload_file(
+            local_source_path,
+            self.bucket_name,
+            storage_key,
+            ExtraArgs=extra_args,
+            Config=transfer_config,
+        )
         return f"s3://{self.bucket_name}/{storage_key}"
 
     def save_bytes(self, data: bytes, storage_key: str, content_type: str | None = None) -> str:
         client = self._get_client()
-        extra_args = {}
+        extra_args: dict[str, Any] = {}
         if content_type:
             extra_args["ContentType"] = content_type
         client.put_object(Bucket=self.bucket_name, Key=storage_key, Body=data, **extra_args)
@@ -270,7 +311,8 @@ class S3StorageProvider(BaseStorageProvider):
         except Exception:
             return False
 
-    def generate_presigned_url(self, storage_key: str, expires_in: int = 1800) -> str | None:
+    def generate_presigned_url(self, storage_key: str, expires_in: int = 300) -> str | None:
+        """Generates a private, short-lived (default 5 minutes) signed URL for viewing/downloading."""
         client = self._get_client()
         key = storage_key.replace(f"s3://{self.bucket_name}/", "")
         try:
@@ -285,23 +327,50 @@ class S3StorageProvider(BaseStorageProvider):
             return None
 
     def check_readiness(self) -> dict[str, str | bool]:
+        """
+        Active probe performing write, read, and delete of a temporary test object.
+        Result is cached for 45 seconds to avoid repeated external I/O on rapid readiness polls.
+        """
+        now = time.time()
+        if self._probe_cache and (now - self._probe_cache[0]) < 45.0:
+            return self._probe_cache[1]
+
+        probe_key = f".probes/readiness_{uuid.uuid4().hex[:8]}.tmp"
         try:
             client = self._get_client()
-            client.head_bucket(Bucket=self.bucket_name)
-            return {
+            # 1. Write probe object
+            client.put_object(Bucket=self.bucket_name, Key=probe_key, Body=b"storage_readiness_probe")
+            # 2. Read probe object
+            obj = client.get_object(Bucket=self.bucket_name, Key=probe_key)
+            data = obj["Body"].read()
+            if data != b"storage_readiness_probe":
+                raise ValueError("Probe data mismatch")
+            # 3. Clean up probe object
+            client.delete_object(Bucket=self.bucket_name, Key=probe_key)
+
+            res = {
                 "provider": "s3_object_storage",
                 "status": "ok",
                 "writable": True,
                 "persistent": True,
             }
+            self._probe_cache = (now, res)
+            return res
         except Exception as exc:
-            return {
+            try:
+                # Cleanup attempt on error
+                client.delete_object(Bucket=self.bucket_name, Key=probe_key)
+            except Exception:
+                pass
+            res = {
                 "provider": "s3_object_storage",
                 "status": "unavailable",
                 "error": str(exc).split(":")[0],
                 "writable": False,
                 "persistent": True,
             }
+            self._probe_cache = (now, res)
+            return res
 
 
 _storage_instance: BaseStorageProvider | None = None
@@ -310,13 +379,38 @@ _storage_instance: BaseStorageProvider | None = None
 def get_storage_provider() -> BaseStorageProvider:
     global _storage_instance
     if _storage_instance is None:
+        from app.core.config import get_settings
+        settings = get_settings()
+        backend = (settings.storage_backend or os.getenv("STORAGE_BACKEND", "")).lower()
+        if backend == "local":
+            _storage_instance = LocalStorageProvider()
+            return _storage_instance
+
         use_s3 = (
-            os.getenv("USE_S3_STORAGE", "").lower() in {"1", "true", "yes"}
-            or bool(os.getenv("S3_ENDPOINT_URL") and os.getenv("S3_ACCESS_KEY_ID"))
+            backend in {"s3", "r2", "minio"}
+            or os.getenv("USE_S3_STORAGE", "").lower() in {"1", "true", "yes"}
+            or bool(
+                (settings.s3_endpoint_url or os.getenv("S3_ENDPOINT_URL"))
+                and (
+                    settings.s3_access_key
+                    or os.getenv("S3_ACCESS_KEY_ID")
+                    or os.getenv("S3_ACCESS_KEY")
+                )
+                and (
+                    settings.s3_secret_key
+                    or os.getenv("S3_SECRET_ACCESS_KEY")
+                    or os.getenv("S3_SECRET_KEY")
+                )
+            )
         )
         if use_s3:
             try:
-                _storage_instance = S3StorageProvider()
+                _storage_instance = S3StorageProvider(
+                    endpoint_url=settings.s3_endpoint_url,
+                    bucket_name=settings.s3_bucket,
+                    access_key_id=settings.s3_access_key,
+                    secret_access_key=settings.s3_secret_key,
+                )
             except Exception as e:
                 logger.warning("Failed to initialize S3 storage provider (%s); falling back to local storage.", e)
                 _storage_instance = LocalStorageProvider()

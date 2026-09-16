@@ -1,0 +1,15 @@
+export const aiEn = {
+  assistantTitle: "Chemistry AI Assistant",
+  assistantSubtitle: "Grounded AI Tutor for Chemistry explanations & study support",
+  thinking: "Chemistry AI Tutor is analyzing the lesson content...",
+  chatPlaceholder: "Ask anything about the Chemistry lesson...",
+  newChat: "New Conversation",
+  chatHistory: "Past Conversations",
+  quickExplain: "Explain simply",
+  quickExample: "Practical example",
+  quickSummary: "Formula & Law Summary",
+  citationsLabel: "Lesson Content Snippets & Citations",
+  subscriptionRequiredTitle: "AI Subscription Required",
+  subscriptionRequiredDesc: "To get unlimited answers, formula explanations and summaries, activate the AI Tutor subscription.",
+  upgradeNow: "Activate Subscription Now",
+};

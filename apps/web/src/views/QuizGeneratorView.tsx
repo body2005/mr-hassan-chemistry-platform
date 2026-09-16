@@ -427,9 +427,15 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
         ? `نوع النشاط المطلوب: ${typeContext}\nتوجيهات المعلم: ${teacherPrompt.trim()}\n`
         : `نوع النشاط المطلوب: ${typeContext}\n`;
 
+      const selectedCourseId = currentCourse?.id;
+      if (!selectedCourseId) {
+        setError("يرجى اختيار مادة دراسية صالحة أولاً لتوليد الاختبار منها.");
+        return;
+      }
+
       const resp = await aiClient.generateQuiz(
         {
-          course_id: currentCourse?.id,
+          course_id: selectedCourseId,
           lesson_ids: targetLessons.map((l) => l.id),
           lesson_contents: lessonPassages.length > 0 ? lessonPassages : [promptContext],
           question_count: totalQuestions,
@@ -437,6 +443,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
           type_allocations: typeConfigs,
           topics: targetLessons.length > 0 ? targetLessons.map((l) => l.title) : [currentCourse?.title || "محتوى الدرس"],
           quiz_mode: quizMode,
+          title: manualTitle.trim() || `${assessmentType === "quiz" ? "اختبار" : "واجب"}: ${currentCourse.title}`,
         },
         false
       );
@@ -507,9 +514,15 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
 
       const existingStems = draft.questions.map((q) => q.question_text);
 
+      const selectedCourseId = currentCourse?.id;
+      if (!selectedCourseId) {
+        setError("يرجى اختيار مادة دراسية صالحة أولاً.");
+        return;
+      }
+
       const resp = await aiClient.generateQuiz(
         {
-          course_id: currentCourse?.id,
+          course_id: selectedCourseId,
           lesson_ids: targetLessons.map((l) => l.id),
           lesson_contents: lessonPassages.length > 0 ? lessonPassages : [""],
           question_count: totalQuestions,
@@ -518,6 +531,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
           topics: targetLessons.length > 0 ? targetLessons.map((l) => l.title) : [currentCourse?.title || "محتوى الدرس"],
           quiz_mode: quizMode,
           exclude_stems: existingStems,
+          title: manualTitle.trim() || `${assessmentType === "quiz" ? "اختبار" : "واجب"}: ${currentCourse.title}`,
         },
         true
       );

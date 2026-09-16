@@ -28,7 +28,7 @@ import { Language, translations } from "../utils/i18n";
 import { EducationalBookItem, RevisionPackageItem } from "./GeneralHomeView";
 import { VideoTelemetryTracker } from "../services/videoTelemetry";
 import { courseService } from "../services/lmsService";
-import { apiRequest } from "../services/apiClient";
+import { apiRequest, apiUrl, fetchApiBlob } from "../services/apiClient";
 import { useToast } from "../components/ToastProvider";
 import { FormulaRenderer } from "../components/FormulaRenderer";
 import { PaymentTarget } from "../services/paymentService";
@@ -138,13 +138,41 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   // Interactive Modals State
   const [activeLessonModal, setActiveLessonModal] = useState<VideoLesson | null>(null);
+  const [playbackUrl, setPlaybackUrl] = useState("");
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
   const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const telemetryTrackerRef = useRef<VideoTelemetryTracker | null>(null);
 
   useEffect(() => {
+    let disposed = false;
+    setPlaybackUrl("");
+    setPlaybackError(null);
+    if (!activeLessonModal?.videoUrl && !activeLessonModal?.requiresProtectedPlayback) {
+      return () => { disposed = true; };
+    }
+
+    if (!activeLessonModal.requiresProtectedPlayback) {
+      setPlaybackUrl(activeLessonModal.videoUrl);
+      return () => { disposed = true; };
+    }
+
+    void apiRequest<{ stream_url: string }>(`/lessons/${activeLessonModal.id}/video-token`, {
+      method: "POST",
+    })
+      .then(({ stream_url }) => {
+        if (!disposed) setPlaybackUrl(apiUrl(stream_url));
+      })
+      .catch(() => {
+        if (!disposed) setPlaybackError("تعذر تجهيز بث الفيديو المحمي. تأكد من صلاحية الوصول ثم أعد المحاولة.");
+      });
+
+    return () => { disposed = true; };
+  }, [activeLessonModal?.id, activeLessonModal?.videoUrl, activeLessonModal?.requiresProtectedPlayback]);
+
+  useEffect(() => {
     telemetryTrackerRef.current?.detach();
     telemetryTrackerRef.current = null;
-    if (!activeLessonModal?.videoUrl || !videoElementRef.current) return;
+    if (!activeLessonModal || !playbackUrl || !videoElementRef.current) return;
 
     const tracker = new VideoTelemetryTracker(activeLessonModal.id);
     tracker.attach(videoElementRef.current);
@@ -153,7 +181,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       tracker.detach();
       if (telemetryTrackerRef.current === tracker) telemetryTrackerRef.current = null;
     };
-  }, [activeLessonModal?.id, activeLessonModal?.videoUrl]);
+  }, [activeLessonModal, playbackUrl]);
 
   // Interactive Transcript & AI Grounded Q&A State
   const [studentAIQuestion, setStudentAIQuestion] = useState("");
@@ -179,6 +207,23 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     if (videoElementRef.current) {
       videoElementRef.current.currentTime = sec;
       videoElementRef.current.play().catch(() => undefined);
+    }
+  }
+
+  async function downloadLessonMaterial(url: string, filename: string) {
+    try {
+      const blob = await fetchApiBlob(url);
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+      toast(`تم تنزيل ملف: ${filename}`, "success");
+    } catch {
+      toast("تعذر تنزيل المذكرة. تحقق من صلاحية الوصول ثم أعد المحاولة.", "danger");
     }
   }
 
@@ -1336,9 +1381,16 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 position: "relative",
               }}
             >
-              {activeLessonModal.videoUrl ? (
+              {activeLessonModal.videoUrl || activeLessonModal.requiresProtectedPlayback ? (
                 (() => {
-                  const url = activeLessonModal.videoUrl;
+                  const url = playbackUrl;
+                  if (!url) {
+                    return (
+                      <div style={{ display: "grid", placeItems: "center", width: "100%", height: "100%", color: "#cbd5e1", padding: "24px", textAlign: "center" }}>
+                        {playbackError || "جاري تجهيز بث الفيديو المحمي..."}
+                      </div>
+                    );
+                  }
                   const ytMatch = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
                   if (ytMatch && ytMatch[1]) {
                     return (
@@ -1364,19 +1416,42 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     );
                   }
                   return (
-                    <video
-                      ref={videoElementRef}
-                      src={activeLessonModal.videoUrl}
-                      controls
-                      controlsList="nodownload nofullscreen noremoteplayback"
-                      disablePictureInPicture
-                      disableRemotePlayback
-                      onContextMenu={(e) => e.preventDefault()}
-                      playsInline
-                      preload="metadata"
-                      style={{ width: "100%", height: "100%", objectFit: "contain", userSelect: "none" }}
-                      aria-label={activeLessonModal.title}
-                    />
+                    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+                      <video
+                        ref={videoElementRef}
+                        src={url}
+                        controls
+                        controlsList="nodownload noremoteplayback"
+                        disablePictureInPicture
+                        disableRemotePlayback
+                        onContextMenu={(e) => e.preventDefault()}
+                        playsInline
+                        preload="metadata"
+                        style={{ width: "100%", height: "100%", objectFit: "contain", userSelect: "none" }}
+                        aria-label={activeLessonModal.title}
+                      />
+                      {/* Dynamic Moving Watermark: Student Name + Masked ID (Privacy Compliant, No Phone) */}
+                      {currentUser && (
+                        <div
+                          style={{
+                            position: "absolute",
+                            top: "16%",
+                            right: "14%",
+                            color: "rgba(255, 255, 255, 0.45)",
+                            fontSize: "12.5px",
+                            fontWeight: 700,
+                            fontFamily: "monospace",
+                            pointerEvents: "none",
+                            userSelect: "none",
+                            letterSpacing: "0.5px",
+                            textShadow: "1px 1px 3px rgba(0,0,0,0.85)",
+                            zIndex: 10,
+                          }}
+                        >
+                          {currentUser.name || "طالب معتمد"} • {currentUser.id.slice(0, 8)}
+                        </div>
+                      )}
+                    </div>
                   );
                 })()
               ) : (
@@ -1561,9 +1636,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                           </div>
 
                           <button
-                            onClick={() => toast(`جاري تنزيل ملف: ${mat.title}`, "success")}
+                            onClick={() => void downloadLessonMaterial(mat.fileUrl, mat.title)}
                             className="btn-outline"
-                            style={{ padding: "6px 12px", fontSize: "12px", gap: "4px" }}
+                            style={{ padding: "6px 12px", fontSize: "12px", gap: "4px", cursor: "pointer" }}
                           >
                             <Download size={13} />
                             <span>تنزيل المذكرة</span>

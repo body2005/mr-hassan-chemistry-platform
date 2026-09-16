@@ -44,6 +44,7 @@ if not course:
         teacher_id=teacher.id,
         code="GEO_KC_101",
         title="مقرر الجيولوجيا والتركيبات الصخرية",
+        grade_level="SECONDARY_1",
         status=CourseStatus.PUBLISHED,
     )
     db.add(course)
@@ -64,7 +65,7 @@ source = create_knowledge_source(
     filename="geology_chapter_1.txt",
     file_bytes=doc_text.encode("utf-8"),
     source_role=SourceRole.KNOWLEDGE,
-)
+).source
 
 process_knowledge_source(db, source.id)
 

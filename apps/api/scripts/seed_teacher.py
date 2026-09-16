@@ -36,16 +36,36 @@ def _seed_account(
     password: str,
     role: UserRole,
     reset_password: bool,
-    ensure_password_matches: bool = False,
     label: str,
 ) -> None:
-    existing = db.query(User).filter(
+    existing_by_email = db.query(User).filter(
         User.institution_id == institution.id,
         User.email == email,
     ).first()
+    existing_by_username = db.query(User).filter(
+        User.institution_id == institution.id,
+        User.username == username,
+    ).first()
+
+    if (
+        existing_by_email
+        and existing_by_username
+        and existing_by_email.id != existing_by_username.id
+    ):
+        raise RuntimeError(
+            f"{label} seed identity is ambiguous: email and username belong to different accounts"
+        )
+
+    # A deployment may rename an authorized account's email. Reconcile the
+    # account by its institution-scoped username only when the requested email
+    # is not already owned by someone else.
+    existing = existing_by_email or existing_by_username
 
     if existing:
         changed = False
+        if existing.email != email:
+            existing.email = email
+            changed = True
         if existing.role != role:
             existing.role = role
             changed = True
@@ -59,7 +79,9 @@ def _seed_account(
         if existing.display_name != display_name:
             existing.display_name = display_name
             changed = True
-        if reset_password or (ensure_password_matches and not verify_password(password, existing.password_hash)):
+        # Passwords only change when an operator explicitly opts in. Seed runs
+        # are otherwise idempotent and must never invalidate a live login.
+        if reset_password:
             existing.password_hash = hash_password(password)
             changed = True
         if changed:
@@ -84,8 +106,6 @@ def _seed_account(
 
 
 def seed() -> None:
-    Base.metadata.create_all(bind=engine)
-
     teacher_email = os.getenv("INITIAL_TEACHER_EMAIL", "").strip().lower()
     teacher_password = os.getenv("INITIAL_TEACHER_PASSWORD", "")
     demo_enabled = _env_flag("ENABLE_DEMO_ACCOUNTS")
@@ -143,7 +163,6 @@ def seed() -> None:
             password=demo_teacher_password,
             role=UserRole.TEACHER,
             reset_password=reset_demo_passwords,
-            ensure_password_matches=True,
             label="Demo teacher",
         )
         _seed_account(
@@ -155,20 +174,20 @@ def seed() -> None:
             password=demo_student_password,
             role=UserRole.STUDENT,
             reset_password=reset_demo_passwords,
-            ensure_password_matches=True,
             label="Demo student",
         )
 
-        for email, password in (
-            (os.getenv("DEMO_TEACHER_EMAIL", "teacher@demo.com").strip().lower(), demo_teacher_password),
-            (os.getenv("DEMO_STUDENT_EMAIL", "student@demo.com").strip().lower(), demo_student_password),
-        ):
-            seeded = db.query(User).filter(
-                User.institution_id == demo_institution.id,
-                User.email == email,
-            ).first()
-            if not seeded or not verify_password(password, seeded.password_hash):
-                raise RuntimeError(f"Demo credential reconciliation failed for {email}")
+        if reset_demo_passwords:
+            for email, password in (
+                (os.getenv("DEMO_TEACHER_EMAIL", "teacher@demo.com").strip().lower(), demo_teacher_password),
+                (os.getenv("DEMO_STUDENT_EMAIL", "student@demo.com").strip().lower(), demo_student_password),
+            ):
+                seeded = db.query(User).filter(
+                    User.institution_id == demo_institution.id,
+                    User.email == email,
+                ).first()
+                if not seeded or not verify_password(password, seeded.password_hash):
+                    raise RuntimeError(f"Demo credential reconciliation failed for {email}")
 
 
 if __name__ == "__main__":

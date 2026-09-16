@@ -77,7 +77,7 @@ export const ReportGeneratorView: React.FC = () => {
   return (
     <div className="page-content">
       <div style={{ marginBottom: "24px" }}>
-        <p className="eyebrow">تقارير الإدارة والمعلم • CLASS PERFORMANCE REPORT</p>
+        <p className="eyebrow">تقارير الإدارة والمعلم - تقرير أداء الفصل</p>
         <h1 style={{ margin: "4px 0", fontSize: "26px", fontFamily: "Manrope, sans-serif" }}>
           التقرير السردي الشامل لأداء الفصل
         </h1>

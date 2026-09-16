@@ -27,6 +27,7 @@ import { Course, CurrentUser, VideoLesson } from "../types/lms";
 import { exportToCsv, exportToDocx, exportToPrintPdf } from "../utils/exportEngine";
 import { courseService } from "../services/lmsService";
 import { uploadManager } from "../services/uploadManager";
+import { apiRequest, apiUrl, fetchApiBlob } from "../services/apiClient";
 import { useConfirm } from "../components/ConfirmWizard";
 
 /** Lightweight in-app toast — replaces window.alert for transient notices. */
@@ -54,6 +55,53 @@ interface LessonManagementViewProps {
   courses: Course[];
   onCoursesChanged: (courses: Course[]) => void;
 }
+
+/** A teacher receives the same short-lived, lesson-scoped playback URL as a
+ * student. Native storage paths never reach a video element. */
+const ManagedLessonVideo: React.FC<{ lesson: VideoLesson }> = ({ lesson }) => {
+  const [streamUrl, setStreamUrl] = useState(lesson.videoUrl);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    setError(null);
+    if (!lesson.requiresProtectedPlayback) {
+      setStreamUrl(lesson.videoUrl);
+      return () => { disposed = true; };
+    }
+    setStreamUrl("");
+    void apiRequest<{ stream_url: string }>(`/lessons/${lesson.id}/video-token`, {
+      method: "POST",
+    })
+      .then(({ stream_url }) => {
+        if (!disposed) setStreamUrl(apiUrl(stream_url));
+      })
+      .catch(() => {
+        if (!disposed) setError("تعذر تجهيز بث الفيديو. أعد المحاولة.");
+      });
+    return () => { disposed = true; };
+  }, [lesson.id, lesson.requiresProtectedPlayback, lesson.videoUrl]);
+
+  if (error) {
+    return <div style={{ padding: "24px", color: "#b91c1c", textAlign: "center" }}>{error}</div>;
+  }
+  if (!streamUrl) {
+    return <div style={{ padding: "24px", color: "#475569", textAlign: "center" }}>جاري تجهيز البث المحمي…</div>;
+  }
+  return (
+    <video
+      src={streamUrl}
+      controls
+      controlsList="nodownload noremoteplayback"
+      disablePictureInPicture
+      disableRemotePlayback
+      onContextMenu={(event) => event.preventDefault()}
+      playsInline
+      preload="metadata"
+      style={{ width: "100%", maxHeight: "360px", display: "block", background: "#000", userSelect: "none" }}
+    />
+  );
+};
 
 export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   currentUser,
@@ -213,7 +261,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   // File Input Refs for Guaranteed Click Triggering
   const videoInputRef = useRef<HTMLInputElement>(null);
   const materialsInputRef = useRef<HTMLInputElement>(null);
-  const lessonAttachRef = useRef<HTMLInputElement>(null);
 
   const activeCourse = courses.find((c) => c.academicYear === selectedYear);
   // Reverse order so the latest uploaded video/lesson is always displayed at the top
@@ -222,18 +269,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     return [...activeCourse.lessons].reverse();
   }, [activeCourse]);
 
-  // Video & Lesson Search / Filter State
+  // Video & Lesson Search State
   const [videoSearchQuery, setVideoSearchQuery] = useState("");
-  const [videoFilterType, setVideoFilterType] = useState<"all" | "video_only" | "notes_only">("all");
-
-  const totalWithVideo = React.useMemo(
-    () => activeLessons.filter((l) => Boolean(l.videoUrl)).length,
-    [activeLessons]
-  );
-  const totalWithNotes = React.useMemo(
-    () => activeLessons.filter((l) => Boolean(l.materials && l.materials.length > 0)).length,
-    [activeLessons]
-  );
 
   const filteredLessons: VideoLesson[] = React.useMemo(() => {
     let result = activeLessons;
@@ -245,13 +282,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         return title.includes(q) || desc.includes(q);
       });
     }
-    if (videoFilterType === "video_only") {
-      result = result.filter((l) => Boolean(l.videoUrl));
-    } else if (videoFilterType === "notes_only") {
-      result = result.filter((l) => Boolean(l.materials && l.materials.length > 0));
-    }
     return result;
-  }, [activeLessons, videoSearchQuery, videoFilterType]);
+  }, [activeLessons, videoSearchQuery]);
 
   const activeYearLabel =
     selectedYear === "1st_secondary"
@@ -313,11 +345,20 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     setAttachedFiles((prev) => prev.filter((f) => f.id !== id));
   }
 
-  // Attach Material to an Existing Lesson
-  function handleAttachToExistingLesson(e: React.ChangeEvent<HTMLInputElement>) {
-    if (e.target.files?.length) {
-      notify("رفع الملفات سيتم عبر Object Storage بعد تفعيل خدمة الملفات الآمنة.");
-      e.target.value = "";
+  async function downloadLessonMaterial(url: string, filename: string) {
+    try {
+      const blob = await fetchApiBlob(url);
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+      notify(`تم تنزيل المذكرة: ${filename}`);
+    } catch {
+      notify("تعذر تنزيل المذكرة. تحقق من الاتصال والصلاحيات ثم أعد المحاولة.");
     }
   }
 
@@ -521,20 +562,20 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
 
   return (
     <div className="page-container" style={{ maxWidth: "1280px", margin: "0 auto" }}>
-      {/* Hidden File Input for Attaching to Existing Lesson */}
-      <input
-        type="file"
-        ref={lessonAttachRef}
-        onChange={handleAttachToExistingLesson}
-        accept=".pdf,.doc,.docx,.ppt,.pptx"
-        style={{ display: "none" }}
-      />
       {/* Hidden File Input for Per-Lesson Video Upload */}
       <input
         type="file"
         ref={individualVideoInputRef}
         accept="video/*"
         onChange={handleIndividualVideoChange}
+        style={{ display: "none" }}
+      />
+      <input
+        type="file"
+        ref={individualMaterialInputRef}
+        multiple
+        accept=".pdf,.doc,.docx,.ppt,.pptx"
+        onChange={handleIndividualMaterialChange}
         style={{ display: "none" }}
       />
 
@@ -1088,72 +1129,10 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                   )}
                 </div>
 
-                {/* Filter Pills: All / Videos Only / Notes Only */}
-                <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                  <button
-                    type="button"
-                    onClick={() => setVideoFilterType("all")}
-                    style={{
-                      padding: "6px 12px",
-                      borderRadius: "20px",
-                      fontSize: "12px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      border: "none",
-                      background: videoFilterType === "all" ? "#0f392b" : "var(--bg-surface-secondary, #f1f5f9)",
-                      color: videoFilterType === "all" ? "#ffffff" : "var(--text-muted, #64748b)",
-                      transition: "all 0.15s ease",
-                    }}
-                  >
-                    الكل ({activeLessons.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setVideoFilterType("video_only")}
-                    style={{
-                      padding: "6px 12px",
-                      borderRadius: "20px",
-                      fontSize: "12px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      border: "none",
-                      background: videoFilterType === "video_only" ? "#059669" : "var(--bg-surface-secondary, #f1f5f9)",
-                      color: videoFilterType === "video_only" ? "#ffffff" : "var(--text-muted, #64748b)",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "4px",
-                      transition: "all 0.15s ease",
-                    }}
-                  >
-                    <span>فيديوهات فقط 🎥</span>
-                    <span>({totalWithVideo})</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setVideoFilterType("notes_only")}
-                    style={{
-                      padding: "6px 12px",
-                      borderRadius: "20px",
-                      fontSize: "12px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      border: "none",
-                      background: videoFilterType === "notes_only" ? "#0284c7" : "var(--bg-surface-secondary, #f1f5f9)",
-                      color: videoFilterType === "notes_only" ? "#ffffff" : "var(--text-muted, #64748b)",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "4px",
-                      transition: "all 0.15s ease",
-                    }}
-                  >
-                    <span>مذكرات فقط 📄</span>
-                    <span>({totalWithNotes})</span>
-                  </button>
-                </div>
               </div>
 
               {/* Search Active Indicator / Summary */}
-              {(videoSearchQuery.trim() || videoFilterType !== "all") && (
+              {videoSearchQuery.trim() && (
                 <div
                   style={{
                     display: "flex",
@@ -1171,10 +1150,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                   </span>
                   <button
                     type="button"
-                    onClick={() => {
-                      setVideoSearchQuery("");
-                      setVideoFilterType("all");
-                    }}
+                    onClick={() => setVideoSearchQuery("")}
                     style={{
                       background: "none",
                       border: "none",
@@ -1231,10 +1207,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
               </p>
               <button
                 type="button"
-                onClick={() => {
-                  setVideoSearchQuery("");
-                  setVideoFilterType("all");
-                }}
+                onClick={() => setVideoSearchQuery("")}
                 style={{
                   background: "var(--bg-surface-secondary, #f1f5f9)",
                   color: "#059669",
@@ -1274,6 +1247,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                 {/* Strictly Per-Lesson Video Player Section */}
                 {(() => {
                   const lessonVideoUrl = lesson.videoUrl;
+                  const hasLessonVideo = Boolean(lessonVideoUrl || lesson.requiresProtectedPlayback);
 
                   return (
                     <div
@@ -1285,13 +1259,13 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                         marginBottom: "16px",
                       }}
                     >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: lessonVideoUrl ? "12px" : "0", flexWrap: "wrap", gap: "10px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: hasLessonVideo ? "12px" : "0", flexWrap: "wrap", gap: "10px" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                           <Film size={18} style={{ color: "#059669" }} />
                           <strong style={{ fontSize: "13px", color: "var(--text-main)" }}>
                             فيديو الشرح: {lesson.title}
                           </strong>
-                          {lessonVideoUrl ? (
+                          {hasLessonVideo ? (
                             <span style={{ fontSize: "11px", color: "#059669", fontWeight: 700, background: "#ecfdf5", padding: "2px 8px", borderRadius: "6px" }}>
                               جاهز للتشغيل
                             </span>
@@ -1320,14 +1294,17 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                           }}
                         >
                           <Upload size={13} />
-                          <span>{lessonVideoUrl ? "تغيير فيديو هذا الدرس" : "رفع فيديو لهذا الدرس"}</span>
+                          <span>{hasLessonVideo ? "تغيير فيديو هذا الدرس" : "رفع فيديو لهذا الدرس"}</span>
                         </button>
                       </div>
 
                       {/* Video Player — Appears ONLY when this specific lesson has a video */}
-                      {lessonVideoUrl && (
+                      {hasLessonVideo && (
                         <div style={{ borderRadius: "10px", overflow: "hidden", border: "1.5px solid #0f392b", background: "#000" }}>
                           {(() => {
+                            if (lesson.requiresProtectedPlayback) {
+                              return <ManagedLessonVideo lesson={lesson} />;
+                            }
                             const ytMatch = lessonVideoUrl.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
                             if (ytMatch && ytMatch[1]) {
                               return (
@@ -1369,7 +1346,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                           })()}
                           <div style={{ padding: "8px 12px", background: "#0f392b", color: "#ecfdf5", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px" }}>
                             <span>{lesson.title}</span>
-                            <span style={{ color: "#34d399", fontWeight: 700 }}>دقة HD • تشغيل سلس للمشاهدة والشرح</span>
+                            <span style={{ color: "#34d399", fontWeight: 700 }}>تشغيل فائق الدقة وسلس للمشاهدة والشرح</span>
                           </div>
                         </div>
                       )}
@@ -1727,6 +1704,15 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                           <FileText size={13} style={{ color: "#2563eb" }} />
                           <span style={{ fontWeight: 700, color: "var(--text-main)" }}>{mat.title}</span>
                           <span style={{ color: "var(--text-muted)", fontSize: "10px" }}>({mat.fileSize})</span>
+                          <button
+                            type="button"
+                            aria-label={`تنزيل ${mat.title}`}
+                            title="تنزيل المذكرة"
+                            onClick={() => void downloadLessonMaterial(mat.fileUrl, mat.title)}
+                            style={{ background: "transparent", border: "none", color: "#059669", cursor: "pointer", display: "inline-flex", padding: "2px" }}
+                          >
+                            <Download size={13} />
+                          </button>
                         </div>
                       ))}
                     </div>
@@ -2013,14 +1999,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         ref={individualVideoInputRef}
         accept="video/*"
         onChange={handleIndividualVideoChange}
-        style={{ display: "none" }}
-      />
-      <input
-        type="file"
-        ref={individualMaterialInputRef}
-        multiple
-        accept=".pdf,.doc,.docx,.ppt,.pptx"
-        onChange={handleIndividualMaterialChange}
         style={{ display: "none" }}
       />
 

@@ -105,7 +105,7 @@ def test_stop_indexing_endpoint_success_and_idempotency(auth_teacher_client, db)
     # Check DB status
     db.expire_all()
     refreshed = db.get(KnowledgeSource, source_id)
-    assert refreshed.status == SourceStatus.STOPPED
+    assert refreshed.status == SourceStatus.CANCELLED
 
     # 2. Idempotent repeat request
     res2 = client.post(
@@ -238,6 +238,34 @@ def test_cors_headers_on_exception_and_error_responses(auth_teacher_client):
     assert allowed_headers != "*"
 
 
+def test_cors_rejects_untrusted_origin_and_allows_scoped_vercel_preview():
+    """Credentialed CORS must never reflect an arbitrary Origin header."""
+    client = TestClient(app)
+    path = "/api/v1/auth/login"
+    allowed_origin = "https://mr-hassan-chemistry-platform-msgpaeex8-body19.vercel.app"
+    allowed = client.options(
+        path,
+        headers={
+            "Origin": allowed_origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert allowed.status_code == 200
+    assert allowed.headers.get("access-control-allow-origin") == allowed_origin
+
+    blocked = client.options(
+        path,
+        headers={
+            "Origin": "https://untrusted.example",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert blocked.status_code == 400
+    assert blocked.headers.get("access-control-allow-origin") is None
+
+
 def test_unhandled_500_exception_returns_json_with_cors(auth_teacher_client, db):
     """Verifies that an unhandled 500 exception returns structured JSON error and CORS headers."""
     client = auth_teacher_client["client"]
@@ -310,5 +338,5 @@ def test_process_knowledge_source_respects_cancellation(auth_teacher_client, db,
 
     db.expire_all()
     refreshed = db.get(KnowledgeSource, source_id)
-    assert refreshed.status == SourceStatus.STOPPED
+    assert refreshed.status == SourceStatus.CANCELLED
     clear_source_tracking(source_id)

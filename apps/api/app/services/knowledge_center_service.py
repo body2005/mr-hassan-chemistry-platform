@@ -58,6 +58,14 @@ from app.services.embedding_provider import get_embedding_provider
 from app.services.exam_processing import materialize_assessment_questions
 from app.services.book_outline import materialize_book_outline, materialize_lesson_relations, outline_node_for_page
 import threading
+from dataclasses import dataclass
+
+
+@dataclass
+class CreateSourceResult:
+    source: KnowledgeSource
+    created: bool
+    created_storage_key: str | None = None
 from app.core.errors import OperationCancelledError
 from app.services.vision_language import analyze_educational_image
 from app.services.knowledge_graph import build_source_knowledge_graph
@@ -70,37 +78,151 @@ STORAGE_DIR = os.getenv("STORAGE_DIR", "storage/knowledge_center")
 SEMANTIC_CONFIDENCE_THRESHOLD = float(os.getenv("SEMANTIC_CONFIDENCE_THRESHOLD", "0.65"))
 logger = logging.getLogger(__name__)
 
+
+class StaleProcessingAttemptError(RuntimeError):
+    """Raised when an older worker tries to mutate a newer source attempt."""
+
+
+def _assert_current_attempt(
+    db: Session,
+    source_id: uuid.UUID,
+    generation: int,
+    attempt_id: uuid.UUID,
+) -> None:
+    current = db.execute(
+        select(
+            KnowledgeSource.processing_generation,
+            KnowledgeSource.processing_attempt_id,
+        ).where(KnowledgeSource.id == source_id)
+    ).one_or_none()
+    if not current or current[0] != generation or current[1] != attempt_id:
+        db.rollback()
+        raise StaleProcessingAttemptError(
+            f"Stale indexing attempt rejected for source {source_id}"
+        )
+
+
+def _advance_indexing_progress(
+    db: Session | None,
+    source: KnowledgeSource,
+    generation: int,
+    attempt_id: uuid.UUID,
+    percent: int,
+    status_value: SourceStatus | None = None,
+) -> None:
+    from app.core.database import SessionLocal
+
+    with SessionLocal() as prog_db:
+        src = prog_db.get(KnowledgeSource, source.id)
+        if not src:
+            return
+        _assert_current_attempt(prog_db, src.id, generation, attempt_id)
+        next_percent = max(src.indexing_percent or 0, min(100, percent))
+        src.indexing_percent = next_percent
+        src.progress_percent = max(src.progress_percent or 0, next_percent)
+        if status_value is not None:
+            src.status = status_value
+        prog_db.commit()
+
+    source.indexing_percent = max(source.indexing_percent or 0, min(100, percent))
+    source.progress_percent = max(source.progress_percent or 0, source.indexing_percent)
+    if status_value is not None:
+        source.status = status_value
+
+
+def _get_kc_temp_dir() -> str:
+    storage_dir = os.getenv("STORAGE_DIR", "storage/knowledge_center")
+    tmp = os.path.join(storage_dir, "tmp")
+    os.makedirs(tmp, exist_ok=True)
+    return tmp
+
 _CANCELLATION_REGISTRY_LOCK = threading.Lock()
 _CANCEL_REQUESTED_SOURCES: set[uuid.UUID] = set()
 _DELETING_SOURCES: set[uuid.UUID] = set()
 _ACTIVE_PARSER_SOURCES: set[uuid.UUID] = set()
+_LAST_DB_CANCEL_CHECK: dict[uuid.UUID, float] = {}
+_LAST_DB_CANCEL_RESULT: dict[uuid.UUID, bool] = {}
 
 
 def register_cancellation(source_id: uuid.UUID) -> None:
     with _CANCELLATION_REGISTRY_LOCK:
         _CANCEL_REQUESTED_SOURCES.add(source_id)
+        _LAST_DB_CANCEL_RESULT[source_id] = True
 
 
 def register_deleting(source_id: uuid.UUID) -> None:
     with _CANCELLATION_REGISTRY_LOCK:
         _CANCEL_REQUESTED_SOURCES.add(source_id)
         _DELETING_SOURCES.add(source_id)
+        _LAST_DB_CANCEL_RESULT[source_id] = True
 
 
-def is_source_cancelled(source_id: uuid.UUID) -> bool:
+def is_source_cancelled(
+    source_id: uuid.UUID,
+    generation: int | None = None,
+    attempt_id: uuid.UUID | None = None,
+    force_db: bool = False,
+) -> bool:
+    import time
     with _CANCELLATION_REGISTRY_LOCK:
-        return source_id in _CANCEL_REQUESTED_SOURCES
+        if source_id in _CANCEL_REQUESTED_SOURCES or source_id in _DELETING_SOURCES:
+            return True
+
+    now = time.monotonic()
+    last_check = _LAST_DB_CANCEL_CHECK.get(source_id, 0.0)
+    if not force_db and (now - last_check < 1.0):
+        return _LAST_DB_CANCEL_RESULT.get(source_id, False)
+
+    try:
+        from app.core.database import SessionLocal
+        with SessionLocal() as check_db:
+            row = check_db.execute(
+                select(
+                    KnowledgeSource.status,
+                    KnowledgeSource.processing_generation,
+                    KnowledgeSource.processing_attempt_id,
+                ).where(KnowledgeSource.id == source_id)
+            ).one_or_none()
+            if not row:
+                _LAST_DB_CANCEL_CHECK[source_id] = now
+                _LAST_DB_CANCEL_RESULT[source_id] = True
+                return True
+            status_val, db_gen, db_att = row
+            cancelled = (
+                status_val in (SourceStatus.CANCELLED, SourceStatus.STOPPED, SourceStatus.DELETING)
+                or (generation is not None and db_gen != generation)
+                or (attempt_id is not None and db_att != attempt_id)
+            )
+            _LAST_DB_CANCEL_CHECK[source_id] = now
+            _LAST_DB_CANCEL_RESULT[source_id] = cancelled
+            return cancelled
+    except Exception as e:
+        logger.warning("Error checking DB cancellation for source %s: %s", source_id, e)
+        return _LAST_DB_CANCEL_RESULT.get(source_id, False)
 
 
 def is_source_deleting(source_id: uuid.UUID) -> bool:
     with _CANCELLATION_REGISTRY_LOCK:
-        return source_id in _DELETING_SOURCES
+        if source_id in _DELETING_SOURCES:
+            return True
+    try:
+        from app.core.database import SessionLocal
+        with SessionLocal() as check_db:
+            st = check_db.scalar(
+                select(KnowledgeSource.status).where(KnowledgeSource.id == source_id)
+            )
+            return st == SourceStatus.DELETING
+    except Exception:
+        return False
 
 
 def clear_source_tracking(source_id: uuid.UUID) -> None:
     with _CANCELLATION_REGISTRY_LOCK:
         _CANCEL_REQUESTED_SOURCES.discard(source_id)
         _DELETING_SOURCES.discard(source_id)
+        _ACTIVE_PARSER_SOURCES.discard(source_id)
+        _LAST_DB_CANCEL_CHECK.pop(source_id, None)
+        _LAST_DB_CANCEL_RESULT.pop(source_id, None)
 
 
 def mark_parser_active(source_id: uuid.UUID) -> None:
@@ -637,11 +759,11 @@ def assemble_document_questions(
     ]
 
     HEADER_RE = re.compile(
-        r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)|س\s*\d+|Question\s*\d+|Q\d+)\b",
+        r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الاول|الثاني|الثانى|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)|س\s*\d+|Question\s*\d+|Q\d+|(?:\)?درجات?\s*\d+\(?\s*:\s*(?:السؤال|سؤال)\s*(?:الأول|الاول|الثاني|الثانى|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر)))\b",
         re.IGNORECASE,
     )
-    MARKS_RE = re.compile(r"[\(\[]\s*(\d+)\s*(?:درجات|درجة|علامات|علامة|marks?|pts?)\s*[\)\]]", re.IGNORECASE)
-    SECTION_RE = re.compile(r"^\s*\[?\s*(?:القسم\s+(?:الأول|الثاني|الثالث|الرابع)|أسئلة\s+الاختيار|الأسئلة\s+المقالية|أولاً|ثانياً|ثالثاً)\b", re.IGNORECASE)
+    MARKS_RE = re.compile(r"[\(\[]\s*(\d+)\s*(?:درجات|درجة|علامات|علامة|marks?|pts?)\s*[\)\]]|(?:\(?درجات\s*(\d+)\)?)", re.IGNORECASE)
+    SECTION_RE = re.compile(r"(?:القسم\s+(?:الأول|الثاني|الثالث|الرابع)|أسئلة\s+الاختيار|الأسئلة\s+المقالية|أولاً|ثانياً|ثالثاً|اختر\s+الإجابة\s+الصحيحة)", re.IGNORECASE)
     ANS_RE = re.compile(r"^(?:فكرة\s+الحل|الحل(?:\s+الصحيح)?|الإجاب[ةه](?:\s+الصحيح[ةه])?|الجواب|Answer|Key)\s*[\:\.\-]?\s*(.*)$", re.IGNORECASE)
     EXAM_END_RE = re.compile(r"(?:مع\s+أطيب\s+التمنيات|انتهت\s+الأسئلة|مع\s+تمنياتنا|بالتوفيق|ﺔﻠﺌﺳألا\s+ﺖﻬﺘﻧا|\.{5,}|={5,})", re.IGNORECASE)
 
@@ -655,13 +777,17 @@ def assemble_document_questions(
     OPT_PREFIX_RE = re.compile(r"^[\(\[]+\s*([أبجدA-Da-d1-4]|i|z|s|\)\()\s*[\)\]\.\:\-\/]+\s*(.*)$")
     OPT_SUFFIX_RE = re.compile(r"^(.*?)\s*[\(\[]+\s*([أبجدA-Da-d1-4]|i|z|s|\)\()\s*[\)\]]+[\.\:\-]?$")
     OPT_ANY_RE = re.compile(r"(?:^|\s)[\(\[]+\s*([أبجدA-Da-d1-4]|i|z|s|\)\()\s*[\)\]]+(?:\s|$)")
+    CHEM_ENTITY_PRECEDING_RE = re.compile(r"(?:مركب|عنصر|حمض|غاز|محلول|فلز|ألكان|ألكين|ألكاين|كاتيون|أنيون|رمز|إلكتروليت)\s*[\(\[]\s*[A-Za-z0-9]+\s*[\)\]]$")
 
-    DIGIT_START_RE = re.compile(r"^\(?(\d{1,2})\)?[\.\-\:\)]\s+(.*)$")
+    DIGIT_START_RE = re.compile(r"^\(?(\d{1,2})\)?[\.\-\:\)](?!\d)\s+(.*)$")
     DIGIT_END_RE = re.compile(r"^(.*?)\s+[\.\-\:]?\s*(\d{1,2})[\.\-\:]?$")
 
     def _parse_opt(line: str) -> tuple[str, str] | None:
         l_c = line.strip()
         if not l_c or len(l_c.split()) > 25:
+            return None
+        # Stem lines ending in colon or question mark are not options
+        if l_c.endswith(":") or l_c.endswith("؟") or l_c.endswith("?"):
             return None
         # mirrored bracket suffix like )1( or )أ( or (د) or (د))
         m = re.match(r"^(.*?)\s*[\(\)\[\]]+\s*([أبجدA-Da-d1-4]|i|z|s)\s*[\(\)\[\]]+[\.\:\-]?$", l_c)
@@ -681,11 +807,15 @@ def assemble_document_questions(
             return (KEY_NORM.get(m.group(1), m.group(1)), m.group(2).strip())
         m = OPT_ANY_RE.search(l_c)
         if m and not l_c.startswith("السؤال"):
-            raw_k = m.group(1)
-            k = KEY_NORM.get(raw_k, raw_k)
-            txt = l_c[:m.start()] + " " + l_c[m.end():]
-            txt = re.sub(r"\s+", " ", txt).strip()
-            return (k, txt)
+            prefix_part = l_c[:m.start()].strip()
+            if not CHEM_ENTITY_PRECEDING_RE.search(prefix_part):
+                raw_k = m.group(1)
+                # In Arabic text context, require [أبجد] to avoid Latin compound notation (e.g. (B)) being treated as option
+                if raw_k in "أبجد" or not any('\u0600' <= c <= '\u06FF' for c in l_c):
+                    k = KEY_NORM.get(raw_k, raw_k)
+                    txt = l_c[:m.start()] + " " + l_c[m.end():]
+                    txt = re.sub(r"\s+", " ", txt).strip()
+                    return (k, txt)
         return None
 
     cur_header = ""
@@ -711,7 +841,7 @@ def assemble_document_questions(
         if not cur_stem_lines and HEADER_RE.match(full_text) and len(full_text.split()) <= 6:
             return
         # 2. Reject admin metadata
-        if any(re.search(p, full_text, re.IGNORECASE) for p in ADMINISTRATIVE_METADATA_PATTERNS) or re.search(r"^(?:جمهورية|وزارة|امتحان\s+شهادة|الزمن\s*:|الدرجة\s+العظمى)", full_text):
+        if any(re.search(p, full_text, re.IGNORECASE) for p in ADMINISTRATIVE_METADATA_PATTERNS) or re.search(r"(?:جمهورية|وزارة|امتحان\s+شهادة|مادة\s+الكيمياء|الزمن\s*:|الدرجة\s+العظمى|درجة\s*\d+\s*:|ساعات\s+.*الدرجة)", full_text):
             _reset()
             return
         # 3. Reject PDF corruption tokens
@@ -797,7 +927,7 @@ def assemble_document_questions(
         page_img_ids = [img.id for img in page.images]
 
         for line in lines:
-            if any(re.search(p, line, re.IGNORECASE) for p in ADMINISTRATIVE_METADATA_PATTERNS) or re.search(r"^(?:جمهورية|وزارة|امتحان\s+شهادة|الزمن\s*:|الدرجة\s+العظمى)", line):
+            if any(re.search(p, line, re.IGNORECASE) for p in ADMINISTRATIVE_METADATA_PATTERNS) or re.search(r"(?:جمهورية|وزارة|امتحان\s+شهادة|مادة\s+الكيمياء|الزمن\s*:|الدرجة\s+العظمى|درجة\s*\d+\s*:|ساعات\s+.*الدرجة)", line):
                 continue
             if EXAM_END_RE.search(line):
                 flush()
@@ -805,7 +935,7 @@ def assemble_document_questions(
 
             if SECTION_RE.search(line):
                 flush()
-                is_essay_mode = ("مقالي" in line)
+                is_essay_mode = ("مقالي" in line or "المقالية" in line)
                 continue
 
             if HEADER_RE.search(line):
@@ -815,7 +945,9 @@ def assemble_document_questions(
                 cur_images.extend(page_img_ids)
                 marks_m = MARKS_RE.search(line)
                 if marks_m:
-                    cur_points = int(marks_m.group(1))
+                    pts = marks_m.group(1) or marks_m.group(2)
+                    if pts:
+                        cur_points = int(pts)
                 continue
 
             ans_m = ANS_RE.match(line)
@@ -901,11 +1033,12 @@ def sanitize_source_filename(name: str) -> str:
 def create_knowledge_source(
     db: Session,
     user: User,
-    course_id: uuid.UUID,
-    filename: str,
+    course_id: uuid.UUID | None = None,
+    filename: str = "",
     file_bytes: bytes | None = None,
     lesson_id: uuid.UUID | None = None,
-    source_role: str = SourceRole.KNOWLEDGE,
+    source_role: str = SourceRole.COURSE_KNOWLEDGE,
+    grade_level: str | None = None,
     mime_type: str | None = None,
     metadata: dict[str, Any] | None = None,
     staged_file_path: str | None = None,
@@ -913,7 +1046,8 @@ def create_knowledge_source(
     size_bytes: int | None = None,
     commit: bool = True,
     created_storage_paths: list[str] | None = None,
-) -> KnowledgeSource:
+    preview_total_pages: int | None = None,
+) -> CreateSourceResult:
     """Uploads and creates a new KnowledgeSource record in QUEUED state."""
     filename = sanitize_source_filename(filename)
 
@@ -943,6 +1077,8 @@ def create_knowledge_source(
     else:
         role_str = str(source_role).split(".")[-1].strip().upper()
         source_role = SourceRole(role_str).value
+    if source_role == SourceRole.KNOWLEDGE:
+        source_role = SourceRole.COURSE_KNOWLEDGE.value
 
     BANNED_MEDIA_EXTENSIONS = {"mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "3gp", "m4v", "mp3", "wav", "aac"}
     if ext in BANNED_MEDIA_EXTENSIONS or (mime_type and any(mime_type.lower().startswith(p) for p in ["video/", "audio/"])):
@@ -955,46 +1091,101 @@ def create_knowledge_source(
     if ext not in allowed_extensions:
         raise ValueError(f"صيغة الملف غير مدعومة: .{ext}. الصيغ المدعومة هي: PDF, Word (docx, doc), PowerPoint (pptx, ppt), ملفات نصية، وصور.")
 
-    # Ensure course exists and belongs to teacher's institution
-    course = db.scalar(
-        select(Course).where(
-            Course.id == course_id,
-            Course.institution_id == user.institution_id,
+    if source_role == SourceRole.LESSON_MATERIAL.value:
+        if not course_id or not lesson_id:
+            raise ValueError("course_id and lesson_id are required for LESSON_MATERIAL")
+        course = db.scalar(
+            select(Course).where(
+                Course.id == course_id,
+                Course.institution_id == user.institution_id,
+            )
         )
-    )
-    if not course:
-        raise ValueError("Course not found in the current institution")
+        if not course:
+            raise ValueError("Course not found in the current institution")
+        if not grade_level:
+            if not course.grade_level:
+                raise ValueError("المقرر غير مصنف، يرجى تحديد الصف الدراسي للمقرر أولاً")
+            grade_level = course.grade_level
+    elif source_role == SourceRole.COURSE_KNOWLEDGE.value:
+        if course_id:
+            course = db.scalar(
+                select(Course).where(
+                    Course.id == course_id,
+                    Course.institution_id == user.institution_id,
+                )
+            )
+            if not course:
+                raise ValueError("Course not found in the current institution")
+            if not grade_level:
+                if not course.grade_level:
+                    raise ValueError("المقرر غير مصنف، يرجى تحديد الصف الدراسي للمقرر أولاً")
+                grade_level = course.grade_level
+        if not grade_level:
+            raise ValueError("grade_level is required for COURSE_KNOWLEDGE")
+        valid_grades = {"SECONDARY_1", "SECONDARY_2", "SECONDARY_3"}
+        if grade_level not in valid_grades:
+            raise ValueError(f"Invalid grade_level: {grade_level}")
+        if lesson_id:
+            raise ValueError("lesson_id is not allowed for COURSE_KNOWLEDGE")
+
+    source_metadata = dict(metadata or {})
+    document_key = str(source_metadata.get("document_key") or filename).strip().lower()
+    source_metadata["document_key"] = document_key
+
+    # Acquire PostgreSQL transaction-level advisory locks to serialize concurrent deduplication & versioning
+    if db.bind.dialect.name == "postgresql":
+        from sqlalchemy import text
+        dedup_scope = f"{user.institution_id}:{source_role}:{course_id or ''}:{lesson_id or ''}:{grade_level or ''}:{checksum}"
+        lock_key_dedup = int.from_bytes(hashlib.sha256(dedup_scope.encode("utf-8")).digest()[:8], byteorder="big", signed=True)
+        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key_dedup})
+
+        ver_scope = f"{user.institution_id}:{source_role}:{course_id or ''}:{lesson_id or ''}:{grade_level or ''}:{document_key}"
+        lock_key_ver = int.from_bytes(hashlib.sha256(ver_scope.encode("utf-8")).digest()[:8], byteorder="big", signed=True)
+        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key_ver})
 
     # Check for existing checksum upload to avoid duplicate storage
-    existing = db.scalar(
-        select(KnowledgeSource).where(
-            KnowledgeSource.course_id == course_id,
-            KnowledgeSource.checksum == checksum,
-            KnowledgeSource.lesson_id == lesson_id,
-            KnowledgeSource.source_role == source_role,
-        )
+    existing_stmt = select(KnowledgeSource).where(
+        KnowledgeSource.institution_id == user.institution_id,
+        KnowledgeSource.checksum == checksum,
+        KnowledgeSource.source_role == source_role,
     )
+    if source_role == SourceRole.LESSON_MATERIAL.value:
+        existing_stmt = existing_stmt.where(
+            KnowledgeSource.course_id == course_id,
+            KnowledgeSource.lesson_id == lesson_id,
+        )
+    else:
+        existing_stmt = existing_stmt.where(KnowledgeSource.grade_level == grade_level)
+        if course_id:
+            existing_stmt = existing_stmt.where(KnowledgeSource.course_id == course_id)
+
+    existing = db.scalar(existing_stmt)
     if existing:
         if staged_file_path and os.path.exists(staged_file_path) and staged_file_path != existing.storage_path:
             try:
                 os.remove(staged_file_path)
             except OSError:
                 pass
-        return existing
+        return CreateSourceResult(source=existing, created=False, created_storage_key=None)
 
     # A source with the same logical document key is a new edition. Retrieval
     # uses only the current edition; prior files stay available for audit.
-    source_metadata = dict(metadata or {})
-    document_key = str(source_metadata.get("document_key") or filename).strip().lower()
-    source_metadata["document_key"] = document_key
-    prior_sources = db.scalars(
-        select(KnowledgeSource).where(
+    prior_stmt = select(KnowledgeSource).where(
+        KnowledgeSource.institution_id == user.institution_id,
+        KnowledgeSource.source_role == source_role,
+        KnowledgeSource.is_current == True,
+    )
+    if source_role == SourceRole.LESSON_MATERIAL.value:
+        prior_stmt = prior_stmt.where(
             KnowledgeSource.course_id == course_id,
             KnowledgeSource.lesson_id == lesson_id,
-            KnowledgeSource.source_role == source_role,
-            KnowledgeSource.is_current == True,
         )
-    ).all()
+    else:
+        prior_stmt = prior_stmt.where(KnowledgeSource.grade_level == grade_level)
+        if course_id:
+            prior_stmt = prior_stmt.where(KnowledgeSource.course_id == course_id)
+
+    prior_sources = db.scalars(prior_stmt).all()
     matching_prior = [
         item for item in prior_sources
         if str((item.metadata_json or {}).get("document_key") or item.filename).strip().lower() == document_key
@@ -1004,7 +1195,7 @@ def create_knowledge_source(
         item.is_current = False
 
     # Save file to storage using completely server-generated filename
-    rel_dir = f"courses/{course_id}"
+    rel_dir = f"courses/{course_id}" if course_id else f"grades/{grade_level or 'general'}"
     full_dir = os.path.join(STORAGE_DIR, rel_dir)
     os.makedirs(full_dir, exist_ok=True)
     
@@ -1017,24 +1208,41 @@ def create_knowledge_source(
             f.write(file_bytes)
     else:
         raise ValueError("Either file_bytes or staged_file_path must be provided.")
+
+    from app.core.storage import get_storage_provider, S3StorageProvider
+    storage = get_storage_provider()
+    if isinstance(storage, S3StorageProvider):
+        storage_key = f"{rel_dir}/{server_storage_name}"
+        canonical_path = storage.save_file(file_path, storage_key, content_type=mime_type or f"application/{ext}")
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except OSError:
+            pass
+        final_storage_path = canonical_path
+    else:
+        final_storage_path = file_path
+
     if created_storage_paths is not None:
-        created_storage_paths.append(file_path)
+        created_storage_paths.append(final_storage_path)
 
     source = KnowledgeSource(
         institution_id=user.institution_id,
         course_id=course_id,
+        grade_level=grade_level,
         lesson_id=lesson_id,
         teacher_id=user.id,
         filename=filename,
         file_format=ext,
         mime_type=mime_type or f"application/{ext}",
-        storage_path=file_path,
+        storage_path=final_storage_path,
         size_bytes=size_bytes,
         source_role=source_role,
         version=next_version,
         is_current=True,
         checksum=checksum,
         status=SourceStatus.QUEUED,
+        preview_total_pages=preview_total_pages,
         metadata_json=source_metadata,
     )
     db.add(source)
@@ -1043,45 +1251,84 @@ def create_knowledge_source(
         db.refresh(source)
     else:
         db.flush()
-    return source
+    return CreateSourceResult(source=source, created=True, created_storage_key=final_storage_path)
 
 
-def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSource:
+
+def _purge_source_child_records(db: Session, source_id: uuid.UUID) -> None:
+    """Purge prior child records within the active session without committing."""
+    db.execute(delete(KnowledgeUnitRecord).where(KnowledgeUnitRecord.source_id == source_id))
+    db.execute(delete(KnowledgeQuestionImageLink).where(
+        KnowledgeQuestionImageLink.question_record_id.in_(
+            select(KnowledgeQuestionRecord.id).where(KnowledgeQuestionRecord.source_id == source_id)
+        )
+    ))
+    db.execute(delete(KnowledgeQuestionRecord).where(KnowledgeQuestionRecord.source_id == source_id))
+    db.execute(delete(KnowledgeAsset).where(KnowledgeAsset.source_id == source_id))
+    db.execute(delete(KnowledgeConceptLink).where(KnowledgeConceptLink.source_id == source_id))
+    db.execute(delete(KnowledgeConceptRelation).where(KnowledgeConceptRelation.source_id == source_id))
+    db.execute(delete(KnowledgeLessonRelation).where(KnowledgeLessonRelation.source_id == source_id))
+    db.execute(delete(KnowledgeOutlineNode).where(KnowledgeOutlineNode.source_id == source_id))
+    db.execute(delete(KnowledgeDocument).where(KnowledgeDocument.source_id == source_id))
+    db.execute(delete(AssessmentSource).where(AssessmentSource.source_id == source_id))
+
+
+def process_knowledge_source(
+    db: Session,
+    source_id: uuid.UUID,
+    generation: int | None = None,
+    attempt_id: uuid.UUID | None = None,
+) -> KnowledgeSource:
     """Parses source file, extracts structured Knowledge Units, Questions & Assets, and indexes knowledge."""
+    from app.core.storage import get_storage_provider
+
     source = db.scalar(select(KnowledgeSource).where(KnowledgeSource.id == source_id))
-    if not source or not os.path.exists(source.storage_path):
-        raise ValueError("Knowledge source or file not found")
+    storage = get_storage_provider()
+    if not source or not storage.exists(source.storage_path):
+        raise ValueError("Knowledge source or file not found in storage")
 
-    source.status = SourceStatus.PROCESSING
-    source.progress_percent = 10
-    db.commit()
+    generation = generation if generation is not None else source.processing_generation
+    attempt_id = attempt_id if attempt_id is not None else source.processing_attempt_id
+    _advance_indexing_progress(
+        db,
+        source,
+        generation,
+        attempt_id,
+        10,
+        SourceStatus.PROCESSING,
+    )
 
+    # If local file exists, use it directly. Otherwise, stream from remote storage to a temporary worker stage.
+    local_path = storage.get_local_path(source.storage_path)
+    temp_staging_path = None
+    if local_path and os.path.exists(local_path):
+        effective_file_path = local_path
+    else:
+        temp_dir = _get_kc_temp_dir()
+        temp_staging_path = os.path.join(temp_dir, f"worker_stage_{uuid.uuid4().hex[:8]}_{source.filename}")
+        with open(temp_staging_path, "wb") as f_out:
+            for chunk in storage.open_stream(source.storage_path):
+                f_out.write(chunk)
+        effective_file_path = temp_staging_path
+
+    newly_created_asset_paths: list[str] = []
     try:
-        # Ensure idempotency: purge any prior child records for this source before processing
-        db.execute(delete(KnowledgeUnitRecord).where(KnowledgeUnitRecord.source_id == source_id))
-        db.execute(delete(KnowledgeQuestionImageLink).where(
-            KnowledgeQuestionImageLink.question_record_id.in_(
-                select(KnowledgeQuestionRecord.id).where(KnowledgeQuestionRecord.source_id == source_id)
-            )
-        ))
-        db.execute(delete(KnowledgeQuestionRecord).where(KnowledgeQuestionRecord.source_id == source_id))
-        db.execute(delete(KnowledgeAsset).where(KnowledgeAsset.source_id == source_id))
-        db.execute(delete(KnowledgeConceptLink).where(KnowledgeConceptLink.source_id == source_id))
-        db.execute(delete(KnowledgeConceptRelation).where(KnowledgeConceptRelation.source_id == source_id))
-        db.execute(delete(KnowledgeLessonRelation).where(KnowledgeLessonRelation.source_id == source_id))
-        db.execute(delete(KnowledgeOutlineNode).where(KnowledgeOutlineNode.source_id == source_id))
-        db.execute(delete(KnowledgeDocument).where(KnowledgeDocument.source_id == source_id))
-        db.execute(delete(AssessmentSource).where(AssessmentSource.source_id == source_id))
-        db.commit()
-
         if is_source_cancelled(source_id):
             raise OperationCancelledError(f"Indexing cancelled for source {source_id}")
+
         # Structured assessment banks are parsed directly; document assessments use
         # the normal structure-preserving document parser below, then materialize.
         if source.file_format in ("json", "quiz"):
-            with open(source.storage_path, "rb") as f:
-                file_bytes = f.read()
+            MAX_QUIZ_BYTES = 50 * 1024 * 1024
+            with open(effective_file_path, "rb") as f:
+                file_bytes = f.read(MAX_QUIZ_BYTES + 1)
+            if len(file_bytes) > MAX_QUIZ_BYTES:
+                raise ValueError("ملف الأسئلة يتجاوز الحد الأقصى المسموح (50 ميجابايت)")
             parsed_questions = parse_assessment_bank(file_bytes, source.filename)
+
+            _assert_current_attempt(db, source_id, generation, attempt_id)
+            _purge_source_child_records(db, source_id)
+            db.flush()
             
             assess_source = AssessmentSource(
                 source_id=source.id,
@@ -1093,7 +1340,7 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
                 review_status="needs_review",
             )
             db.add(assess_source)
-            db.commit()
+            db.flush()
             db.refresh(assess_source)
 
             q_count = 0
@@ -1127,8 +1374,14 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
 
             source.question_count = q_count
             source.status = SourceStatus.INDEXED
+            source.indexing_percent = 100
             source.progress_percent = 100
+            source.error_message = None
             db.commit()
+            db.refresh(source)
+            _advance_indexing_progress(
+                db, source, generation, attempt_id, 100, SourceStatus.INDEXED
+            )
             return source
 
         # Document & Media parsing (PDF, DOCX, PPTX, TXT, Images)
@@ -1137,23 +1390,34 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
                 raise OperationCancelledError(f"Indexing cancelled for source {source_id} on page {current_page}")
             if total_pages > 0 and (current_page % 5 == 0 or current_page == total_pages):
                 pct = min(75, int(10 + (current_page / total_pages) * 65))
-                source.progress_percent = pct
                 try:
-                    db.commit()
+                    _advance_indexing_progress(
+                        db, source, generation, attempt_id, pct, SourceStatus.PROCESSING
+                    )
+                except StaleProcessingAttemptError:
+                    raise
                 except Exception:
-                    pass
+                    db.rollback()
 
         parsed_doc = parse_knowledge_file(
             file_bytes=None,
             filename=source.filename,
             mime_type=source.mime_type,
             progress_callback=on_page_progress,
-            file_path=source.storage_path,
+            file_path=effective_file_path,
             cancel_check=lambda: is_source_cancelled(source_id),
         )
 
         if is_source_cancelled(source_id):
             raise OperationCancelledError(f"Indexing cancelled for source {source_id} after document parsing")
+
+        # Parsing succeeded without error: atomically replace child records under single transaction
+        _assert_current_attempt(db, source_id, generation, attempt_id)
+        prior_asset_paths = set(
+            db.scalars(select(KnowledgeAsset.storage_path).where(KnowledgeAsset.source_id == source.id)).all()
+        )
+        _purge_source_child_records(db, source_id)
+        db.flush()
 
         doc_rec = KnowledgeDocument(
             source_id=source.id,
@@ -1165,7 +1429,7 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
             hierarchy_json=parsed_doc.hierarchy,
         )
         db.add(doc_rec)
-        db.commit()
+        db.flush()
         db.refresh(doc_rec)
 
         if is_source_cancelled(source_id):
@@ -1192,27 +1456,21 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
                 context.setdefault(current.node_kind, current.title)
                 current = outline_by_id.get(current.parent_id) if current.parent_id else None
             return node, context
-        db.commit()
+        db.flush()
 
-        # 1. Process Assets with single BATCH COMMIT
+        # 1. Process Assets with storage provider
         asset_count = 0
         img_id_map: dict[str, uuid.UUID] = {}
-        assets_dir = os.path.join(STORAGE_DIR, f"courses/{source.course_id}/assets")
-        os.makedirs(assets_dir, exist_ok=True)
 
         for p_img in parsed_doc.all_images:
-            if is_source_cancelled(source_id):
+            if is_source_cancelled(source_id, generation, attempt_id):
                 raise OperationCancelledError(f"Indexing cancelled for source {source_id} during asset processing")
             asset_path = p_img.storage_path or source.storage_path
             vision_analysis: dict[str, Any] = {}
             if p_img.image_bytes:
-                img_filename = f"{p_img.id}_{source.id.hex[:8]}.png"
-                asset_path = os.path.join(assets_dir, img_filename)
-                try:
-                    with open(asset_path, "wb") as img_f:
-                        img_f.write(p_img.image_bytes)
-                except Exception:
-                    asset_path = source.storage_path
+                asset_key = f"knowledge_center/assets/{source.id}/{p_img.id}.png"
+                asset_path = storage.save_bytes(p_img.image_bytes, asset_key, content_type="image/png")
+                newly_created_asset_paths.append(asset_path)
                 vision_analysis = analyze_educational_image(
                     p_img.image_bytes,
                     mime_type="image/png",
@@ -1257,7 +1515,7 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
             asset_count += 1
 
         if asset_count > 0:
-            db.commit()
+            db.flush()
 
         assets_by_page: dict[int, list[KnowledgeAsset]] = {}
         for asset in db.scalars(select(KnowledgeAsset).where(KnowledgeAsset.source_id == source.id)).all():
@@ -1284,7 +1542,7 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
                     )
                 except Exception as exc:
                     logger.debug(f"Failed indexing asset {ca.id} as knowledge unit: {exc}")
-            db.commit()
+            db.flush()
 
         # 2. Extract distant answer keys across document
         distant_keys = extract_distant_answer_keys(parsed_doc)
@@ -1508,11 +1766,15 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
                     elif re.search(r"^(?:[0-9]+[\-\.\)]\s*|[\-\*•]\s*)(?:يوضح|يتعرف|يذكر|يقارن|يفسر|يشرح|يحدد|يصف|يستنتج|يميز|يعدد|يطبق|يبين|يحلل|يركب|يحسب)\b", b_text) or re.search(r"^(?:يوضح|يتعرف|يذكر|يقارن|يفسر|يشرح|يحدد|يصف|يستنتج|يميز|يعدد|يطبق|يبين|يحلل)\b", b_text):
                         continue
 
-                norm_block_stem = re.sub(r"\s+", "", block.text[:40])
-                if norm_block_stem in assembled_q_stems:
-                    continue
-
-                status, q_data = classify_and_parse_question(block.text, distant_keys)
+                # For pure assessment sources, or if questions were already assembled at document level,
+                # skip raw block-level question fragment parsing to prevent duplicating/splitting questions.
+                if source.source_role in (SourceRole.ASSESSMENT, SourceRole.QUIZ_IMPORT, SourceRole.ANSWER_KEY) or (doc_assembled_questions and len(doc_assembled_questions) > 0):
+                    status, q_data = "statement", None
+                else:
+                    norm_block_stem = re.sub(r"\s+", "", block.text[:40])
+                    if norm_block_stem in assembled_q_stems:
+                        continue
+                    status, q_data = classify_and_parse_question(block.text, distant_keys)
 
                 if status in ("question", "uncertain") and q_data:
                     block.block_type = status
@@ -1546,7 +1808,7 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
                     continue
 
                 # Everything not a question is processed as Content
-                if source.source_role in (SourceRole.ASSESSMENT, SourceRole.ANSWER_KEY):
+                if source.source_role in (SourceRole.ASSESSMENT, SourceRole.QUIZ_IMPORT, SourceRole.ANSWER_KEY):
                     continue
                 # Filter out document/exam titles and answer-key sections from becoming KnowledgeUnits
                 lines = [l.strip() for l in block.text.split("\n") if l.strip()]
@@ -1655,7 +1917,7 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
                 ))
         db.flush()
 
-        if source.source_role == SourceRole.ASSESSMENT:
+        if source.source_role in (SourceRole.ASSESSMENT, SourceRole.QUIZ_IMPORT):
             db.flush()
             answer_key_raw = (source.metadata_json or {}).get("answer_key_source_id")
             answer_key_source_id = uuid.UUID(str(answer_key_raw)) if answer_key_raw else None
@@ -1666,8 +1928,17 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
                 answer_key_source_id=answer_key_source_id,
             )
 
-        source.progress_percent = 85
-        db.commit()
+            # Imported assessments are question-bank inputs, never general RAG
+            # evidence. Parsers may temporarily create units from tables or
+            # figures, so remove those units before embedding/indexing.
+            db.execute(
+                delete(KnowledgeUnitRecord).where(
+                    KnowledgeUnitRecord.source_id == source.id
+                )
+            )
+            unit_count = 0
+
+        _advance_indexing_progress(db, source, generation, attempt_id, 85)
 
         if is_source_cancelled(source_id):
             raise OperationCancelledError(f"Indexing cancelled for source {source_id} before embeddings")
@@ -1687,44 +1958,71 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
             for unit, vector in zip(units_to_embed, provider.embed_texts(texts), strict=False):
                 unit.embedding_json = vector
 
-        source.progress_percent = 90
-        db.commit()
+        _advance_indexing_progress(db, source, generation, attempt_id, 90)
 
-        if is_source_cancelled(source_id):
-            raise OperationCancelledError(f"Indexing cancelled for source {source_id} before vector store upsert")
-
-        indexed_units = db.scalars(
-            select(KnowledgeUnitRecord).where(KnowledgeUnitRecord.source_id == source.id)
-        ).all()
-        upsert_knowledge_vectors(
-            (
-                str(unit.id), unit.embedding_json or [],
-                {"course_id": str(unit.course_id), "source_id": str(source.id), "version": source.version},
-            )
-            for unit in indexed_units
-        )
-
-        source.progress_percent = 95
-        db.commit()
-
-        if is_source_cancelled(source_id):
+        if is_source_cancelled(source_id, generation, attempt_id):
             raise OperationCancelledError(f"Indexing cancelled for source {source_id} before graph generation")
 
         build_source_knowledge_graph(db, source.id)
+
+        if source.source_role in (SourceRole.ASSESSMENT, SourceRole.QUIZ_IMPORT):
+            meta = source.metadata_json or {}
+            materialize_assessment_questions(
+                db=db,
+                source=source,
+                assessment_type=meta.get("assessment_type", "exam"),
+                answer_key_source_id=meta.get("answer_key_source_id"),
+            )
 
         source.unit_count = unit_count
         source.image_count = asset_count
         source.table_count = table_count
         source.question_count = question_count
         source.status = SourceStatus.INDEXED
+        source.indexing_percent = 100
         source.progress_percent = 100
+        source.error_message = None
         db.commit()
         db.refresh(source)
+        _advance_indexing_progress(
+            db, source, generation, attempt_id, 100, SourceStatus.INDEXED
+        )
+
+        # 1. Clean up obsolete orphan assets from prior indexing
+        orphan_paths = prior_asset_paths - set(newly_created_asset_paths)
+        for old_path in orphan_paths:
+            try:
+                storage.delete(old_path)
+            except Exception as clean_err:
+                logger.warning("Failed to clean up obsolete asset %s: %s", old_path, clean_err)
+
+        # 2. Upsert vectors AFTER DB commit to ensure no orphaned vectors on rollback
+        indexed_units = db.scalars(
+            select(KnowledgeUnitRecord).where(KnowledgeUnitRecord.source_id == source.id)
+        ).all()
+        try:
+            upsert_knowledge_vectors(
+                (
+                    str(unit.id), unit.embedding_json or [],
+                    {"course_id": str(unit.course_id), "source_id": str(source.id), "version": source.version},
+                )
+                for unit in indexed_units
+            )
+        except Exception as vec_exc:
+            logger.warning("Failed to upsert knowledge vectors for source %s: %s", source.id, vec_exc)
 
         return source
 
+    except StaleProcessingAttemptError:
+        logger.warning("Discarded stale indexing attempt for source %s", source_id)
+        raise
     except OperationCancelledError as exc:
-        logger.info(f"Indexing cancelled for source {source_id}: {exc}")
+        logger.info("Indexing cancelled for source %s: %s", source_id, exc)
+        for ap in newly_created_asset_paths:
+            try:
+                storage.delete(ap)
+            except Exception as clean_err:
+                logger.warning("Failed to delete asset %s during cancellation cleanup: %s", ap, clean_err)
         if is_source_deleting(source_id):
             try:
                 delete_knowledge_source(db, source_id)
@@ -1733,23 +2031,27 @@ def process_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
         else:
             try:
                 src = db.get(KnowledgeSource, source_id)
-                if src:
-                    src.status = SourceStatus.STOPPED
+                if src and src.processing_generation == generation and src.processing_attempt_id == attempt_id:
+                    src.status = SourceStatus.CANCELLED
                     src.error_message = "تم إيقاف الفهرسة (الملف محفوظ بالسيرفر)"
                     db.commit()
             except Exception:
                 db.rollback()
         raise exc
     except Exception as exc:
-        try:
-            src = db.get(KnowledgeSource, source_id)
-            if src and src.status != SourceStatus.INDEXED:
-                src.status = SourceStatus.FAILED
-                src.error_message = str(exc)
-                db.commit()
-        except Exception:
-            db.rollback()
+        db.rollback()
+        for ap in newly_created_asset_paths:
+            try:
+                storage.delete(ap)
+            except Exception as clean_err:
+                logger.warning("Failed to delete asset %s during error rollback: %s", ap, clean_err)
         raise exc
+    finally:
+        if temp_staging_path and os.path.exists(temp_staging_path):
+            try:
+                os.remove(temp_staging_path)
+            except OSError:
+                pass
 
 
 def reindex_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSource:
@@ -1757,62 +2059,215 @@ def reindex_knowledge_source(db: Session, source_id: uuid.UUID) -> KnowledgeSour
     source = db.scalar(select(KnowledgeSource).where(KnowledgeSource.id == source_id))
     if not source:
         raise ValueError("Source not found")
+    if source.status in (SourceStatus.QUEUED, SourceStatus.PROCESSING):
+        raise ValueError("An indexing attempt is already active for this source")
 
-    # Increment version
     source.version += 1
-
-    # Delete previous version units, questions & documents safely
-    db.execute(delete(KnowledgeUnitRecord).where(KnowledgeUnitRecord.source_id == source_id))
-    db.execute(delete(KnowledgeQuestionImageLink).where(
-        KnowledgeQuestionImageLink.question_record_id.in_(
-            select(KnowledgeQuestionRecord.id).where(KnowledgeQuestionRecord.source_id == source_id)
-        )
-    ))
-    db.execute(delete(KnowledgeQuestionRecord).where(KnowledgeQuestionRecord.source_id == source_id))
-    db.execute(delete(KnowledgeAsset).where(KnowledgeAsset.source_id == source_id))
-    db.execute(delete(KnowledgeConceptLink).where(KnowledgeConceptLink.source_id == source_id))
-    db.execute(delete(KnowledgeConceptRelation).where(KnowledgeConceptRelation.source_id == source_id))
-    db.execute(delete(KnowledgeLessonRelation).where(KnowledgeLessonRelation.source_id == source_id))
-    db.execute(delete(KnowledgeOutlineNode).where(KnowledgeOutlineNode.source_id == source_id))
-    db.execute(delete(KnowledgeDocument).where(KnowledgeDocument.source_id == source_id))
-    db.execute(delete(AssessmentSource).where(AssessmentSource.source_id == source_id))
+    source.processing_generation += 1
+    source.processing_attempt_id = uuid.uuid4()
+    source.active_task_id = None
+    source.status = SourceStatus.QUEUED
+    source.indexing_percent = 0
+    source.progress_percent = 0
+    source.error_message = None
     db.commit()
 
-    return process_knowledge_source(db, source_id)
+    return process_knowledge_source(
+        db,
+        source_id,
+        generation=source.processing_generation,
+        attempt_id=source.processing_attempt_id,
+    )
 
 
 def delete_knowledge_source(db: Session, source_id: uuid.UUID) -> bool:
-    """Deletes source file and purges associated document, assets, units, and questions."""
+    """Deletes source file and purges associated document, assets, units, and questions under advisory lock."""
+    import time
+    from app.core.storage import get_storage_provider
+    from app.tasks.knowledge_ingestion import SourceAdvisoryLock
+
     source = db.scalar(select(KnowledgeSource).where(KnowledgeSource.id == source_id))
     if not source:
         clear_source_tracking(source_id)
         return False
 
-    # Purge child records explicitly to prevent orphaned units in search/RAG
-    db.execute(delete(KnowledgeUnitRecord).where(KnowledgeUnitRecord.source_id == source_id))
-    db.execute(delete(KnowledgeQuestionImageLink).where(
-        KnowledgeQuestionImageLink.question_record_id.in_(
-            select(KnowledgeQuestionRecord.id).where(KnowledgeQuestionRecord.source_id == source_id)
+    # Mark as DELETING immediately to signal any active worker to abort
+    register_deleting(source_id)
+    source.status = SourceStatus.DELETING
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    # Acquire advisory lock to ensure no worker is writing while deleting
+    lock = SourceAdvisoryLock(source_id)
+    acquired = False
+    for _ in range(50):
+        if lock.acquire():
+            acquired = True
+            break
+        time.sleep(0.1)
+
+    try:
+        # Collect all asset storage paths to purge
+        asset_storage_paths = list(
+            db.scalars(select(KnowledgeAsset.storage_path).where(KnowledgeAsset.source_id == source_id)).all()
         )
-    ))
-    db.execute(delete(KnowledgeQuestionRecord).where(KnowledgeQuestionRecord.source_id == source_id))
-    db.execute(delete(KnowledgeAsset).where(KnowledgeAsset.source_id == source_id))
-    db.execute(delete(KnowledgeConceptLink).where(KnowledgeConceptLink.source_id == source_id))
-    db.execute(delete(KnowledgeConceptRelation).where(KnowledgeConceptRelation.source_id == source_id))
-    db.execute(delete(KnowledgeLessonRelation).where(KnowledgeLessonRelation.source_id == source_id))
-    db.execute(delete(KnowledgeOutlineNode).where(KnowledgeOutlineNode.source_id == source_id))
-    db.execute(delete(KnowledgeDocument).where(KnowledgeDocument.source_id == source_id))
-    db.execute(delete(AssessmentSource).where(AssessmentSource.source_id == source_id))
 
-    storage_path = source.storage_path
-    db.delete(source)
-    db.commit()
+        # Purge child records explicitly to prevent orphaned units in search/RAG
+        db.execute(delete(KnowledgeUnitRecord).where(KnowledgeUnitRecord.source_id == source_id))
+        db.execute(delete(KnowledgeQuestionImageLink).where(
+            KnowledgeQuestionImageLink.question_record_id.in_(
+                select(KnowledgeQuestionRecord.id).where(KnowledgeQuestionRecord.source_id == source_id)
+            )
+        ))
+        db.execute(delete(KnowledgeQuestionRecord).where(KnowledgeQuestionRecord.source_id == source_id))
+        db.execute(delete(KnowledgeAsset).where(KnowledgeAsset.source_id == source_id))
+        db.execute(delete(KnowledgeConceptLink).where(KnowledgeConceptLink.source_id == source_id))
+        db.execute(delete(KnowledgeConceptRelation).where(KnowledgeConceptRelation.source_id == source_id))
+        db.execute(delete(KnowledgeLessonRelation).where(KnowledgeLessonRelation.source_id == source_id))
+        db.execute(delete(KnowledgeOutlineNode).where(KnowledgeOutlineNode.source_id == source_id))
+        db.execute(delete(KnowledgeDocument).where(KnowledgeDocument.source_id == source_id))
+        db.execute(delete(AssessmentSource).where(AssessmentSource.source_id == source_id))
 
-    if storage_path and os.path.exists(storage_path):
+        storage_path = source.storage_path
+        db.delete(source)
+        db.commit()
+
+        storage = get_storage_provider()
         try:
-            os.remove(storage_path)
+            storage.delete(storage_path)
         except Exception as exc:
-            logger.warning(f"Could not remove source file {storage_path}: {exc}")
+            logger.warning("Could not remove source file %s: %s", storage_path, exc)
 
-    clear_source_tracking(source_id)
-    return True
+        for a_path in asset_storage_paths:
+            try:
+                storage.delete(a_path)
+            except Exception as a_exc:
+                logger.warning("Could not remove asset file %s: %s", a_path, a_exc)
+
+        try:
+            cache_dir = os.path.join(_get_kc_temp_dir(), "remote_pdf_cache")
+            if os.path.exists(cache_dir):
+                for f_name in os.listdir(cache_dir):
+                    if str(source_id) in f_name:
+                        try:
+                            os.remove(os.path.join(cache_dir, f_name))
+                        except OSError as f_exc:
+                            logger.warning("Failed to remove preview cache file %s: %s", f_name, f_exc)
+        except Exception as c_exc:
+            logger.warning("Failed to clear local cache for source %s: %s", source_id, c_exc)
+
+        clear_source_tracking(source_id)
+        return True
+    finally:
+        if acquired:
+            lock.release()
+
+
+def dispatch_source_processing(
+    db: Session,
+    source_id: uuid.UUID,
+    background_tasks: Any | None = None,
+    is_startup: bool = False,
+) -> bool:
+    """Centralized, idempotent dispatch function with persistent database claim and row lock.
+
+    Prevents duplicate task enqueuing across multiple API replicas and startup recovery races.
+    """
+    from datetime import timedelta
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    if settings.app_env.lower() in {"test", "testing"} or os.getenv("APP_ENV", "").lower() in {"test", "testing"}:
+        logger.info("Test environment active; skipping background ingestion enqueue for source %s", source_id)
+        return True
+
+    stmt = select(KnowledgeSource).where(KnowledgeSource.id == source_id)
+    if db.bind.dialect.name == "postgresql":
+        stmt = stmt.with_for_update(skip_locked=True)
+
+    source = db.scalar(stmt)
+    if not source:
+        # Row locked by another replica or doesn't exist
+        return False
+
+    if source.status in (SourceStatus.INDEXED, SourceStatus.CANCELLED, SourceStatus.STOPPED, SourceStatus.FAILED, SourceStatus.DELETING):
+        return False
+
+    now = datetime.now(timezone.utc)
+    if source.status == SourceStatus.QUEUED:
+        # If it has a recent active claim (< 2 minutes), do not re-dispatch
+        if source.active_task_id and source.updated_at:
+            updated_tz = source.updated_at if source.updated_at.tzinfo else source.updated_at.replace(tzinfo=timezone.utc)
+            if now - updated_tz < timedelta(minutes=2):
+                return False
+    elif source.status == SourceStatus.PROCESSING:
+        if not is_startup:
+            return False
+        # On startup recovery: only redeliver if PROCESSING is stale (> 15 min)
+        if source.updated_at:
+            updated_tz = source.updated_at if source.updated_at.tzinfo else source.updated_at.replace(tzinfo=timezone.utc)
+            if now - updated_tz < timedelta(minutes=15):
+                return False
+
+    is_prod = settings.app_env.lower() in {"production", "production_like"}
+    use_celery = (
+        is_prod
+        or settings.ingestion_backend.lower() == "celery"
+        or os.getenv("USE_CELERY_INGESTION", "").lower() in {"1", "true", "yes"}
+    )
+
+    if use_celery:
+        claim_task_id = f"knowledge-source:{source.id}:gen:{source.processing_generation}:{uuid.uuid4().hex[:8]}"
+        source.active_task_id = claim_task_id
+        source.updated_at = now
+        db.commit()
+
+        try:
+            from app.tasks.knowledge_ingestion import index_source
+            index_source.apply_async(
+                args=[
+                    str(source.id),
+                    source.processing_generation,
+                    str(source.processing_attempt_id),
+                ],
+                task_id=claim_task_id,
+            )
+            logger.info("Dispatched source %s generation %d to Celery (task %s)", source.id, source.processing_generation, claim_task_id)
+            return True
+        except Exception as exc:
+            logger.error("Failed to enqueue source %s to Celery: %s", source.id, exc)
+            # Safely clear claim
+            source.active_task_id = None
+            db.commit()
+            return False
+
+    if settings.allow_local_ingestion:
+        from app.api.routes.knowledge_center import _LOCAL_INGEST_EXECUTOR, _run_bg_process_source
+        source.active_task_id = f"local:{source.processing_generation}:{uuid.uuid4().hex[:8]}"
+        source.updated_at = now
+        db.commit()
+
+        if background_tasks:
+            background_tasks.add_task(
+                _LOCAL_INGEST_EXECUTOR.submit,
+                _run_bg_process_source,
+                source.id,
+                source.processing_generation,
+                source.processing_attempt_id,
+            )
+        else:
+            _LOCAL_INGEST_EXECUTOR.submit(
+                _run_bg_process_source,
+                source.id,
+                source.processing_generation,
+                source.processing_attempt_id,
+            )
+        return True
+    else:
+        logger.error(
+            "Ingestion dispatcher is unavailable (backend=%s, allow_local_ingestion=False)",
+            settings.ingestion_backend,
+        )
+        return False
