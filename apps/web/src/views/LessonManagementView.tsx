@@ -1537,34 +1537,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                       </div>
                     )}
                   </>
-                ) : (
-                  <div
-                    style={{
-                      background: "var(--bg-surface-secondary, #f8fafc)",
-                      border: "1px solid var(--border-color, #e2e8f0)",
-                      borderRadius: "12px",
-                      padding: "14px 16px",
-                      marginBottom: "14px",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      flexWrap: "wrap",
-                      gap: "12px",
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                      <Clock size={18} style={{ color: "#d97706", flexShrink: 0 }} />
-                      <div>
-                        <strong style={{ display: "block", fontSize: "12px", color: "var(--text-main)" }}>
-                          في انتظار اكتمال الحد الأدنى للمشاهدات ({viewsCount} من أصل {minViewsThreshold} طالب)
-                        </strong>
-                        <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                          سيتم تفعيل تقارير الذكاء الاصطناعي وتوقعات الصعوبة بمجرد وصول عدد المشاهدين للحد المطلوب.
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                )}
+                ) : null}
 
                 {/* Attached Materials Section & Add Material Button */}
                 <div style={{ background: "var(--bg-surface-secondary, #f8fafc)", padding: "10px 14px", borderRadius: "10px", border: "1px solid var(--border-color)" }}>
