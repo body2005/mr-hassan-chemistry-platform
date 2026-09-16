@@ -1,4 +1,4 @@
-import { apiRequest, uploadWithProgress, ApiClientError } from "./apiClient";
+import { apiRequest, uploadWithProgress, ApiClientError, markBrowserSessionActive } from "./apiClient";
 /**
  * ============================================================================
  * MATGAR LMS - UNIFIED DATA ACCESS LAYER (DAL)
@@ -391,24 +391,14 @@ export const authService = {
   },
 
   async getCurrentUser(): Promise<CurrentUser | null> {
-    const hasSession = typeof localStorage !== "undefined"
-      && Boolean(localStorage.getItem("lms_session_token") || localStorage.getItem("lms_cached_user"));
-    if (!hasSession) return null;
-
     try {
       const apiUser = await apiRequest<ApiUser>("/auth/me");
-      const user = mapApiUser(apiUser);
-      if (typeof localStorage !== "undefined") {
-        localStorage.setItem("lms_cached_user", JSON.stringify(user));
-      }
-      return user;
+      markBrowserSessionActive(true);
+      return mapApiUser(apiUser);
     } catch (err: unknown) {
       // ONLY genuine 401 Unauthenticated means the session is expired or invalid
       if (err instanceof ApiClientError && err.status === 401) {
-        if (typeof localStorage !== "undefined") {
-          localStorage.removeItem("lms_session_token");
-          localStorage.removeItem("lms_cached_user");
-        }
+        markBrowserSessionActive(false);
         return null;
       }
       // 403 Forbidden is an authorization error, NOT an unauthenticated session!
@@ -422,16 +412,13 @@ export const authService = {
     const cleanPass = (pass || "").trim();
 
     try {
-      const result = await apiRequest<{ user: ApiUser; token?: string }>("/auth/login", {
+      const result = await apiRequest<{ user: ApiUser; expires_at: string }>("/auth/login", {
         method: "POST",
         body: JSON.stringify({ email: cleanEmail, password: cleanPass, institution_slug: institutionSlug }),
       });
       const user = mapApiUser(result.user);
+      markBrowserSessionActive(true);
       if (typeof localStorage !== "undefined") {
-        if (result.token) {
-          localStorage.setItem("lms_session_token", result.token);
-        }
-        localStorage.setItem("lms_cached_user", JSON.stringify(user));
         const targetTab = user.role === "student" ? "GeneralHome" : "LessonManagement";
         localStorage.setItem("lms_active_tab", targetTab);
       }
@@ -456,7 +443,7 @@ export const authService = {
 
     // 1. Try FastAPI backend API
     try {
-      const result = await apiRequest<{ user: ApiUser; token?: string }>("/auth/register", {
+      const result = await apiRequest<{ user: ApiUser; expires_at: string }>("/auth/register", {
         method: "POST",
         body: JSON.stringify({
           display_name: userData.name,
@@ -466,11 +453,8 @@ export const authService = {
         }),
       });
       const user = mapApiUser(result.user);
+      markBrowserSessionActive(true);
       if (typeof localStorage !== "undefined") {
-        if (result.token) {
-          localStorage.setItem("lms_session_token", result.token);
-        }
-        localStorage.setItem("lms_cached_user", JSON.stringify(user));
         const targetTab = user.role === "student" ? "GeneralHome" : "LessonManagement";
         localStorage.setItem("lms_active_tab", targetTab);
       }
@@ -491,11 +475,10 @@ export const authService = {
       // Logout is local-first so an unavailable server cannot trap the user in the UI.
     }
     if (typeof localStorage !== "undefined") {
-      localStorage.removeItem("lms_session_token");
-      localStorage.removeItem("lms_cached_user");
       localStorage.setItem("lms_active_tab", "Landing");
     }
     if (typeof window !== "undefined") {
+      markBrowserSessionActive(false);
       window.location.hash = "";
       window.dispatchEvent(new Event("lms_user_updated"));
     }

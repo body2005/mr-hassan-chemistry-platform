@@ -65,7 +65,7 @@ class LoginRequest(BaseModel):
 class AuthResponse(BaseModel):
     user: UserResponse
     expires_in: int
-    token: str | None = None
+    expires_at: datetime
 
 
 class ChangePasswordRequest(BaseModel):

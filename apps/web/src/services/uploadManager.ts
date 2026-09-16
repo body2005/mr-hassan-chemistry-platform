@@ -7,7 +7,7 @@
  */
 
 import { courseService } from "./lmsService";
-import { uploadWithProgress, apiRequest } from "./apiClient";
+import { uploadWithProgress, apiRequest, hasBrowserSession } from "./apiClient";
 
 export type UploadType = "lesson_video" | "lesson_material" | "knowledge_source";
 export type UploadStatus = "queued" | "uploading" | "processing" | "completed" | "error" | "cancelled";
@@ -83,8 +83,7 @@ class UploadManager {
   }
 
   private hasAuthenticatedSession(): boolean {
-    if (typeof window === "undefined" || !window.localStorage) return false;
-    return Boolean(localStorage.getItem("lms_session_token"));
+    return hasBrowserSession();
   }
 
   public hasProcessingTasks(): boolean {

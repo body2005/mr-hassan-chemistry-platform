@@ -100,17 +100,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
   const [isExpanded, setIsExpanded] = useState(false);
 
   // Strictly enforce role: Upload widget is exclusively for teachers
-  let role = currentUser?.role;
-  if (!role && typeof localStorage !== "undefined") {
-    try {
-      const cached = localStorage.getItem("lms_cached_user");
-      if (cached) {
-        role = JSON.parse(cached).role;
-      }
-    } catch {
-      role = undefined;
-    }
-  }
+  const role = currentUser?.role;
 
   useEffect(() => {
     const unsubscribe = uploadManager.subscribe((newTasks) => {

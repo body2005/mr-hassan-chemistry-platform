@@ -32,7 +32,8 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def create_session_token(user: User) -> str:
+def create_session_token(user: User, *, family_id: uuid.UUID | None = None) -> str:
+    """Create the short-lived access credential stored only in an HttpOnly cookie."""
     settings = get_settings()
     now = datetime.now(UTC)
     payload: dict[str, Any] = {
@@ -41,7 +42,9 @@ def create_session_token(user: User) -> str:
         "role": user.role.value,
         "type": "session",
         "aud": "session",
+        "iss": settings.session_issuer,
         "jti": str(uuid.uuid4()),
+        "family_id": str(family_id) if family_id else None,
         "iat": now,
         "exp": now + timedelta(seconds=settings.session_ttl_seconds),
     }
@@ -55,16 +58,16 @@ def decode_session_token(token: str) -> dict[str, Any] | None:
             token,
             settings.secret_key,
             algorithms=["HS256"],
-            options={"verify_aud": False},
+            audience="session",
+            issuer=settings.session_issuer,
         )
     except jwt.PyJWTError:
         return None
 
-    # CRITICAL: Reject preview tokens immediately so they cannot be used as generic session credentials
-    if payload.get("type") == "preview" or payload.get("aud") == "preview":
+    if payload.get("type") != "session" or payload.get("aud") != "session":
         return None
 
-    if not payload.get("sub") or not payload.get("institution_id"):
+    if not payload.get("sub") or not payload.get("institution_id") or not payload.get("jti"):
         return None
     return payload
 
