@@ -113,7 +113,7 @@ def test_grade_source_isolation_between_secondary_grades(two_institutions_setup,
         file_bytes=content.encode("utf-8"),
         grade_level="SECONDARY_1",
         source_role=SourceRole.COURSE_KNOWLEDGE,
-    )
+    ).source
     process_knowledge_source(db, source_sec1.id)
     assert source_sec1.status == SourceStatus.INDEXED
 
@@ -161,7 +161,7 @@ def test_cross_institution_isolation(two_institutions_setup, db):
         file_bytes=content.encode("utf-8"),
         grade_level="SECONDARY_1",
         source_role=SourceRole.COURSE_KNOWLEDGE,
-    )
+    ).source
     process_knowledge_source(db, source_a.id)
 
     client = TestClient(app, raise_server_exceptions=False)

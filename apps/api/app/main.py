@@ -21,71 +21,39 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Resume interrupted indexing without running in-process OCR when Celery is enabled."""
+    """Resume interrupted indexing tasks with centralized dispatch."""
     from datetime import datetime, timezone, timedelta
     from sqlalchemy import select, or_, and_
     from app.core.database import SessionLocal
     from app.models.knowledge_center import KnowledgeSource, SourceStatus
+    from app.services.knowledge_center_service import dispatch_source_processing
 
-    if settings.ingestion_backend == "celery":
-        try:
-            from app.tasks.knowledge_ingestion import index_source
-
-            stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
-            with SessionLocal() as db:
-                stmt = (
-                    select(KnowledgeSource)
-                    .where(
-                        or_(
-                            KnowledgeSource.status == SourceStatus.QUEUED,
-                            and_(
-                                KnowledgeSource.status == SourceStatus.PROCESSING,
-                                KnowledgeSource.updated_at <= stale_cutoff,
-                            ),
-                        )
+    try:
+        stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
+        with SessionLocal() as db:
+            stmt = (
+                select(KnowledgeSource.id)
+                .where(
+                    or_(
+                        KnowledgeSource.status == SourceStatus.QUEUED,
+                        and_(
+                            KnowledgeSource.status == SourceStatus.PROCESSING,
+                            KnowledgeSource.updated_at <= stale_cutoff,
+                        ),
                     )
                 )
-                if db.bind.dialect.name == "postgresql":
-                    stmt = stmt.with_for_update(skip_locked=True)
+            )
+            candidate_ids = list(db.scalars(stmt).all())
 
-                sources_to_resume = list(db.scalars(stmt).all())
-                for source in sources_to_resume:
-                    task_id = f"knowledge-source:{source.id}:generation:{source.processing_generation}"
-                    index_source.apply_async(
-                        args=[
-                            str(source.id),
-                            source.processing_generation,
-                            str(source.processing_attempt_id),
-                        ],
-                        task_id=task_id,
-                    )
-                if sources_to_resume:
-                    logger.info("Enqueued %s interrupted/queued source(s) to Celery", len(sources_to_resume))
-        except Exception:
-            logger.exception("Unable to resume interrupted indexing tasks via Celery at startup")
-    elif settings.allow_local_ingestion:
-        try:
-            from app.api.routes.knowledge_center import _LOCAL_INGEST_EXECUTOR, _run_bg_process_source
+        dispatched_count = 0
+        for source_id in candidate_ids:
             with SessionLocal() as db:
-                interrupted_ids = list(
-                    db.scalars(
-                        select(KnowledgeSource.id).where(
-                            KnowledgeSource.status == SourceStatus.QUEUED
-                        )
-                    ).all()
-                )
-            for source_id in interrupted_ids:
-                _LOCAL_INGEST_EXECUTOR.submit(_run_bg_process_source, source_id)
-            if interrupted_ids:
-                logger.info("Queued %s interrupted indexing task(s) for local resume", len(interrupted_ids))
-        except Exception:
-            logger.exception("Unable to resume interrupted indexing tasks locally at startup")
-    else:
-        logger.error(
-            "Ingestion backend is '%s' and allow_local_ingestion is False. "
-            "Ingestion dispatcher is unavailable. No OCR/parsing will run in Web API.",
-            settings.ingestion_backend,
-        )
+                if dispatch_source_processing(db, source_id, is_startup=True):
+                    dispatched_count += 1
+        if candidate_ids:
+            logger.info("Startup recovery: dispatched %s / %s eligible source(s)", dispatched_count, len(candidate_ids))
+    except Exception:
+        logger.exception("Unable to resume interrupted indexing tasks at startup")
     yield
 
 app = FastAPI(

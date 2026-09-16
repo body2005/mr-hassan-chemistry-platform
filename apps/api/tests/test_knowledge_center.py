@@ -145,7 +145,7 @@ def test_create_and_process_knowledge_source(db, test_setup):
         filename="geophysics_notes.txt",
         file_bytes=content.encode("utf-8"),
         source_role=SourceRole.KNOWLEDGE,
-    )
+    ).source
     assert source.status == SourceStatus.QUEUED
 
     processed = process_knowledge_source(db, source.id)
@@ -178,7 +178,7 @@ def test_grounded_tutor_qna_and_refusal(db, test_setup):
         filename="minerals_chapter.txt",
         file_bytes=content.encode("utf-8"),
         source_role=SourceRole.KNOWLEDGE,
-    )
+    ).source
     process_knowledge_source(db, source.id)
 
     # 1. Answerable Query -> Returns Grounded Answer + Citation
@@ -220,7 +220,7 @@ def test_reindex_idempotency_and_delete(db, test_setup):
         course_id=course.id,
         filename="fossils.txt",
         file_bytes=content.encode("utf-8"),
-    )
+    ).source
     process_knowledge_source(db, source.id)
 
     initial_units_count = len(db.scalars(
@@ -273,7 +273,7 @@ def test_cross_course_security_isolation(db, test_setup):
         course_id=course_b.id,
         filename="python_private.txt",
         file_bytes=content_b.encode("utf-8"),
-    )
+    ).source
     process_knowledge_source(db, source_b.id)
 
     # Querying Course A for Python concepts must NOT leak Course B knowledge
@@ -317,7 +317,7 @@ def test_architecture_reset_no_auto_video_indexing(db, test_setup):
         filename="geology_structures.txt",
         file_bytes=doc_content.encode("utf-8"),
         source_role=SourceRole.KNOWLEDGE,
-    )
+    ).source
     process_knowledge_source(db, doc_source.id)
     assert doc_source.status == SourceStatus.INDEXED
     assert doc_source.unit_count >= 1
@@ -407,7 +407,7 @@ def test_instant_page_streaming_and_caching(db, test_setup):
         course_id=course.id,
         filename="apparatus.png",
         file_bytes=img_bytes,
-    )
+    ).source
     process_knowledge_source(db, source.id)
 
     # Test list_knowledge_sources includes total_pages
@@ -443,7 +443,7 @@ def test_stop_indexing_preserves_file(db, test_setup):
         course_id=course.id,
         filename="notes_to_stop.txt",
         file_bytes=b"Sample content for indexing cancellation test.",
-    )
+    ).source
     assert os.path.exists(source.storage_path)
 
     # Call stop_indexing_source
@@ -511,7 +511,7 @@ def test_preview_file_byte_range_streaming(test_setup, db):
         filename="sample_preview.pdf",
         file_bytes=sample_content,
         source_role=SourceRole.KNOWLEDGE,
-    )
+    ).source
 
     preview_tok = create_preview_token(teacher, source.id)
 

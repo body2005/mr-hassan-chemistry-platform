@@ -54,6 +54,7 @@ from app.services.knowledge_center_service import (
     clear_source_tracking,
     create_knowledge_source,
     delete_knowledge_source,
+    dispatch_source_processing,
     is_parser_active,
     is_source_deleting,
     mark_parser_active,
@@ -129,54 +130,14 @@ def _run_bg_process_source(
         clear_source_tracking(source_id)
 
 
-def _enqueue_source_processing(background_tasks: BackgroundTasks, source: KnowledgeSource) -> None:
-    """Dispatches processing to Celery worker. Prevents heavy in-process OCR on web API in production."""
-    import logging
-    _log = logging.getLogger(__name__)
-    settings = get_settings()
-    if settings.app_env.lower() in {"test", "testing"} or os.getenv("APP_ENV", "").lower() in {"test", "testing"}:
-        _log.info("Test environment active; skipping background ingestion enqueue for source %s", source.id)
-        return
-
-    is_prod = settings.app_env.lower() in {"production", "production_like"}
-    use_celery = (
-        is_prod
-        or settings.ingestion_backend.lower() == "celery"
-        or os.getenv("USE_CELERY_INGESTION", "").lower() in {"1", "true", "yes"}
-    )
-
-    if use_celery:
-        try:
-            from app.tasks.knowledge_ingestion import index_source
-            task_id = f"knowledge-source:{source.id}:generation:{source.processing_generation}"
-            index_source.apply_async(
-                args=[
-                    str(source.id),
-                    source.processing_generation,
-                    str(source.processing_attempt_id),
-                ],
-                task_id=task_id,
-            )
-            _log.info("Dispatched source %s generation %s to Celery", source.id, source.processing_generation)
-            return
-        except Exception as exc:
-            _log.error("Failed to enqueue source %s to Celery: %s", source.id, exc)
-            if is_prod or not settings.allow_local_ingestion:
-                # Strictly prevent running OCR in web API process in production to avoid Render 502 OOM crash
-                _log.warning("Heavy in-process ingestion disallowed in %s. Source %s remains in QUEUED state for worker.", settings.app_env, source.id)
-                return
-
-    # In local development ONLY if explicitly permitted:
-    if settings.allow_local_ingestion:
-        background_tasks.add_task(
-            _LOCAL_INGEST_EXECUTOR.submit,
-            _run_bg_process_source,
-            source.id,
-            source.processing_generation,
-            source.processing_attempt_id,
-        )
+def _enqueue_source_processing(background_tasks: BackgroundTasks, source: KnowledgeSource, db: Session | None = None) -> None:
+    """Dispatches processing via centralized dispatch_source_processing with row lock and claim."""
+    if db is not None:
+        dispatch_source_processing(db, source.id, background_tasks)
     else:
-        _log.info("Source %s saved and left in QUEUED state for external worker pickup", source.id)
+        from app.core.database import SessionLocal
+        with SessionLocal() as s_db:
+            dispatch_source_processing(s_db, source.id, background_tasks)
 
 
 class KnowledgeSourceResponse(BaseModel):
@@ -323,16 +284,51 @@ def _validate_upload_scope(
     return normalized_role
 
 
-_SOURCE_RENDER_LOCKS: dict[uuid.UUID, threading.Lock] = {}
-_SOURCE_RENDER_LOCKS_GUARD = threading.Lock()
-_REMOTE_PDF_LOCK = threading.Lock()
+from contextlib import contextmanager
+
+class _RefCountedLock:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.ref_count = 0
+
+_RENDER_REGISTRY_GUARD = threading.Lock()
+_SOURCE_RENDER_LOCKS: dict[uuid.UUID, _RefCountedLock] = {}
+_SOURCE_STAGE_LOCKS: dict[uuid.UUID, _RefCountedLock] = {}
+_GLOBAL_RENDER_SEMAPHORE = threading.BoundedSemaphore(4)
 
 
-def _get_source_render_lock(source_id: uuid.UUID) -> threading.Lock:
-    with _SOURCE_RENDER_LOCKS_GUARD:
+@contextmanager
+def _get_source_render_lock(source_id: uuid.UUID):
+    with _RENDER_REGISTRY_GUARD:
         if source_id not in _SOURCE_RENDER_LOCKS:
-            _SOURCE_RENDER_LOCKS[source_id] = threading.Lock()
-        return _SOURCE_RENDER_LOCKS[source_id]
+            _SOURCE_RENDER_LOCKS[source_id] = _RefCountedLock()
+        rc = _SOURCE_RENDER_LOCKS[source_id]
+        rc.ref_count += 1
+    try:
+        with rc.lock:
+            yield
+    finally:
+        with _RENDER_REGISTRY_GUARD:
+            rc.ref_count -= 1
+            if rc.ref_count <= 0:
+                _SOURCE_RENDER_LOCKS.pop(source_id, None)
+
+
+@contextmanager
+def _get_source_stage_lock(source_id: uuid.UUID):
+    with _RENDER_REGISTRY_GUARD:
+        if source_id not in _SOURCE_STAGE_LOCKS:
+            _SOURCE_STAGE_LOCKS[source_id] = _RefCountedLock()
+        rc = _SOURCE_STAGE_LOCKS[source_id]
+        rc.ref_count += 1
+    try:
+        with rc.lock:
+            yield
+    finally:
+        with _RENDER_REGISTRY_GUARD:
+            rc.ref_count -= 1
+            if rc.ref_count <= 0:
+                _SOURCE_STAGE_LOCKS.pop(source_id, None)
 
 
 def _inspect_pdf_page_count_fast(file_path: str) -> int:
@@ -455,8 +451,11 @@ def _source_response(source: KnowledgeSource, total_pages: int | None = None) ->
     eff_pages = total_pages
     if eff_pages is None:
         eff_pages = getattr(source, "preview_total_pages", None)
-    if eff_pages is None and source.file_format != "pdf":
-        eff_pages = 1
+    if eff_pages is None:
+        if source.file_format in ("png", "jpg", "jpeg", "webp", "image"):
+            eff_pages = 1
+        else:
+            eff_pages = None
 
     return KnowledgeSourceResponse(
         id=str(source.id),
@@ -505,39 +504,42 @@ async def upload_knowledge_source(
     max_file_bytes = settings.max_file_size_mb * 1024 * 1024
 
     grade_level_clean = str(grade_level).strip() if grade_level else None
-    if not grade_level_clean and course_id and str(course_id).strip():
-        c_uuid = _parse_uuid(course_id)
-        if c_uuid:
-            c_obj = db.get(Course, c_uuid)
-            if c_obj:
-                if not c_obj.grade_level:
-                    raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                        detail="المقرر غير مصنف، يرجى تحديد الصف الدراسي للمقرر أولاً",
-                    )
-                grade_level_clean = c_obj.grade_level
-    normalized_role = _validate_upload_scope(source_role, lesson_id, grade_level_clean)
 
+    # Strict Tenant Authorization Sequence (P0-4):
+    # 1. Parse source role
+    role_str = str(source_role).split(".")[-1].strip().upper()
+    try:
+        parsed_role = SourceRole(role_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid source role: {source_role}")
+
+    # 2. Resolve course using tenant and teacher ownership
     course_uuid: uuid.UUID | None = None
     lesson_uuid: uuid.UUID | None = None
+    course_obj: Course | None = None
+    if course_id and str(course_id).strip():
+        course_uuid = _resolve_course_uuid(db, user, course_id)
+        course_obj = db.get(Course, course_uuid)
+        # 3. Read course.grade_level if grade_level not explicitly provided
+        if not grade_level_clean and course_obj and course_obj.grade_level:
+            grade_level_clean = course_obj.grade_level
+
+    # 4. Validate upload scope
+    normalized_role = _validate_upload_scope(parsed_role, lesson_id, grade_level_clean)
+
     if normalized_role == SourceRole.LESSON_MATERIAL:
-        if not course_id or not str(course_id).strip():
+        if not course_id or not str(course_id).strip() or not course_uuid or not course_obj:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="course_id is required for LESSON_MATERIAL",
             )
-        course_uuid = _resolve_course_uuid(db, user, course_id)
-        lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
-        course = db.get(Course, course_uuid)
-        if not course or not course.grade_level:
+        if not course_obj.grade_level:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="المقرر غير مصنف، يرجى تحديد الصف الدراسي للمقرر أولاً",
             )
-        grade_level_clean = course.grade_level
-    else:
-        if course_id and str(course_id).strip():
-            course_uuid = _resolve_course_uuid(db, user, course_id)
+        grade_level_clean = course_obj.grade_level
+        lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
 
     tmp_dir = _get_kc_temp_dir()
     safe_name = sanitize_source_filename(file.filename or "uploaded_file")
@@ -588,7 +590,7 @@ async def upload_knowledge_source(
                 source.preview_total_pages = preview_pages
             db.commit()
             db.refresh(source)
-            _enqueue_source_processing(background_tasks, source)
+            dispatch_source_processing(db, source.id, background_tasks)
         else:
             db.commit()
             db.refresh(source)
@@ -637,39 +639,42 @@ async def upload_knowledge_sources_batch(
     max_batch_bytes = settings.max_batch_size_mb * 1024 * 1024
 
     grade_level_clean = str(grade_level).strip() if grade_level else None
-    if not grade_level_clean and course_id and str(course_id).strip():
-        c_uuid = _parse_uuid(course_id)
-        if c_uuid:
-            c_obj = db.get(Course, c_uuid)
-            if c_obj:
-                if not c_obj.grade_level:
-                    raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                        detail="المقرر غير مصنف، يرجى تحديد الصف الدراسي للمقرر أولاً",
-                    )
-                grade_level_clean = c_obj.grade_level
-    normalized_role = _validate_upload_scope(source_role, lesson_id, grade_level_clean)
 
+    # Strict Tenant Authorization Sequence (P0-4):
+    # 1. Parse source role
+    role_str = str(source_role).split(".")[-1].strip().upper()
+    try:
+        parsed_role = SourceRole(role_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid source role: {source_role}")
+
+    # 2. Resolve course using tenant and teacher ownership
     course_uuid: uuid.UUID | None = None
     lesson_uuid: uuid.UUID | None = None
+    course_obj: Course | None = None
+    if course_id and str(course_id).strip():
+        course_uuid = _resolve_course_uuid(db, user, course_id)
+        course_obj = db.get(Course, course_uuid)
+        # 3. Read course.grade_level if grade_level not explicitly provided
+        if not grade_level_clean and course_obj and course_obj.grade_level:
+            grade_level_clean = course_obj.grade_level
+
+    # 4. Validate upload scope
+    normalized_role = _validate_upload_scope(parsed_role, lesson_id, grade_level_clean)
+
     if normalized_role == SourceRole.LESSON_MATERIAL:
-        if not course_id or not str(course_id).strip():
+        if not course_id or not str(course_id).strip() or not course_uuid or not course_obj:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="course_id is required for LESSON_MATERIAL",
             )
-        course_uuid = _resolve_course_uuid(db, user, course_id)
-        lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
-        course = db.get(Course, course_uuid)
-        if not course or not course.grade_level:
+        if not course_obj.grade_level:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="المقرر غير مصنف، يرجى تحديد الصف الدراسي للمقرر أولاً",
             )
-        grade_level_clean = course.grade_level
-    else:
-        if course_id and str(course_id).strip():
-            course_uuid = _resolve_course_uuid(db, user, course_id)
+        grade_level_clean = course_obj.grade_level
+        lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
 
     tmp_base = _get_kc_temp_dir()
     batch_stage_dir = tempfile.mkdtemp(prefix=f"batch_stage_{uuid.uuid4().hex[:12]}_", dir=tmp_base)
@@ -1124,7 +1129,11 @@ def stop_indexing_source(source_id: str, db: Db, user: TeacherOrAdmin) -> dict[s
     # Register in-memory cancellation immediately so any active parsing thread stops at the next page
     register_cancellation(s_uuid)
 
-    source = db.get(KnowledgeSource, s_uuid)
+    stmt = select(KnowledgeSource).where(KnowledgeSource.id == s_uuid)
+    if db.bind.dialect.name == "postgresql":
+        stmt = stmt.with_for_update()
+
+    source = db.scalar(stmt)
     if not source:
         return {"status": "ok", "message": "المصدر غير موجود", "source_status": "NOT_FOUND"}
 
@@ -1136,6 +1145,8 @@ def stop_indexing_source(source_id: str, db: Db, user: TeacherOrAdmin) -> dict[s
         return {"status": "ok", "message": "تم إيقاف الفهرسة مسبقاً", "source_status": source.status}
 
     source.status = SourceStatus.CANCELLED
+    source.processing_generation += 1
+    source.processing_attempt_id = uuid.uuid4()
     source.error_message = "تم إيقاف الفهرسة (الملف محفوظ بالسيرفر)"
     try:
         db.commit()
@@ -1438,8 +1449,44 @@ def _stream_private_object(storage: Any, storage_key: str, media_type: str) -> R
     )
 
 
+def _prune_remote_pdf_cache(cache_dir: str, max_files: int = 50, max_bytes: int = 500 * 1024 * 1024, ttl_sec: int = 900) -> None:
+    """Evict expired (TTL) and LRU excess files to prevent unbounded disk usage."""
+    import logging
+    _log = logging.getLogger(__name__)
+    try:
+        now = time.time()
+        file_entries: list[tuple[str, int, float]] = []
+        for fname in os.listdir(cache_dir):
+            fpath = os.path.join(cache_dir, fname)
+            if not os.path.isfile(fpath):
+                continue
+            try:
+                st = os.stat(fpath)
+                if now - st.st_mtime > ttl_sec:
+                    os.remove(fpath)
+                else:
+                    file_entries.append((fpath, st.st_size, getattr(st, "st_atime", st.st_mtime)))
+            except OSError:
+                pass
+
+        total_bytes = sum(e[1] for e in file_entries)
+        if len(file_entries) > max_files or total_bytes > max_bytes:
+            file_entries.sort(key=lambda x: x[2])  # oldest access time first
+            for fpath, size, _ in file_entries:
+                if len(file_entries) <= int(max_files * 0.8) and total_bytes <= int(max_bytes * 0.8):
+                    break
+                try:
+                    os.remove(fpath)
+                    total_bytes -= size
+                    file_entries.pop(0)
+                except OSError:
+                    pass
+    except Exception as exc:
+        _log.warning("Remote PDF cache pruning error: %s", exc)
+
+
 def _stage_source_for_preview(storage: Any, source: KnowledgeSource) -> tuple[str, str | None]:
-    """Return a local PDF path, caching remote downloads on disk with bounded TTL."""
+    """Return a local PDF path, caching remote downloads on disk with bounded TTL and LRU quota."""
     local_path = storage.get_local_path(source.storage_path)
     if local_path and os.path.exists(local_path):
         return local_path, None
@@ -1450,7 +1497,8 @@ def _stage_source_for_preview(storage: Any, source: KnowledgeSource) -> tuple[st
     os.makedirs(cache_dir, exist_ok=True)
     cached_file = os.path.join(cache_dir, f"{source.id}_{source.checksum[:16]}.pdf")
 
-    with _REMOTE_PDF_LOCK:
+    with _get_source_stage_lock(source.id):
+        _prune_remote_pdf_cache(cache_dir)
         now = time.time()
         if os.path.exists(cached_file) and (now - os.path.getmtime(cached_file)) < 900:  # 15 min TTL
             return cached_file, None
@@ -1483,8 +1531,7 @@ def stream_source_page_image(
     background_tasks: BackgroundTasks,
     user: CurrentUser,
     scale: float = 1.3,
-) -> FileResponse:
-    from fastapi.responses import FileResponse
+) -> Response:
     from app.core.storage import get_storage_provider
 
     if scale < 0.5 or scale > 2.0:
@@ -1492,6 +1539,9 @@ def stream_source_page_image(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="scale must be between 0.5 and 2.0",
         )
+
+    # Quantize scale to 0.25 increments to avoid unbounded cache key proliferation
+    quantized_scale = round(scale * 4) / 4
 
     s_uuid = _parse_uuid(source_id)
     source = _get_source_for_user(db, s_uuid, user)
@@ -1518,7 +1568,7 @@ def stream_source_page_image(
     if known_total is not None and page_number > known_total:
         raise HTTPException(status_code=404, detail=f"Page {page_number} exceeds document total ({known_total})")
 
-    scale_key = int(round(scale * 100))
+    scale_key = int(round(quantized_scale * 100))
     cached_page_key = f"knowledge_center/preview_pages/{s_uuid}/{source.checksum[:16]}_v{source.version}/page_{page_number}_{scale_key}.jpg"
     if storage.exists(cached_page_key):
         return _stream_private_object(storage, cached_page_key, "image/jpeg")
@@ -1527,8 +1577,7 @@ def stream_source_page_image(
     try:
         import pypdfium2 as pdfium
         effective_source_path, staged_path = _stage_source_for_preview(storage, source)
-        source_lock = _get_source_render_lock(s_uuid)
-        with source_lock:
+        with _get_source_render_lock(s_uuid):
             if storage.exists(cached_page_key):
                 return _stream_private_object(storage, cached_page_key, "image/jpeg")
 
@@ -1539,10 +1588,20 @@ def stream_source_page_image(
                 raise HTTPException(status_code=404, detail=f"Page {page_number} exceeds document total ({total})")
 
             page = pdf[page_number - 1]
-            pil_img = page.render(scale=scale).to_pil()
+            # Pre-render dimension calculation to prevent memory exhaustion BEFORE allocation
+            width_pt, height_pt = page.get_size()
+            eff_scale = quantized_scale
+            max_dim = max(width_pt * eff_scale, height_pt * eff_scale)
+            if max_dim > 3000:
+                eff_scale = eff_scale * (3000.0 / max_dim)
+            if (width_pt * eff_scale) * (height_pt * eff_scale) > 9_000_000:
+                eff_scale = eff_scale * ((9_000_000 / ((width_pt * eff_scale) * (height_pt * eff_scale))) ** 0.5)
+
+            with _GLOBAL_RENDER_SEMAPHORE:
+                pil_img = page.render(scale=eff_scale).to_pil()
             pdf.close()
 
-            # Bound max pixel dimensions to prevent memory exhaustion
+            # Bound max pixel dimensions as secondary safeguard
             if pil_img.width > 3000 or pil_img.height > 3000:
                 pil_img.thumbnail((3000, 3000))
 
@@ -1555,7 +1614,9 @@ def stream_source_page_image(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to render document page: {str(exc)}")
+        import logging
+        logging.getLogger(__name__).exception("Failed to render document page %s for source %s: %s", page_number, source_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to render document page")
     finally:
         if staged_path and os.path.exists(staged_path):
             try:
@@ -1565,14 +1626,17 @@ def stream_source_page_image(
 
 
 @router.get("/assets/{asset_id}/view")
-def view_knowledge_asset_file(asset_id: str, db: Db, user: CurrentUser) -> FileResponse:
-    from fastapi.responses import FileResponse
+def view_knowledge_asset_file(asset_id: str, db: Db, user: CurrentUser) -> Response:
+    from fastapi.responses import StreamingResponse
     a_uuid = _parse_uuid(asset_id)
     asset = db.scalar(select(KnowledgeAsset).where(KnowledgeAsset.id == a_uuid))
-    if asset:
-        _get_source_for_user(db, asset.source_id, user)
-    if not asset or not os.path.exists(asset.storage_path):
+    if not asset:
         raise HTTPException(status_code=404, detail="Asset image not found")
+
+    _get_source_for_user(db, asset.source_id, user)
+    storage = get_storage_provider()
+    if not storage.exists(asset.storage_path):
+        raise HTTPException(status_code=404, detail="Asset image not found in storage")
 
     ext = os.path.splitext(asset.storage_path)[1].lower()
     media_type = "image/png"
@@ -1581,9 +1645,13 @@ def view_knowledge_asset_file(asset_id: str, db: Db, user: CurrentUser) -> FileR
     elif ext == ".webp":
         media_type = "image/webp"
 
-    return FileResponse(
-        path=asset.storage_path,
+    return StreamingResponse(
+        storage.open_stream(asset.storage_path),
         media_type=media_type,
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

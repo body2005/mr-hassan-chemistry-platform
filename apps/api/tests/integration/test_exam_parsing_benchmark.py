@@ -245,7 +245,7 @@ try:
         file_bytes=file_bytes,
         source_role="KNOWLEDGE",
         mime_type="text/plain",
-    )
+    ).source
 
     print(f"1. Created KnowledgeSource: ID={source.id}, filename={source.filename}")
     

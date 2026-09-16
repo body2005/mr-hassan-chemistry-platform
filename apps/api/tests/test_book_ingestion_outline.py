@@ -65,7 +65,7 @@ def test_book_outline_links_content_to_most_specific_heading(db) -> None:
             "### الغشاء البلازمي\n"
             "الغشاء البلازمي ينظم مرور المواد إلى الخلية وخارجها.\n"
         ).encode("utf-8"),
-    )
+    ).source
 
     process_knowledge_source(db, source.id)
 

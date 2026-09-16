@@ -65,7 +65,7 @@ source = create_knowledge_source(
     filename="geology_chapter_1.txt",
     file_bytes=doc_text.encode("utf-8"),
     source_role=SourceRole.KNOWLEDGE,
-)
+).source
 
 process_knowledge_source(db, source.id)
 
