@@ -29,6 +29,7 @@ export interface UploadTask {
   type: UploadType;
   lessonId?: string;
   courseId?: string;
+  gradeLevel?: string;
   sourceIds?: string[];
   createdAt: number;
   completedAt?: number;
@@ -383,6 +384,7 @@ class UploadManager {
   public enqueueKnowledgeBatchUpload(params: {
     files: File[];
     courseId?: string;
+    gradeLevel?: string;
     lessonId?: string;
     lessonTitle?: string;
     onSuccess?: () => void;
@@ -390,8 +392,17 @@ class UploadManager {
     const taskId = `knw_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const totalBytes = params.files.reduce((sum, f) => sum + f.size, 0);
     const count = params.files.length;
+    const gradeLabel = params.gradeLevel === "SECONDARY_1"
+      ? "الصف الأول الثانوي"
+      : params.gradeLevel === "SECONDARY_2"
+      ? "الصف الثاني الثانوي"
+      : params.gradeLevel === "SECONDARY_3"
+      ? "الصف الثالث الثانوي"
+      : "";
     const taskTitle = params.lessonTitle
       ? `مذكرات درس: ${params.lessonTitle} (${count} ${count === 1 ? "ملف" : "ملفات"})`
+      : gradeLabel
+      ? `مصادر ${gradeLabel} (${count} ${count === 1 ? "ملف" : "ملفات"})`
       : `رفع دفعة مستندات (${count} ${count === 1 ? "ملف" : "ملفات"})`;
     const isMaterial = Boolean(params.lessonId);
     const task: UploadTask = {
@@ -406,6 +417,7 @@ class UploadManager {
       status: "queued",
       type: isMaterial ? "lesson_material" : "knowledge_source",
       courseId: params.courseId,
+      gradeLevel: params.gradeLevel,
       lessonId: params.lessonId,
       createdAt: Date.now(),
       files: params.files,
@@ -517,6 +529,9 @@ class UploadManager {
       task.files!.forEach((file) => {
         formData.append("files", file);
       });
+      if (task.gradeLevel) {
+        formData.append("grade_level", task.gradeLevel);
+      }
       if (task.courseId) {
         formData.append("course_id", task.courseId);
       }

@@ -959,11 +959,12 @@ def sanitize_source_filename(name: str) -> str:
 def create_knowledge_source(
     db: Session,
     user: User,
-    course_id: uuid.UUID,
-    filename: str,
+    course_id: uuid.UUID | None = None,
+    filename: str = "",
     file_bytes: bytes | None = None,
     lesson_id: uuid.UUID | None = None,
     source_role: str = SourceRole.COURSE_KNOWLEDGE,
+    grade_level: str | None = None,
     mime_type: str | None = None,
     metadata: dict[str, Any] | None = None,
     staged_file_path: str | None = None,
@@ -1015,25 +1016,56 @@ def create_knowledge_source(
     if ext not in allowed_extensions:
         raise ValueError(f"صيغة الملف غير مدعومة: .{ext}. الصيغ المدعومة هي: PDF, Word (docx, doc), PowerPoint (pptx, ppt), ملفات نصية، وصور.")
 
-    # Ensure course exists and belongs to teacher's institution
-    course = db.scalar(
-        select(Course).where(
-            Course.id == course_id,
-            Course.institution_id == user.institution_id,
+    if source_role == SourceRole.LESSON_MATERIAL.value:
+        if not course_id or not lesson_id:
+            raise ValueError("course_id and lesson_id are required for LESSON_MATERIAL")
+        course = db.scalar(
+            select(Course).where(
+                Course.id == course_id,
+                Course.institution_id == user.institution_id,
+            )
         )
-    )
-    if not course:
-        raise ValueError("Course not found in the current institution")
+        if not course:
+            raise ValueError("Course not found in the current institution")
+        if not grade_level:
+            grade_level = course.grade_level or "SECONDARY_1"
+    elif source_role == SourceRole.COURSE_KNOWLEDGE.value:
+        if course_id:
+            course = db.scalar(
+                select(Course).where(
+                    Course.id == course_id,
+                    Course.institution_id == user.institution_id,
+                )
+            )
+            if not course:
+                raise ValueError("Course not found in the current institution")
+            if not grade_level:
+                grade_level = course.grade_level or "SECONDARY_1"
+        if not grade_level:
+            raise ValueError("grade_level is required for COURSE_KNOWLEDGE")
+        valid_grades = {"SECONDARY_1", "SECONDARY_2", "SECONDARY_3"}
+        if grade_level not in valid_grades:
+            raise ValueError(f"Invalid grade_level: {grade_level}")
+        if lesson_id:
+            raise ValueError("lesson_id is not allowed for COURSE_KNOWLEDGE")
 
     # Check for existing checksum upload to avoid duplicate storage
-    existing = db.scalar(
-        select(KnowledgeSource).where(
-            KnowledgeSource.course_id == course_id,
-            KnowledgeSource.checksum == checksum,
-            KnowledgeSource.lesson_id == lesson_id,
-            KnowledgeSource.source_role == source_role,
-        )
+    existing_stmt = select(KnowledgeSource).where(
+        KnowledgeSource.institution_id == user.institution_id,
+        KnowledgeSource.checksum == checksum,
+        KnowledgeSource.source_role == source_role,
     )
+    if source_role == SourceRole.LESSON_MATERIAL.value:
+        existing_stmt = existing_stmt.where(
+            KnowledgeSource.course_id == course_id,
+            KnowledgeSource.lesson_id == lesson_id,
+        )
+    else:
+        existing_stmt = existing_stmt.where(KnowledgeSource.grade_level == grade_level)
+        if course_id:
+            existing_stmt = existing_stmt.where(KnowledgeSource.course_id == course_id)
+
+    existing = db.scalar(existing_stmt)
     if existing:
         if staged_file_path and os.path.exists(staged_file_path) and staged_file_path != existing.storage_path:
             try:
@@ -1047,14 +1079,23 @@ def create_knowledge_source(
     source_metadata = dict(metadata or {})
     document_key = str(source_metadata.get("document_key") or filename).strip().lower()
     source_metadata["document_key"] = document_key
-    prior_sources = db.scalars(
-        select(KnowledgeSource).where(
+
+    prior_stmt = select(KnowledgeSource).where(
+        KnowledgeSource.institution_id == user.institution_id,
+        KnowledgeSource.source_role == source_role,
+        KnowledgeSource.is_current == True,
+    )
+    if source_role == SourceRole.LESSON_MATERIAL.value:
+        prior_stmt = prior_stmt.where(
             KnowledgeSource.course_id == course_id,
             KnowledgeSource.lesson_id == lesson_id,
-            KnowledgeSource.source_role == source_role,
-            KnowledgeSource.is_current == True,
         )
-    ).all()
+    else:
+        prior_stmt = prior_stmt.where(KnowledgeSource.grade_level == grade_level)
+        if course_id:
+            prior_stmt = prior_stmt.where(KnowledgeSource.course_id == course_id)
+
+    prior_sources = db.scalars(prior_stmt).all()
     matching_prior = [
         item for item in prior_sources
         if str((item.metadata_json or {}).get("document_key") or item.filename).strip().lower() == document_key
@@ -1064,7 +1105,7 @@ def create_knowledge_source(
         item.is_current = False
 
     # Save file to storage using completely server-generated filename
-    rel_dir = f"courses/{course_id}"
+    rel_dir = f"courses/{course_id}" if course_id else f"grades/{grade_level or 'general'}"
     full_dir = os.path.join(STORAGE_DIR, rel_dir)
     os.makedirs(full_dir, exist_ok=True)
     
@@ -1081,7 +1122,7 @@ def create_knowledge_source(
     from app.core.storage import get_storage_provider, S3StorageProvider
     storage = get_storage_provider()
     if isinstance(storage, S3StorageProvider):
-        storage_key = f"courses/{course_id}/{server_storage_name}"
+        storage_key = f"{rel_dir}/{server_storage_name}"
         canonical_path = storage.save_file(file_path, storage_key, content_type=mime_type or f"application/{ext}")
         try:
             if os.path.exists(file_path):
@@ -1097,6 +1138,7 @@ def create_knowledge_source(
     source = KnowledgeSource(
         institution_id=user.institution_id,
         course_id=course_id,
+        grade_level=grade_level,
         lesson_id=lesson_id,
         teacher_id=user.id,
         filename=filename,
@@ -1303,7 +1345,8 @@ def process_knowledge_source(
         # 1. Process Assets with single BATCH COMMIT
         asset_count = 0
         img_id_map: dict[str, uuid.UUID] = {}
-        assets_dir = os.path.join(STORAGE_DIR, f"courses/{source.course_id}/assets")
+        assets_rel = f"courses/{source.course_id}/assets" if source.course_id else f"grades/{source.grade_level or 'general'}/assets"
+        assets_dir = os.path.join(STORAGE_DIR, assets_rel)
         os.makedirs(assets_dir, exist_ok=True)
 
         for p_img in parsed_doc.all_images:

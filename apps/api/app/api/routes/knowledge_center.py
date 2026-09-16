@@ -179,7 +179,8 @@ def _enqueue_source_processing(background_tasks: BackgroundTasks, source: Knowle
 
 class KnowledgeSourceResponse(BaseModel):
     id: str
-    course_id: str
+    course_id: str | None = None
+    grade_level: str | None = None
     lesson_id: str | None = None
     filename: str
     file_format: str
@@ -280,7 +281,11 @@ _UPLOAD_SOURCE_ROLES = {
 }
 
 
-def _validate_upload_scope(source_role: str, lesson_id: str | None) -> SourceRole:
+def _validate_upload_scope(
+    source_role: str,
+    lesson_id: str | None,
+    grade_level: str | None = None,
+) -> SourceRole:
     """Validate the role/lesson contract before accepting any file bytes."""
     try:
         normalized_role = SourceRole(str(source_role).strip().upper())
@@ -307,6 +312,12 @@ def _validate_upload_scope(source_role: str, lesson_id: str | None) -> SourceRol
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="lesson_id is not allowed for COURSE_KNOWLEDGE",
         )
+    if normalized_role == SourceRole.COURSE_KNOWLEDGE:
+        if not grade_level or str(grade_level).strip() not in {"SECONDARY_1", "SECONDARY_2", "SECONDARY_3"}:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="grade_level must be one of SECONDARY_1, SECONDARY_2, SECONDARY_3 for COURSE_KNOWLEDGE",
+            )
     return normalized_role
 
 
@@ -361,17 +372,18 @@ async def _stream_upload_to_file(
     return file_bytes_written, hasher.hexdigest()
 
 
-
-
-
 def _get_source_for_user(db: Session, source_id: uuid.UUID | None, user: User) -> KnowledgeSource:
     source = db.get(KnowledgeSource, source_id) if source_id else None
     if not source or (user.role != UserRole.PLATFORM_ADMIN and source.institution_id != user.institution_id):
         raise HTTPException(status_code=404, detail="Source not found")
     if user.role == UserRole.TEACHER:
-        course = db.get(Course, source.course_id)
-        if not course or course.teacher_id != user.id:
-            raise HTTPException(status_code=404, detail="Source not found")
+        if source.course_id:
+            course = db.get(Course, source.course_id)
+            if not course or course.teacher_id != user.id:
+                raise HTTPException(status_code=404, detail="Source not found")
+        else:
+            if source.teacher_id != user.id:
+                raise HTTPException(status_code=404, detail="Source not found")
     if user.role == UserRole.STUDENT:
         if source.source_role in {
             SourceRole.ASSESSMENT,
@@ -379,11 +391,16 @@ def _get_source_for_user(db: Session, source_id: uuid.UUID | None, user: User) -
             SourceRole.ANSWER_KEY,
         }:
             raise HTTPException(status_code=404, detail="Source not found")
-        allowed = (
-            can_access_lesson_content(db, user, source.lesson_id)
-            if source.lesson_id
-            else can_access_course_knowledge(db, user, source.course_id)
-        )
+        # Grade isolation & unclassified legacy exclusion for students (applies to COURSE_KNOWLEDGE):
+        if source.source_role != SourceRole.LESSON_MATERIAL:
+            if not user.grade_level or not source.grade_level or source.grade_level != user.grade_level:
+                raise HTTPException(status_code=403, detail="Grade level access denied")
+        if source.lesson_id:
+            allowed = can_access_lesson_content(db, user, source.lesson_id)
+        elif source.course_id:
+            allowed = can_access_course_knowledge(db, user, source.course_id)
+        else:
+            allowed = True
         if not allowed:
             raise HTTPException(status_code=403, detail="Course access denied")
     return source
@@ -392,7 +409,8 @@ def _get_source_for_user(db: Session, source_id: uuid.UUID | None, user: User) -
 def _source_response(source: KnowledgeSource, total_pages: int | None = None) -> KnowledgeSourceResponse:
     return KnowledgeSourceResponse(
         id=str(source.id),
-        course_id=str(source.course_id),
+        course_id=str(source.course_id) if source.course_id else None,
+        grade_level=source.grade_level,
         lesson_id=str(source.lesson_id) if source.lesson_id else None,
         filename=source.filename,
         file_format=source.file_format,
@@ -423,7 +441,8 @@ async def upload_knowledge_source(
     db: Db,
     user: TeacherOrAdmin,
     background_tasks: BackgroundTasks,
-    course_id: str = Form(...),
+    course_id: str | None = Form(None),
+    grade_level: str | None = Form(None),
     lesson_id: str | None = Form(None),
     source_role: str = Form(SourceRole.COURSE_KNOWLEDGE),
     assessment_type: str | None = Form(None),
@@ -434,10 +453,32 @@ async def upload_knowledge_source(
     settings = get_settings()
     max_file_bytes = settings.max_file_size_mb * 1024 * 1024
 
-    normalized_role = _validate_upload_scope(source_role, lesson_id)
+    grade_level_clean = str(grade_level).strip() if grade_level else None
+    if not grade_level_clean and course_id and str(course_id).strip():
+        c_uuid = _parse_uuid(course_id)
+        if c_uuid:
+            c_obj = db.get(Course, c_uuid)
+            if c_obj:
+                grade_level_clean = c_obj.grade_level or "SECONDARY_1"
+    normalized_role = _validate_upload_scope(source_role, lesson_id, grade_level_clean)
 
-    course_uuid = _resolve_course_uuid(db, user, course_id)
-    lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
+    course_uuid: uuid.UUID | None = None
+    lesson_uuid: uuid.UUID | None = None
+    if normalized_role == SourceRole.LESSON_MATERIAL:
+        if not course_id or not str(course_id).strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="course_id is required for LESSON_MATERIAL",
+            )
+        course_uuid = _resolve_course_uuid(db, user, course_id)
+        lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
+        if not grade_level_clean:
+            course = db.get(Course, course_uuid)
+            if course and course.grade_level:
+                grade_level_clean = course.grade_level
+    else:
+        if course_id and str(course_id).strip():
+            course_uuid = _resolve_course_uuid(db, user, course_id)
 
     tmp_dir = _get_kc_temp_dir()
     safe_name = sanitize_source_filename(file.filename or "uploaded_file")
@@ -456,6 +497,7 @@ async def upload_knowledge_source(
             db=db,
             user=user,
             course_id=course_uuid,
+            grade_level=grade_level_clean,
             lesson_id=lesson_uuid,
             filename=file.filename or safe_name,
             staged_file_path=staging_file,
@@ -492,7 +534,8 @@ async def upload_knowledge_sources_batch(
     db: Db,
     user: TeacherOrAdmin,
     background_tasks: BackgroundTasks,
-    course_id: str = Form(...),
+    course_id: str | None = Form(None),
+    grade_level: str | None = Form(None),
     lesson_id: str | None = Form(None),
     source_role: str = Form(SourceRole.COURSE_KNOWLEDGE),
     assessment_type: str | None = Form(None),
@@ -510,12 +553,33 @@ async def upload_knowledge_sources_batch(
     max_file_bytes = settings.max_file_size_mb * 1024 * 1024
     max_batch_bytes = settings.max_batch_size_mb * 1024 * 1024
 
-    normalized_role = _validate_upload_scope(source_role, lesson_id)
+    grade_level_clean = str(grade_level).strip() if grade_level else None
+    if not grade_level_clean and course_id and str(course_id).strip():
+        c_uuid = _parse_uuid(course_id)
+        if c_uuid:
+            c_obj = db.get(Course, c_uuid)
+            if c_obj:
+                grade_level_clean = c_obj.grade_level or "SECONDARY_1"
+    normalized_role = _validate_upload_scope(source_role, lesson_id, grade_level_clean)
 
-    course_uuid = _resolve_course_uuid(db, user, course_id)
-    lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
+    course_uuid: uuid.UUID | None = None
+    lesson_uuid: uuid.UUID | None = None
+    if normalized_role == SourceRole.LESSON_MATERIAL:
+        if not course_id or not str(course_id).strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="course_id is required for LESSON_MATERIAL",
+            )
+        course_uuid = _resolve_course_uuid(db, user, course_id)
+        lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
+        if not grade_level_clean:
+            course = db.get(Course, course_uuid)
+            if course and course.grade_level:
+                grade_level_clean = course.grade_level
+    else:
+        if course_id and str(course_id).strip():
+            course_uuid = _resolve_course_uuid(db, user, course_id)
 
-    # Correction 3: Atomic Staged Operation
     tmp_base = _get_kc_temp_dir()
     batch_stage_dir = tempfile.mkdtemp(prefix=f"batch_stage_{uuid.uuid4().hex[:12]}_", dir=tmp_base)
 
@@ -560,6 +624,7 @@ async def upload_knowledge_sources_batch(
                     db=db,
                     user=user,
                     course_id=course_uuid,
+                    grade_level=grade_level_clean,
                     lesson_id=lesson_uuid,
                     filename=item["filename"],
                     staged_file_path=item["staged_path"],
@@ -599,9 +664,7 @@ async def upload_knowledge_sources_batch(
             _enqueue_source_processing(background_tasks, source)
 
         return [_source_response(source) for source in created_sources]
-
     finally:
-        # Always clean up the staging directory on success or failure
         if os.path.exists(batch_stage_dir):
             shutil.rmtree(batch_stage_dir, ignore_errors=True)
 
@@ -613,6 +676,7 @@ def list_knowledge_sources(
     db: Db,
     user: TeacherOrAdmin,
     course_id: str | None = None,
+    grade_level: str | None = None,
     lesson_id: str | None = None,
     source_role: str | None = None,
 ) -> list[KnowledgeSourceResponse]:
@@ -621,6 +685,8 @@ def list_knowledge_sources(
         stmt = stmt.where(KnowledgeSource.institution_id == user.institution_id)
     if user.role == UserRole.TEACHER:
         stmt = stmt.where(KnowledgeSource.teacher_id == user.id)
+    if grade_level and grade_level.strip():
+        stmt = stmt.where(KnowledgeSource.grade_level == grade_level.strip())
     if course_id and course_id.strip():
         course_uuid = _resolve_course_uuid(db, user, course_id)
         stmt = stmt.where(KnowledgeSource.course_id == course_uuid)
@@ -664,31 +730,7 @@ def list_knowledge_sources(
     pages_map = {d.source_id: d.total_pages for d in docs}
 
     return [
-        KnowledgeSourceResponse(
-            id=str(s.id),
-            course_id=str(s.course_id),
-            lesson_id=str(s.lesson_id) if s.lesson_id else None,
-            filename=s.filename,
-            file_format=s.file_format,
-            size_bytes=s.size_bytes,
-            source_role=s.source_role,
-            version=s.version,
-            checksum=s.checksum,
-            status=s.status,
-            upload_percent=s.upload_percent,
-            indexing_percent=s.indexing_percent,
-            processing_generation=s.processing_generation,
-            processing_attempt_id=str(s.processing_attempt_id),
-            progress_percent=s.progress_percent,
-            unit_count=s.unit_count,
-            image_count=s.image_count,
-            table_count=s.table_count,
-            question_count=s.question_count,
-            total_pages=pages_map.get(s.id, 1 if s.file_format != "pdf" else None),
-            error_message=s.error_message,
-            file_url=f"/api/v1/knowledge-center/sources/{s.id}/view",
-            created_at=s.created_at.isoformat(),
-        )
+        _source_response(s, total_pages=pages_map.get(s.id, 1 if s.file_format != "pdf" else None))
         for s in sources
     ]
 
@@ -706,7 +748,6 @@ async def mark_sources_interrupted(
     processing attempt.  Workers own terminal state transitions instead.
     """
     return {"status": "ok", "marked": 0}
-
 
 @router.get("/sources/{source_id}")
 def get_knowledge_source_detail(source_id: str, db: Db, user: CurrentUser) -> dict[str, Any]:
@@ -746,7 +787,8 @@ def get_knowledge_source_detail(source_id: str, db: Db, user: CurrentUser) -> di
 
     return {
         "id": str(source.id),
-        "course_id": str(source.course_id),
+        "course_id": str(source.course_id) if source.course_id else None,
+        "grade_level": source.grade_level,
         "lesson_id": str(source.lesson_id) if source.lesson_id else None,
         "filename": source.filename,
         "file_format": source.file_format,
@@ -956,30 +998,7 @@ def reindex_source(source_id: str, db: Db, background_tasks: BackgroundTasks, us
     # this generation, so a queued retry never erases the last usable index.
     _enqueue_source_processing(background_tasks, source)
 
-    return KnowledgeSourceResponse(
-
-        id=str(source.id),
-        course_id=str(source.course_id),
-        lesson_id=str(source.lesson_id) if source.lesson_id else None,
-        filename=source.filename,
-        file_format=source.file_format,
-        size_bytes=source.size_bytes,
-        source_role=source.source_role,
-        version=source.version,
-        checksum=source.checksum,
-        status=source.status,
-        upload_percent=source.upload_percent,
-        indexing_percent=source.indexing_percent,
-        processing_generation=source.processing_generation,
-        processing_attempt_id=str(source.processing_attempt_id),
-        progress_percent=source.progress_percent,
-        unit_count=source.unit_count,
-        image_count=source.image_count,
-        table_count=source.table_count,
-        question_count=source.question_count,
-        error_message=source.error_message,
-        created_at=source.created_at.isoformat(),
-    )
+    return _source_response(source)
 
 
 @router.post("/sources/{source_id}/stop-indexing")
@@ -1423,26 +1442,35 @@ def view_knowledge_asset_file(asset_id: str, db: Db, user: CurrentUser) -> FileR
 
 @router.get("/search")
 def search_knowledge(
-    course_id: str,
     query: str,
     db: Db,
     user: CurrentUser,
+    course_id: str | None = None,
+    grade_level: str | None = None,
     source_id: str | None = None,
     outline_node_id: str | None = None,
     include_prerequisite_lessons: bool = False,
 ) -> dict[str, Any]:
-    c_uuid = uuid.UUID(course_id)
+    c_uuid = _parse_uuid(course_id) if course_id else None
     enforce_ai_access(db, user, None, {"feature": "knowledge_search"})
-    if not can_access_course_knowledge(db, user, c_uuid):
-        raise HTTPException(status_code=403, detail="Course access denied")
+    if c_uuid:
+        if not can_access_course_knowledge(db, user, c_uuid):
+            raise HTTPException(status_code=403, detail="Course access denied")
+    eff_grade = grade_level or (user.grade_level if user.role == UserRole.STUDENT else None)
+    if user.role == UserRole.STUDENT and not user.grade_level and not c_uuid:
+        raise HTTPException(status_code=403, detail="Grade level access denied")
+
     return search_knowledge_base(
         db,
-        c_uuid,
-        query,
+        course_id=c_uuid,
+        query=query,
         include_assessment_answers=user.role != UserRole.STUDENT,
         source_id=_parse_uuid(source_id),
         outline_node_id=_parse_uuid(outline_node_id),
         include_prerequisite_lessons=include_prerequisite_lessons,
+        institution_id=user.institution_id if user.role != UserRole.PLATFORM_ADMIN else None,
+        grade_level=eff_grade,
+        user=user,
     )
 
 
