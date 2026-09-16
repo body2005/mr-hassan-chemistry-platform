@@ -147,9 +147,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     let disposed = false;
     setPlaybackUrl("");
     setPlaybackError(null);
-    if (!activeLessonModal?.videoUrl) return () => { disposed = true; };
+    if (!activeLessonModal?.videoUrl && !activeLessonModal?.requiresProtectedPlayback) {
+      return () => { disposed = true; };
+    }
 
-    if (!activeLessonModal.videoUrl.startsWith("protected:")) {
+    if (!activeLessonModal.requiresProtectedPlayback) {
       setPlaybackUrl(activeLessonModal.videoUrl);
       return () => { disposed = true; };
     }
@@ -165,7 +167,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       });
 
     return () => { disposed = true; };
-  }, [activeLessonModal?.id, activeLessonModal?.videoUrl]);
+  }, [activeLessonModal?.id, activeLessonModal?.videoUrl, activeLessonModal?.requiresProtectedPlayback]);
 
   useEffect(() => {
     telemetryTrackerRef.current?.detach();
@@ -1379,7 +1381,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 position: "relative",
               }}
             >
-              {activeLessonModal.videoUrl ? (
+              {activeLessonModal.videoUrl || activeLessonModal.requiresProtectedPlayback ? (
                 (() => {
                   const url = playbackUrl;
                   if (!url) {

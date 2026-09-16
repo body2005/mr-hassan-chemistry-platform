@@ -93,6 +93,7 @@ def auth_teacher_client(db):
         teacher_id=teacher.id,
         code="CHEM-500",
         title="Chemistry Advanced Lab",
+        grade_level="SECONDARY_1",
         status=CourseStatus.PUBLISHED,
     )
     db.add(course)
@@ -126,13 +127,14 @@ def auth_teacher_client(db):
 
 @pytest.fixture(autouse=True)
 def mock_background_indexing():
-    """Mocks out OCR and heavy indexing during upload limits tests so test suite runs in seconds."""
-    with patch("app.api.routes.knowledge_center._enqueue_source_processing"):
-        yield
+    """Mocks out OCR, fast PDF inspection and heavy indexing during upload limits tests so test suite runs in seconds."""
+    with patch("app.api.routes.knowledge_center._enqueue_source_processing") as enqueue, \
+         patch("app.api.routes.knowledge_center._inspect_pdf_page_count_fast", return_value=1):
+        yield enqueue
 
 
-def test_upload_single_file_above_100mb_accepted(auth_teacher_client, db):
-    """Accept file > 100 MiB (e.g. 105 MiB) which previously failed with HTTP 413."""
+def test_upload_single_file_above_100mb_accepted(auth_teacher_client, db, mock_background_indexing):
+    """The API durably stores a large upload and hands its queued work to Celery."""
     client = auth_teacher_client["client"]
     course = auth_teacher_client["course"]
     size_105mb = 105 * 1024 * 1024
@@ -147,7 +149,14 @@ def test_upload_single_file_above_100mb_accepted(auth_teacher_client, db):
     data = response.json()
     assert data["filename"] == "advanced_handbook.pdf"
     assert data["size_bytes"] == size_105mb
-    assert data["status"] == "PROCESSING"
+    # Upload completion and indexing are deliberately separate phases.  The
+    # worker, never the HTTP request, owns QUEUED -> PROCESSING.
+    assert data["status"] == "QUEUED"
+    assert data["upload_percent"] == 100
+    assert data["indexing_percent"] == 0
+    mock_background_indexing.assert_called_once()
+    _, source_arg = mock_background_indexing.call_args.args
+    assert str(source_arg.id) == data["id"]
 
     # Verify source persisted in database
     src = db.query(KnowledgeSource).filter(KnowledgeSource.id == uuid.UUID(data["id"])).first()

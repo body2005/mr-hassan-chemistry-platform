@@ -38,7 +38,7 @@ def materialize_book_outline(
     db: Session,
     *,
     source_id: uuid.UUID,
-    course_id: uuid.UUID,
+    course_id: uuid.UUID | None,
     document_title: str,
     total_pages: int,
     hierarchy: list[dict[str, Any]] | None,
@@ -129,7 +129,7 @@ def outline_node_for_page(
 
 
 def materialize_lesson_relations(
-    db: Session, *, source_id: uuid.UUID, course_id: uuid.UUID, nodes: list[KnowledgeOutlineNode]
+    db: Session, *, source_id: uuid.UUID, course_id: uuid.UUID | None, nodes: list[KnowledgeOutlineNode]
 ) -> None:
     """Create only defensible lesson links from the book's stated sequence/titles."""
     lessons = sorted((node for node in nodes if node.node_kind == "lesson"), key=lambda node: node.position)

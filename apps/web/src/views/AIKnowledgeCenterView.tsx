@@ -25,8 +25,6 @@ import {
   X,
   Download,
 } from "lucide-react";
-import { courseService } from "../services/lmsService";
-import { Course } from "../types/lms";
 import { apiRequest, apiUrl, ApiClientError, fetchApiBlob } from "../services/apiClient";
 import { uploadManager } from "../services/uploadManager";
 import { useConfirm } from "../components/ConfirmWizard";
@@ -36,7 +34,8 @@ import { normalizeFormulaText, containsFormulaOrMath } from "../utils/formulaUti
 
 interface KnowledgeSourceItem {
   id: string;
-  course_id: string;
+  course_id?: string | null;
+  grade_level?: string | null;
   lesson_id?: string | null;
   filename: string;
   file_format: string;
@@ -59,6 +58,12 @@ interface KnowledgeSourceItem {
   file_url?: string | null;
   created_at: string;
 }
+
+const SECONDARY_GRADES = [
+  { id: "SECONDARY_1", label: "الصف الأول الثانوي" },
+  { id: "SECONDARY_2", label: "الصف الثاني الثانوي" },
+  { id: "SECONDARY_3", label: "الصف الثالث الثانوي" },
+] as const;
 
 interface InspectSourceState {
   id: string;
@@ -93,8 +98,14 @@ interface AIKnowledgeCenterViewProps {
 export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () => {
   const confirm = useConfirm();
   const toast = useToast();
-  const [selectedCourseId, setSelectedCourseId] = useState<string>("");
-  const [courses, setCourses] = useState<Course[]>([]);
+  const [selectedGrade, setSelectedGrade] = useState<string>(
+    () => localStorage.getItem("lms_last_selected_grade") || ""
+  );
+
+  const handleSelectGrade = (grade: string) => {
+    setSelectedGrade(grade);
+    localStorage.setItem("lms_last_selected_grade", grade);
+  };
 
   const [sources, setSources] = useState<KnowledgeSourceItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -116,7 +127,9 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
     });
   }, []);
 
-  const uploading = activeUploads.length > 0;
+  // Uploading and indexing are separate lifecycles.  A queued/processing
+  // source must never prevent the teacher from starting another batch.
+  const uploading = activeUploads.some((task) => task.status === "uploading");
   const currentKnowledgeTask = activeUploads[0];
   const uploadProgress = currentKnowledgeTask
     ? currentKnowledgeTask.status === "processing"
@@ -139,26 +152,18 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
     setSources((prev) => updater(prev));
   }, []);
 
-  // Load courses
-  useEffect(() => {
-    async function loadCourses() {
-      try {
-        const list = await courseService.getCourses();
-        setCourses(list);
-      } catch (err) {
-        console.error("Failed to load courses", err);
-      }
-    }
-    void loadCourses();
-  }, []);
+
 
   // Backend is the single source of truth for knowledge sources.
   const fetchSources = useCallback(async () => {
+    if (!selectedGrade) {
+      setSources([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      const query = selectedCourseId && selectedCourseId !== "all"
-        ? `?course_id=${encodeURIComponent(selectedCourseId)}`
-        : "";
+      const query = `?grade_level=${encodeURIComponent(selectedGrade)}`;
       const data = await apiRequest<KnowledgeSourceItem[]>(`/knowledge-center/sources${query}`);
       setSources(Array.isArray(data) ? data : []);
     } catch (err) {
@@ -167,7 +172,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
     } finally {
       setLoading(false);
     }
-  }, [selectedCourseId]);
+  }, [selectedGrade]);
 
   useEffect(() => {
     void fetchSources();
@@ -203,15 +208,14 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
   const handleUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
 
-    const targetCourseId = selectedCourseId;
-    if (!targetCourseId) {
-      toast({ message: "لا يوجد مقرر حقيقي متاح للرفع. أعد تحميل المقررات ثم حاول مرة أخرى.", tone: "warning" });
+    if (!selectedGrade) {
+      toast({ message: "يرجى تحديد الصف الدراسي أولاً قبل رفع الملفات.", tone: "warning" });
       return;
     }
 
     uploadManager.enqueueKnowledgeBatchUpload({
       files: Array.from(files),
-      courseId: targetCourseId,
+      gradeLevel: selectedGrade,
       onSuccess: () => {
         fetchSources();
       },
@@ -431,11 +435,10 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
       });
   };
 
-  // Test AI Q&A — Calls real backend LLM API with zero hardcoded facts
+  // Test AI Q&A — Calls real backend knowledge search API
   const handleTestAI = async () => {
-    const testCourseId = selectedCourseId;
-    if (!testQuery.trim() || !testCourseId) {
-      setTestError("لا يوجد مقرر متاح لاختبار المساعد حاليًا.");
+    if (!testQuery.trim() || !selectedGrade) {
+      setTestError("يرجى تحديد الصف الدراسي أولاً وكتابة سؤال للاختبار.");
       return;
     }
     setTestLoading(true);
@@ -444,15 +447,26 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
     setTestError(null);
 
     try {
-      const data = await apiRequest<{ answer?: string; refusal?: boolean }>("/tutor/chat", {
-        method: "POST",
-        body: JSON.stringify({
-          course_id: testCourseId,
-          message: testQuery,
-        }),
-      });
-      setTestAnswer(data.answer || null);
-      setTestRefusal(data.refusal || false);
+      const data = await apiRequest<{
+        units?: Array<{ concept?: string; statement?: string }>;
+        questions?: Array<{ question_text?: string; correct_answer?: string }>;
+      }>(`/knowledge-center/search?query=${encodeURIComponent(testQuery)}&grade_level=${encodeURIComponent(selectedGrade)}`);
+      const units = data?.units || [];
+      const questions = data?.questions || [];
+      if (units.length === 0 && questions.length === 0) {
+        setTestAnswer("لم يتم العثور على معلومات مطابقة في مصادر المعرفة المرفوعة لهذا الصف الدراسي.");
+        setTestRefusal(true);
+      } else {
+        const parts: string[] = [];
+        if (units.length > 0) {
+          parts.push(...units.slice(0, 3).map((u) => u.concept ? `**${u.concept}**: ${u.statement}` : (u.statement || "")));
+        }
+        if (questions.length > 0) {
+          parts.push(...questions.slice(0, 2).map((q) => `سؤال مرتبط: ${q.question_text || ""}`));
+        }
+        setTestAnswer(parts.join("\n\n"));
+        setTestRefusal(false);
+      }
     } catch (err) {
       console.error("Test AI API error", err);
       const message = err instanceof ApiClientError && (err.status === 401 || err.status === 403)
@@ -516,20 +530,40 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
           يمكنك اختيار كتاب واحد أو عدة كتب معًا. تُحفَظ النسخ الأصلية وتُفهرَس الصفحات والصور والنصوص داخلها (PDF, Word, PowerPoint, TXT, الصور).
         </p>
 
-        <label htmlFor="knowledgeCourseSelect" style={{ display: "block", fontSize: "13px", fontWeight: 700, marginBottom: "6px" }}>
-          المقرر المرتبط بمصدر المعرفة
-        </label>
-        <select
-          id="knowledgeCourseSelect"
-          value={selectedCourseId}
-          onChange={(event) => setSelectedCourseId(event.target.value)}
-          style={{ width: "min(100%, 420px)", padding: "10px 12px", marginBottom: "16px", borderRadius: "8px", border: "1px solid var(--border-color)", background: "var(--bg-surface)", color: "var(--text-main)" }}
-        >
-          <option value="">اختر المقرر قبل الرفع</option>
-          {courses.map((course) => (
-            <option key={course.id} value={course.id}>{course.title}</option>
-          ))}
-        </select>
+        <div style={{ marginBottom: "20px" }}>
+          <label style={{ display: "block", fontSize: "14px", fontWeight: 700, marginBottom: "10px", color: "var(--text-main, inherit)" }}>
+            الصف الدراسي للمصادر التعليمية
+          </label>
+          <div style={{ display: "flex", justifyContent: "center", gap: "10px", flexWrap: "wrap" }}>
+            {SECONDARY_GRADES.map((grade) => {
+              const isSelected = selectedGrade === grade.id;
+              return (
+                <button
+                  key={grade.id}
+                  type="button"
+                  onClick={() => handleSelectGrade(grade.id)}
+                  style={{
+                    minHeight: "44px",
+                    padding: "10px 20px",
+                    borderRadius: "8px",
+                    border: isSelected ? "2px solid #2563eb" : "1px solid var(--border-color, rgba(255,255,255,0.15))",
+                    background: isSelected ? "#2563eb" : "var(--bg-surface, rgba(255,255,255,0.05))",
+                    color: isSelected ? "#ffffff" : "var(--text-main, inherit)",
+                    fontWeight: isSelected ? "700" : "500",
+                    fontSize: "14px",
+                    cursor: "pointer",
+                    transition: "all 0.15s ease",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  {grade.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
 
         <input
           type="file"
@@ -541,21 +575,24 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
         />
         <button
           type="button"
-          disabled={uploading || !selectedCourseId}
-          onClick={() => document.getElementById("fileUploadInput")?.click()}
+          disabled={uploading || !selectedGrade}
+          title={!selectedGrade ? "اختر السنة الدراسية أولاً" : "اختر كتابًا أو عدة كتب"}
+          onClick={() => {
+            document.getElementById("fileUploadInput")?.click();
+          }}
           style={{
             padding: "12px 32px",
             borderRadius: "10px",
-            background: uploading ? "#155e42" : "#2563eb",
+            background: uploading ? "#155e42" : !selectedGrade ? "#94a3b8" : "#2563eb",
             color: "#ffffff",
             border: "none",
             fontSize: "15px",
             fontWeight: "700",
-            cursor: uploading ? "not-allowed" : "pointer",
+            cursor: uploading || !selectedGrade ? "not-allowed" : "pointer",
             display: "inline-flex",
             alignItems: "center",
             gap: "10px",
-            boxShadow: "0 4px 14px rgba(37, 99, 235, 0.35)",
+            boxShadow: selectedGrade && !uploading ? "0 4px 14px rgba(37, 99, 235, 0.35)" : "none",
           }}
         >
           <UploadCloud style={{ width: "20px", height: "20px", color: "#ffffff" }} />
@@ -571,7 +608,9 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                     return `جاري رفع الملفات: MB ${loadedMB} من MB ${totalMB} (${uploadProgress}%)`;
                   })()
                 : "جاري حفظ وتجهيز الملفات..."
-              : "اختر كتابًا أو عدة ملفات لرفعها وفهرستها"}
+              : !selectedGrade
+                ? "اختر السنة الدراسية أولاً"
+                : "اختر كتابًا أو عدة ملفات لرفعها وفهرستها"}
           </span>
         </button>
 
@@ -689,11 +728,15 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
           المصادر المرفوعة في المنهج ({sources.length})
         </h3>
 
-        {loading && sources.length === 0 ? (
+        {!selectedGrade ? (
+          <p style={{ textAlign: "center", color: "var(--text-muted, #94a3b8)", padding: "30px 0" }}>
+            يرجى اختيار الصف الدراسي من الأعلى لعرض أو رفع المصادر التعليمية الخاصة به.
+          </p>
+        ) : loading && sources.length === 0 ? (
           <p style={{ textAlign: "center", color: "var(--text-muted, #94a3b8)", padding: "20px" }}>جاري تحميل مصادر المعرفة...</p>
         ) : sources.length === 0 ? (
           <p style={{ textAlign: "center", color: "var(--text-muted, #94a3b8)", padding: "30px 0" }}>
-            لا توجد مصادر تعليمية مرفوعة لهذا المقرر بعد. قم برفع مذكرات أو ملفات PDF لتغذية مركز المعرفة الذكي.
+            لا توجد مصادر تعليمية مرفوعة لهذا الصف الدراسي بعد. قم برفع مذكرات أو ملفات PDF لتغذية مركز المعرفة الذكي.
           </p>
         ) : (
           <div style={{ overflowX: "auto" }}>
@@ -758,27 +801,81 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                           onClick={() => handleInspect(src.id)}
                           title="معاينة صفحات الملف"
                           aria-label="معاينة صفحات الملف"
-                          style={{ padding: "7px 10px", borderRadius: "6px", background: "rgba(37,99,235,0.15)", border: "1px solid #2563eb", cursor: "pointer", color: "#60a5fa", display: "flex", alignItems: "center", justifyContent: "center" }}
+                          style={{
+                            width: "44px",
+                            height: "44px",
+                            minWidth: "44px",
+                            minHeight: "44px",
+                            padding: 0,
+                            border: "none",
+                            background: "transparent",
+                            boxShadow: "none",
+                            cursor: "pointer",
+                            color: "#2563eb",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            borderRadius: "8px",
+                            outline: "none",
+                          }}
+                          onFocus={(e) => { e.currentTarget.style.outline = "2px solid #2563eb"; }}
+                          onBlur={(e) => { e.currentTarget.style.outline = "none"; }}
                         >
-                          <Eye style={{ width: "16px", height: "16px" }} />
+                          <Eye style={{ width: "24px", height: "24px", strokeWidth: 2.25 }} />
                         </button>
                         <button
                           type="button"
                           onClick={() => handleDownload(src.id, src.filename)}
                           title="تنزيل الملف الأصلي"
                           aria-label="تنزيل الملف الأصلي"
-                          style={{ padding: "7px 10px", borderRadius: "6px", background: "rgba(16,185,129,0.15)", border: "1px solid #10b981", cursor: "pointer", color: "#10b981", display: "flex", alignItems: "center", justifyContent: "center" }}
+                          style={{
+                            width: "44px",
+                            height: "44px",
+                            minWidth: "44px",
+                            minHeight: "44px",
+                            padding: 0,
+                            border: "none",
+                            background: "transparent",
+                            boxShadow: "none",
+                            cursor: "pointer",
+                            color: "#059669",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            borderRadius: "8px",
+                            outline: "none",
+                          }}
+                          onFocus={(e) => { e.currentTarget.style.outline = "2px solid #059669"; }}
+                          onBlur={(e) => { e.currentTarget.style.outline = "none"; }}
                         >
-                          <Download style={{ width: "16px", height: "16px" }} />
+                          <Download style={{ width: "24px", height: "24px", strokeWidth: 2.25 }} />
                         </button>
                         <button
                           type="button"
                           onClick={() => handleDelete(src.id)}
                           title="حذف المصدر"
                           aria-label="حذف المصدر"
-                          style={{ padding: "6px 10px", borderRadius: "6px", background: "none", border: "1px solid #fca5a5", cursor: "pointer", color: "#ef4444" }}
+                          style={{
+                            width: "44px",
+                            height: "44px",
+                            minWidth: "44px",
+                            minHeight: "44px",
+                            padding: 0,
+                            border: "none",
+                            background: "transparent",
+                            boxShadow: "none",
+                            cursor: "pointer",
+                            color: "#dc2626",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            borderRadius: "8px",
+                            outline: "none",
+                          }}
+                          onFocus={(e) => { e.currentTarget.style.outline = "2px solid #dc2626"; }}
+                          onBlur={(e) => { e.currentTarget.style.outline = "none"; }}
                         >
-                          <Trash2 style={{ width: "16px", height: "16px" }} />
+                          <Trash2 style={{ width: "24px", height: "24px", strokeWidth: 2.25 }} />
                         </button>
                       </div>
                     </td>

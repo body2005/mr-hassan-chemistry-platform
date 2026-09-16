@@ -21,25 +21,37 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Resume interrupted indexing without using deprecated startup events."""
-    from sqlalchemy import select
-    from app.api.routes.knowledge_center import _LOCAL_INGEST_EXECUTOR, _run_bg_process_source
+    """Resume interrupted indexing tasks with centralized dispatch."""
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import select, or_, and_
     from app.core.database import SessionLocal
     from app.models.knowledge_center import KnowledgeSource, SourceStatus
+    from app.services.knowledge_center_service import dispatch_source_processing
 
     try:
+        stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
         with SessionLocal() as db:
-            interrupted_ids = list(
-                db.scalars(
-                    select(KnowledgeSource.id).where(
-                        KnowledgeSource.status.in_([SourceStatus.PROCESSING, SourceStatus.QUEUED])
+            stmt = (
+                select(KnowledgeSource.id)
+                .where(
+                    or_(
+                        KnowledgeSource.status == SourceStatus.QUEUED,
+                        and_(
+                            KnowledgeSource.status == SourceStatus.PROCESSING,
+                            KnowledgeSource.updated_at <= stale_cutoff,
+                        ),
                     )
-                ).all()
+                )
             )
-        for source_id in interrupted_ids:
-            _LOCAL_INGEST_EXECUTOR.submit(_run_bg_process_source, source_id)
-        if interrupted_ids:
-            logger.info("Queued %s interrupted indexing task(s) for resume", len(interrupted_ids))
+            candidate_ids = list(db.scalars(stmt).all())
+
+        dispatched_count = 0
+        for source_id in candidate_ids:
+            with SessionLocal() as db:
+                if dispatch_source_processing(db, source_id, is_startup=True):
+                    dispatched_count += 1
+        if candidate_ids:
+            logger.info("Startup recovery: dispatched %s / %s eligible source(s)", dispatched_count, len(candidate_ids))
     except Exception:
         logger.exception("Unable to resume interrupted indexing tasks at startup")
     yield
@@ -61,9 +73,8 @@ def is_origin_allowed(origin: str | None) -> bool:
         return True
     if origin in settings.cors_origins:
         return True
-    if settings.app_env != "production":
-        return True
-    return False
+    origin_regex = settings.cors_origin_regex
+    return bool(origin_regex and re.fullmatch(origin_regex, origin))
 
 
 @app.middleware("http")
@@ -199,8 +210,8 @@ async def security_middleware(request, call_next):
 # Access-Control-Allow-Headers breaks credentialed Authorization preflights.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins if settings.app_env == "production" else [],
-    allow_origin_regex=None if settings.app_env == "production" else r"https?://.*",
+    allow_origins=settings.cors_origins,
+    allow_origin_regex=settings.cors_origin_regex,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=[

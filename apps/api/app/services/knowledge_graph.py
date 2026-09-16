@@ -95,6 +95,8 @@ def build_source_knowledge_graph(db: Session, source_id: uuid.UUID) -> None:
     if not units:
         return
     course_id = units[0].course_id
+    if not course_id:
+        return
 
     # 1. Preload existing concepts for course into in-memory dictionary
     all_concepts = db.scalars(select(KnowledgeConcept).where(KnowledgeConcept.course_id == course_id)).all()

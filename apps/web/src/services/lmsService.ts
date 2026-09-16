@@ -200,14 +200,16 @@ function mapApiCourse(course: ApiCourse): Course {
           durationFormatted: lesson.video_duration_seconds
             ? `${Math.ceil(lesson.video_duration_seconds / 60)} دقيقة`
             : "",
-          // Native uploads are never handed to the player as a reusable raw
-          // storage/API URL. MyCourses exchanges this marker for a short-lived
-          // scoped stream token when the entitled learner opens the lesson.
-          videoUrl: lesson.video_asset_key
-            ? /^https?:\/\//i.test(lesson.video_asset_key)
-              ? lesson.video_asset_key
-              : `protected:${lesson.id}`
+          // A native upload never becomes a browser URL here. The player asks
+          // the API for a short-lived, lesson-scoped stream token when opened.
+          // This explicit flag avoids inventing a pseudo URL, which browsers
+          // cannot safely resolve.
+          videoUrl: lesson.video_asset_key && /^https?:\/\//i.test(lesson.video_asset_key)
+            ? lesson.video_asset_key
             : "",
+          requiresProtectedPlayback: Boolean(
+            lesson.video_asset_key && !/^https?:\/\//i.test(lesson.video_asset_key),
+          ),
           price: Number(lesson.price_egp || 0),
           materials: (lesson.materials || []).map((m) => ({
             id: m.id,

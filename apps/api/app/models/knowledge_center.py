@@ -78,9 +78,10 @@ class KnowledgeSource(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     institution_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    course_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("courses.id", ondelete="CASCADE"), index=True, nullable=False
+    course_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), index=True, nullable=True
     )
+    grade_level: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     lesson_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("lessons.id", ondelete="CASCADE"), index=True
     )
@@ -112,6 +113,7 @@ class KnowledgeSource(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     image_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     table_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     question_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    preview_total_pages: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     metadata_json: Mapped[dict | None] = mapped_column(JSON)
 
@@ -148,8 +150,8 @@ class KnowledgeOutlineNode(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     source_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("knowledge_sources.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    course_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("courses.id", ondelete="CASCADE"), index=True, nullable=False
+    course_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), index=True, nullable=True
     )
     parent_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("knowledge_outline_nodes.id", ondelete="CASCADE"), index=True
@@ -175,8 +177,8 @@ class KnowledgeLessonRelation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     source_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("knowledge_sources.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    course_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("courses.id", ondelete="CASCADE"), index=True, nullable=False
+    course_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), index=True, nullable=True
     )
     from_outline_node_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("knowledge_outline_nodes.id", ondelete="CASCADE"), index=True, nullable=False
@@ -350,8 +352,8 @@ class KnowledgeUnitRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index("ix_ku_records_concept", "concept"),
     )
 
-    course_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("courses.id", ondelete="CASCADE"), index=True, nullable=False
+    course_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), index=True, nullable=True
     )
     lesson_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("lessons.id", ondelete="CASCADE"), index=True

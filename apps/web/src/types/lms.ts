@@ -89,6 +89,8 @@ export interface VideoLesson {
   durationMinutes: number;
   durationFormatted: string;
   videoUrl: string;
+  /** Native videos are resolved only after the viewer obtains a scoped token. */
+  requiresProtectedPlayback?: boolean;
   thumbnailUrl?: string;
   price?: number; // Per-lesson price decided by teacher (0 = free)
   materials: UploadedMaterial[];

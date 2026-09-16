@@ -462,14 +462,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
     setExtractingFile(true);
     setError(null);
     try {
-      const targetCourseId = currentCourse?.id;
-      if (!targetCourseId) {
-        setError("يرجى اختيار مقرر صالح قبل استيراد ملف الأسئلة.");
-        return;
-      }
       const resp = await aiClient.extractQuizFromFile(
         file,
-        targetCourseId,
+        currentCourse?.id,
         selectedLessonIds.length > 0 ? selectedLessonIds[0] : undefined
       );
 
@@ -1769,7 +1764,13 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
                       type="button"
                       onClick={handleResetNewQuiz}
                       className="btn-secondary"
-                      style={{ fontSize: "12px", gap: "5px", color: "#64748b" }}
+                      style={{
+                        fontSize: "12px",
+                        gap: "5px",
+                        color: "#ffffff",
+                        background: "#dc2626",
+                        borderColor: "#dc2626",
+                      }}
                       title="مسح المسودة الحالية والبدء باختبار جديد من الصفر"
                     >
                       <RotateCcw size={13} />
