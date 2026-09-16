@@ -9,10 +9,12 @@ source indexing status, document inspection, reindexing, deletion, and knowledge
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import shutil
 import tempfile
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -89,7 +91,6 @@ def _run_bg_process_source(
     attempt_id: uuid.UUID,
 ) -> None:
     """Runs knowledge source indexing and OCR in a background worker task with dedicated DB session."""
-    import logging
     logger = logging.getLogger(__name__)
     from app.core.database import SessionLocal
 
