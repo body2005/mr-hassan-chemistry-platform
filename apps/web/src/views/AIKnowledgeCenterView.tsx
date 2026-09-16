@@ -108,6 +108,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
 
   const [sources, setSources] = useState<KnowledgeSourceItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [reindexingSourceIds, setReindexingSourceIds] = useState<Set<string>>(() => new Set());
 
   // Background upload manager state sync
   const [activeUploads, setActiveUploads] = useState(() =>
@@ -245,6 +246,30 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
     } catch (err) {
       console.error("Delete error", err);
       toast({ message: "تعذر الاتصال بالسيرفر لحذف المصدر.", tone: "danger" });
+    }
+  };
+
+  const handleReindex = async (source: KnowledgeSourceItem) => {
+    if (source.status === "QUEUED" || source.status === "PROCESSING" || reindexingSourceIds.has(source.id)) {
+      return;
+    }
+    setReindexingSourceIds((previous) => new Set(previous).add(source.id));
+    try {
+      const updated = await apiRequest<KnowledgeSourceItem>(
+        `/knowledge-center/sources/${source.id}/reindex`,
+        { method: "POST" },
+      );
+      updateSources((previous) => previous.map((item) => item.id === source.id ? updated : item));
+      toast({ message: `بدأت إعادة فهرسة «${source.filename}».`, tone: "success" });
+    } catch (err) {
+      console.error("Reindex error", err);
+      toast({ message: "تعذرت إعادة الفهرسة. أعد المحاولة بعد قليل.", tone: "danger" });
+    } finally {
+      setReindexingSourceIds((previous) => {
+        const next = new Set(previous);
+        next.delete(source.id);
+        return next;
+      });
     }
   };
 
@@ -741,11 +766,10 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
             <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "right" }}>
               <thead>
                 <tr style={{ borderBottom: "2px solid var(--border-color, rgba(255,255,255,0.1))", color: "var(--text-muted, #94a3b8)", fontSize: "13px" }}>
-                  <th style={{ padding: "12px", width: "35%" }}>اسم المصدر والملف</th>
+                  <th style={{ padding: "12px", width: "38%" }}>اسم المصدر والملف</th>
                   <th style={{ padding: "12px", width: "12%" }}>الحجم</th>
-                  <th style={{ padding: "12px", width: "26%" }}>الحالة والتقدم</th>
-                  <th style={{ padding: "12px", width: "13%" }}>الوحدات المفهرسة</th>
-                  <th style={{ padding: "12px", width: "14%" }}>الإجراءات</th>
+                  <th style={{ padding: "12px", width: "28%" }}>الحالة والتقدم</th>
+                  <th style={{ padding: "12px", width: "22%" }}>الإجراءات</th>
                 </tr>
               </thead>
               <tbody>
@@ -791,9 +815,37 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                         </div>
                       )}
                     </td>
-                    <td style={{ padding: "12px", fontWeight: "600" }}>{src.unit_count} وحدة</td>
                     <td style={{ padding: "12px" }}>
                       <div style={{ display: "flex", gap: "8px" }}>
+                        <button
+                          type="button"
+                          onClick={() => void handleReindex(src)}
+                          disabled={src.status === "QUEUED" || src.status === "PROCESSING" || reindexingSourceIds.has(src.id)}
+                          title={src.status === "QUEUED" || src.status === "PROCESSING" ? "الفهرسة جارية بالفعل" : "إعادة فهرسة المصدر"}
+                          aria-label="إعادة فهرسة المصدر"
+                          style={{
+                            width: "44px",
+                            height: "44px",
+                            minWidth: "44px",
+                            minHeight: "44px",
+                            padding: 0,
+                            border: "none",
+                            background: "transparent",
+                            boxShadow: "none",
+                            cursor: src.status === "QUEUED" || src.status === "PROCESSING" || reindexingSourceIds.has(src.id) ? "not-allowed" : "pointer",
+                            color: "#d97706",
+                            opacity: src.status === "QUEUED" || src.status === "PROCESSING" || reindexingSourceIds.has(src.id) ? 0.45 : 1,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            borderRadius: "8px",
+                            outline: "none",
+                          }}
+                          onFocus={(e) => { e.currentTarget.style.outline = "2px solid #d97706"; }}
+                          onBlur={(e) => { e.currentTarget.style.outline = "none"; }}
+                        >
+                          <RefreshCw style={{ width: "22px", height: "22px", strokeWidth: 2.25 }} />
+                        </button>
                         <button
                           type="button"
                           onClick={() => handleInspect(src.id)}
