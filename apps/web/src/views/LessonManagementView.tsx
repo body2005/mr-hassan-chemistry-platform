@@ -209,15 +209,15 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
 
   // Transcript & AI Summary Modals State
   const [transcriptModalLesson, setTranscriptModalLesson] = useState<VideoLesson | null>(null);
-  const [transcriptModalSegments, setTranscriptModalSegments] = useState<Array<{ id: string; sequence: number; start_time: number; end_time: number; time_formatted: string; text: string }>>([]);
+  const [transcriptModalSegments] = useState<Array<{ id: string; sequence: number; start_time: number; end_time: number; time_formatted: string; text: string }>>([]);
   const [transcriptModalSearch, setTranscriptModalSearch] = useState("");
   const [visibleTranscriptModalCount, setVisibleTranscriptModalCount] = useState(60);
-  const [loadingTranscriptModal, setLoadingTranscriptModal] = useState(false);
+  const [loadingTranscriptModal] = useState(false);
 
   const [summaryModalLesson, setSummaryModalLesson] = useState<VideoLesson | null>(null);
-  const [summaryData, setSummaryData] = useState<{ title: string; full_overview: string; total_duration_sec: number; language: string; sections: Array<{ time_range: string; start_time: number; end_time: number; summary_snippet: string }> } | null>(null);
+  const [summaryData] = useState<{ title: string; full_overview: string; total_duration_sec: number; language: string; sections: Array<{ time_range: string; start_time: number; end_time: number; summary_snippet: string }> } | null>(null);
   const [visibleSummaryCount, setVisibleSummaryCount] = useState(50);
-  const [loadingSummary, setLoadingSummary] = useState(false);
+  const [loadingSummary] = useState(false);
 
   const filteredTranscriptModalSegments = React.useMemo(() => {
     if (!transcriptModalSearch.trim()) return transcriptModalSegments;
@@ -228,35 +228,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   useEffect(() => {
     setVisibleTranscriptModalCount(60);
   }, [transcriptModalSearch]);
-
-  async function openTranscriptModal(lesson: VideoLesson) {
-    setTranscriptModalLesson(lesson);
-    setTranscriptModalSearch("");
-    setVisibleTranscriptModalCount(60);
-    setLoadingTranscriptModal(true);
-    try {
-      const res = await courseService.getLessonSegments(lesson.id);
-      setTranscriptModalSegments(res.segments || []);
-    } catch {
-      setTranscriptModalSegments([]);
-    } finally {
-      setLoadingTranscriptModal(false);
-    }
-  }
-
-  async function openSummaryModal(lesson: VideoLesson) {
-    setSummaryModalLesson(lesson);
-    setVisibleSummaryCount(50);
-    setLoadingSummary(true);
-    try {
-      const res = await courseService.getLessonAISummary(lesson.id);
-      setSummaryData(res);
-    } catch {
-      setSummaryData(null);
-    } finally {
-      setLoadingSummary(false);
-    }
-  }
 
   // File Input Refs for Guaranteed Click Triggering
   const videoInputRef = useRef<HTMLInputElement>(null);
@@ -582,12 +553,9 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "24px", flexWrap: "wrap", gap: "16px" }}>
         <div>
-          <h1 style={{ margin: "0 0 4px", fontSize: "24px", color: "var(--text-main, #0f172a)" }}>
-            إدارة الدروس وتوقعات صعوبة المنهج التفاعلية
+          <h1 style={{ margin: 0, fontSize: "24px", color: "var(--text-main, #0f172a)" }}>
+            إدارة الدروس
           </h1>
-          <p style={{ margin: 0, color: "var(--text-muted, #64748b)", fontSize: "13px" }}>
-            ارفع فيديوهات الشروحات والمذكرات، وتعرف على توقعات الذكاء الاصطناعي المستخرجة من تفاعل الطلاب (المقاطع الأكثر إعادة، الكومنتات، درجات الواجب، والكويزات).
-          </p>
         </div>
 
         {/* Universal Export */}
@@ -1379,52 +1347,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                     </p>
                   </div>
 
-                  {/* Actions & AI Status Badge */}
+                  {/* Lesson actions */}
                   <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                    <button
-                      type="button"
-                      onClick={() => openTranscriptModal(lesson)}
-                      style={{
-                        background: "var(--bg-surface, #ffffff)",
-                        color: "#059669",
-                        border: "1px solid #059669",
-                        borderRadius: "8px",
-                        padding: "5px 12px",
-                        fontSize: "11.5px",
-                        fontWeight: 700,
-                        cursor: "pointer",
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "5px",
-                      }}
-                      title="عرض تفريغ الشرح والبحث الزمني"
-                    >
-                      <FileText size={13} />
-                      <span>تفريغ الشرح والبحث</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => openSummaryModal(lesson)}
-                      style={{
-                        background: "var(--bg-surface, #ffffff)",
-                        color: "#0f766e",
-                        border: "1px solid #0f766e",
-                        borderRadius: "8px",
-                        padding: "5px 12px",
-                        fontSize: "11.5px",
-                        fontWeight: 700,
-                        cursor: "pointer",
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "5px",
-                      }}
-                      title="عرض ملخص الذكاء الاصطناعي للمفاهيم الأساسية"
-                    >
-                      <Bot size={13} />
-                      <span>ملخص AI</span>
-                    </button>
-
                     {isDeleteMode && (
                       <button
                         type="button"
@@ -1450,7 +1374,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                       </button>
                     )}
 
-                    {isAnalyzed ? (
+                    {isAnalyzed && (
                     <span
                       style={{
                         fontSize: "11px",
@@ -1468,53 +1392,12 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                       <Sparkles size={13} />
                       <span>{lesson.expectedStruggleRate > 40 ? "درس عالي الصعوبة" : "صعوبة معتدلة"}</span>
                     </span>
-                  ) : (
-                    <span
-                      style={{
-                        fontSize: "11px",
-                        fontWeight: 700,
-                        padding: "4px 10px",
-                        borderRadius: "8px",
-                        background: "var(--bg-accent-warm)",
-                        color: "#b45309",
-                        border: "1px solid #fde68a",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "5px",
-                      }}
-                    >
-                      <Clock size={13} />
-                      <span>في انتظار اكتمال المشاهدات ({viewsCount} / {minViewsThreshold})</span>
-                    </span>
                   )}
                   </div>
                 </div>
 
                 {/* Real Analytics Status: ONLY shown when real student telemetry exists */}
-                {viewsCount === 0 ? (
-                  <div
-                    style={{
-                      background: "var(--bg-surface-secondary, #f8fafc)",
-                      border: "1px dashed var(--border-color, #cbd5e1)",
-                      borderRadius: "12px",
-                      padding: "14px 16px",
-                      marginBottom: "14px",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "10px",
-                    }}
-                  >
-                    <Clock size={18} style={{ color: "#059669", flexShrink: 0 }} />
-                    <div>
-                      <strong style={{ display: "block", fontSize: "12px", color: "var(--text-main)" }}>
-                        في انتظار بدء مشاهدات وتفاعل الطلاب (0 مشاهدات حالياً)
-                      </strong>
-                      <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                        تم رفع وحفظ الدرس بنجاح. ستظهر نسب المتابعة الحقيقية وتحليلات الذكاء الاصطناعي فور بدء الطلاب بمشاهدة الفيديو وحل الواجبات.
-                      </span>
-                    </div>
-                  </div>
-                ) : isAnalyzed ? (
+                {viewsCount === 0 ? null : isAnalyzed ? (
                   <>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px", marginBottom: "16px" }}>
                       <div style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "10px", padding: "12px 14px" }}>

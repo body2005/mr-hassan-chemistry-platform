@@ -575,27 +575,24 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
         />
         <button
           type="button"
-          disabled={uploading}
+          disabled={uploading || !selectedGrade}
+          title={!selectedGrade ? "اختر السنة الدراسية أولاً" : "اختر كتابًا أو عدة كتب"}
           onClick={() => {
-            if (!selectedGrade) {
-              toast({ message: "يرجى تحديد الصف الدراسي أولاً قبل رفع الملفات.", tone: "warning" });
-              return;
-            }
             document.getElementById("fileUploadInput")?.click();
           }}
           style={{
             padding: "12px 32px",
             borderRadius: "10px",
-            background: uploading ? "#155e42" : "#2563eb",
+            background: uploading ? "#155e42" : !selectedGrade ? "#94a3b8" : "#2563eb",
             color: "#ffffff",
             border: "none",
             fontSize: "15px",
             fontWeight: "700",
-            cursor: uploading ? "not-allowed" : "pointer",
+            cursor: uploading || !selectedGrade ? "not-allowed" : "pointer",
             display: "inline-flex",
             alignItems: "center",
             gap: "10px",
-            boxShadow: "0 4px 14px rgba(37, 99, 235, 0.35)",
+            boxShadow: selectedGrade && !uploading ? "0 4px 14px rgba(37, 99, 235, 0.35)" : "none",
           }}
         >
           <UploadCloud style={{ width: "20px", height: "20px", color: "#ffffff" }} />
@@ -611,7 +608,9 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                     return `جاري رفع الملفات: MB ${loadedMB} من MB ${totalMB} (${uploadProgress}%)`;
                   })()
                 : "جاري حفظ وتجهيز الملفات..."
-              : "اختر كتابًا أو عدة ملفات لرفعها وفهرستها"}
+              : !selectedGrade
+                ? "اختر السنة الدراسية أولاً"
+                : "اختر كتابًا أو عدة ملفات لرفعها وفهرستها"}
           </span>
         </button>
 
