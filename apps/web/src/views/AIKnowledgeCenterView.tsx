@@ -517,7 +517,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
         </p>
 
         <label htmlFor="knowledgeCourseSelect" style={{ display: "block", fontSize: "13px", fontWeight: 700, marginBottom: "6px" }}>
-          المقرر المرتبط بمصدر المعرفة
+          نطاق المعرفة
         </label>
         <select
           id="knowledgeCourseSelect"
@@ -541,8 +541,14 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
         />
         <button
           type="button"
-          disabled={uploading || !selectedCourseId}
-          onClick={() => document.getElementById("fileUploadInput")?.click()}
+          disabled={uploading}
+          onClick={() => {
+            if (!selectedCourseId) {
+              toast({ message: "حدد نطاق المعرفة قبل اختيار الملفات.", tone: "warning" });
+              return;
+            }
+            document.getElementById("fileUploadInput")?.click();
+          }}
           style={{
             padding: "12px 32px",
             borderRadius: "10px",
@@ -758,27 +764,27 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                           onClick={() => handleInspect(src.id)}
                           title="معاينة صفحات الملف"
                           aria-label="معاينة صفحات الملف"
-                          style={{ padding: "7px 10px", borderRadius: "6px", background: "rgba(37,99,235,0.15)", border: "1px solid #2563eb", cursor: "pointer", color: "#60a5fa", display: "flex", alignItems: "center", justifyContent: "center" }}
+                          style={{ width: "44px", height: "44px", padding: 0, border: "none", background: "transparent", boxShadow: "none", cursor: "pointer", color: "#2563eb", display: "flex", alignItems: "center", justifyContent: "center" }}
                         >
-                          <Eye style={{ width: "16px", height: "16px" }} />
+                          <Eye style={{ width: "24px", height: "24px", strokeWidth: 2.25 }} />
                         </button>
                         <button
                           type="button"
                           onClick={() => handleDownload(src.id, src.filename)}
                           title="تنزيل الملف الأصلي"
                           aria-label="تنزيل الملف الأصلي"
-                          style={{ padding: "7px 10px", borderRadius: "6px", background: "rgba(16,185,129,0.15)", border: "1px solid #10b981", cursor: "pointer", color: "#10b981", display: "flex", alignItems: "center", justifyContent: "center" }}
+                          style={{ width: "44px", height: "44px", padding: 0, border: "none", background: "transparent", boxShadow: "none", cursor: "pointer", color: "#059669", display: "flex", alignItems: "center", justifyContent: "center" }}
                         >
-                          <Download style={{ width: "16px", height: "16px" }} />
+                          <Download style={{ width: "24px", height: "24px", strokeWidth: 2.25 }} />
                         </button>
                         <button
                           type="button"
                           onClick={() => handleDelete(src.id)}
                           title="حذف المصدر"
                           aria-label="حذف المصدر"
-                          style={{ padding: "6px 10px", borderRadius: "6px", background: "none", border: "1px solid #fca5a5", cursor: "pointer", color: "#ef4444" }}
+                          style={{ width: "44px", height: "44px", padding: 0, border: "none", background: "transparent", boxShadow: "none", cursor: "pointer", color: "#dc2626", display: "flex", alignItems: "center", justifyContent: "center" }}
                         >
-                          <Trash2 style={{ width: "16px", height: "16px" }} />
+                          <Trash2 style={{ width: "24px", height: "24px", strokeWidth: 2.25 }} />
                         </button>
                       </div>
                     </td>

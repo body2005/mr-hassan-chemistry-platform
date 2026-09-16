@@ -329,8 +329,8 @@ def test_lesson_material_student_access_and_download(db, tmp_path):
     assert res_dl_forbidden.status_code == 403
 
 
-def test_extract_quiz_from_file_requires_explicit_course(auth_teacher_client, db):
-    """Quiz imports never infer a course, even when the teacher has only one."""
+def test_extract_quiz_from_file_is_temporary_and_does_not_require_course(auth_teacher_client, db):
+    """Extraction is an independent temporary draft; a course is optional."""
     client = auth_teacher_client["client"]
     course = auth_teacher_client["course"]
 
@@ -343,11 +343,12 @@ def test_extract_quiz_from_file_requires_explicit_course(auth_teacher_client, db
         "الإجابة الصحيحة: أ\n"
     )
 
-    res_missing = client.post(
+    res_without_course = client.post(
         "/api/v1/quiz/extract-from-file",
         files={"file": ("quiz.txt", io.BytesIO(sample_text.encode("utf-8")), "text/plain")},
     )
-    assert res_missing.status_code == 422
+    assert res_without_course.status_code == 200, res_without_course.text
+    assert len(res_without_course.json()["questions"]) >= 1
 
     res = client.post(
         "/api/v1/quiz/extract-from-file",
@@ -371,3 +372,14 @@ def test_extract_quiz_from_file_requires_explicit_course(auth_teacher_client, db
     general = client.get(f"/api/v1/knowledge-center/sources?course_id={course.id}")
     assert general.status_code == 200
     assert general.json() == []
+
+
+def test_extract_quiz_rejects_lesson_without_course(auth_teacher_client):
+    client = auth_teacher_client["client"]
+    response = client.post(
+        "/api/v1/quiz/extract-from-file",
+        data={"lesson_id": str(uuid.uuid4())},
+        files={"file": ("quiz.txt", io.BytesIO(b"1. What is sodium?"), "text/plain")},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "COURSE_REQUIRED_FOR_LESSON"

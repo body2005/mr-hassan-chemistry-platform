@@ -1035,7 +1035,7 @@ async def extract_quiz_from_file(
     db: Db,
     user: TeacherOrAdmin,
     file: UploadFile = File(...),
-    course_id: str = Form(...),
+    course_id: str | None = Form(None),
     lesson_id: str | None = Form(None),
 ) -> QuizDraftResponse:
     """Extract questions directly from an uploaded exam / question file (PDF, Word, TXT, JSON, etc.)"""
@@ -1048,8 +1048,16 @@ async def extract_quiz_from_file(
 
     max_exam_bytes = 50 * 1024 * 1024
     filename = sanitize_source_filename(file.filename or "exam_file.txt")
-    course_uuid = _resolve_course_uuid(db, user, course_id)
-    lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
+    course_uuid = _resolve_course_uuid(db, user, course_id) if course_id else None
+    if lesson_id and not course_uuid:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "COURSE_REQUIRED_FOR_LESSON",
+                "message": "يلزم اختيار المقرر عند تحديد درس لاستخراج الأسئلة.",
+            },
+        )
+    _resolve_lesson_uuid(db, course_uuid, lesson_id) if lesson_id and course_uuid else None
     staging_file = os.path.join(
         _get_kc_temp_dir(), f"exam_stage_{uuid.uuid4().hex[:12]}_{filename}"
     )

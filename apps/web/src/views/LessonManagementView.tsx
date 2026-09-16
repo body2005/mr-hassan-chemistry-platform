@@ -269,18 +269,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     return [...activeCourse.lessons].reverse();
   }, [activeCourse]);
 
-  // Video & Lesson Search / Filter State
+  // Video & Lesson Search State
   const [videoSearchQuery, setVideoSearchQuery] = useState("");
-  const [videoFilterType, setVideoFilterType] = useState<"all" | "video_only" | "notes_only">("all");
-
-  const totalWithVideo = React.useMemo(
-    () => activeLessons.filter((l) => Boolean(l.videoUrl)).length,
-    [activeLessons]
-  );
-  const totalWithNotes = React.useMemo(
-    () => activeLessons.filter((l) => Boolean(l.materials && l.materials.length > 0)).length,
-    [activeLessons]
-  );
 
   const filteredLessons: VideoLesson[] = React.useMemo(() => {
     let result = activeLessons;
@@ -292,13 +282,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         return title.includes(q) || desc.includes(q);
       });
     }
-    if (videoFilterType === "video_only") {
-      result = result.filter((l) => Boolean(l.videoUrl));
-    } else if (videoFilterType === "notes_only") {
-      result = result.filter((l) => Boolean(l.materials && l.materials.length > 0));
-    }
     return result;
-  }, [activeLessons, videoSearchQuery, videoFilterType]);
+  }, [activeLessons, videoSearchQuery]);
 
   const activeYearLabel =
     selectedYear === "1st_secondary"
@@ -1144,72 +1129,10 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                   )}
                 </div>
 
-                {/* Filter Pills: All / Videos Only / Notes Only */}
-                <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                  <button
-                    type="button"
-                    onClick={() => setVideoFilterType("all")}
-                    style={{
-                      padding: "6px 12px",
-                      borderRadius: "20px",
-                      fontSize: "12px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      border: "none",
-                      background: videoFilterType === "all" ? "#0f392b" : "var(--bg-surface-secondary, #f1f5f9)",
-                      color: videoFilterType === "all" ? "#ffffff" : "var(--text-muted, #64748b)",
-                      transition: "all 0.15s ease",
-                    }}
-                  >
-                    الكل ({activeLessons.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setVideoFilterType("video_only")}
-                    style={{
-                      padding: "6px 12px",
-                      borderRadius: "20px",
-                      fontSize: "12px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      border: "none",
-                      background: videoFilterType === "video_only" ? "#059669" : "var(--bg-surface-secondary, #f1f5f9)",
-                      color: videoFilterType === "video_only" ? "#ffffff" : "var(--text-muted, #64748b)",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "4px",
-                      transition: "all 0.15s ease",
-                    }}
-                  >
-                    <span>فيديوهات فقط 🎥</span>
-                    <span>({totalWithVideo})</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setVideoFilterType("notes_only")}
-                    style={{
-                      padding: "6px 12px",
-                      borderRadius: "20px",
-                      fontSize: "12px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      border: "none",
-                      background: videoFilterType === "notes_only" ? "#0284c7" : "var(--bg-surface-secondary, #f1f5f9)",
-                      color: videoFilterType === "notes_only" ? "#ffffff" : "var(--text-muted, #64748b)",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "4px",
-                      transition: "all 0.15s ease",
-                    }}
-                  >
-                    <span>مذكرات فقط 📄</span>
-                    <span>({totalWithNotes})</span>
-                  </button>
-                </div>
               </div>
 
               {/* Search Active Indicator / Summary */}
-              {(videoSearchQuery.trim() || videoFilterType !== "all") && (
+              {videoSearchQuery.trim() && (
                 <div
                   style={{
                     display: "flex",
@@ -1227,10 +1150,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                   </span>
                   <button
                     type="button"
-                    onClick={() => {
-                      setVideoSearchQuery("");
-                      setVideoFilterType("all");
-                    }}
+                    onClick={() => setVideoSearchQuery("")}
                     style={{
                       background: "none",
                       border: "none",
@@ -1287,10 +1207,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
               </p>
               <button
                 type="button"
-                onClick={() => {
-                  setVideoSearchQuery("");
-                  setVideoFilterType("all");
-                }}
+                onClick={() => setVideoSearchQuery("")}
                 style={{
                   background: "var(--bg-surface-secondary, #f1f5f9)",
                   color: "#059669",

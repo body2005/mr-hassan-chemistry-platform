@@ -61,9 +61,8 @@ def is_origin_allowed(origin: str | None) -> bool:
         return True
     if origin in settings.cors_origins:
         return True
-    if settings.app_env != "production":
-        return True
-    return False
+    origin_regex = settings.cors_origin_regex
+    return bool(origin_regex and re.fullmatch(origin_regex, origin))
 
 
 @app.middleware("http")
@@ -199,8 +198,8 @@ async def security_middleware(request, call_next):
 # Access-Control-Allow-Headers breaks credentialed Authorization preflights.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins if settings.app_env == "production" else [],
-    allow_origin_regex=None if settings.app_env == "production" else r"https?://.*",
+    allow_origins=settings.cors_origins,
+    allow_origin_regex=settings.cors_origin_regex,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=[

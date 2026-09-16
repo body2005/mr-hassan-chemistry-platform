@@ -520,6 +520,9 @@ class UploadManager {
       if (task.courseId) {
         formData.append("course_id", task.courseId);
       }
+      if (task.lessonId) {
+        formData.append("lesson_id", task.lessonId);
+      }
       const role = task.type === "lesson_material" || Boolean(task.lessonId)
         ? "LESSON_MATERIAL"
         : "COURSE_KNOWLEDGE";

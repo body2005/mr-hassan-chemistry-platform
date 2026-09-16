@@ -462,14 +462,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
     setExtractingFile(true);
     setError(null);
     try {
-      const targetCourseId = currentCourse?.id;
-      if (!targetCourseId) {
-        setError("يرجى اختيار مقرر صالح قبل استيراد ملف الأسئلة.");
-        return;
-      }
       const resp = await aiClient.extractQuizFromFile(
         file,
-        targetCourseId,
+        currentCourse?.id,
         selectedLessonIds.length > 0 ? selectedLessonIds[0] : undefined
       );
 
