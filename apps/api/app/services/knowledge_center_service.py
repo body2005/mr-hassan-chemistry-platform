@@ -2179,10 +2179,6 @@ def dispatch_source_processing(
     from app.core.config import get_settings
 
     settings = get_settings()
-    if settings.app_env.lower() in {"test", "testing"} or os.getenv("APP_ENV", "").lower() in {"test", "testing"}:
-        logger.info("Test environment active; skipping background ingestion enqueue for source %s", source_id)
-        return True
-
     stmt = select(KnowledgeSource).where(KnowledgeSource.id == source_id)
     if db.bind.dialect.name == "postgresql":
         stmt = stmt.with_for_update(skip_locked=True)
