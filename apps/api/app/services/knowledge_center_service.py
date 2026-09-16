@@ -1106,6 +1106,10 @@ def create_knowledge_source(
             if not course.grade_level:
                 raise ValueError("المقرر غير مصنف، يرجى تحديد الصف الدراسي للمقرر أولاً")
             grade_level = course.grade_level
+        elif not course.grade_level:
+            # The lesson-management page owns its grade selector.  Persist its
+            # first explicit choice so future lesson materials stay classified.
+            course.grade_level = grade_level
     elif source_role == SourceRole.COURSE_KNOWLEDGE.value:
         if course_id:
             course = db.scalar(

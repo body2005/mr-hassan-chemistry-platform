@@ -114,6 +114,11 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   const confirm = useConfirm();
   const { toast, notify } = useWizardToast();
   const [selectedYear, setSelectedYear] = useState<"1st_secondary" | "2nd_secondary" | "3rd_secondary">("1st_secondary");
+  const selectedGradeLevel = selectedYear === "1st_secondary"
+    ? "SECONDARY_1"
+    : selectedYear === "2nd_secondary"
+    ? "SECONDARY_2"
+    : "SECONDARY_3";
   const [isDeleteMode, setIsDeleteMode] = useState(false);
 
 
@@ -193,6 +198,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       uploadManager.enqueueKnowledgeBatchUpload({
         files: Array.from(files),
         courseId: activeCourse.id,
+        gradeLevel: selectedGradeLevel,
         lessonId,
         lessonTitle,
         onSuccess: () => {
@@ -479,6 +485,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
           files: noteFiles,
           courseId: course.id,
           lessonId: addedLesson.id,
+          gradeLevel: selectedGradeLevel,
           lessonTitle: savedTitle,
           onSuccess: () => {
             courseService.getCourses().then((refreshed) => {
