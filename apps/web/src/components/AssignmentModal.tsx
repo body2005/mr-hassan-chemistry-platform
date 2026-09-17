@@ -488,7 +488,7 @@ export const AssignmentModal: React.FC<AssignmentModalProps> = ({
               <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: "14px" }}>
                 <div>
                   <label style={{ display: "block", fontSize: "12px", fontWeight: 800, color: "var(--text-main)", marginBottom: "6px" }}>
-                    الدرجة النهائية المعتمدة (أرقام فقط):
+                    الدرجة النهائية المعتمدة:
                   </label>
                   <input
                     type="text"

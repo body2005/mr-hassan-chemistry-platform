@@ -67,9 +67,21 @@ def register_student(db: Session, payload: RegisterRequest) -> User:
         display_name=payload.display_name.strip(),
         password_hash=hash_password(payload.password),
         role=UserRole.STUDENT,
+        grade_level=payload.grade_level.value,
+        student_phone=payload.student_phone,
+        guardian_phone=payload.guardian_phone,
+        national_id=payload.national_id,
+        governorate=payload.governorate,
+        school_name=payload.school_name,
+        gender=payload.gender,
+        religion=payload.religion,
     )
     db.add(user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise ValueError("الرقم القومي مستخدم بالفعل داخل المؤسسة") from exc
     db.refresh(user)
     return user
 

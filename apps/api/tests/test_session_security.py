@@ -16,6 +16,14 @@ def _register(client: TestClient, email: str = "session.student@example.com") ->
             "email": email,
             "password": "a-strong-password",
             "institution_slug": "session-security",
+            "grade_level": "SECONDARY_2",
+            "student_phone": "01012345678",
+            "guardian_phone": "01112345678",
+            "national_id": "30201010101010" if email == "session.student@example.com" else None,
+            "governorate": "CAIRO",
+            "school_name": "Session Secondary School",
+            "gender": "MALE",
+            "religion": "MUSLIM",
         },
     )
     assert response.status_code == 201, response.text

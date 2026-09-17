@@ -18,12 +18,11 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     # Enlarge the role column from VARCHAR(7) so it can store 'institution_admin' (17 chars) and 'platform_admin'
-    op.alter_column(
-        "users",
-        "role",
-        type_=sa.String(length=32),
-        existing_type=sa.String(length=7),
-    )
+    if op.get_bind().dialect.name == "sqlite":
+        with op.batch_alter_table("users") as batch:
+            batch.alter_column("role", type_=sa.String(length=32), existing_type=sa.String(length=7))
+    else:
+        op.alter_column("users", "role", type_=sa.String(length=32), existing_type=sa.String(length=7))
     # The first schema used the ambiguous `admin` value. Preserve existing records
     # while moving them to the explicit institution-scoped role.
     op.execute("UPDATE users SET role = 'institution_admin' WHERE role = 'admin'")
@@ -52,12 +51,11 @@ def downgrade() -> None:
     op.execute(
         "UPDATE users SET role = 'admin' WHERE role IN ('institution_admin', 'platform_admin')"
     )
-    op.alter_column(
-        "users",
-        "role",
-        type_=sa.String(length=7),
-        existing_type=sa.String(length=32),
-    )
+    if op.get_bind().dialect.name == "sqlite":
+        with op.batch_alter_table("users") as batch:
+            batch.alter_column("role", type_=sa.String(length=7), existing_type=sa.String(length=32))
+    else:
+        op.alter_column("users", "role", type_=sa.String(length=7), existing_type=sa.String(length=32))
     op.drop_index("ix_password_reset_tokens_user_id", table_name="password_reset_tokens")
     op.drop_table("password_reset_tokens")
     op.drop_index("ix_users_deleted_at", table_name="users")

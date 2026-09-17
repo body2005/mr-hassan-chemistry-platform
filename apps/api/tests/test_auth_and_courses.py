@@ -21,6 +21,14 @@ def register(client: TestClient, email: str, institution_slug: str = "demo"):
             "email": email,
             "password": "a-strong-password",
             "institution_slug": institution_slug,
+            "grade_level": "SECONDARY_2",
+            "student_phone": "01012345678",
+            "guardian_phone": "01112345678",
+            "national_id": None,
+            "governorate": "CAIRO",
+            "school_name": "Demo Secondary School",
+            "gender": "MALE",
+            "religion": "MUSLIM",
         },
     )
 

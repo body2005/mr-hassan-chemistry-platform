@@ -22,6 +22,7 @@ from app.schemas import (
     LoginRequest,
     PasswordResetConfirm,
     PasswordResetRequest,
+    PrivateUserResponse,
     RegisterRequest,
     UserResponse,
 )
@@ -122,7 +123,7 @@ def _auth_response(user: User, family_id: uuid.UUID, db: Session, response: Resp
     settings = get_settings()
     expires_at = datetime.now(UTC) + timedelta(seconds=settings.session_ttl_seconds)
     return AuthResponse(
-        user=UserResponse.model_validate(user),
+        user=PrivateUserResponse.model_validate(user),
         expires_in=settings.session_ttl_seconds,
         expires_at=expires_at,
     )
@@ -254,9 +255,9 @@ def logout(
     _clear_auth_cookies(response, request)
 
 
-@router.get("/me", response_model=UserResponse)
-def current_user(user: CurrentUser) -> UserResponse:
-    return UserResponse.model_validate(user)
+@router.get("/me", response_model=PrivateUserResponse)
+def current_user(user: CurrentUser) -> PrivateUserResponse:
+    return PrivateUserResponse.model_validate(user)
 
 
 @router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)

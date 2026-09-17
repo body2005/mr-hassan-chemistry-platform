@@ -42,6 +42,14 @@ type ApiUser = {
   email: string;
   display_name: string;
   role: "student" | "teacher" | "institution_admin" | "platform_admin";
+  grade_level: "SECONDARY_1" | "SECONDARY_2" | "SECONDARY_3" | null;
+  governorate: string | null;
+  school_name: string | null;
+  gender: "MALE" | "FEMALE" | null;
+  student_phone?: string | null;
+  guardian_phone?: string | null;
+  national_id?: string | null;
+  religion?: "MUSLIM" | "CHRISTIAN" | "OTHER" | "PREFER_NOT_TO_SAY" | null;
   is_active: boolean;
   created_at: string;
 };
@@ -149,22 +157,29 @@ type ApiLessonProgress = {
 export { apiRequest, ApiClientError };
 
 function mapApiUser(user: ApiUser): CurrentUser {
+  const gradeMap = {
+    SECONDARY_1: { value: "1st_secondary", label: "الصف الأول الثانوي" },
+    SECONDARY_2: { value: "2nd_secondary", label: "الصف الثاني الثانوي" },
+    SECONDARY_3: { value: "3rd_secondary", label: "الصف الثالث الثانوي" },
+  } as const;
   const base = {
     id: user.id,
     name: user.display_name,
     email: user.email,
-    nationalId: "",
+    nationalId: user.national_id || "",
     joinedDate: user.created_at.slice(0, 10),
   };
   if (user.role === "student") {
+    const grade = user.grade_level ? gradeMap[user.grade_level] : undefined;
+    if (!grade) throw new ApiClientError("INVALID_STUDENT_GRADE", "Student grade is missing", 422);
     return {
       ...base,
       role: "student",
-      studentPhone: "",
-      guardianPhone: "",
+      studentPhone: user.student_phone || "",
+      guardianPhone: user.guardian_phone || "",
       age: 0,
-      academicYear: "1st_secondary",
-      academicYearLabel: "الصف الأول الثانوي",
+      academicYear: grade.value,
+      academicYearLabel: grade.label,
       interestedSubjects: [],
     };
   }
@@ -437,7 +452,14 @@ export const authService = {
     email: string;
     password: string;
     institutionSlug?: string;
-    [key: string]: unknown;
+    academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary";
+    studentPhone?: string;
+    guardianPhone?: string;
+    nationalId?: string;
+    governorate: string;
+    schoolName: string;
+    gender: "MALE" | "FEMALE";
+    religion: "MUSLIM" | "CHRISTIAN" | "OTHER" | "PREFER_NOT_TO_SAY";
   }): Promise<{ success: boolean; user?: CurrentUser; error?: string }> {
     const cleanEmail = (userData.email || "").trim().toLowerCase();
 
@@ -450,6 +472,18 @@ export const authService = {
           email: cleanEmail,
           password: userData.password,
           institution_slug: userData.institutionSlug || "demo",
+          grade_level: {
+            "1st_secondary": "SECONDARY_1",
+            "2nd_secondary": "SECONDARY_2",
+            "3rd_secondary": "SECONDARY_3",
+          }[userData.academicYear],
+          student_phone: userData.studentPhone || null,
+          guardian_phone: userData.guardianPhone || null,
+          national_id: userData.nationalId || null,
+          governorate: userData.governorate,
+          school_name: userData.schoolName,
+          gender: userData.gender,
+          religion: userData.religion,
         }),
       });
       const user = mapApiUser(result.user);
