@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import CurrentUser, get_current_user, require_roles
+from app.api.dependencies import CurrentUser, DbSession, PreviewAuth, get_current_user, require_roles
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.rate_limit import enforce_rate_limit
@@ -68,8 +68,8 @@ from app.services.knowledge_center_service import (
     sanitize_source_filename,
 )
 from app.services.knowledge_retriever import search_knowledge_base
+from app.services.exam_processing import relink_answer_key, validate_assessment_question
 from app.services.ai_access_policy import can_access_course_knowledge, enforce_ai_access
-from app.api.dependencies import CurrentUser, DbSession, PreviewAuth, get_current_user, require_roles
 from app.services.payment_service import can_access_lesson_content
 
 router = APIRouter(prefix="/knowledge-center", tags=["knowledge-center"])

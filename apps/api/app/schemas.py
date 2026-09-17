@@ -9,7 +9,7 @@ except ImportError:
     class StrEnum(str, Enum):
         pass
 
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
