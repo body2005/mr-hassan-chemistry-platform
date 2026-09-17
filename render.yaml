@@ -4,11 +4,11 @@
 services:
   - type: web
     name: chemistry-platform-api
-    runtime: python
-    rootDir: apps/api
-    buildCommand: pip install -r requirements.txt
-    preDeployCommand: alembic upgrade head && python scripts/seed_teacher.py
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
+    runtime: docker
+    dockerfilePath: infra/Dockerfile.api
+    dockerContext: apps/api
+    preDeployCommand: cd apps/api && alembic upgrade head && python scripts/seed_teacher.py
+    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
     envVars:
       - key: APP_ENV
         value: production
@@ -27,8 +27,6 @@ services:
         value: https://mr-hassan-chemistry.vercel.app,https://mr-hassan-chemistry-platform.vercel.app
       - key: COOKIE_CROSS_SITE
         value: "true"
-      - key: PYTHON_VERSION
-        value: "3.12.11"
       - key: INITIAL_TEACHER_EMAIL
         value: teacher@hassanshaban.com
       - key: INITIAL_TEACHER_PASSWORD
@@ -93,6 +91,10 @@ services:
         sync: false
       - key: S3_REGION
         value: "auto"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
       - key: REDIS_URL
         sync: false
       - key: CELERY_BROKER_URL
@@ -105,10 +107,10 @@ services:
 
   - type: worker
     name: chemistry-platform-worker
-    runtime: python
-    rootDir: apps/api
-    buildCommand: pip install -r requirements.txt
-    startCommand: celery -A app.tasks.celery_app.celery_app worker --loglevel=info --concurrency=1 --prefetch-multiplier=1 --max-tasks-per-child=1
+    runtime: docker
+    dockerfilePath: infra/Dockerfile.api
+    dockerContext: apps/api
+    dockerCommand: celery -A app.tasks.celery_app.celery_app worker --loglevel=info --concurrency=1 --prefetch-multiplier=1 --max-tasks-per-child=1
     envVars:
       - key: APP_ENV
         value: production
@@ -139,8 +141,10 @@ services:
         sync: false
       - key: S3_REGION
         value: "auto"
-      - key: PYTHON_VERSION
-        value: "3.12.11"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
     autoDeploy: true
 
 databases:
