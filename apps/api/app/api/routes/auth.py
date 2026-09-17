@@ -39,9 +39,11 @@ def _cookie_options(request: Request | None = None) -> tuple[str, bool]:
     if request:
         proto = request.headers.get("x-forwarded-proto") or request.url.scheme
         is_https = proto.lower() == "https"
-    samesite_val = "none" if settings.cookie_cross_site else "lax"
-    secure_val = True if settings.cookie_cross_site else (settings.secure_cookies or is_https)
-    return samesite_val, secure_val
+    # Browser sessions are same-origin via the frontend /api proxy.  Lax
+    # prevents third-party cookie sends while preserving ordinary navigation.
+    # Cross-site cookies would require SameSite=None and materially weaken the
+    # CSRF boundary, so they are intentionally not enabled by configuration.
+    return "lax", settings.secure_cookies or is_https
 
 
 def _issue_refresh_session(db: Session, user: User, family_id: uuid.UUID | None = None) -> tuple[str, RefreshSession]:
@@ -182,7 +184,14 @@ def refresh(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh session is missing")
 
     now = datetime.now(UTC)
-    session = db.query(RefreshSession).filter(RefreshSession.token_hash == hash_token(refresh_cookie)).one_or_none()
+    # Lock the consumed row.  On PostgreSQL this makes two simultaneous
+    # refreshes deterministic: one rotates it and the other observes replay.
+    session = (
+        db.query(RefreshSession)
+        .filter(RefreshSession.token_hash == hash_token(refresh_cookie))
+        .with_for_update()
+        .one_or_none()
+    )
     if session is None:
         _clear_auth_cookies(response, request)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh session is invalid")

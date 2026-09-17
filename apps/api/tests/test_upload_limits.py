@@ -112,6 +112,7 @@ def auth_teacher_client(db):
         },
     )
     assert login_res.status_code == 200, f"Login failed: {login_res.text}"
+    client.headers.update({"X-CSRF-Token": client.cookies.get("matgar_csrf") or ""})
 
     yield {"client": client, "course": course, "teacher": teacher, "inst": inst}
 
@@ -127,10 +128,10 @@ def auth_teacher_client(db):
 
 @pytest.fixture(autouse=True)
 def mock_background_indexing():
-    """Mocks out OCR, fast PDF inspection and heavy indexing during upload limits tests so test suite runs in seconds."""
-    with patch("app.api.routes.knowledge_center._enqueue_source_processing") as enqueue, \
+    """Mocks dispatch after durable upload; parsing stays outside the request."""
+    with patch("app.api.routes.knowledge_center.dispatch_source_processing", return_value=True) as dispatch, \
          patch("app.api.routes.knowledge_center._inspect_pdf_page_count_fast", return_value=1):
-        yield enqueue
+        yield dispatch
 
 
 def test_upload_single_file_above_100mb_accepted(auth_teacher_client, db, mock_background_indexing):
@@ -155,8 +156,8 @@ def test_upload_single_file_above_100mb_accepted(auth_teacher_client, db, mock_b
     assert data["upload_percent"] == 100
     assert data["indexing_percent"] == 0
     mock_background_indexing.assert_called_once()
-    _, source_arg = mock_background_indexing.call_args.args
-    assert str(source_arg.id) == data["id"]
+    _, source_id, _ = mock_background_indexing.call_args.args
+    assert str(source_id) == data["id"]
 
     # Verify source persisted in database
     src = db.query(KnowledgeSource).filter(KnowledgeSource.id == uuid.UUID(data["id"])).first()

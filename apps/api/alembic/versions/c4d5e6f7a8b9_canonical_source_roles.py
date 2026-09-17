@@ -42,22 +42,13 @@ def upgrade() -> None:
         )
     )
 
-    if bind.dialect.name == "sqlite":
-        with op.batch_alter_table("knowledge_sources") as batch:
-            batch.alter_column(
-                "source_role",
-                existing_type=sa.String(length=30),
-                server_default="COURSE_KNOWLEDGE",
-                existing_nullable=False,
-            )
-    else:
-        op.alter_column(
-            "knowledge_sources",
-            "source_role",
-            existing_type=sa.String(length=30),
-            server_default="COURSE_KNOWLEDGE",
-            existing_nullable=False,
-        )
+    op.alter_column(
+        "knowledge_sources",
+        "source_role",
+        existing_type=sa.String(length=30),
+        server_default="COURSE_KNOWLEDGE",
+        existing_nullable=False,
+    )
 
 
 def downgrade() -> None:

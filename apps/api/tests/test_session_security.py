@@ -86,7 +86,6 @@ def test_cookie_mutation_requires_csrf_and_password_change_revokes_family() -> N
 
     missing_csrf = client.post(
         "/api/v1/auth/change-password",
-        headers={"Origin": "http://localhost:5173"},
         json={"current_password": "a-strong-password", "new_password": "another-strong-password"},
     )
     assert missing_csrf.status_code == 403

@@ -133,7 +133,6 @@ async def security_middleware(request, call_next):
     }
     if (
         unsafe_method
-        and origin
         and (
             request.cookies.get(settings.session_cookie_name)
             or request.cookies.get(settings.refresh_cookie_name)

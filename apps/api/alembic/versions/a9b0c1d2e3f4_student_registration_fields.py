@@ -25,8 +25,6 @@ def upgrade() -> None:
     op.add_column("users", sa.Column("school_name", sa.String(length=200), nullable=True))
     op.add_column("users", sa.Column("gender", sa.String(length=16), nullable=True))
     op.add_column("users", sa.Column("religion", sa.String(length=32), nullable=True))
-    # A unique index is portable to SQLite and PostgreSQL and still permits
-    # any number of legacy NULL values.
     op.create_index("uq_users_institution_national_id", "users", ["institution_id", "national_id"], unique=True)
 
 
