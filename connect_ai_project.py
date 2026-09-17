@@ -119,6 +119,32 @@ def connect_ai(api_key: str):
     return None, None, None
 
 
+def interactive_chat(client, history, model):
+    """Run an interactive chat using the already-established client session."""
+    print("\n[i] Interactive chat started. Type 'exit' or 'quit' to end.\n")
+    while True:
+        try:
+            user_input = input(">> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n[i] Chat ended.")
+            return
+        if not user_input:
+            continue
+        if user_input.lower() in {"exit", "quit"}:
+            print("[i] Chat ended.")
+            return
+        history.append({"role": "user", "content": user_input})
+        try:
+            response = client.chat.completions.create(model=model, messages=history)
+            answer = response.choices[0].message.content
+        except Exception as exc:
+            print(f"[!] Error: {exc}")
+            history.pop()
+            continue
+        history.append({"role": "assistant", "content": answer})
+        print(f"\n{'=' * 65}\n{answer}\n{'=' * 65}\n")
+
+
 def send_task_and_save_response(client, model, output_file: str = r"D:\AI_REVIEW.md"):
     """Reads D:\AI_AND_INDEXING_SYSTEM.zip and D:\AI_TASK_PROMPT.md, sends to AI, and saves response."""
     import zipfile

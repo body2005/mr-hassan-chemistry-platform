@@ -95,19 +95,8 @@ export type AuthStatus = "loading" | "authenticated" | "unauthenticated" | "temp
 
 function App() {
   const confirm = useConfirm();
-  // Cached identity is used for optimistic rendering and offline resilience.
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(() => {
-    try {
-      const cached = typeof localStorage !== "undefined" ? localStorage.getItem("lms_cached_user") : null;
-      return cached ? (JSON.parse(cached) as CurrentUser) : null;
-    } catch {
-      return null;
-    }
-  });
-  const [authStatus, setAuthStatus] = useState<AuthStatus>(() => {
-    const hasToken = typeof localStorage !== "undefined" && Boolean(localStorage.getItem("lms_session_token") || localStorage.getItem("lms_cached_user"));
-    return hasToken ? "loading" : "unauthenticated";
-  });
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
   const [retryAttempt, setRetryAttempt] = useState(0);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isInitialRefresh, setIsInitialRefresh] = useState(true);
@@ -165,20 +154,9 @@ function App() {
       } catch (error) {
         if (requestId !== authSyncId.current) return;
         console.error("Session verification error", error);
-        let cachedUser: CurrentUser | null = null;
-        try {
-          const cached = typeof localStorage !== "undefined" ? localStorage.getItem("lms_cached_user") : null;
-          if (cached) cachedUser = JSON.parse(cached) as CurrentUser;
-        } catch {
-          cachedUser = null;
-        }
-
-        if (cachedUser) {
-          setCurrentUser(cachedUser);
-          setAuthStatus("temporarily_unavailable");
-        } else {
-          setAuthStatus("temporarily_unavailable");
-        }
+        // A network/502 failure is not an authentication decision. Keep the
+        // in-memory identity, retry with backoff, and do not persist a token.
+        setAuthStatus("temporarily_unavailable");
       } finally {
         if (requestId === authSyncId.current) setAuthLoading(false);
       }
@@ -223,22 +201,7 @@ function App() {
     const fromHash = getTabFromHash();
     if (fromHash && fromHash !== "Landing" && fromHash !== "Auth") return fromHash;
 
-    let user: CurrentUser | null = null;
-    try {
-      const cached = typeof localStorage !== "undefined" ? localStorage.getItem("lms_cached_user") : null;
-      user = cached ? (JSON.parse(cached) as CurrentUser) : null;
-    } catch {
-      user = null;
-    }
-
     const savedTab = typeof localStorage !== "undefined" ? localStorage.getItem("lms_active_tab") : null;
-    if (user) {
-      if (savedTab && VALID_TABS.includes(savedTab as AllTabs) && savedTab !== "Landing" && savedTab !== "Auth") {
-        return savedTab as AllTabs;
-      }
-      return user.role === "student" ? "GeneralHome" : "LessonManagement";
-    }
-
     if (savedTab && VALID_TABS.includes(savedTab as AllTabs)) {
       return savedTab as AllTabs;
     }
@@ -445,8 +408,6 @@ function App() {
       setCurrentUser(null);
       setAuthStatus("unauthenticated");
       setAuthLoading(false);
-      localStorage.removeItem("lms_session_token");
-      localStorage.removeItem("lms_cached_user");
       navigateToTab("Landing");
     }
   }

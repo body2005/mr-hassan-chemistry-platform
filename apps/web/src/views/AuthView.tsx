@@ -18,6 +18,18 @@ import { CurrentUser } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
 import { authService } from "../services/lmsService";
 
+const GOVERNORATES = [
+  ["ALEXANDRIA", "الإسكندرية", "Alexandria"], ["ASWAN", "أسوان", "Aswan"], ["ASIUT", "أسيوط", "Asiut"],
+  ["BEHEIRA", "البحيرة", "Beheira"], ["BENI_SUEF", "بني سويف", "Beni Suef"], ["CAIRO", "القاهرة", "Cairo"],
+  ["DAKAHLIA", "الدقهلية", "Dakahlia"], ["DAMIETTA", "دمياط", "Damietta"], ["FAYOUM", "الفيوم", "Fayoum"],
+  ["GHARBIA", "الغربية", "Gharbia"], ["GIZA", "الجيزة", "Giza"], ["ISMAILIA", "الإسماعيلية", "Ismailia"],
+  ["KAFR_EL_SHEIKH", "كفر الشيخ", "Kafr El Sheikh"], ["LUXOR", "الأقصر", "Luxor"], ["MATROUH", "مطروح", "Matrouh"],
+  ["MINYA", "المنيا", "Minya"], ["MONUFIA", "المنوفية", "Monufia"], ["NEW_VALLEY", "الوادي الجديد", "New Valley"],
+  ["NORTH_SINAI", "شمال سيناء", "North Sinai"], ["PORT_SAID", "بورسعيد", "Port Said"], ["QALYUBIA", "القليوبية", "Qalyubia"],
+  ["QENA", "قنا", "Qena"], ["RED_SEA", "البحر الأحمر", "Red Sea"], ["SHARQIA", "الشرقية", "Sharqia"],
+  ["SOHAG", "سوهاج", "Sohag"], ["SOUTH_SINAI", "جنوب سيناء", "South Sinai"], ["SUEZ", "السويس", "Suez"],
+] as const;
+
 interface AuthViewProps {
   initialTab?: "signin" | "register";
   onLoginSuccess: (user: CurrentUser) => void;
@@ -55,10 +67,14 @@ export const AuthView: React.FC<AuthViewProps> = ({
   const [showRegPassword, setShowRegPassword] = useState(false);
   const [regConfirmPassword, setRegConfirmPassword] = useState("");
   const [showRegConfirmPassword, setShowRegConfirmPassword] = useState(false);
-  const [regYear, setRegYear] = useState<"1st_secondary" | "2nd_secondary" | "3rd_secondary">("1st_secondary");
+  const [regYear, setRegYear] = useState<"" | "1st_secondary" | "2nd_secondary" | "3rd_secondary">("");
   const [regStudentPhone, setRegStudentPhone] = useState("");
   const [regGuardianPhone, setRegGuardianPhone] = useState("");
   const [regNationalId, setRegNationalId] = useState("");
+  const [regGovernorate, setRegGovernorate] = useState("");
+  const [regSchoolName, setRegSchoolName] = useState("");
+  const [regGender, setRegGender] = useState<"" | "MALE" | "FEMALE">("");
+  const [regReligion, setRegReligion] = useState<"" | "MUSLIM" | "CHRISTIAN" | "OTHER" | "PREFER_NOT_TO_SAY">("");
 
   // Handle Strict Validated Sign In via authService
   async function handleSignIn(e: React.FormEvent) {
@@ -90,13 +106,6 @@ export const AuthView: React.FC<AuthViewProps> = ({
     setError("");
     setSuccessMsg("");
 
-    const yearLabel =
-      regYear === "2nd_secondary"
-        ? lang === "ar" ? "الصف الثاني الثانوي" : "2nd Secondary Year"
-        : regYear === "3rd_secondary"
-        ? lang === "ar" ? "الصف الثالث الثانوي" : "3rd Secondary Year"
-        : lang === "ar" ? "الصف الأول الثانوي" : "1st Secondary Year";
-
     if (regPassword !== regConfirmPassword) {
       setError(lang === "ar" ? "كلمتا المرور غير متطابقتين، يرجى التأكد من تطابق كلمة المرور وتأكيدها." : "Passwords do not match. Please verify confirmation.");
       return;
@@ -107,16 +116,23 @@ export const AuthView: React.FC<AuthViewProps> = ({
       return;
     }
 
+    if (!regYear || !regGovernorate || !regSchoolName.trim() || !regGender || !regReligion) {
+      setError(lang === "ar" ? "يرجى استكمال الصف والمحافظة والمدرسة والنوع والديانة." : "Please complete grade, governorate, school, gender, and religion.");
+      return;
+    }
+
     const res = await authService.register({
       name: regName,
       email: regEmail,
       password: regPassword,
       academicYear: regYear,
-      academicYearLabel: yearLabel,
       studentPhone: regStudentPhone,
       guardianPhone: regGuardianPhone,
       nationalId: regNationalId,
-      interestedSubjects: ["الكيمياء"],
+      governorate: regGovernorate,
+      schoolName: regSchoolName,
+      gender: regGender,
+      religion: regReligion,
     });
 
     if (!res.success) {
@@ -524,13 +540,13 @@ export const AuthView: React.FC<AuthViewProps> = ({
               <form onSubmit={handleRegister} style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                 <div>
                   <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>
-                    {lang === "ar" ? "اسم الطالب رباعي (حروف فقط):" : "Full Student Name (Letters only):"}
+                    {lang === "ar" ? "اسم الطالب رباعي:" : "Full Student Name:"}
                   </label>
                   <input
                     type="text"
                     required
                     value={regName}
-                    onChange={(e) => setRegName(e.target.value.replace(/[^a-zA-Z\u0600-\u06FF\s]/g, ""))}
+                    onChange={(e) => setRegName(e.target.value)}
                     placeholder={lang === "ar" ? "مثال: عمر زيدان عبد الرحمن" : "e.g. Omar Zeidan Abdelrahman"}
                     style={{
                       width: "100%",
@@ -665,6 +681,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                   <select
                     value={regYear}
                     onChange={(e) => setRegYear(e.target.value as "1st_secondary" | "2nd_secondary" | "3rd_secondary")}
+                    required
                     style={{
                       width: "100%",
                       padding: "9px 12px",
@@ -677,6 +694,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                       fontWeight: 700,
                     }}
                   >
+                    <option value="" disabled>{lang === "ar" ? "اختر الصف الدراسي" : "Select academic year"}</option>
                     <option value="1st_secondary">{lang === "ar" ? "الصف الأول الثانوي" : "1st Secondary Year"}</option>
                     <option value="2nd_secondary">{lang === "ar" ? "الصف الثاني الثانوي" : "2nd Secondary Year"}</option>
                     <option value="3rd_secondary">{lang === "ar" ? "الصف الثالث الثانوي" : "3rd Secondary Year"}</option>
@@ -687,14 +705,14 @@ export const AuthView: React.FC<AuthViewProps> = ({
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
                   <div>
                     <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>
-                      {lang === "ar" ? "هاتف الطالب (أرقام فقط):" : "Student Phone (Digits only):"}
+                      {lang === "ar" ? "هاتف الطالب:" : "Student Phone:"}
                     </label>
                     <input
                       type="tel"
                       inputMode="numeric"
                       maxLength={11}
                       value={regStudentPhone}
-                      onChange={(e) => setRegStudentPhone(e.target.value.replace(/\D/g, "").slice(0, 11))}
+                      onChange={(e) => setRegStudentPhone(e.target.value)}
                       placeholder="010XXXXXXXX"
                       style={{
                         width: "100%",
@@ -711,14 +729,14 @@ export const AuthView: React.FC<AuthViewProps> = ({
 
                   <div>
                     <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>
-                      {lang === "ar" ? "هاتف ولي الأمر (أرقام فقط):" : "Guardian Phone (Digits only):"}
+                      {lang === "ar" ? "هاتف ولي الأمر:" : "Guardian Phone:"}
                     </label>
                     <input
                       type="tel"
                       inputMode="numeric"
                       maxLength={11}
                       value={regGuardianPhone}
-                      onChange={(e) => setRegGuardianPhone(e.target.value.replace(/\D/g, "").slice(0, 11))}
+                      onChange={(e) => setRegGuardianPhone(e.target.value)}
                       placeholder="011XXXXXXXX"
                       style={{
                         width: "100%",
@@ -736,14 +754,14 @@ export const AuthView: React.FC<AuthViewProps> = ({
 
                 <div>
                   <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>
-                    {lang === "ar" ? "الرقم القومي (14 رقم فقط):" : "National ID (14 digits only):"}
+                    {lang === "ar" ? "الرقم القومي:" : "National ID:"}
                   </label>
                   <input
                     type="text"
                     inputMode="numeric"
                     maxLength={14}
                     value={regNationalId}
-                    onChange={(e) => setRegNationalId(e.target.value.replace(/\D/g, "").slice(0, 14))}
+                    onChange={(e) => setRegNationalId(e.target.value)}
                     placeholder="30608150104892"
                     style={{
                       width: "100%",
@@ -756,6 +774,31 @@ export const AuthView: React.FC<AuthViewProps> = ({
                       boxSizing: "border-box",
                     }}
                   />
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                  <div>
+                    <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>{lang === "ar" ? "المحافظة:" : "Governorate:"}</label>
+                    <select required value={regGovernorate} onChange={(e) => setRegGovernorate(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", background: "var(--bg-surface-secondary)", color: "var(--text-main)" }}>
+                      <option value="" disabled>{lang === "ar" ? "اختر المحافظة" : "Select governorate"}</option>
+                      {GOVERNORATES.map(([code, ar, en]) => <option key={code} value={code}>{lang === "ar" ? ar : en}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>{lang === "ar" ? "المدرسة:" : "School:"}</label>
+                    <input required minLength={2} maxLength={200} value={regSchoolName} onChange={(e) => setRegSchoolName(e.target.value)} placeholder={lang === "ar" ? "اسم المدرسة" : "School name"} style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", boxSizing: "border-box", background: "var(--bg-surface-secondary)", color: "var(--text-main)" }} />
+                  </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                  <div>
+                    <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>{lang === "ar" ? "النوع:" : "Gender:"}</label>
+                    <select required value={regGender} onChange={(e) => setRegGender(e.target.value as "" | "MALE" | "FEMALE")} style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", background: "var(--bg-surface-secondary)", color: "var(--text-main)" }}><option value="" disabled>{lang === "ar" ? "اختر النوع" : "Select gender"}</option><option value="MALE">{lang === "ar" ? "ذكر" : "Male"}</option><option value="FEMALE">{lang === "ar" ? "أنثى" : "Female"}</option></select>
+                  </div>
+                  <div>
+                    <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>{lang === "ar" ? "الديانة:" : "Religion:"}</label>
+                    <select required value={regReligion} onChange={(e) => setRegReligion(e.target.value as typeof regReligion)} style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", background: "var(--bg-surface-secondary)", color: "var(--text-main)" }}><option value="" disabled>{lang === "ar" ? "اختر الديانة" : "Select religion"}</option><option value="MUSLIM">{lang === "ar" ? "مسلم" : "Muslim"}</option><option value="CHRISTIAN">{lang === "ar" ? "مسيحي" : "Christian"}</option><option value="OTHER">{lang === "ar" ? "أخرى" : "Other"}</option><option value="PREFER_NOT_TO_SAY">{lang === "ar" ? "أفضل عدم الإفصاح" : "Prefer not to say"}</option></select>
+                  </div>
                 </div>
 
                 <button

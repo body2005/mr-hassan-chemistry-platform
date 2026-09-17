@@ -1,9 +1,11 @@
+import os
 from functools import lru_cache
+import re
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,7 +26,10 @@ class Settings(BaseSettings):
     qa_model: str = "gemini-2.5-flash"
     session_cookie_name: str = "matgar_session"
     csrf_cookie_name: str = "matgar_csrf"
-    session_ttl_seconds: int = Field(default=60 * 60 * 24 * 30, ge=300, le=60 * 60 * 24 * 365)
+    refresh_cookie_name: str = "matgar_refresh"
+    session_issuer: str = "mr-hassan-chemistry-platform"
+    session_ttl_seconds: int = Field(default=15 * 60, ge=300, le=60 * 60)
+    refresh_ttl_seconds: int = Field(default=60 * 60 * 24 * 30, ge=60 * 60, le=60 * 60 * 24 * 365)
     password_reset_ttl_minutes: int = Field(default=30, ge=5, le=24 * 60)
     default_institution_slug: str = "demo"
     database_url: str = "sqlite:///./learning_website.db"
@@ -34,9 +39,19 @@ class Settings(BaseSettings):
     db_pool_recycle_seconds: int = Field(default=1800, ge=60, le=7200)
     redis_url: str = "redis://localhost:6379/0"
     s3_endpoint_url: str = "http://localhost:9000"
-    s3_access_key: str = "learning"
-    s3_secret_key: str = "learning-development"
-    s3_bucket: str = "learning-website"
+    s3_access_key: str = Field(
+        default="learning",
+        validation_alias=AliasChoices("s3_access_key", "S3_ACCESS_KEY_ID", "S3_ACCESS_KEY"),
+    )
+    s3_secret_key: str = Field(
+        default="learning-development",
+        validation_alias=AliasChoices("s3_secret_key", "S3_SECRET_ACCESS_KEY", "S3_SECRET_KEY"),
+    )
+    s3_bucket: str = Field(
+        default="learning-website",
+        validation_alias=AliasChoices("s3_bucket", "S3_BUCKET_NAME", "S3_BUCKET"),
+    )
+    s3_region: str = "auto"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
     frontend_origins: str = "http://localhost:5173"
@@ -113,6 +128,17 @@ class Settings(BaseSettings):
             if d not in origins:
                 origins.append(d)
         return origins
+
+    @property
+    def cors_origin_regex(self) -> str | None:
+        """Allow only this project's Vercel previews, never an arbitrary origin."""
+        configured = os.getenv("CORS_ORIGIN_REGEX", "").strip()
+        if configured:
+            # Validate configuration now so a malformed deployment variable
+            # fails closed rather than silently widening CORS.
+            re.compile(configured)
+            return configured
+        return r"^https://mr-hassan-chemistry-platform-[a-z0-9]+-body19\.vercel\.app$"
 
     @property
     def sqlalchemy_database_url(self) -> str:

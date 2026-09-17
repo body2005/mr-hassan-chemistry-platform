@@ -45,6 +45,24 @@ def test_resolve_client_ip_untrusted_proxy_spoof_ignored():
     assert ip == "203.0.113.50"
 
 
+def test_resolve_client_ip_supports_trusted_proxy_cidr(monkeypatch):
+    monkeypatch.setattr(get_settings(), "trusted_proxies", "10.0.0.0/8")
+    request = MagicMock(spec=Request)
+    request.client = MagicMock(host="10.1.2.3")
+    request.headers = {"X-Forwarded-For": "198.51.100.5, 10.2.3.4"}
+
+    assert resolve_client_ip(request) == "198.51.100.5"
+
+
+def test_resolve_client_ip_uses_explicit_wildcard_mode(monkeypatch):
+    monkeypatch.setattr(get_settings(), "trusted_proxies", "*")
+    request = MagicMock(spec=Request)
+    request.client = MagicMock(host="10.1.2.3")
+    request.headers = {"X-Forwarded-For": "198.51.100.5, 10.2.3.4"}
+
+    assert resolve_client_ip(request) == "198.51.100.5"
+
+
 def test_resolve_rate_limit_key_guest():
     request = MagicMock(spec=Request)
     request.cookies = {}

@@ -1,4 +1,4 @@
-import { apiRequest, uploadWithProgress, ApiClientError } from "./apiClient";
+import { apiRequest, uploadWithProgress, ApiClientError, markBrowserSessionActive } from "./apiClient";
 /**
  * ============================================================================
  * MATGAR LMS - UNIFIED DATA ACCESS LAYER (DAL)
@@ -42,6 +42,14 @@ type ApiUser = {
   email: string;
   display_name: string;
   role: "student" | "teacher" | "institution_admin" | "platform_admin";
+  grade_level: "SECONDARY_1" | "SECONDARY_2" | "SECONDARY_3" | null;
+  governorate: string | null;
+  school_name: string | null;
+  gender: "MALE" | "FEMALE" | null;
+  student_phone?: string | null;
+  guardian_phone?: string | null;
+  national_id?: string | null;
+  religion?: "MUSLIM" | "CHRISTIAN" | "OTHER" | "PREFER_NOT_TO_SAY" | null;
   is_active: boolean;
   created_at: string;
 };
@@ -149,22 +157,29 @@ type ApiLessonProgress = {
 export { apiRequest, ApiClientError };
 
 function mapApiUser(user: ApiUser): CurrentUser {
+  const gradeMap = {
+    SECONDARY_1: { value: "1st_secondary", label: "الصف الأول الثانوي" },
+    SECONDARY_2: { value: "2nd_secondary", label: "الصف الثاني الثانوي" },
+    SECONDARY_3: { value: "3rd_secondary", label: "الصف الثالث الثانوي" },
+  } as const;
   const base = {
     id: user.id,
     name: user.display_name,
     email: user.email,
-    nationalId: "",
+    nationalId: user.national_id || "",
     joinedDate: user.created_at.slice(0, 10),
   };
   if (user.role === "student") {
+    const grade = user.grade_level ? gradeMap[user.grade_level] : undefined;
+    if (!grade) throw new ApiClientError("INVALID_STUDENT_GRADE", "Student grade is missing", 422);
     return {
       ...base,
       role: "student",
-      studentPhone: "",
-      guardianPhone: "",
+      studentPhone: user.student_phone || "",
+      guardianPhone: user.guardian_phone || "",
       age: 0,
-      academicYear: "1st_secondary",
-      academicYearLabel: "الصف الأول الثانوي",
+      academicYear: grade.value,
+      academicYearLabel: grade.label,
       interestedSubjects: [],
     };
   }
@@ -200,14 +215,16 @@ function mapApiCourse(course: ApiCourse): Course {
           durationFormatted: lesson.video_duration_seconds
             ? `${Math.ceil(lesson.video_duration_seconds / 60)} دقيقة`
             : "",
-          // Native uploads are never handed to the player as a reusable raw
-          // storage/API URL. MyCourses exchanges this marker for a short-lived
-          // scoped stream token when the entitled learner opens the lesson.
-          videoUrl: lesson.video_asset_key
-            ? /^https?:\/\//i.test(lesson.video_asset_key)
-              ? lesson.video_asset_key
-              : `protected:${lesson.id}`
+          // A native upload never becomes a browser URL here. The player asks
+          // the API for a short-lived, lesson-scoped stream token when opened.
+          // This explicit flag avoids inventing a pseudo URL, which browsers
+          // cannot safely resolve.
+          videoUrl: lesson.video_asset_key && /^https?:\/\//i.test(lesson.video_asset_key)
+            ? lesson.video_asset_key
             : "",
+          requiresProtectedPlayback: Boolean(
+            lesson.video_asset_key && !/^https?:\/\//i.test(lesson.video_asset_key),
+          ),
           price: Number(lesson.price_egp || 0),
           materials: (lesson.materials || []).map((m) => ({
             id: m.id,
@@ -389,24 +406,14 @@ export const authService = {
   },
 
   async getCurrentUser(): Promise<CurrentUser | null> {
-    const hasSession = typeof localStorage !== "undefined"
-      && Boolean(localStorage.getItem("lms_session_token") || localStorage.getItem("lms_cached_user"));
-    if (!hasSession) return null;
-
     try {
       const apiUser = await apiRequest<ApiUser>("/auth/me");
-      const user = mapApiUser(apiUser);
-      if (typeof localStorage !== "undefined") {
-        localStorage.setItem("lms_cached_user", JSON.stringify(user));
-      }
-      return user;
+      markBrowserSessionActive(true);
+      return mapApiUser(apiUser);
     } catch (err: unknown) {
       // ONLY genuine 401 Unauthenticated means the session is expired or invalid
       if (err instanceof ApiClientError && err.status === 401) {
-        if (typeof localStorage !== "undefined") {
-          localStorage.removeItem("lms_session_token");
-          localStorage.removeItem("lms_cached_user");
-        }
+        markBrowserSessionActive(false);
         return null;
       }
       // 403 Forbidden is an authorization error, NOT an unauthenticated session!
@@ -420,16 +427,13 @@ export const authService = {
     const cleanPass = (pass || "").trim();
 
     try {
-      const result = await apiRequest<{ user: ApiUser; token?: string }>("/auth/login", {
+      const result = await apiRequest<{ user: ApiUser; expires_at: string }>("/auth/login", {
         method: "POST",
         body: JSON.stringify({ email: cleanEmail, password: cleanPass, institution_slug: institutionSlug }),
       });
       const user = mapApiUser(result.user);
+      markBrowserSessionActive(true);
       if (typeof localStorage !== "undefined") {
-        if (result.token) {
-          localStorage.setItem("lms_session_token", result.token);
-        }
-        localStorage.setItem("lms_cached_user", JSON.stringify(user));
         const targetTab = user.role === "student" ? "GeneralHome" : "LessonManagement";
         localStorage.setItem("lms_active_tab", targetTab);
       }
@@ -448,27 +452,43 @@ export const authService = {
     email: string;
     password: string;
     institutionSlug?: string;
-    [key: string]: unknown;
+    academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary";
+    studentPhone?: string;
+    guardianPhone?: string;
+    nationalId?: string;
+    governorate: string;
+    schoolName: string;
+    gender: "MALE" | "FEMALE";
+    religion: "MUSLIM" | "CHRISTIAN" | "OTHER" | "PREFER_NOT_TO_SAY";
   }): Promise<{ success: boolean; user?: CurrentUser; error?: string }> {
     const cleanEmail = (userData.email || "").trim().toLowerCase();
 
     // 1. Try FastAPI backend API
     try {
-      const result = await apiRequest<{ user: ApiUser; token?: string }>("/auth/register", {
+      const result = await apiRequest<{ user: ApiUser; expires_at: string }>("/auth/register", {
         method: "POST",
         body: JSON.stringify({
           display_name: userData.name,
           email: cleanEmail,
           password: userData.password,
           institution_slug: userData.institutionSlug || "demo",
+          grade_level: {
+            "1st_secondary": "SECONDARY_1",
+            "2nd_secondary": "SECONDARY_2",
+            "3rd_secondary": "SECONDARY_3",
+          }[userData.academicYear],
+          student_phone: userData.studentPhone || null,
+          guardian_phone: userData.guardianPhone || null,
+          national_id: userData.nationalId || null,
+          governorate: userData.governorate,
+          school_name: userData.schoolName,
+          gender: userData.gender,
+          religion: userData.religion,
         }),
       });
       const user = mapApiUser(result.user);
+      markBrowserSessionActive(true);
       if (typeof localStorage !== "undefined") {
-        if (result.token) {
-          localStorage.setItem("lms_session_token", result.token);
-        }
-        localStorage.setItem("lms_cached_user", JSON.stringify(user));
         const targetTab = user.role === "student" ? "GeneralHome" : "LessonManagement";
         localStorage.setItem("lms_active_tab", targetTab);
       }
@@ -489,11 +509,10 @@ export const authService = {
       // Logout is local-first so an unavailable server cannot trap the user in the UI.
     }
     if (typeof localStorage !== "undefined") {
-      localStorage.removeItem("lms_session_token");
-      localStorage.removeItem("lms_cached_user");
       localStorage.setItem("lms_active_tab", "Landing");
     }
     if (typeof window !== "undefined") {
+      markBrowserSessionActive(false);
       window.location.hash = "";
       window.dispatchEvent(new Event("lms_user_updated"));
     }

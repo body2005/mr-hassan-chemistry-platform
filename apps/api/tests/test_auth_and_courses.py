@@ -14,15 +14,33 @@ from app.models.user import User, UserRole
 
 
 def register(client: TestClient, email: str, institution_slug: str = "demo"):
-    return client.post(
+    response = client.post(
         "/api/v1/auth/register",
         json={
             "display_name": "Student One",
             "email": email,
             "password": "a-strong-password",
             "institution_slug": institution_slug,
+            "grade_level": "SECONDARY_2",
+            "student_phone": "01012345678",
+            "guardian_phone": "01112345678",
+            "national_id": None,
+            "governorate": "CAIRO",
+            "school_name": "Demo Secondary School",
+            "gender": "MALE",
+            "religion": "MUSLIM",
         },
     )
+    if response.is_success:
+        client.headers.update({"X-CSRF-Token": client.cookies.get("matgar_csrf") or ""})
+    return response
+
+
+def remember_csrf(client: TestClient, response):
+    """Model browser behavior: echo the readable CSRF cookie on mutations."""
+    if response.is_success:
+        client.headers.update({"X-CSRF-Token": client.cookies.get("matgar_csrf") or ""})
+    return response
 
 
 def seed_teacher_and_course(db, institution_slug: str = "academy-a") -> tuple[User, Course]:
@@ -87,14 +105,14 @@ def test_teacher_can_create_and_publish_course_but_student_cannot() -> None:
         teacher, _ = seed_teacher_and_course(db)
 
     client = TestClient(app)
-    login = client.post(
+    login = remember_csrf(client, client.post(
         "/api/v1/auth/login",
         json={
             "email": teacher.email,
             "password": "teacher-password",
             "institution_slug": "academy-a",
         },
-    )
+    ))
     assert login.status_code == 200
     created = client.post(
         "/api/v1/courses",
@@ -173,14 +191,14 @@ def test_quiz_is_server_timed_and_submission_is_idempotent(db) -> None:
     teacher, course = seed_teacher_and_course(db, "academy-quiz")
     teacher_client = TestClient(app)
     assert (
-        teacher_client.post(
+        remember_csrf(teacher_client, teacher_client.post(
             "/api/v1/auth/login",
             json={
                 "email": teacher.email,
                 "password": "teacher-password",
                 "institution_slug": "academy-quiz",
             },
-        ).status_code
+        )).status_code
         == 200
     )
     question = teacher_client.post(
@@ -235,14 +253,14 @@ def test_quiz_is_server_timed_and_submission_is_idempotent(db) -> None:
 def test_assignment_versions_are_preserved_and_grading_is_server_side(db) -> None:
     teacher, course = seed_teacher_and_course(db, "academy-assignment")
     teacher_client = TestClient(app)
-    teacher_client.post(
+    remember_csrf(teacher_client, teacher_client.post(
         "/api/v1/auth/login",
         json={
             "email": teacher.email,
             "password": "teacher-password",
             "institution_slug": "academy-assignment",
         },
-    )
+    ))
     assignment = teacher_client.post(
         "/api/v1/assignments",
         json={"course_id": str(course.id), "title": "Essay", "prompt": "Explain gravity"},

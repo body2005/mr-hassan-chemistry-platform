@@ -1,5 +1,15 @@
 const API_BASE_URL = (import.meta.env.VITE_API_URL || "/api/v1").replace(/\/$/, "");
 let sessionInvalidationDispatched = false;
+let refreshInFlight: Promise<boolean> | null = null;
+let browserSessionActive = false;
+
+export function markBrowserSessionActive(active: boolean): void {
+  browserSessionActive = active;
+}
+
+export function hasBrowserSession(): boolean {
+  return browserSessionActive;
+}
 
 export function apiUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) return path;
@@ -33,10 +43,8 @@ export interface ApiRequestInit extends RequestInit {
   timeoutMs?: number;
 }
 
-export async function fetchApiBlob(path: string): Promise<Blob> {
+export async function fetchApiBlob(path: string, retriedAfterRefresh = false): Promise<Blob> {
   const headers = new Headers();
-  const token = authToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
   let response: Response;
   try {
     response = await fetch(apiUrl(path), { headers, credentials: "include" });
@@ -44,6 +52,9 @@ export async function fetchApiBlob(path: string): Promise<Blob> {
     throw new ApiClientError("NETWORK_ERROR", "Unable to reach the API", 0, { cause: error });
   }
   if (!response.ok) {
+    if (response.status === 401 && !retriedAfterRefresh && !isAuthPath(path) && await refreshSession()) {
+      return fetchApiBlob(path, true);
+    }
     if (response.status === 401) clearStaleSession(path);
     throw new ApiClientError(`HTTP_${response.status}`, `Request failed (${response.status})`, response.status);
   }
@@ -56,27 +67,47 @@ function csrfToken(): string | undefined {
   return raw ? decodeURIComponent(raw.split("=")[1]) : undefined;
 }
 
-export function authToken(): string | undefined {
-  if (typeof localStorage === "undefined") return undefined;
-  return localStorage.getItem("lms_session_token") || undefined;
-}
-
 function clearStaleSession(path: string): void {
   const normalized = path.replace(/^\/api\/v1/, "");
-  if (normalized === "/auth/login" || normalized === "/auth/register") return;
-  const hadSession = typeof localStorage !== "undefined"
-    && Boolean(localStorage.getItem("lms_session_token") || localStorage.getItem("lms_cached_user"));
-  if (typeof localStorage !== "undefined") {
-    localStorage.removeItem("lms_session_token");
-    localStorage.removeItem("lms_cached_user");
-  }
-  if (hadSession && !sessionInvalidationDispatched && typeof window !== "undefined") {
+  if (["/auth/login", "/auth/register", "/auth/refresh"].includes(normalized)) return;
+  if (!sessionInvalidationDispatched && typeof window !== "undefined") {
+    browserSessionActive = false;
     sessionInvalidationDispatched = true;
     window.dispatchEvent(new Event("lms_user_updated"));
   }
 }
 
-export async function apiRequest<T>(path: string, init: ApiRequestInit = {}): Promise<T> {
+function isAuthPath(path: string): boolean {
+  const normalized = path.replace(/^\/api\/v1/, "");
+  return ["/auth/login", "/auth/register", "/auth/refresh", "/auth/logout"].includes(normalized);
+}
+
+async function refreshSession(): Promise<boolean> {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    const headers = new Headers();
+    const csrf = csrfToken();
+    if (csrf) headers.set("X-CSRF-Token", csrf);
+    try {
+      const response = await fetch(apiUrl("/auth/refresh"), {
+        method: "POST",
+        headers,
+        credentials: "include",
+      });
+      if (!response.ok) return false;
+      browserSessionActive = true;
+      sessionInvalidationDispatched = false;
+      return true;
+    } catch {
+      return false;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+  return refreshInFlight;
+}
+
+export async function apiRequest<T>(path: string, init: ApiRequestInit = {}, retriedAfterRefresh = false): Promise<T> {
   const { timeoutMs = 30_000, ...requestInit } = init;
   const headers = new Headers(requestInit.headers);
   const isFormData = typeof FormData !== "undefined" && requestInit.body instanceof FormData;
@@ -85,11 +116,6 @@ export async function apiRequest<T>(path: string, init: ApiRequestInit = {}): Pr
   if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
     const csrf = csrfToken();
     if (csrf) headers.set("X-CSRF-Token", csrf);
-  }
-
-  const token = authToken();
-  if (token && !headers.has("Authorization")) {
-    headers.set("Authorization", `Bearer ${token}`);
   }
 
   const controller = new AbortController();
@@ -136,6 +162,9 @@ export async function apiRequest<T>(path: string, init: ApiRequestInit = {}): Pr
     } catch {
       // Keep status-derived error if the body is not JSON.
     }
+    if (response.status === 401 && !retriedAfterRefresh && !isAuthPath(path) && await refreshSession()) {
+      return apiRequest<T>(path, init, true);
+    }
     if (response.status === 401) clearStaleSession(path);
     throw new ApiClientError(code, message, response.status);
   }
@@ -167,9 +196,6 @@ export function uploadWithProgress<T>(
     if (timeoutMs > 0) xhr.timeout = timeoutMs;
     const csrf = csrfToken();
     if (csrf) xhr.setRequestHeader("X-CSRF-Token", csrf);
-    const token = authToken();
-    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
-
     if (xhr.upload && onProgress) {
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable && event.total > 0) {

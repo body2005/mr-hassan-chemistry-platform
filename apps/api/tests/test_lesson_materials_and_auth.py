@@ -34,6 +34,7 @@ def auth_teacher_client(db):
         teacher_id=teacher.id,
         code="CHEM-TEST",
         title="Chemistry Testing Course",
+        grade_level="SECONDARY_1",
         status=CourseStatus.PUBLISHED,
     )
     db.add(course)
@@ -70,7 +71,13 @@ def test_lesson_material_upload_validation(auth_teacher_client, db):
     db.commit()
     db.refresh(lesson)
 
-    file_content = b"%PDF-1.4 chemistry dummy note"
+    import pypdfium2 as pdfium
+    _pdf = pdfium.PdfDocument.new()
+    _pdf.new_page(width=100, height=100)
+    _buf = io.BytesIO()
+    _pdf.save(_buf)
+    _pdf.close()
+    file_content = _buf.getvalue()
 
     # 1. Uploading LESSON_MATERIAL without lesson_id must fail with 422
     res_fail = client.post(
@@ -329,8 +336,8 @@ def test_lesson_material_student_access_and_download(db, tmp_path):
     assert res_dl_forbidden.status_code == 403
 
 
-def test_extract_quiz_from_file_requires_explicit_course(auth_teacher_client, db):
-    """Quiz imports never infer a course, even when the teacher has only one."""
+def test_extract_quiz_from_file_is_temporary_and_does_not_require_course(auth_teacher_client, db):
+    """Extraction is an independent temporary draft; a course is optional."""
     client = auth_teacher_client["client"]
     course = auth_teacher_client["course"]
 
@@ -343,11 +350,12 @@ def test_extract_quiz_from_file_requires_explicit_course(auth_teacher_client, db
         "الإجابة الصحيحة: أ\n"
     )
 
-    res_missing = client.post(
+    res_without_course = client.post(
         "/api/v1/quiz/extract-from-file",
         files={"file": ("quiz.txt", io.BytesIO(sample_text.encode("utf-8")), "text/plain")},
     )
-    assert res_missing.status_code == 422
+    assert res_without_course.status_code == 200, res_without_course.text
+    assert len(res_without_course.json()["questions"]) >= 1
 
     res = client.post(
         "/api/v1/quiz/extract-from-file",
@@ -359,19 +367,26 @@ def test_extract_quiz_from_file_requires_explicit_course(auth_teacher_client, db
     assert "questions" in data
     assert len(data["questions"]) >= 1
 
-    imported = db.scalar(
-        select(KnowledgeSource).where(
-            KnowledgeSource.course_id == course.id,
-            KnowledgeSource.source_role == SourceRole.QUIZ_IMPORT,
-        )
-    )
-    assert imported is not None
+    # Quiz extraction is request-scoped. It must not create a KnowledgeSource
+    # or general-RAG units merely to assemble a draft.
     assert db.scalar(
-        select(KnowledgeUnitRecord)
-        .where(KnowledgeUnitRecord.source_id == imported.id)
+        select(KnowledgeSource)
+        .where(KnowledgeSource.course_id == course.id)
         .limit(1)
     ) is None
+    assert db.scalar(select(KnowledgeUnitRecord).limit(1)) is None
 
     general = client.get(f"/api/v1/knowledge-center/sources?course_id={course.id}")
     assert general.status_code == 200
-    assert str(imported.id) not in {item["id"] for item in general.json()}
+    assert general.json() == []
+
+
+def test_extract_quiz_rejects_lesson_without_course(auth_teacher_client):
+    client = auth_teacher_client["client"]
+    response = client.post(
+        "/api/v1/quiz/extract-from-file",
+        data={"lesson_id": str(uuid.uuid4())},
+        files={"file": ("quiz.txt", io.BytesIO(b"1. What is sodium?"), "text/plain")},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "COURSE_REQUIRED_FOR_LESSON"

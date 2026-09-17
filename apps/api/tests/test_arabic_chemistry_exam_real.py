@@ -152,7 +152,7 @@ def test_real_exam_end_to_end_ingestion(db):
         file_bytes=pdf_bytes,
         filename="7d1b3d88_049fd658-0ccc-4840-b2b4-2335cfd5b0ec.pdf",
         source_role=SourceRole.ASSESSMENT,
-    )
+    ).source
     db.commit()
 
     processed_source = process_knowledge_source(db=db, source_id=source.id)

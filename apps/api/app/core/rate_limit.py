@@ -5,6 +5,7 @@ import os
 import threading
 import time
 import uuid
+import ipaddress
 from collections import defaultdict, deque
 from typing import Any
 
@@ -71,20 +72,55 @@ def _get_redis_client() -> redis.Redis | None:
         return None
 
 
+def _is_trusted(ip: str, trusted_exact: set[str], trusted_networks: list[Any]) -> bool:
+    if ip in trusted_exact:
+        return True
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(address in network for network in trusted_networks)
+
+
 def resolve_client_ip(request: Request) -> str:
     settings = get_settings()
     direct_ip = request.client.host if request.client else "127.0.0.1"
     trusted_raw = getattr(settings, "trusted_proxies", "127.0.0.1,::1")
-    trusted = {ip.strip() for ip in trusted_raw.split(",") if ip.strip()}
-
-    if direct_ip in trusted:
+    if trusted_raw.strip() == "*":
+        # This explicit deployment mode is for platforms such as Render where
+        # the app is not directly reachable and the platform proxy owns XFF.
         forwarded = request.headers.get("X-Forwarded-For")
         if forwarded:
             hops = [ip.strip() for ip in forwarded.split(",") if ip.strip()]
-            for hop in hops:
-                if hop not in trusted:
-                    return hop
-    return direct_ip
+            if hops:
+                return hops[0]
+        return direct_ip
+
+    trusted_exact: set[str] = set()
+    trusted_networks: list[Any] = []
+    for entry in trusted_raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if "/" in entry:
+            try:
+                trusted_networks.append(ipaddress.ip_network(entry, strict=False))
+                continue
+            except ValueError:
+                logger.warning("Ignoring invalid trusted proxy CIDR: %s", entry)
+                continue
+        trusted_exact.add(entry)
+
+    if not _is_trusted(direct_ip, trusted_exact, trusted_networks):
+        return direct_ip
+    forwarded = request.headers.get("X-Forwarded-For")
+    if not forwarded:
+        return direct_ip
+    hops = [ip.strip() for ip in forwarded.split(",") if ip.strip()]
+    for hop in reversed(hops):
+        if not _is_trusted(hop, trusted_exact, trusted_networks):
+            return hop
+    return hops[0] if hops else direct_ip
 
 
 def resolve_rate_limit_key(request: Request, category: str) -> str:

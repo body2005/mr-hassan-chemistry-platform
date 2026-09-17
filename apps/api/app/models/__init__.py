@@ -15,6 +15,7 @@ from app.models.platform import (
     QuizAttempt,
     QuizAttemptAnswer,
     QuizQuestion,
+    RefreshSession,
     RevokedSession,
 )
 from app.models.progress import LessonProgress, VideoEvent
@@ -99,6 +100,7 @@ __all__ = [
     "QuizAttempt",
     "QuizAttemptAnswer",
     "QuizQuestion",
+    "RefreshSession",
     "RevokedSession",
     "Chapter",
     "LessonAsset",
