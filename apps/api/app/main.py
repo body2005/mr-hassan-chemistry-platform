@@ -1,4 +1,5 @@
 import os
+import re
 import secrets
 import time
 import uuid
@@ -21,25 +22,37 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Resume interrupted indexing without using deprecated startup events."""
-    from sqlalchemy import select
-    from app.api.routes.knowledge_center import _LOCAL_INGEST_EXECUTOR, _run_bg_process_source
+    """Resume interrupted indexing tasks with centralized dispatch."""
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import select, or_, and_
     from app.core.database import SessionLocal
     from app.models.knowledge_center import KnowledgeSource, SourceStatus
+    from app.services.knowledge_center_service import dispatch_source_processing
 
     try:
+        stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
         with SessionLocal() as db:
-            interrupted_ids = list(
-                db.scalars(
-                    select(KnowledgeSource.id).where(
-                        KnowledgeSource.status.in_([SourceStatus.PROCESSING, SourceStatus.QUEUED])
+            stmt = (
+                select(KnowledgeSource.id)
+                .where(
+                    or_(
+                        KnowledgeSource.status == SourceStatus.QUEUED,
+                        and_(
+                            KnowledgeSource.status == SourceStatus.PROCESSING,
+                            KnowledgeSource.updated_at <= stale_cutoff,
+                        ),
                     )
-                ).all()
+                )
             )
-        for source_id in interrupted_ids:
-            _LOCAL_INGEST_EXECUTOR.submit(_run_bg_process_source, source_id)
-        if interrupted_ids:
-            logger.info("Queued %s interrupted indexing task(s) for resume", len(interrupted_ids))
+            candidate_ids = list(db.scalars(stmt).all())
+
+        dispatched_count = 0
+        for source_id in candidate_ids:
+            with SessionLocal() as db:
+                if dispatch_source_processing(db, source_id, is_startup=True):
+                    dispatched_count += 1
+        if candidate_ids:
+            logger.info("Startup recovery: dispatched %s / %s eligible source(s)", dispatched_count, len(candidate_ids))
     except Exception:
         logger.exception("Unable to resume interrupted indexing tasks at startup")
     yield
@@ -61,9 +74,46 @@ def is_origin_allowed(origin: str | None) -> bool:
         return True
     if origin in settings.cors_origins:
         return True
-    if settings.app_env != "production":
-        return True
-    return False
+    origin_regex = settings.cors_origin_regex
+    return bool(origin_regex and re.fullmatch(origin_regex, origin))
+
+
+def classify_rate_limit_category(method: str, path: str) -> str:
+    """Classify each request once; source reads must never be charged as uploads."""
+    normalized_method = method.upper()
+    normalized_path = path.rstrip("/")
+    api_prefix = settings.api_v1_prefix
+
+    if normalized_path.startswith(f"{api_prefix}/auth/"):
+        return "auth"
+    if normalized_path.startswith(f"{api_prefix}/ai"):
+        return "ai"
+    if (
+        "/preview-page/" in normalized_path
+        or normalized_path.endswith("/preview-file")
+        or normalized_path.endswith("/preview-token")
+    ):
+        return "preview"
+    if normalized_method == "POST" and (
+        normalized_path in {
+            f"{api_prefix}/knowledge-center/sources/upload",
+            f"{api_prefix}/knowledge-center/sources/upload-batch",
+        }
+        or normalized_path.endswith("/video")
+        or normalized_path.endswith("/receipt")
+    ):
+        return "upload"
+    if normalized_method == "POST" and (
+        "extract-from-file" in normalized_path or "/exam" in normalized_path
+    ):
+        return "quiz_extraction"
+    if normalized_method in {"PUT", "PATCH", "DELETE"} or normalized_path.endswith(
+        ("/reindex", "/stop-indexing")
+    ):
+        return "mutation"
+    if normalized_method in {"GET", "HEAD"}:
+        return "read"
+    return "default"
 
 
 @app.middleware("http")
@@ -71,39 +121,26 @@ async def security_middleware(request, call_next):
     request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     origin = request.headers.get("Origin")
     unsafe_method = request.method in {"POST", "PUT", "PATCH", "DELETE"}
-    authorization = request.headers.get("Authorization", "")
-    has_bearer_auth = authorization.lower().startswith("bearer ") and bool(
-        authorization[7:].strip()
-    )
     if request.url.path.startswith(settings.api_v1_prefix) and request.url.path not in {
         f"{settings.api_v1_prefix}/health",
         f"{settings.api_v1_prefix}/ready",
     }:
         try:
-            path = request.url.path
-            if path.startswith(f"{settings.api_v1_prefix}/auth/login"):
-                category = "auth_login"
-            elif "/ai" in path:
-                category = "ai"
-            elif "/upload" in path or "/sources" in path:
-                category = "upload"
-            elif "/quiz" in path or "/exam" in path or "/extract" in path:
-                category = "quiz_extraction"
-            elif request.method == "GET":
-                category = "read"
-            else:
-                category = "default"
-
+            category = classify_rate_limit_category(request.method, request.url.path)
             enforce_rate_limit(request, category=category)
+            request.state.rate_limit_categories = {category}
         except HTTPException as exc:
             res = JSONResponse(
                 status_code=exc.status_code,
                 content={
                     "detail": str(exc.detail),
-                    "error": {"code": "RATE_LIMITED", "message": exc.detail},
+                    "error": {
+                        "code": "RATE_LIMITED" if exc.status_code == 429 else "SERVICE_UNAVAILABLE",
+                        "message": exc.detail,
+                    },
                     "request_id": request_id,
                 },
-                headers=exc.headers,
+                headers=exc.headers or ({"Retry-After": "1"} if exc.status_code == 503 else None),
             )
             return res
     if unsafe_method and origin and not is_origin_allowed(origin):
@@ -116,14 +153,21 @@ async def security_middleware(request, call_next):
             },
         )
         return res
-    # Double-submit CSRF applies only to cookie-authenticated mutations.  The
-    # cross-origin SPA cannot read a cookie scoped to the Render API domain,
-    # and an explicit Bearer token is already protected from ambient CSRF.
+    # Cookie-authenticated mutations require an origin-bound double-submit
+    # token. Login and password reset do not rely on an existing session.
+    csrf_exempt_paths = {
+        f"{settings.api_v1_prefix}/auth/login",
+        f"{settings.api_v1_prefix}/auth/register",
+        f"{settings.api_v1_prefix}/auth/password-reset/request",
+        f"{settings.api_v1_prefix}/auth/password-reset/confirm",
+    }
     if (
         unsafe_method
-        and origin
-        and request.cookies.get(settings.session_cookie_name)
-        and not has_bearer_auth
+        and (
+            request.cookies.get(settings.session_cookie_name)
+            or request.cookies.get(settings.refresh_cookie_name)
+        )
+        and request.url.path not in csrf_exempt_paths
     ):
         csrf_cookie = request.cookies.get(settings.csrf_cookie_name)
         csrf_header = request.headers.get("X-CSRF-Token")
@@ -199,8 +243,8 @@ async def security_middleware(request, call_next):
 # Access-Control-Allow-Headers breaks credentialed Authorization preflights.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins if settings.app_env == "production" else [],
-    allow_origin_regex=None if settings.app_env == "production" else r"https?://.*",
+    allow_origins=settings.cors_origins,
+    allow_origin_regex=settings.cors_origin_regex,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=[

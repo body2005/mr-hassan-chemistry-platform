@@ -428,7 +428,7 @@ def start_worker_service(port: int = 8000) -> None:
 
     in_jupyter = False
     try:
-        get_ipython()
+        get_ipython()  # noqa: F821 - available only inside Jupyter/IPython
         in_jupyter = True
     except Exception:
         pass

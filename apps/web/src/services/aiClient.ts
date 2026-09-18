@@ -94,12 +94,12 @@ class AIServiceClient {
   // ================================================================
   async extractQuizFromFile(
     file: File,
-    courseId: string,
+    courseId?: string,
     lessonId?: string
   ): Promise<QuizDraftResponse> {
     const formData = new FormData();
     formData.append("file", file);
-    formData.append("course_id", courseId);
+    if (courseId) formData.append("course_id", courseId);
     if (lessonId) formData.append("lesson_id", lessonId);
 
     return apiRequest<QuizDraftResponse>("/quiz/extract-from-file", {

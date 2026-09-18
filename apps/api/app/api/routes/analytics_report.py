@@ -43,7 +43,7 @@ async def get_analytics_summary(
     request: Request,
     db: Db,
 ) -> AnalyticsSummary:
-    enforce_rate_limit(request, bucket="analytics", limit=10, window_seconds=60)
+    enforce_rate_limit(request, bucket="default", limit=10, window_seconds=60)
     students_count = db.execute(select(func.count(User.id)).select_from(User).where(User.institution_id == user.institution_id, User.role == UserRole.STUDENT)).scalar_one() or 0
 
     lessons_count = db.execute(

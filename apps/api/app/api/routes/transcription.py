@@ -42,7 +42,7 @@ def download_scoped_video(token: str, request: Request, db: Db) -> FileResponse:
     Secure scoped media download endpoint for authorized remote compute workers.
     Validates token expiration and cryptographically verifies the download scope.
     """
-    enforce_rate_limit(request, bucket=f"transcription_dl:{token[:8]}", limit=60, window_seconds=60)
+    enforce_rate_limit(request, bucket="read", limit=60, window_seconds=60)
     filepath = TranscriptionJobManager.resolve_download_file(db, token)
     if not filepath or not os.path.isfile(filepath):
         raise HTTPException(

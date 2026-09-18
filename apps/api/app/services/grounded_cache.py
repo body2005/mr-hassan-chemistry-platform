@@ -13,7 +13,11 @@ from app.services.embedding_provider import cosine_similarity, get_embedding_pro
 @dataclass
 class _Entry:
     key: str
-    course_id: uuid.UUID
+    institution_id: uuid.UUID | None
+    grade_level: str | None
+    course_id: uuid.UUID | None
+    lesson_id: uuid.UUID | None
+    permission_type: str | None
     version_token: str
     vector: list[float]
     value: tuple[str, bool, bool, list[dict]]
@@ -24,13 +28,30 @@ _lock = threading.Lock()
 _entries: list[_Entry] = []
 
 
-def _key(course_id: uuid.UUID, version_token: str, query: str) -> str:
+def _key(
+    institution_id: uuid.UUID | None,
+    grade_level: str | None,
+    course_id: uuid.UUID | None,
+    lesson_id: uuid.UUID | None,
+    permission_type: str | None,
+    version_token: str,
+    query: str,
+) -> str:
     normalized = " ".join(query.lower().split())
-    return hashlib.sha256(f"{course_id}:{version_token}:{normalized}".encode()).hexdigest()
+    raw = f"{institution_id}:{grade_level}:{course_id}:{lesson_id}:{permission_type}:{version_token}:{normalized}"
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def get_cached(course_id: uuid.UUID, version_token: str, query: str) -> tuple[str, bool, bool, list[dict]] | None:
-    key = _key(course_id, version_token, query)
+def get_cached(
+    institution_id: uuid.UUID | None,
+    grade_level: str | None,
+    course_id: uuid.UUID | None,
+    lesson_id: uuid.UUID | None,
+    permission_type: str | None,
+    version_token: str,
+    query: str,
+) -> tuple[str, bool, bool, list[dict]] | None:
+    key = _key(institution_id, grade_level, course_id, lesson_id, permission_type, version_token, query)
     now = time.time()
     with _lock:
         _entries[:] = [entry for entry in _entries if entry.expires_at > now]
@@ -42,19 +63,50 @@ def get_cached(course_id: uuid.UUID, version_token: str, query: str) -> tuple[st
         except Exception:
             return None
         for entry in _entries:
-            if entry.course_id == course_id and entry.version_token == version_token and cosine_similarity(vector, entry.vector) >= 0.96:
+            if (
+                entry.institution_id == institution_id
+                and entry.grade_level == grade_level
+                and entry.course_id == course_id
+                and entry.lesson_id == lesson_id
+                and entry.permission_type == permission_type
+                and entry.version_token == version_token
+                and cosine_similarity(vector, entry.vector) >= 0.96
+            ):
                 return entry.value
     return None
 
 
-def put_cached(course_id: uuid.UUID, version_token: str, query: str, value: tuple[str, bool, bool, list[dict]]) -> None:
+def put_cached(
+    institution_id: uuid.UUID | None,
+    grade_level: str | None,
+    course_id: uuid.UUID | None,
+    lesson_id: uuid.UUID | None,
+    permission_type: str | None,
+    version_token: str,
+    query: str,
+    value: tuple[str, bool, bool, list[dict]],
+) -> None:
     try:
         vector = get_embedding_provider().embed_texts([query])[0]
     except Exception:
         return
     ttl = float(__import__("os").getenv("GROUNDED_CACHE_TTL_SECONDS", "900"))
+    key = _key(institution_id, grade_level, course_id, lesson_id, permission_type, version_token, query)
     with _lock:
-        _entries.append(_Entry(_key(course_id, version_token, query), course_id, version_token, vector, value, time.time() + ttl))
+        _entries.append(
+            _Entry(
+                key=key,
+                institution_id=institution_id,
+                grade_level=grade_level,
+                course_id=course_id,
+                lesson_id=lesson_id,
+                permission_type=permission_type,
+                version_token=version_token,
+                vector=vector,
+                value=value,
+                expires_at=time.time() + ttl,
+            )
+        )
         del _entries[:-500]
 
 

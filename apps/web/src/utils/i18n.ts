@@ -359,7 +359,7 @@ export const translations: Record<Language, Translations> = {
     splitDontHaveAccount: "طالب جديد؟ أنشئ حسابك وابدأ التعلم الآن",
     forgotPasswordLink: "هل نسيت كلمة المرور؟",
     demoTeacherHint: "دخول كمعلم: teacher@demo.com",
-    demoStudentHint: "دخول كطالب: student@demo.com",
+    demoStudentHint: "دخول كطالب: student01@demo.com",
 
     profileTitle: "الملف التعريفي للحساب",
     profileSubtitle: "استعرض إحصائياتك الأكاديمية وسجل نشاطك في المنصة",
@@ -539,7 +539,7 @@ export const translations: Record<Language, Translations> = {
     splitDontHaveAccount: "New student? Create an account and start learning",
     forgotPasswordLink: "Forgot your password?",
     demoTeacherHint: "Teacher Login: teacher@demo.com",
-    demoStudentHint: "Student Login: student@demo.com",
+    demoStudentHint: "Student Login: student01@demo.com",
 
     profileTitle: "User Profile & Account",
     profileSubtitle: "Review your academic statistics and platform activity",

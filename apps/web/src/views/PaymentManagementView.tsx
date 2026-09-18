@@ -118,7 +118,7 @@ export function PaymentManagementView({ courses, onCoursesChanged }: PaymentMana
     <section className="panel pricing-panel">
       <div className="panel-title-row"><div><h2>أسعار الدروس</h2><p>السعر صفر يعني أن الدرس مجاني. كل درس له سعر وصلاحية مستقلة.</p></div></div>
       <div className="pricing-list">{courses.map((course) => <div className="pricing-course" key={course.id}>
-        <div className="pricing-course-heading"><strong>{course.title}</strong><small>الدروس التابعة لهذا الصف</small></div>
+        <div className="pricing-course-heading"><strong>{course.title}</strong></div>
         {course.lessons.map((lesson) => <div className="pricing-row" key={lesson.id}><div><span>{lesson.title}</span><small>درس منفرد</small></div><div className="price-editor"><input type="number" min="0" step="1" value={prices[`lesson:${lesson.id}`] ?? "0"} onChange={(event) => setPrices((current) => ({ ...current, [`lesson:${lesson.id}`]: event.target.value }))} /><span>ج.م</span><button onClick={() => void savePrice("lesson", lesson.id)} disabled={workingId === `lesson:${lesson.id}`} aria-label="حفظ سعر الدرس"><Save size={15} /></button></div></div>)}
       </div>)}</div>
     </section>

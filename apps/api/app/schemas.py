@@ -9,7 +9,7 @@ except ImportError:
     class StrEnum(str, Enum):
         pass
 
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
@@ -21,7 +21,27 @@ from app.models.platform import (
     QuizStatus,
     SubmissionStatus,
 )
-from app.models.user import UserRole
+from app.models.user import Gender, GradeLevel, Religion, UserRole
+
+GOVERNORATE_CODES = frozenset({
+    "ALEXANDRIA", "ASWAN", "ASIUT", "BEHEIRA", "BENI_SUEF", "CAIRO", "DAKAHLIA",
+    "DAMIETTA", "FAYOUM", "GHARBIA", "GIZA", "ISMAILIA", "KAFR_EL_SHEIKH", "LUXOR",
+    "MATROUH", "MINYA", "MONUFIA", "NEW_VALLEY", "NORTH_SINAI", "PORT_SAID",
+    "QALYUBIA", "QENA", "RED_SEA", "SHARQIA", "SOHAG", "SOUTH_SINAI", "SUEZ",
+})
+
+
+def _normalize_digits(value: str) -> str:
+    return value.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+
+
+def _normalize_phone(value: str | None) -> str | None:
+    if value is None or not value.strip():
+        return None
+    normalized = _normalize_digits(value).replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+    if not normalized.isdigit() or len(normalized) > 20:
+        raise ValueError("Phone number must contain at most 20 digits")
+    return normalized
 
 
 class UserResponse(BaseModel):
@@ -33,11 +53,26 @@ class UserResponse(BaseModel):
     email: EmailStr
     display_name: str
     role: UserRole
+    grade_level: GradeLevel | None = None
+    governorate: str | None = None
+    school_name: str | None = None
+    gender: Gender | None = None
     is_active: bool
     created_at: datetime
 
 
+class PrivateUserResponse(UserResponse):
+    """Only returned to the authenticated account owner during auth flows."""
+
+    student_phone: str | None = None
+    guardian_phone: str | None = None
+    national_id: str | None = None
+    religion: Religion | None = None
+
+
 class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     display_name: str = Field(min_length=2, max_length=160)
     email: EmailStr
     password: str = Field(min_length=10, max_length=128)
@@ -45,6 +80,48 @@ class RegisterRequest(BaseModel):
     institution_slug: str = Field(
         default="demo", min_length=2, max_length=80, pattern=r"^[a-z0-9-]+$"
     )
+    grade_level: GradeLevel
+    student_phone: str | None = None
+    guardian_phone: str | None = None
+    national_id: str | None = None
+    governorate: str = Field(min_length=1, max_length=40)
+    school_name: str = Field(min_length=2, max_length=200)
+    gender: Gender
+    religion: Religion
+
+    @field_validator("display_name", "school_name", mode="before")
+    @classmethod
+    def trim_required_text(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("Value must be text")
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Value is required")
+        return normalized
+
+    @field_validator("student_phone", "guardian_phone", mode="before")
+    @classmethod
+    def validate_phone(cls, value: object) -> str | None:
+        return _normalize_phone(value if isinstance(value, str) else None)
+
+    @field_validator("national_id", mode="before")
+    @classmethod
+    def validate_national_id(cls, value: object) -> str | None:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if not isinstance(value, str):
+            raise ValueError("National ID must be text")
+        normalized = _normalize_digits(value.strip())
+        if not normalized.isdigit() or len(normalized) != 14:
+            raise ValueError("National ID must contain exactly 14 digits")
+        return normalized
+
+    @field_validator("governorate")
+    @classmethod
+    def validate_governorate(cls, value: str) -> str:
+        if value not in GOVERNORATE_CODES:
+            raise ValueError("Governorate is not supported")
+        return value
 
     @field_validator("password")
     @classmethod
@@ -63,9 +140,9 @@ class LoginRequest(BaseModel):
 
 
 class AuthResponse(BaseModel):
-    user: UserResponse
+    user: PrivateUserResponse
     expires_in: int
-    token: str | None = None
+    expires_at: datetime
 
 
 class ChangePasswordRequest(BaseModel):

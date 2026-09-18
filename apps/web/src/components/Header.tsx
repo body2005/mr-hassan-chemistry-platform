@@ -48,14 +48,7 @@ export const Header: React.FC<HeaderProps> = ({
   const unreadCount = notifications.filter((n) => !n.read).length;
   const t = translations[lang];
 
-  const isTeacher = currentUser?.role === "teacher" || (() => {
-    try {
-      const cached = localStorage.getItem("lms_cached_user");
-      return cached ? JSON.parse(cached).role === "teacher" : false;
-    } catch {
-      return false;
-    }
-  })();
+  const isTeacher = currentUser?.role === "teacher";
 
   function handleNotificationClick(notif: NotificationItem) {
     onMarkNotificationRead(notif.id);

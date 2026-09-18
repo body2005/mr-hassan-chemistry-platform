@@ -38,10 +38,12 @@ from app.models.progress import LessonProgress
 from app.models.user import User, UserRole
 from app.services.ai_access_policy import can_access_course_knowledge, enforce_ai_access
 from app.services.knowledge_center_service import (
-    create_knowledge_source,
-    process_knowledge_source,
+    classify_and_parse_question,
+    extract_distant_answer_keys,
+    parse_table_questions,
     sanitize_source_filename,
 )
+from app.services.document_parsers import parse_assessment_bank, parse_knowledge_file
 from app.services.transcript_indexer import index_lesson_video
 from app.services.payment_service import student_can_use_ai_for_lesson
 
@@ -1033,7 +1035,7 @@ async def extract_quiz_from_file(
     db: Db,
     user: TeacherOrAdmin,
     file: UploadFile = File(...),
-    course_id: str = Form(...),
+    course_id: str | None = Form(None),
     lesson_id: str | None = Form(None),
 ) -> QuizDraftResponse:
     """Extract questions directly from an uploaded exam / question file (PDF, Word, TXT, JSON, etc.)"""
@@ -1046,8 +1048,16 @@ async def extract_quiz_from_file(
 
     max_exam_bytes = 50 * 1024 * 1024
     filename = sanitize_source_filename(file.filename or "exam_file.txt")
-    course_uuid = _resolve_course_uuid(db, user, course_id)
-    lesson_uuid = _resolve_lesson_uuid(db, course_uuid, lesson_id)
+    course_uuid = _resolve_course_uuid(db, user, course_id) if course_id else None
+    if lesson_id and not course_uuid:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "COURSE_REQUIRED_FOR_LESSON",
+                "message": "يلزم اختيار المقرر عند تحديد درس لاستخراج الأسئلة.",
+            },
+        )
+    _resolve_lesson_uuid(db, course_uuid, lesson_id) if lesson_id and course_uuid else None
     staging_file = os.path.join(
         _get_kc_temp_dir(), f"exam_stage_{uuid.uuid4().hex[:12]}_{filename}"
     )
@@ -1059,177 +1069,191 @@ async def extract_quiz_from_file(
         )
         if size_bytes == 0:
             raise HTTPException(status_code=400, detail="الملف المرفوع فارغ.")
-        source = create_knowledge_source(
-            db=db,
-            user=user,
-            course_id=course_uuid,
-            lesson_id=lesson_uuid,
-            filename=filename,
-            staged_file_path=staging_file,
-            checksum=checksum,
-            size_bytes=size_bytes,
-            source_role=SourceRole.QUIZ_IMPORT,
-            mime_type=file.content_type,
-            metadata={"assessment_type": "exam", "extracted_in_quiz_maker": True},
+
+        generated_questions: list[GeneratedQuestion] = []
+        q_id = 1
+        extension = os.path.splitext(filename)[1].lower()
+        extracted_candidates: list[dict[str, Any]] = []
+
+        if extension in {".json", ".quiz"}:
+            with open(staging_file, "rb") as staged:
+                parsed_assessment = parse_assessment_bank(staged.read(), filename)
+            extracted_candidates = [
+                {
+                    "question_text": item.question_text,
+                    "question_type": item.question_type,
+                    "options": item.options,
+                    "correct_answer": item.correct_answer,
+                    "explanation": item.explanation or "",
+                    "topic": item.topic_concept or filename,
+                }
+                for item in parsed_assessment
+            ]
+        else:
+            try:
+                parsed_document = parse_knowledge_file(
+                    filename=filename,
+                    mime_type=file.content_type,
+                    file_path=staging_file,
+                )
+                answer_keys = extract_distant_answer_keys(parsed_document)
+                extracted_candidates.extend(parse_table_questions(parsed_document, answer_keys))
+                for page in parsed_document.pages:
+                    for block in page.blocks:
+                        question_status, question = classify_and_parse_question(
+                            block.text, answer_keys
+                        )
+                        if question_status in {"question", "uncertain"} and question:
+                            extracted_candidates.append(question)
+            except Exception as exc:
+                if extension not in {".txt", ".text", ".csv", ".tsv"}:
+                    logger.exception("Quiz extraction parser failed for %s", filename)
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail={
+                            "code": "QUIZ_EXTRACTION_FAILED",
+                            "message": "تعذر قراءة ملف الأسئلة. تأكد من أن الملف صالح ومدعوم.",
+                        },
+                    ) from exc
+                logger.warning("Standard parse failed for text/csv %s, falling back to line reader: %s", filename, exc)
+
+        seen_questions: set[str] = set()
+        for rec in extracted_candidates:
+            question_text = str(rec.get("question_text") or "").strip()
+            fingerprint = re.sub(r"\s+", "", question_text).lower()
+            if not question_text or fingerprint in seen_questions:
+                continue
+            seen_questions.add(fingerprint)
+            opts = [
+                QuestionOption(
+                    key=str(option.get("key", "")),
+                    text=str(option.get("text", "")),
+                    is_correct=bool(option.get("is_correct", False)),
+                )
+                for option in (rec.get("options") or [])
+                if isinstance(option, dict)
+            ]
+            topic = str(rec.get("topic") or filename)
+            points = int(rec.get("points") or 5)
+            q_type = str(rec.get("question_type") or "MCQ")
+            upper_type = q_type.upper()
+            if upper_type in ("MCQ", "MULTIPLE_CHOICE"):
+                norm_type = "MCQ"
+            elif upper_type in ("TRUE_FALSE", "TRUEFALSE"):
+                norm_type = "TRUE_FALSE"
+            elif upper_type in ("ESSAY",):
+                norm_type = "ESSAY"
+            elif upper_type in ("FILL_BLANK", "FILL_IN_BLANK"):
+                norm_type = "FILL_BLANK"
+            else:
+                norm_type = q_type
+
+            generated_questions.append(
+                GeneratedQuestion(
+                    id=q_id,
+                    question_type=norm_type,
+                    difficulty="medium",
+                    topic=topic,
+                    question_text=question_text,
+                    options=opts if opts else None,
+                    correct_answer=str(rec.get("correct_answer") or ""),
+                    explanation=str(rec.get("explanation") or ""),
+                    points=points,
+                )
+            )
+            q_id += 1
+
+        # Safe text-only fallback: STRICTLY for plain text documents (TXT, CSV), NEVER for binary PDFs
+        is_plain_text_doc = extension in {".txt", ".text", ".csv", ".tsv"}
+        if not generated_questions and is_plain_text_doc:
+            try:
+                lines: list[str] = []
+                if os.path.exists(staging_file):
+                    with open(staging_file, "r", encoding="utf-8", errors="replace") as staged_txt:
+                        raw_text = staged_txt.read(1024 * 1024)
+                    lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+
+                cur_q_text = ""
+                cur_opts: list[QuestionOption] = []
+                cur_ans = ""
+                cur_exp = ""
+
+                def flush_q():
+                    nonlocal cur_q_text, cur_opts, cur_ans, cur_exp, q_id
+                    if cur_q_text:
+                        q_type = "MCQ" if len(cur_opts) >= 2 else ("TRUE_FALSE" if "صح" in cur_ans or "خطأ" in cur_ans else "ESSAY")
+                        generated_questions.append(
+                            GeneratedQuestion(
+                                id=q_id,
+                                question_type=q_type,
+                                difficulty="medium",
+                                topic=filename,
+                                question_text=cur_q_text,
+                                options=cur_opts if cur_opts else None,
+                                correct_answer=cur_ans or (cur_opts[0].text if cur_opts else "إجابة نموذجية"),
+                                explanation=cur_exp or f"مستخرج من ملف {filename}",
+                                points=5,
+                            )
+                        )
+                        q_id += 1
+                        cur_q_text = ""
+                        cur_opts = []
+                        cur_ans = ""
+                        cur_exp = ""
+
+                for line in lines:
+                    if re.match(r"^(?:س\s*\d+|[0-9]+[\.\-\)]|\(?[0-9]+\)?|سؤال)\s*[:\.]?", line):
+                        flush_q()
+                        cur_q_text = re.sub(r"^(?:س\s*\d+|[0-9]+[\.\-\)]|\(?[0-9]+\)?|سؤال)\s*[:\.]?\s*", "", line)
+                    elif re.match(r"^[أ-يA-Da-d][\.\-\)]\s*", line):
+                        opt_key = line[0]
+                        opt_text = line[2:].strip()
+                        cur_opts.append(QuestionOption(key=opt_key, text=opt_text, is_correct=False))
+                    elif "الإجابة الصحيحة" in line or "الاجابة الصحيحة" in line or "الإجابة النموذجية" in line:
+                        cur_ans = re.sub(r"^[^:]+:\s*", "", line).strip()
+                        if cur_opts and cur_ans in ["أ", "ب", "ج", "د", "A", "B", "C", "D"]:
+                            for opt in cur_opts:
+                                if opt.key == cur_ans:
+                                    opt.is_correct = True
+                    elif "التفسير" in line or "الشرح" in line:
+                        cur_exp = re.sub(r"^[^:]+:\s*", "", line).strip()
+                    elif not cur_opts and cur_q_text:
+                        cur_q_text += " " + line
+                flush_q()
+            except Exception:
+                pass
+
+        if not generated_questions:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "QUIZ_EXTRACTION_FAILED",
+                    "message": "تعذر استخراج أسئلة واضحة من الملف. تأكد من احتواء الملف على أسئلة وبنك امتحانات.",
+                },
+            )
+
+        total_points = sum(q.points for q in generated_questions)
+        return QuizDraftResponse(
+            title=f"اختبار مستخرج: {filename}",
+            description=f"تم استخراج {len(generated_questions)} سؤالاً تلقائياً من ملف ({filename}).",
+            total_points=total_points,
+            questions=generated_questions,
+            is_complete=True,
+            requires_teacher_approval=True,
+            cached=False,
+            metadata={
+                "extracted_from_file": filename,
+                "extraction_scope": "temporary",
+                "question_count": len(generated_questions),
+                "generated_at": datetime.utcnow().isoformat(),
+            },
         )
-    except Exception:
+    finally:
         if os.path.exists(staging_file):
             try:
                 os.remove(staging_file)
             except OSError:
                 pass
-        db.rollback()
-        raise
-
-    process_knowledge_source(db, source.id)
-    db.refresh(source)
-
-    extracted_records = db.scalars(
-        select(KnowledgeQuestionRecord)
-        .where(KnowledgeQuestionRecord.source_id == source.id)
-        .order_by(KnowledgeQuestionRecord.question_order.asc(), KnowledgeQuestionRecord.created_at.asc())
-    ).all()
-
-    generated_questions: list[GeneratedQuestion] = []
-    q_id = 1
-
-    for rec in extracted_records:
-        opts: list[QuestionOption] = []
-        if rec.options_json and isinstance(rec.options_json, list):
-            for opt in rec.options_json:
-                if isinstance(opt, dict):
-                    opts.append(
-                        QuestionOption(
-                            key=str(opt.get("key", "")),
-                            text=str(opt.get("text", "")),
-                            is_correct=bool(opt.get("is_correct", False)),
-                        )
-                    )
-
-        image_asset_url = None
-        asset_link = db.scalars(
-            select(KnowledgeQuestionImageLink)
-            .where(KnowledgeQuestionImageLink.question_record_id == rec.id)
-        ).first()
-        if asset_link:
-            asset = db.scalars(
-                select(KnowledgeAsset)
-                .where(KnowledgeAsset.id == asset_link.asset_id)
-            ).first()
-            if asset:
-                image_asset_url = asset.file_path or f"/api/v1/knowledge-center/assets/{asset.id}/view"
-
-        topic = filename
-        points = 5
-        if rec.metadata_json and isinstance(rec.metadata_json, dict):
-            topic = rec.metadata_json.get("topic") or filename
-            points = rec.metadata_json.get("points") or 5
-
-        q_type = rec.question_type or "MCQ"
-        upper_type = q_type.upper()
-        if upper_type in ("MCQ", "MULTIPLE_CHOICE"):
-            norm_type = "MCQ"
-        elif upper_type in ("TRUE_FALSE", "TRUEFALSE"):
-            norm_type = "TRUE_FALSE"
-        elif upper_type in ("ESSAY",):
-            norm_type = "ESSAY"
-        elif upper_type in ("FILL_BLANK", "FILL_IN_BLANK"):
-            norm_type = "FILL_BLANK"
-        else:
-            norm_type = q_type
-
-        generated_questions.append(
-            GeneratedQuestion(
-                id=q_id,
-                question_type=norm_type,
-                difficulty="medium",
-                topic=topic,
-                question_text=rec.question_text,
-                options=opts if opts else None,
-                correct_answer=rec.correct_answer or "",
-                explanation=rec.explanation or "",
-                points=points,
-                image_asset_url=image_asset_url,
-                image_asset_ids=rec.image_asset_ids_json,
-            )
-        )
-        q_id += 1
-
-    # Safe text-only fallback: STRICTLY for plain text documents (TXT, CSV), NEVER for binary PDFs (Requirement 7)
-    is_plain_text_doc = filename.lower().endswith((".txt", ".text", ".csv"))
-    if not generated_questions and is_plain_text_doc:
-        try:
-            with open(source.storage_path, "r", encoding="utf-8", errors="ignore") as source_file:
-                lines = [line.strip() for line in source_file if line.strip()]
-            cur_q_text = ""
-            cur_opts: list[QuestionOption] = []
-            cur_ans = ""
-            cur_exp = ""
-
-            def flush_q():
-                nonlocal cur_q_text, cur_opts, cur_ans, cur_exp, q_id
-                if cur_q_text:
-                    q_type = "MCQ" if len(cur_opts) >= 2 else ("TRUE_FALSE" if "صح" in cur_ans or "خطأ" in cur_ans else "ESSAY")
-                    generated_questions.append(
-                        GeneratedQuestion(
-                            id=q_id,
-                            question_type=q_type,
-                            difficulty="medium",
-                            topic=filename,
-                            question_text=cur_q_text,
-                            options=cur_opts if cur_opts else None,
-                            correct_answer=cur_ans or (cur_opts[0].text if cur_opts else "إجابة نموذجية"),
-                            explanation=cur_exp or f"مستخرج من ملف {filename}",
-                            points=5,
-                        )
-                    )
-                    q_id += 1
-                    cur_q_text = ""
-                    cur_opts = []
-                    cur_ans = ""
-                    cur_exp = ""
-
-            for line in lines:
-                if re.match(r"^(?:س\s*\d+|[0-9]+[\.\-\)]|\(?[0-9]+\)?|سؤال)\s*[:\.]?", line):
-                    flush_q()
-                    cur_q_text = re.sub(r"^(?:س\s*\d+|[0-9]+[\.\-\)]|\(?[0-9]+\)?|سؤال)\s*[:\.]?\s*", "", line)
-                elif re.match(r"^[أ-يA-Da-d][\.\-\)]\s*", line):
-                    opt_key = line[0]
-                    opt_text = line[2:].strip()
-                    cur_opts.append(QuestionOption(key=opt_key, text=opt_text, is_correct=False))
-                elif "الإجابة الصحيحة" in line or "الاجابة الصحيحة" in line or "الإجابة النموذجية" in line:
-                    cur_ans = re.sub(r"^[^:]+:\s*", "", line).strip()
-                    if cur_opts and cur_ans in ["أ", "ب", "ج", "د", "A", "B", "C", "D"]:
-                        for opt in cur_opts:
-                            if opt.key == cur_ans:
-                                opt.is_correct = True
-                elif "التفسير" in line or "الشرح" in line:
-                    cur_exp = re.sub(r"^[^:]+:\s*", "", line).strip()
-                elif not cur_opts and cur_q_text:
-                    cur_q_text += " " + line
-            flush_q()
-        except Exception:
-            pass
-
-    if not generated_questions:
-        raise HTTPException(status_code=422, detail="تعذر استخراج أسئلة واضحة من الملف. تأكد من احتواء الملف على أسئلة وبنك امتحانات.")
-
-    total_points = sum(q.points for q in generated_questions)
-    return QuizDraftResponse(
-        title=f"اختبار مستخرج: {filename}",
-        description=f"تم استخراج {len(generated_questions)} سؤالاً تلقائياً من ملف ({filename}).",
-        total_points=total_points,
-        questions=generated_questions,
-        is_complete=True,
-        requires_teacher_approval=True,
-        cached=False,
-        metadata={
-            "extracted_from_file": filename,
-            "source_id": str(source.id),
-            "question_count": len(generated_questions),
-            "generated_at": datetime.utcnow().isoformat(),
-        },
-    )
 
 
 @router.post("/grading/essay", response_model=EssayGradingResponse)
@@ -1458,7 +1482,7 @@ async def create_manual_quiz(
     request: Request,
     db: Db,
 ) -> ManualQuizResponse:
-    enforce_rate_limit(request, bucket="manual", limit=10, window_seconds=60)
+    enforce_rate_limit(request, bucket="ai", limit=10, window_seconds=60)
     course_uuid = _uuid(payload.course_id)
     if not course_uuid:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid course_id")
@@ -1490,7 +1514,7 @@ async def create_manual_assignment(
     request: Request,
     db: Db,
 ) -> ManualAssignmentResponse:
-    enforce_rate_limit(request, bucket="manual", limit=10, window_seconds=60)
+    enforce_rate_limit(request, bucket="ai", limit=10, window_seconds=60)
     course_uuid = _uuid(payload.course_id)
     if not course_uuid:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid course_id")

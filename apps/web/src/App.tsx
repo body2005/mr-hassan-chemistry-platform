@@ -13,7 +13,8 @@ import { PaymentTarget, StudentEntitlement, paymentService } from "./services/pa
 
 // Views
 import { LandingPageView } from "./views/LandingPageView";
-// View chunk loaders for background prefetching & instant navigation
+// View chunk loaders stay lazy. A chunk is only preloaded after the user
+// expresses intent on the corresponding navigation item.
 const viewLoaders = {
   GeneralHome: () => import("./views/GeneralHomeView"),
   MyCourses: () => import("./views/MyCoursesView"),
@@ -95,19 +96,8 @@ export type AuthStatus = "loading" | "authenticated" | "unauthenticated" | "temp
 
 function App() {
   const confirm = useConfirm();
-  // Cached identity is used for optimistic rendering and offline resilience.
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(() => {
-    try {
-      const cached = typeof localStorage !== "undefined" ? localStorage.getItem("lms_cached_user") : null;
-      return cached ? (JSON.parse(cached) as CurrentUser) : null;
-    } catch {
-      return null;
-    }
-  });
-  const [authStatus, setAuthStatus] = useState<AuthStatus>(() => {
-    const hasToken = typeof localStorage !== "undefined" && Boolean(localStorage.getItem("lms_session_token") || localStorage.getItem("lms_cached_user"));
-    return hasToken ? "loading" : "unauthenticated";
-  });
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
   const [retryAttempt, setRetryAttempt] = useState(0);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isInitialRefresh, setIsInitialRefresh] = useState(true);
@@ -165,20 +155,9 @@ function App() {
       } catch (error) {
         if (requestId !== authSyncId.current) return;
         console.error("Session verification error", error);
-        let cachedUser: CurrentUser | null = null;
-        try {
-          const cached = typeof localStorage !== "undefined" ? localStorage.getItem("lms_cached_user") : null;
-          if (cached) cachedUser = JSON.parse(cached) as CurrentUser;
-        } catch {
-          cachedUser = null;
-        }
-
-        if (cachedUser) {
-          setCurrentUser(cachedUser);
-          setAuthStatus("temporarily_unavailable");
-        } else {
-          setAuthStatus("temporarily_unavailable");
-        }
+        // A network/502 failure is not an authentication decision. Keep the
+        // in-memory identity, retry with backoff, and do not persist a token.
+        setAuthStatus("temporarily_unavailable");
       } finally {
         if (requestId === authSyncId.current) setAuthLoading(false);
       }
@@ -223,22 +202,7 @@ function App() {
     const fromHash = getTabFromHash();
     if (fromHash && fromHash !== "Landing" && fromHash !== "Auth") return fromHash;
 
-    let user: CurrentUser | null = null;
-    try {
-      const cached = typeof localStorage !== "undefined" ? localStorage.getItem("lms_cached_user") : null;
-      user = cached ? (JSON.parse(cached) as CurrentUser) : null;
-    } catch {
-      user = null;
-    }
-
     const savedTab = typeof localStorage !== "undefined" ? localStorage.getItem("lms_active_tab") : null;
-    if (user) {
-      if (savedTab && VALID_TABS.includes(savedTab as AllTabs) && savedTab !== "Landing" && savedTab !== "Auth") {
-        return savedTab as AllTabs;
-      }
-      return user.role === "student" ? "GeneralHome" : "LessonManagement";
-    }
-
     if (savedTab && VALID_TABS.includes(savedTab as AllTabs)) {
       return savedTab as AllTabs;
     }
@@ -269,58 +233,6 @@ function App() {
       navigateToTab(homeTab(currentUser));
     }
   }, [currentUser, activeTab, navigateToTab]);
-
-  // Intelligent Background Prefetch: Preload all other views while the user is on any page
-  useEffect(() => {
-    if (!currentUser) return;
-
-    const isStaff = currentUser.role !== "student";
-    const priorityList: Array<keyof typeof viewLoaders> = isStaff
-      ? ["LessonManagement", "QuizGen", "StudentAnalytics", "AIKnowledgeCenter", "Submissions", "PaymentManagement", "Notifications", "Profile"]
-      : ["GeneralHome", "MyCourses", "MySubmissions", "Payments", "Notifications", "Profile"];
-
-    // Filter out current view since it is already rendered
-    const viewsToPrefetch = priorityList.filter((tab) => tab !== activeTab);
-
-    let currentIndex = 0;
-    let isCancelled = false;
-
-    const prefetchNext = () => {
-      if (isCancelled || currentIndex >= viewsToPrefetch.length) return;
-
-      const tab = viewsToPrefetch[currentIndex];
-      currentIndex++;
-
-      const loader = viewLoaders[tab];
-      if (loader) {
-        loader()
-          .catch(() => undefined)
-          .finally(() => {
-            if (!isCancelled) {
-              if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-                window.requestIdleCallback(prefetchNext, { timeout: 1200 });
-              } else {
-                setTimeout(prefetchNext, 120);
-              }
-            }
-          });
-      }
-    };
-
-    // Start background prefetch shortly after page mount (700ms)
-    const timer = setTimeout(() => {
-      if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-        window.requestIdleCallback(prefetchNext, { timeout: 1500 });
-      } else {
-        setTimeout(prefetchNext, 150);
-      }
-    }, 700);
-
-    return () => {
-      isCancelled = true;
-      clearTimeout(timer);
-    };
-  }, [currentUser, activeTab]);
 
   // Listen to Google Chrome Native Back & Forward Buttons (hashchange + popstate)
   useEffect(() => {
@@ -364,12 +276,14 @@ function App() {
 
   // Load business data from the backend after the server session is known.
   useEffect(() => {
-    void courseService.getCourses().then(setCourses).catch(() => setCourses([]));
     if (!currentUser) {
+      setCourses([]);
       setEnrolledCourseIds([]);
       setEntitlements([]);
       return;
     }
+
+    void courseService.getCourses().then(setCourses).catch(() => setCourses([]));
     if (currentUser.role === "student") {
       void courseService.getEnrolledCourseIds().then(setEnrolledCourseIds).catch(() => setEnrolledCourseIds([]));
       void paymentService.getMyEntitlements().then(setEntitlements).catch(() => setEntitlements([]));
@@ -445,8 +359,6 @@ function App() {
       setCurrentUser(null);
       setAuthStatus("unauthenticated");
       setAuthLoading(false);
-      localStorage.removeItem("lms_session_token");
-      localStorage.removeItem("lms_cached_user");
       navigateToTab("Landing");
     }
   }

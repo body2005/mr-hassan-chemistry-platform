@@ -183,6 +183,7 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
               }}
               onMouseEnter={() => onHoverTab?.(id)}
               onFocus={() => onHoverTab?.(id)}
+              onTouchStart={() => onHoverTab?.(id)}
             >
               <Icon size={18} className="nav-icon" />
               <div style={{ textAlign: "inherit", lineHeight: "1.2" }}>
@@ -203,6 +204,8 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
               onCloseMenu();
             }}
             onMouseEnter={() => onHoverTab?.("Profile")}
+            onFocus={() => onHoverTab?.("Profile")}
+            onTouchStart={() => onHoverTab?.("Profile")}
           >
             <div
               className="avatar-badge"

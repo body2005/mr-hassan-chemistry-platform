@@ -95,6 +95,26 @@ class RevokedSession(UUIDPrimaryKeyMixin, Base):
     )
 
 
+class RefreshSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Server-side record for one rotating refresh credential.
+
+    Only a SHA-256 hash of the random browser credential is stored.  A token
+    family lets us revoke every descendant if a rotated token is replayed.
+    """
+
+    __tablename__ = "refresh_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
+    family_id: Mapped[uuid.UUID] = mapped_column(index=True, nullable=False)
+    jti: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    replaced_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 class Notification(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "notifications"
     __table_args__ = (
