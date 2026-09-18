@@ -1482,7 +1482,7 @@ async def create_manual_quiz(
     request: Request,
     db: Db,
 ) -> ManualQuizResponse:
-    enforce_rate_limit(request, bucket="manual", limit=10, window_seconds=60)
+    enforce_rate_limit(request, bucket="ai", limit=10, window_seconds=60)
     course_uuid = _uuid(payload.course_id)
     if not course_uuid:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid course_id")
@@ -1514,7 +1514,7 @@ async def create_manual_assignment(
     request: Request,
     db: Db,
 ) -> ManualAssignmentResponse:
-    enforce_rate_limit(request, bucket="manual", limit=10, window_seconds=60)
+    enforce_rate_limit(request, bucket="ai", limit=10, window_seconds=60)
     course_uuid = _uuid(payload.course_id)
     if not course_uuid:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid course_id")

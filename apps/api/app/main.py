@@ -78,6 +78,34 @@ def is_origin_allowed(origin: str | None) -> bool:
     return bool(origin_regex and re.fullmatch(origin_regex, origin))
 
 
+def classify_rate_limit_category(method: str, path: str) -> str:
+    """Classify each request once; source reads must never be charged as uploads."""
+    normalized_method = method.upper()
+    normalized_path = path.rstrip("/")
+    api_prefix = settings.api_v1_prefix
+
+    if normalized_path.startswith(f"{api_prefix}/auth/"):
+        return "auth"
+    if normalized_path.startswith(f"{api_prefix}/ai"):
+        return "ai"
+    if normalized_method == "POST" and (
+        normalized_path in {
+            f"{api_prefix}/knowledge-center/sources/upload",
+            f"{api_prefix}/knowledge-center/sources/upload-batch",
+        }
+        or normalized_path.endswith("/video")
+        or normalized_path.endswith("/receipt")
+    ):
+        return "upload"
+    if normalized_method == "POST" and (
+        "extract-from-file" in normalized_path or "/exam" in normalized_path
+    ):
+        return "quiz_extraction"
+    if normalized_method in {"GET", "HEAD"}:
+        return "read"
+    return "default"
+
+
 @app.middleware("http")
 async def security_middleware(request, call_next):
     request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
@@ -88,27 +116,18 @@ async def security_middleware(request, call_next):
         f"{settings.api_v1_prefix}/ready",
     }:
         try:
-            path = request.url.path
-            if path.startswith(f"{settings.api_v1_prefix}/auth/login"):
-                category = "auth_login"
-            elif "/ai" in path:
-                category = "ai"
-            elif "/upload" in path or "/sources" in path:
-                category = "upload"
-            elif "/quiz" in path or "/exam" in path or "/extract" in path:
-                category = "quiz_extraction"
-            elif request.method == "GET":
-                category = "read"
-            else:
-                category = "default"
-
+            category = classify_rate_limit_category(request.method, request.url.path)
             enforce_rate_limit(request, category=category)
+            request.state.rate_limit_categories = {category}
         except HTTPException as exc:
             res = JSONResponse(
                 status_code=exc.status_code,
                 content={
                     "detail": str(exc.detail),
-                    "error": {"code": "RATE_LIMITED", "message": exc.detail},
+                    "error": {
+                        "code": "RATE_LIMITED" if exc.status_code == 429 else "SERVICE_UNAVAILABLE",
+                        "message": exc.detail,
+                    },
                     "request_id": request_id,
                 },
                 headers=exc.headers,

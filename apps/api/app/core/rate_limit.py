@@ -67,8 +67,12 @@ def _get_redis_client() -> redis.Redis | None:
         _redis_script = client.register_script(LUA_SLIDING_WINDOW)
         _redis_client = client
         return _redis_client
-    except Exception as exc:
-        logger.debug("Redis rate limiting unavailable, falling back to process memory: %s", exc)
+    except Exception:
+        # A previous connection can become stale. Never retain it or expose
+        # connection details in logs; the next request may establish a new one.
+        _redis_client = None
+        _redis_script = None
+        logger.warning("Redis rate limiting is unavailable")
         return None
 
 
@@ -186,10 +190,15 @@ def enforce_rate_limit(
     limit: int | None = None,
     window_seconds: int | None = None,
 ) -> None:
+    global _redis_client, _redis_script
     if os.getenv("DISABLE_RATE_LIMITING", "").lower() in {"1", "true", "yes"}:
         return
 
-    effective_category = category or bucket or "api"
+    settings = get_settings()
+    effective_category = (category or bucket or "api").lower().replace("-", "_")
+    categories_already_enforced = getattr(request.state, "rate_limit_categories", set())
+    if effective_category in categories_already_enforced:
+        return
     default_limit, default_window = _get_category_defaults(effective_category)
     final_limit = limit if limit is not None else default_limit
     final_window = window_seconds if window_seconds is not None else default_window
@@ -215,10 +224,18 @@ def enforce_rate_limit(
             return
         except HTTPException:
             raise
-        except Exception as exc:
-            logger.debug("Redis rate limit query failed, falling back to memory: %s", exc)
+        except Exception:
+            _redis_client = None
+            _redis_script = None
+            logger.warning("Redis rate limiting query failed")
 
-    # Graceful fallback to memory
+    if settings.redis_required or settings.app_env.lower() in {"production", "production_like"}:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Rate limiting is temporarily unavailable.",
+        )
+
+    # Per-process fallback is deliberately restricted to development/testing.
     _in_memory_enforce(key, final_limit, final_window)
 
 

@@ -135,7 +135,7 @@ def _auth_response(user: User, family_id: uuid.UUID, db: Session, response: Resp
 def register(
     payload: RegisterRequest, response: Response, db: Db, request: Request
 ) -> AuthResponse:
-    enforce_rate_limit(request, bucket="auth-register", limit=10, window_seconds=60)
+    enforce_rate_limit(request, bucket="auth", limit=10, window_seconds=60)
     try:
         user = auth_service.register_student(db, payload)
     except ValueError as exc:
@@ -157,7 +157,7 @@ def register(
 
 @router.post("/login", response_model=AuthResponse)
 def login(payload: LoginRequest, response: Response, db: Db, request: Request) -> AuthResponse:
-    enforce_rate_limit(request, bucket="auth-login", limit=12, window_seconds=60)
+    enforce_rate_limit(request, bucket="auth", limit=12, window_seconds=60)
     user = auth_service.authenticate(db, payload)
     if user is None:
         record_audit(db, request, action="login_failed", resource_type="session")
@@ -179,7 +179,7 @@ def refresh(
     refresh_cookie: Annotated[str | None, Cookie(alias=get_settings().refresh_cookie_name)] = None,
 ) -> AuthResponse:
     """Rotate exactly one refresh credential and detect replay of an older one."""
-    enforce_rate_limit(request, bucket="auth-refresh", limit=60, window_seconds=60)
+    enforce_rate_limit(request, bucket="auth", limit=60, window_seconds=60)
     if not refresh_cookie:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh session is missing")
 
@@ -300,7 +300,7 @@ def revoke_all_sessions(user: CurrentUser, db: Db, request: Request) -> None:
 def request_password_reset(
     payload: PasswordResetRequest, db: Db, request: Request
 ) -> dict[str, str]:
-    enforce_rate_limit(request, bucket="auth-password-reset", limit=5, window_seconds=300)
+    enforce_rate_limit(request, bucket="auth", limit=5, window_seconds=300)
     # Deliberately generic: account existence must not be exposed to callers.
     auth_service.request_password_reset(db, str(payload.email), payload.institution_slug)
     return {"message": "If the account exists, reset instructions will be sent securely."}
@@ -308,7 +308,7 @@ def request_password_reset(
 
 @router.post("/password-reset/confirm", status_code=status.HTTP_204_NO_CONTENT)
 def confirm_password_reset(payload: PasswordResetConfirm, db: Db, request: Request) -> None:
-    enforce_rate_limit(request, bucket="auth-password-reset-confirm", limit=5, window_seconds=300)
+    enforce_rate_limit(request, bucket="auth", limit=5, window_seconds=300)
     try:
         auth_service.reset_password(db, payload)
     except ValueError as exc:

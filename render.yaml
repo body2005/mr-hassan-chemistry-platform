@@ -2,6 +2,12 @@
 # https://render.com/docs/blueprint-spec
 
 services:
+  - type: keyvalue
+    name: chemistry-platform-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
+
   - type: web
     name: chemistry-platform-api
     runtime: docker
@@ -58,7 +64,7 @@ services:
       - key: DB_MAX_OVERFLOW
         value: "10"
       - key: REDIS_REQUIRED
-        value: "false"
+        value: "true"
       - key: MAX_CONCURRENT_INGESTIONS
         value: "1"
       - key: MAX_FILE_SIZE_MB
@@ -96,11 +102,20 @@ services:
       - key: GROQ_API_KEY
         sync: false
       - key: REDIS_URL
-        sync: false
+        fromService:
+          type: keyvalue
+          name: chemistry-platform-redis
+          property: connectionString
       - key: CELERY_BROKER_URL
-        sync: false
+        fromService:
+          type: keyvalue
+          name: chemistry-platform-redis
+          property: connectionString
       - key: CELERY_RESULT_BACKEND
-        sync: false
+        fromService:
+          type: keyvalue
+          name: chemistry-platform-redis
+          property: connectionString
       - key: USE_CELERY_INGESTION
         value: "true"
     autoDeploy: true
@@ -124,11 +139,20 @@ services:
           name: chemistry-platform-db
           property: connectionString
       - key: REDIS_URL
-        sync: false
+        fromService:
+          type: keyvalue
+          name: chemistry-platform-redis
+          property: connectionString
       - key: CELERY_BROKER_URL
-        sync: false
+        fromService:
+          type: keyvalue
+          name: chemistry-platform-redis
+          property: connectionString
       - key: CELERY_RESULT_BACKEND
-        sync: false
+        fromService:
+          type: keyvalue
+          name: chemistry-platform-redis
+          property: connectionString
       - key: STORAGE_BACKEND
         value: "s3"
       - key: S3_ENDPOINT_URL

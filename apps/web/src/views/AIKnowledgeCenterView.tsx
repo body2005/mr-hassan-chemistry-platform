@@ -347,22 +347,6 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
     setInspectSource((prev) => (prev ? { ...prev, scale: prev.scale === "fit" ? 1.0 : "fit" } : null));
   }, []);
 
-  // Pre-load next and previous page images in browser cache
-  useEffect(() => {
-    if (!inspectSource || inspectSource.viewMode !== "FAST_PAGES") return;
-    const { id, currentPage, total_pages } = inspectSource;
-    if (!previewToken) return;
-    const tokenQuery = `?token=${encodeURIComponent(previewToken)}`;
-    if (currentPage < (total_pages || 1)) {
-      const nextImg = new Image();
-      nextImg.src = apiUrl(`/knowledge-center/sources/${id}/preview-page/${currentPage + 1}${tokenQuery}`);
-    }
-    if (currentPage > 1) {
-      const prevImg = new Image();
-      prevImg.src = apiUrl(`/knowledge-center/sources/${id}/preview-page/${currentPage - 1}${tokenQuery}`);
-    }
-  }, [inspectSource, previewToken]);
-
   const closeInspectModal = useCallback(() => {
     setInspectSource(null);
     setPreviewToken(null);

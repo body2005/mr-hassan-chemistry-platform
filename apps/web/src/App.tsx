@@ -13,7 +13,8 @@ import { PaymentTarget, StudentEntitlement, paymentService } from "./services/pa
 
 // Views
 import { LandingPageView } from "./views/LandingPageView";
-// View chunk loaders for background prefetching & instant navigation
+// View chunk loaders stay lazy. A chunk is only preloaded after the user
+// expresses intent on the corresponding navigation item.
 const viewLoaders = {
   GeneralHome: () => import("./views/GeneralHomeView"),
   MyCourses: () => import("./views/MyCoursesView"),
@@ -233,58 +234,6 @@ function App() {
     }
   }, [currentUser, activeTab, navigateToTab]);
 
-  // Intelligent Background Prefetch: Preload all other views while the user is on any page
-  useEffect(() => {
-    if (!currentUser) return;
-
-    const isStaff = currentUser.role !== "student";
-    const priorityList: Array<keyof typeof viewLoaders> = isStaff
-      ? ["LessonManagement", "QuizGen", "StudentAnalytics", "AIKnowledgeCenter", "Submissions", "PaymentManagement", "Notifications", "Profile"]
-      : ["GeneralHome", "MyCourses", "MySubmissions", "Payments", "Notifications", "Profile"];
-
-    // Filter out current view since it is already rendered
-    const viewsToPrefetch = priorityList.filter((tab) => tab !== activeTab);
-
-    let currentIndex = 0;
-    let isCancelled = false;
-
-    const prefetchNext = () => {
-      if (isCancelled || currentIndex >= viewsToPrefetch.length) return;
-
-      const tab = viewsToPrefetch[currentIndex];
-      currentIndex++;
-
-      const loader = viewLoaders[tab];
-      if (loader) {
-        loader()
-          .catch(() => undefined)
-          .finally(() => {
-            if (!isCancelled) {
-              if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-                window.requestIdleCallback(prefetchNext, { timeout: 1200 });
-              } else {
-                setTimeout(prefetchNext, 120);
-              }
-            }
-          });
-      }
-    };
-
-    // Start background prefetch shortly after page mount (700ms)
-    const timer = setTimeout(() => {
-      if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-        window.requestIdleCallback(prefetchNext, { timeout: 1500 });
-      } else {
-        setTimeout(prefetchNext, 150);
-      }
-    }, 700);
-
-    return () => {
-      isCancelled = true;
-      clearTimeout(timer);
-    };
-  }, [currentUser, activeTab]);
-
   // Listen to Google Chrome Native Back & Forward Buttons (hashchange + popstate)
   useEffect(() => {
     // Sync initial hash if absent
@@ -327,12 +276,14 @@ function App() {
 
   // Load business data from the backend after the server session is known.
   useEffect(() => {
-    void courseService.getCourses().then(setCourses).catch(() => setCourses([]));
     if (!currentUser) {
+      setCourses([]);
       setEnrolledCourseIds([]);
       setEntitlements([]);
       return;
     }
+
+    void courseService.getCourses().then(setCourses).catch(() => setCourses([]));
     if (currentUser.role === "student") {
       void courseService.getEnrolledCourseIds().then(setEnrolledCourseIds).catch(() => setEnrolledCourseIds([]));
       void paymentService.getMyEntitlements().then(setEntitlements).catch(() => setEntitlements([]));

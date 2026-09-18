@@ -258,7 +258,7 @@ async def upload_lesson_video(
     request: Request,
     file: UploadFile = File(...),
 ) -> dict:
-    enforce_rate_limit(request, bucket="video_upload", limit=5, window_seconds=60)
+    enforce_rate_limit(request, bucket="upload", limit=5, window_seconds=60)
     lesson, course = _lesson_course(db, lesson_id)
     if user.role != UserRole.PLATFORM_ADMIN and course.institution_id != user.institution_id:
         raise HTTPException(status_code=404, detail="Lesson not found")
