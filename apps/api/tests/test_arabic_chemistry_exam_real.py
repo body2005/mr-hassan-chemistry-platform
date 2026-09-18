@@ -16,6 +16,7 @@ from app.models.knowledge_center import (
 )
 from app.models.user import User, UserRole
 from app.services.document_parsers import (
+    fix_reversed_arabic_text,
     normalize_arabic_presentation_forms,
     parse_pdf_document,
 )
@@ -116,6 +117,16 @@ def test_typo_correction_and_boundary_decimals():
     assert _extract_question_number("سؤال 10: اختر") == "10"
 
 
+def test_visual_order_arabic_is_restored_without_corrupting_chemistry_formula():
+    """Legacy PDF visual-order Arabic must become editable logical Arabic."""
+    visual_order = "ةيبرعلا رصم ةيروهمج\nءايميكلا ةدام\nN2(g) + 3H2(g) ⇌ 2NH3(g)"
+    restored = fix_reversed_arabic_text(visual_order)
+
+    assert "جمهورية مصر العربية" in restored
+    assert "مادة الكيمياء" in restored
+    assert "N2(g) + 3H2(g) ⇌ 2NH3(g)" in restored
+
+
 def test_real_exam_end_to_end_ingestion(db):
     inst = Institution(name="Exam Inst", slug="exam-inst")
     db.add(inst)
@@ -152,7 +163,7 @@ def test_real_exam_end_to_end_ingestion(db):
         file_bytes=pdf_bytes,
         filename="7d1b3d88_049fd658-0ccc-4840-b2b4-2335cfd5b0ec.pdf",
         source_role=SourceRole.ASSESSMENT,
-    )
+    ).source
     db.commit()
 
     processed_source = process_knowledge_source(db=db, source_id=source.id)

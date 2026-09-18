@@ -34,6 +34,7 @@ from app.models.platform import (
     Question,
     Quiz,
     QuizAttempt,
+    QuizAttemptAnswer,
 )
 from app.models.user import User, UserRole
 

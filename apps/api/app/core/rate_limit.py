@@ -5,6 +5,7 @@ import os
 import threading
 import time
 import uuid
+import ipaddress
 from collections import defaultdict, deque
 from typing import Any
 
@@ -66,25 +67,60 @@ def _get_redis_client() -> redis.Redis | None:
         _redis_script = client.register_script(LUA_SLIDING_WINDOW)
         _redis_client = client
         return _redis_client
-    except Exception as exc:
-        logger.debug("Redis rate limiting unavailable, falling back to process memory: %s", exc)
+    except Exception:
+        # A previous connection can become stale. Never retain it or expose
+        # connection details in logs; the next request may establish a new one.
+        _redis_client = None
+        _redis_script = None
+        logger.warning("Redis rate limiting is unavailable")
         return None
+
+
+def _is_trusted(ip: str, trusted_exact: set[str], trusted_networks: list[Any]) -> bool:
+    if ip in trusted_exact:
+        return True
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(address in network for network in trusted_networks)
 
 
 def resolve_client_ip(request: Request) -> str:
     settings = get_settings()
     direct_ip = request.client.host if request.client else "127.0.0.1"
     trusted_raw = getattr(settings, "trusted_proxies", "127.0.0.1,::1")
-    trusted = {ip.strip() for ip in trusted_raw.split(",") if ip.strip()}
+    if trusted_raw.strip() == "*":
+        # Never trust an arbitrary client-controlled XFF chain. Deployments
+        # must configure the actual proxy addresses or CIDRs explicitly.
+        logger.error("TRUSTED_PROXIES='*' is unsafe; ignoring forwarded headers")
+        return direct_ip
 
-    if direct_ip in trusted:
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            hops = [ip.strip() for ip in forwarded.split(",") if ip.strip()]
-            for hop in hops:
-                if hop not in trusted:
-                    return hop
-    return direct_ip
+    trusted_exact: set[str] = set()
+    trusted_networks: list[Any] = []
+    for entry in trusted_raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if "/" in entry:
+            try:
+                trusted_networks.append(ipaddress.ip_network(entry, strict=False))
+                continue
+            except ValueError:
+                logger.warning("Ignoring invalid trusted proxy CIDR: %s", entry)
+                continue
+        trusted_exact.add(entry)
+
+    if not _is_trusted(direct_ip, trusted_exact, trusted_networks):
+        return direct_ip
+    forwarded = request.headers.get("X-Forwarded-For")
+    if not forwarded:
+        return direct_ip
+    hops = [ip.strip() for ip in forwarded.split(",") if ip.strip()]
+    for hop in reversed(hops):
+        if not _is_trusted(hop, trusted_exact, trusted_networks):
+            return hop
+    return hops[0] if hops else direct_ip
 
 
 def resolve_rate_limit_key(request: Request, category: str) -> str:
@@ -113,7 +149,7 @@ def _get_category_defaults(category: str) -> tuple[int, int]:
 
     if "login" in cat_lower or "auth" in cat_lower:
         return settings.rate_limit_login, window
-    if "read" in cat_lower:
+    if "read" in cat_lower or "preview" in cat_lower:
         return settings.rate_limit_read, window
     if "ai" in cat_lower:
         return settings.rate_limit_ai, window
@@ -150,10 +186,15 @@ def enforce_rate_limit(
     limit: int | None = None,
     window_seconds: int | None = None,
 ) -> None:
+    global _redis_client, _redis_script
     if os.getenv("DISABLE_RATE_LIMITING", "").lower() in {"1", "true", "yes"}:
         return
 
-    effective_category = category or bucket or "api"
+    settings = get_settings()
+    effective_category = (category or bucket or "api").lower().replace("-", "_")
+    categories_already_enforced = getattr(request.state, "rate_limit_categories", set())
+    if effective_category in categories_already_enforced:
+        return
     default_limit, default_window = _get_category_defaults(effective_category)
     final_limit = limit if limit is not None else default_limit
     final_window = window_seconds if window_seconds is not None else default_window
@@ -179,10 +220,19 @@ def enforce_rate_limit(
             return
         except HTTPException:
             raise
-        except Exception as exc:
-            logger.debug("Redis rate limit query failed, falling back to memory: %s", exc)
+        except Exception:
+            _redis_client = None
+            _redis_script = None
+            logger.warning("Redis rate limiting query failed")
 
-    # Graceful fallback to memory
+    if settings.redis_required or settings.app_env.lower() in {"production", "production_like"}:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Rate limiting is temporarily unavailable.",
+            headers={"Retry-After": "1"},
+        )
+
+    # Per-process fallback is deliberately restricted to development/testing.
     _in_memory_enforce(key, final_limit, final_window)
 
 
@@ -200,4 +250,6 @@ def reset_rate_limits() -> None:
                 if cursor == 0:
                     break
         except Exception:
-            pass
+            # This is a maintenance-only helper used by tests and trusted
+            # operators. Avoid leaking a Redis URL while preserving evidence.
+            logger.exception("Unable to clear Redis rate-limit keys")

@@ -14,15 +14,40 @@ from app.models.user import User, UserRole
 
 
 def register(client: TestClient, email: str, institution_slug: str = "demo"):
-    return client.post(
+    response = client.post(
         "/api/v1/auth/register",
         json={
             "display_name": "Student One",
             "email": email,
             "password": "a-strong-password",
             "institution_slug": institution_slug,
+            "grade_level": "SECONDARY_2",
+            "student_phone": "01012345678",
+            "guardian_phone": "01112345678",
+            "national_id": None,
+            "governorate": "CAIRO",
+            "school_name": "Demo Secondary School",
+            "gender": "MALE",
+            "religion": "MUSLIM",
         },
     )
+    if response.is_success:
+        client.headers.update({"X-CSRF-Token": client.cookies.get("matgar_csrf") or ""})
+    return response
+
+
+def seed_institution(db, slug: str) -> Institution:
+    institution = Institution(name=f"Institution {slug}", slug=slug)
+    db.add(institution)
+    db.commit()
+    return institution
+
+
+def remember_csrf(client: TestClient, response):
+    """Model browser behavior: echo the readable CSRF cookie on mutations."""
+    if response.is_success:
+        client.headers.update({"X-CSRF-Token": client.cookies.get("matgar_csrf") or ""})
+    return response
 
 
 def seed_teacher_and_course(db, institution_slug: str = "academy-a") -> tuple[User, Course]:
@@ -53,7 +78,8 @@ def seed_teacher_and_course(db, institution_slug: str = "academy-a") -> tuple[Us
     return teacher, course
 
 
-def test_register_login_me_and_logout() -> None:
+def test_register_login_me_and_logout(db) -> None:
+    seed_institution(db, "demo")
     client = TestClient(app)
 
     response = register(client, "student@example.com")
@@ -71,6 +97,7 @@ def test_register_login_me_and_logout() -> None:
 
 
 def test_password_is_hashed_and_duplicate_registration_is_rejected(db) -> None:
+    seed_institution(db, "demo")
     client = TestClient(app)
     assert register(client, "student@example.com").status_code == 201
     assert register(client, "student@example.com").status_code == 409
@@ -87,14 +114,14 @@ def test_teacher_can_create_and_publish_course_but_student_cannot() -> None:
         teacher, _ = seed_teacher_and_course(db)
 
     client = TestClient(app)
-    login = client.post(
+    login = remember_csrf(client, client.post(
         "/api/v1/auth/login",
         json={
             "email": teacher.email,
             "password": "teacher-password",
             "institution_slug": "academy-a",
         },
-    )
+    ))
     assert login.status_code == 200
     created = client.post(
         "/api/v1/courses",
@@ -118,6 +145,7 @@ def test_teacher_can_create_and_publish_course_but_student_cannot() -> None:
 
 def test_course_isolation_between_institutions(db) -> None:
     _, course = seed_teacher_and_course(db, "academy-a")
+    seed_institution(db, "academy-b")
     client_a = TestClient(app)
     client_b = TestClient(app)
     assert register(client_a, "a@example.com", "academy-a").status_code == 201
@@ -173,14 +201,14 @@ def test_quiz_is_server_timed_and_submission_is_idempotent(db) -> None:
     teacher, course = seed_teacher_and_course(db, "academy-quiz")
     teacher_client = TestClient(app)
     assert (
-        teacher_client.post(
+        remember_csrf(teacher_client, teacher_client.post(
             "/api/v1/auth/login",
             json={
                 "email": teacher.email,
                 "password": "teacher-password",
                 "institution_slug": "academy-quiz",
             },
-        ).status_code
+        )).status_code
         == 200
     )
     question = teacher_client.post(
@@ -235,14 +263,14 @@ def test_quiz_is_server_timed_and_submission_is_idempotent(db) -> None:
 def test_assignment_versions_are_preserved_and_grading_is_server_side(db) -> None:
     teacher, course = seed_teacher_and_course(db, "academy-assignment")
     teacher_client = TestClient(app)
-    teacher_client.post(
+    remember_csrf(teacher_client, teacher_client.post(
         "/api/v1/auth/login",
         json={
             "email": teacher.email,
             "password": "teacher-password",
             "institution_slug": "academy-assignment",
         },
-    )
+    ))
     assignment = teacher_client.post(
         "/api/v1/assignments",
         json={"course_id": str(course.id), "title": "Essay", "prompt": "Explain gravity"},
@@ -282,6 +310,7 @@ def test_assignment_versions_are_preserved_and_grading_is_server_side(db) -> Non
 
 
 def test_ai_provider_failure_is_recorded_and_never_silently_falls_back(db) -> None:
+    seed_institution(db, "academy-ai")
     client = TestClient(app)
     assert register(client, "ai-student@example.com", "academy-ai").status_code == 201
     response = client.post(

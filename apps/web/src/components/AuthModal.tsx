@@ -290,7 +290,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <form onSubmit={handleRegisterStudent} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
               <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>اسم الطالب رباعي (حروف فقط):</label>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>اسم الطالب رباعي:</label>
                 <input
                   type="text"
                   required
@@ -335,7 +335,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
               <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>رقم موبايل الطالب (أرقام فقط):</label>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>رقم موبايل الطالب:</label>
                 <input
                   type="tel"
                   inputMode="numeric"
@@ -349,7 +349,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </div>
 
               <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>رقم موبايل ولي الأمر (أرقام فقط):</label>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>رقم موبايل ولي الأمر:</label>
                 <input
                   type="tel"
                   inputMode="numeric"
@@ -365,7 +365,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
               <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>السن (أرقام فقط):</label>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>السن:</label>
                 <input
                   type="text"
                   inputMode="numeric"
@@ -426,7 +426,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <form onSubmit={handleRegisterTeacher} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
               <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>اسم المعلم ثلاثي/رباعي (حروف فقط):</label>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>اسم المعلم ثلاثي/رباعي:</label>
                 <input
                   type="text"
                   required
@@ -471,7 +471,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
               <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>رقم الموبايل (أرقام فقط):</label>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>رقم الموبايل:</label>
                 <input
                   type="tel"
                   inputMode="numeric"
@@ -485,7 +485,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </div>
 
               <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>المادة العلمية (حروف فقط):</label>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>المادة العلمية:</label>
                 <input
                   type="text"
                   required

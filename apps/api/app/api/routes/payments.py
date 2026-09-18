@@ -1,19 +1,24 @@
 from __future__ import annotations
 
+import mimetypes
+import logging
 import os
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import CurrentUser, require_roles
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.storage import generate_safe_object_key, get_storage_provider
 from app.models.payment import (
     PaymentMethod,
     PaymentOrder,
@@ -26,6 +31,7 @@ from app.models.user import User, UserRole
 from app.services import payment_service
 
 router = APIRouter(prefix="/payments")
+logger = logging.getLogger(__name__)
 Db = Annotated[Session, Depends(get_db)]
 Student = Annotated[User, Depends(require_roles(UserRole.STUDENT))]
 Reviewer = Annotated[
@@ -153,10 +159,9 @@ async def upload_payment_receipt(
     if receipt.content_type and receipt.content_type not in allowed_mime:
         raise HTTPException(status_code=422, detail="Unsupported receipt content type")
 
-    storage_root = os.getenv("STORAGE_DIR", "storage")
-    receipt_dir = os.path.join(storage_root, "payment_receipts")
-    os.makedirs(receipt_dir, exist_ok=True)
-    destination = os.path.join(receipt_dir, f"{uuid.uuid4().hex}{extension}")
+    temp_file = tempfile.NamedTemporaryFile(prefix="payment-receipt-", suffix=extension, delete=False)
+    destination = temp_file.name
+    temp_file.close()
     max_bytes = get_settings().payment_receipt_max_mb * 1024 * 1024
     written = 0
     try:
@@ -175,16 +180,38 @@ async def upload_payment_receipt(
         raise HTTPException(status_code=422, detail="Payment receipt is empty")
 
     previous_path = order.receipt_path
-    order.receipt_path = destination
+    storage = get_storage_provider()
+    storage_key = generate_safe_object_key(f"payment_receipts/{order.institution_id}/{order.id}", receipt.filename or f"receipt{extension}")
+    try:
+        stored_path = storage.save_file(destination, storage_key, receipt.content_type or mimetypes.guess_type(storage_key)[0])
+    except Exception as exc:
+        try:
+            storage.delete(storage_key)
+        except Exception:
+            logger.exception("Failed to clean up receipt object after storage failure: %s", storage_key)
+        raise HTTPException(status_code=500, detail="Unable to store payment receipt") from exc
+    finally:
+        if os.path.exists(destination):
+            os.remove(destination)
+
+    order.receipt_path = stored_path
     order.payer_reference = (payer_reference or order.payer_reference or "").strip()[:160] or None
     order.status = PaymentStatus.UNDER_REVIEW
-    db.commit()
-    db.refresh(order)
-    if previous_path and previous_path != destination and os.path.exists(previous_path):
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
         try:
-            os.remove(previous_path)
-        except OSError:
-            pass
+            storage.delete(stored_path)
+        except Exception:
+            logger.exception("Failed to clean up receipt object after database failure: %s", stored_path)
+        raise HTTPException(status_code=500, detail="Unable to save payment receipt") from exc
+    db.refresh(order)
+    if previous_path and previous_path != stored_path:
+        try:
+            storage.delete(previous_path)
+        except Exception:
+            logger.exception("Failed to clean up replaced receipt object: %s", previous_path)
     return _order_response(order)
 
 
@@ -293,8 +320,8 @@ def reject_payment_order(
     return _order_response(order)
 
 
-@router.get("/orders/{order_id}/receipt", response_class=FileResponse)
-def view_payment_receipt(order_id: uuid.UUID, user: CurrentUser, db: Db) -> FileResponse:
+@router.get("/orders/{order_id}/receipt")
+def view_payment_receipt(order_id: uuid.UUID, user: CurrentUser, db: Db) -> Response:
     order = db.get(PaymentOrder, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Payment order not found")
@@ -304,11 +331,29 @@ def view_payment_receipt(order_id: uuid.UUID, user: CurrentUser, db: Db) -> File
     if not order.receipt_path:
         raise HTTPException(status_code=404, detail="Payment receipt not found")
 
-    receipt_path = os.path.realpath(order.receipt_path)
-    receipt_root = os.path.realpath(os.path.join(os.getenv("STORAGE_DIR", "storage"), "payment_receipts"))
-    if os.path.commonpath([receipt_path, receipt_root]) != receipt_root or not os.path.isfile(receipt_path):
-        raise HTTPException(status_code=404, detail="Payment receipt not found")
-    return FileResponse(receipt_path, filename=f"receipt-{order.id}{os.path.splitext(receipt_path)[1]}")
+    storage = get_storage_provider()
+    try:
+        local_path = storage.get_local_path(order.receipt_path)
+        filename = f"receipt-{order.id}{os.path.splitext(order.receipt_path)[1]}"
+        media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        if local_path:
+            return FileResponse(local_path, filename=filename, media_type=media_type)
+        size = storage.get_size(order.receipt_path)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Payment receipt not found") from exc
+    except Exception as exc:
+        # Do not expose bucket or storage-provider details to callers.
+        raise HTTPException(status_code=404, detail="Payment receipt not found") from exc
+    return StreamingResponse(
+        storage.open_stream(order.receipt_path),
+        media_type=media_type,
+        headers={
+            "Content-Length": str(size),
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 @router.patch("/pricing/courses/{course_id}")

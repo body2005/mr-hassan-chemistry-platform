@@ -1,20 +1,25 @@
 from __future__ import annotations
 
+import mimetypes
+import logging
+import os
+import tempfile
 import uuid
 from datetime import datetime, timezone
 UTC = timezone.utc
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status, UploadFile, File, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse
-import os
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 import shutil
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import CurrentUser, require_roles
 from app.core.database import get_db
 from app.core.rate_limit import enforce_rate_limit
+from app.core.storage import generate_safe_object_key, get_storage_provider
 from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus, Lesson, IndexingStatus
 from app.models.transcript import KnowledgeChunk, Transcript, TranscriptSegment, TranscriptionStatus
 from app.services.knowledge_pipeline import generate_grounded_answer, generate_grounded_summary
@@ -60,10 +65,12 @@ from app.schemas import (
     QuizResponse,
     UserResponse,
 )
+
 from app.services import platform_service
 from app.services.audit_service import record_audit
 from app.services.payment_service import can_access_lesson_content, student_can_use_ai_for_lesson
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 Db = Annotated[Session, Depends(get_db)]
 Manager = Annotated[
@@ -162,6 +169,78 @@ def _lesson_video_path(lesson_id: uuid.UUID) -> str:
     return os.path.join(upload_dir, matches[0])
 
 
+def _parse_byte_range(range_header: str | None, size: int) -> tuple[int, int] | None:
+    """Parse a single HTTP byte range, rejecting malformed or unsatisfiable input."""
+    if not range_header:
+        return None
+    if not range_header.startswith("bytes=") or "," in range_header:
+        raise HTTPException(status_code=416, detail="Invalid byte range")
+    start_text, separator, end_text = range_header[6:].partition("-")
+    if not separator:
+        raise HTTPException(status_code=416, detail="Invalid byte range")
+    try:
+        if not start_text:
+            suffix = int(end_text)
+            if suffix <= 0:
+                raise ValueError
+            start = max(size - suffix, 0)
+            end = size - 1
+        else:
+            start = int(start_text)
+            end = int(end_text) if end_text else size - 1
+    except ValueError as exc:
+        raise HTTPException(status_code=416, detail="Invalid byte range") from exc
+    if start < 0 or start >= size or end < start:
+        raise HTTPException(status_code=416, detail="Requested range is not satisfiable")
+    return start, min(end, size - 1)
+
+
+def _stream_stored_media(request: Request, storage_key: str, filename: str, media_type: str) -> Response:
+    """Serve local or object-storage media without exposing a storage URL."""
+    storage = get_storage_provider()
+    try:
+        local_path = storage.get_local_path(storage_key)
+        if local_path:
+            return FileResponse(
+                local_path,
+                media_type=media_type,
+                filename=filename,
+                headers={
+                    "Content-Disposition": "inline",
+                    "Accept-Ranges": "bytes",
+                    "Cache-Control": "private, no-cache, no-store",
+                    "Referrer-Policy": "strict-origin-when-cross-origin",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+        size = storage.get_size(storage_key)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Video not found") from exc
+    except Exception as exc:
+        # Storage providers intentionally avoid exposing upstream bucket errors.
+        raise HTTPException(status_code=404, detail="Video not found") from exc
+
+    byte_range = _parse_byte_range(request.headers.get("range"), size)
+    start, end = byte_range if byte_range else (0, size - 1)
+    length = end - start + 1
+    headers = {
+        "Content-Disposition": "inline",
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(length),
+        "Cache-Control": "private, no-cache, no-store",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if byte_range:
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    return StreamingResponse(
+        storage.open_stream(storage_key, start=start, length=length),
+        status_code=206 if byte_range else 200,
+        media_type=media_type,
+        headers=headers,
+    )
+
+
 @router.post("/courses/{course_id}/modules", response_model=ModuleResponse, status_code=201)
 def create_module(
     course_id: uuid.UUID, payload: ModuleCreateRequest, user: Manager, db: Db
@@ -183,7 +262,7 @@ async def upload_lesson_video(
     request: Request,
     file: UploadFile = File(...),
 ) -> dict:
-    enforce_rate_limit(request, bucket="video_upload", limit=5, window_seconds=60)
+    enforce_rate_limit(request, bucket="upload", limit=5, window_seconds=60)
     lesson, course = _lesson_course(db, lesson_id)
     if user.role != UserRole.PLATFORM_ADMIN and course.institution_id != user.institution_id:
         raise HTTPException(status_code=404, detail="Lesson not found")
@@ -199,10 +278,10 @@ async def upload_lesson_video(
     if file.content_type and not file.content_type.startswith("video/"):
         raise HTTPException(status_code=422, detail="Uploaded file is not a video")
 
-    upload_dir = _lesson_upload_dir()
-    os.makedirs(upload_dir, exist_ok=True)
     filename = f"{lesson_id}{ext}"
-    filepath = os.path.join(upload_dir, filename)
+    temp_file = tempfile.NamedTemporaryFile(prefix="lesson-video-", suffix=ext, delete=False)
+    filepath = temp_file.name
+    temp_file.close()
 
     file_size_limit = 500 * 1024 * 1024
     written = 0
@@ -221,12 +300,41 @@ async def upload_lesson_video(
             os.remove(filepath)
         raise
 
+    storage = get_storage_provider()
+    storage_key = generate_safe_object_key(f"lesson_videos/{lesson.id}", filename)
+    try:
+        stored_path = storage.save_file(filepath, storage_key, file.content_type or mimetypes.guess_type(filename)[0])
+    except Exception as exc:
+        try:
+            storage.delete(storage_key)
+        except Exception:
+            logger.exception("Failed to clean up video object after storage failure: %s", storage_key)
+        raise HTTPException(status_code=500, detail="Unable to store lesson video") from exc
+    finally:
+        if os.path.exists(filepath):
+            os.remove(filepath)
+
+    previous_asset = lesson.video_asset_key
     video_url = f"/api/v1/lessons/{lesson_id}/video"
-    lesson.video_asset_key = video_url
+    lesson.video_asset_key = stored_path
     lesson.indexing_status = IndexingStatus.NOT_INDEXED
     lesson.indexing_error = None
-    db.commit()
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        try:
+            storage.delete(stored_path)
+        except Exception:
+            logger.exception("Failed to clean up video object after database failure: %s", stored_path)
+        raise HTTPException(status_code=500, detail="Unable to save lesson video") from exc
     db.refresh(lesson)
+
+    if previous_asset and previous_asset != stored_path and not previous_asset.startswith("/api/"):
+        try:
+            storage.delete(previous_asset)
+        except Exception:
+            logger.exception("Failed to clean up replaced video object: %s", previous_asset)
 
     return {
         "id": str(lesson.id),
@@ -237,8 +345,11 @@ async def upload_lesson_video(
 
 
 @router.get("/lessons/{lesson_id}/video")
-def stream_lesson_video(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> FileResponse:
+def stream_lesson_video(lesson_id: uuid.UUID, request: Request, user: CurrentUser, db: Db) -> Response:
     lesson, _ = _require_lesson_access(db, user, lesson_id)
+    if lesson.video_asset_key and not lesson.video_asset_key.startswith("/api/"):
+        media_type = mimetypes.guess_type(lesson.video_asset_key)[0] or "video/mp4"
+        return _stream_stored_media(request, lesson.video_asset_key, f"lesson-{lesson.id}", media_type)
     return FileResponse(
         _lesson_video_path(lesson.id),
         media_type="video/mp4",
@@ -270,7 +381,7 @@ def stream_lesson_authenticated_range(
     request: Request,
     db: Db,
     token: str | None = None,
-) -> FileResponse:
+) -> Response:
     from app.core.security import decode_video_token
     if token:
         payload = decode_video_token(token)
@@ -279,6 +390,10 @@ def stream_lesson_authenticated_range(
     else:
         raise HTTPException(status_code=401, detail="Authentication required for video stream")
 
+    lesson, _ = _lesson_course(db, lesson_id)
+    if lesson.video_asset_key and not lesson.video_asset_key.startswith("/api/"):
+        media_type = mimetypes.guess_type(lesson.video_asset_key)[0] or "video/mp4"
+        return _stream_stored_media(request, lesson.video_asset_key, f"lesson-{lesson.id}", media_type)
     return FileResponse(
         _lesson_video_path(lesson_id),
         media_type="video/mp4",

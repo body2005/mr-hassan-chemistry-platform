@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.models.course import Course, Lesson
 from app.models.knowledge_center import (
     AssessmentQuestion,
+    AssessmentSource,
     KnowledgeAsset,
     KnowledgeDocument,
     KnowledgeOutlineNode,
@@ -31,7 +32,7 @@ from app.models.knowledge_center import (
     KnowledgeUnitRecord,
     SourceRole,
 )
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.services.document_parsers import clean_arabic_ocr_text
 from app.services.chemistry_normalizer import (
     chemistry_aware_tokenize,
@@ -138,7 +139,7 @@ def _conflicting_evidence(items: list[KnowledgeSearchResult]) -> list[KnowledgeS
 
 def retrieve_lesson_knowledge(
     db: Session,
-    course_id: uuid.UUID,
+    course_id: uuid.UUID | None = None,
     lesson_id: uuid.UUID | None = None,
     query: str = "",
     limit: int = 6,
@@ -146,9 +147,12 @@ def retrieve_lesson_knowledge(
     outline_node_id: uuid.UUID | None = None,
     include_visual: bool = True,
     include_prerequisite_lessons: bool = False,
+    institution_id: uuid.UUID | None = None,
+    grade_level: str | None = None,
+    user: User | None = None,
 ) -> list[KnowledgeSearchResult]:
     """
-    Hybrid retrieval query for KnowledgeUnits with strict course isolation.
+    Hybrid retrieval query for KnowledgeUnits with strict course and grade isolation.
     Uses Okapi BM25 with IDF weighting, concept boosting, and phrase matching.
     """
     stmt = (
@@ -168,7 +172,6 @@ def retrieve_lesson_knowledge(
         )
         .join(KnowledgeSource, KnowledgeUnitRecord.source_id == KnowledgeSource.id)
         .where(
-            KnowledgeUnitRecord.course_id == course_id,
             KnowledgeSource.status == "INDEXED",
             KnowledgeSource.is_current == True,
             KnowledgeUnitRecord.source_type.in_(["document", "diagram"] if include_visual else ["document"]),
@@ -176,6 +179,28 @@ def retrieve_lesson_knowledge(
             KnowledgeUnitRecord.version == KnowledgeSource.version,
         )
     )
+
+    if institution_id:
+        stmt = stmt.where(KnowledgeSource.institution_id == institution_id)
+    elif user and user.institution_id and user.role != UserRole.PLATFORM_ADMIN:
+        stmt = stmt.where(KnowledgeSource.institution_id == user.institution_id)
+
+    if user and user.role == UserRole.STUDENT:
+        stmt = stmt.where(KnowledgeSource.grade_level.isnot(None))
+        if user.grade_level:
+            stmt = stmt.where(KnowledgeSource.grade_level == user.grade_level)
+        else:
+            return []
+    elif grade_level:
+        stmt = stmt.where(KnowledgeSource.grade_level == grade_level)
+
+    if course_id:
+        stmt = stmt.where(
+            or_(
+                KnowledgeUnitRecord.course_id == course_id,
+                KnowledgeSource.course_id == course_id,
+            )
+        )
 
     if lesson_id:
         stmt = stmt.where(
@@ -449,9 +474,10 @@ def retrieve_lesson_knowledge(
 def check_grounding_and_answer(
     db: Session,
     user: User,
-    course_id: uuid.UUID,
-    message: str,
+    course_id: uuid.UUID | None = None,
+    message: str = "",
     lesson_id: uuid.UUID | None = None,
+    grade_level: str | None = None,
 ) -> tuple[str, bool, bool, list[dict[str, Any]]]:
     """
     Grounded Student Q&A logic.
@@ -461,16 +487,28 @@ def check_grounding_and_answer(
     if not clean_msg:
         return ("يرجى إدخال السؤال المطلوب.", False, False, [])
 
+    inst_id = getattr(user, "institution_id", None) if user else None
+    eff_grade = grade_level or (getattr(user, "grade_level", None) if user and getattr(user, "role", None) == UserRole.STUDENT else None)
+    perm_type = user.role.value if user and hasattr(user, "role") and hasattr(user.role, "value") else (str(user.role) if user else "anonymous")
+
+    sources_stmt = select(KnowledgeSource).where(
+        KnowledgeSource.status == "INDEXED",
+        KnowledgeSource.is_current == True,
+    )
+    if inst_id:
+        sources_stmt = sources_stmt.where(KnowledgeSource.institution_id == inst_id)
+    if course_id:
+        sources_stmt = sources_stmt.where(KnowledgeSource.course_id == course_id)
+    if eff_grade:
+        sources_stmt = sources_stmt.where(KnowledgeSource.grade_level == eff_grade)
+    elif user and getattr(user, "role", None) == UserRole.STUDENT:
+        sources_stmt = sources_stmt.where(KnowledgeSource.grade_level.isnot(None))
+
     version_token = "|".join(
         f"{source.id}:{source.version}"
-        for source in db.scalars(
-            select(KnowledgeSource)
-            .where(KnowledgeSource.course_id == course_id, KnowledgeSource.status == "INDEXED")
-            .where(KnowledgeSource.is_current == True)
-            .order_by(KnowledgeSource.id)
-        ).all()
+        for source in db.scalars(sources_stmt.order_by(KnowledgeSource.id)).all()
     )
-    if cached := get_cached(course_id, version_token, clean_msg):
+    if cached := get_cached(inst_id, eff_grade, course_id, lesson_id, perm_type, version_token, clean_msg):
         return cached
 
     # Greetings check
@@ -485,7 +523,16 @@ def check_grounding_and_answer(
         )
 
     # Retrieve matching Knowledge Units from teacher sources
-    retrieved = retrieve_lesson_knowledge(db, course_id, lesson_id, clean_msg, limit=14)
+    retrieved = retrieve_lesson_knowledge(
+        db,
+        course_id=course_id,
+        lesson_id=lesson_id,
+        query=clean_msg,
+        limit=14,
+        institution_id=inst_id,
+        grade_level=eff_grade,
+        user=user,
+    )
     conflicts = _conflicting_evidence(retrieved)
     if conflicts:
         answer = (
@@ -501,9 +548,9 @@ def check_grounding_and_answer(
     else:
         answer = build_grounded_answer(clean_msg, retrieved)
     if answer[1] and not answer[2] and len(answer[0]) > 80:
-        put_cached(course_id, version_token, clean_msg, answer)
+        put_cached(inst_id, eff_grade, course_id, lesson_id, perm_type, version_token, clean_msg, answer)
     db.add(KnowledgeQueryEvent(
-        institution_id=getattr(user, "institution_id", None) if user else None,
+        institution_id=inst_id,
         user_id=getattr(user, "id", None) if user else None,
         course_id=course_id,
         lesson_id=lesson_id,
@@ -519,27 +566,45 @@ def check_grounding_and_answer(
 
 def search_knowledge_base(
     db: Session,
-    course_id: uuid.UUID,
-    query: str,
+    course_id: uuid.UUID | None = None,
+    query: str = "",
     limit: int = 10,
     include_assessment_answers: bool = False,
     source_id: uuid.UUID | None = None,
     outline_node_id: uuid.UUID | None = None,
     include_prerequisite_lessons: bool = False,
+    institution_id: uuid.UUID | None = None,
+    grade_level: str | None = None,
+    user: User | None = None,
 ) -> dict[str, Any]:
-    """Search knowledge units, documents, assets, and assessment questions across a course."""
+    """Search knowledge units, documents, assets, and assessment questions across a course or grade."""
     units = retrieve_lesson_knowledge(
-        db, course_id, query=query, limit=limit,
-        source_id=source_id, outline_node_id=outline_node_id,
+        db,
+        course_id=course_id,
+        query=query,
+        limit=limit,
+        source_id=source_id,
+        outline_node_id=outline_node_id,
         include_prerequisite_lessons=include_prerequisite_lessons,
+        institution_id=institution_id,
+        grade_level=grade_level,
+        user=user,
     )
     
     # Search Assessment Questions
     questions_stmt = select(AssessmentQuestion).where(
-        AssessmentQuestion.course_id == course_id,
         AssessmentQuestion.question_text.icontains(query),
-    ).limit(5)
-    matched_questions = db.scalars(questions_stmt).all()
+    )
+    if course_id:
+        questions_stmt = questions_stmt.where(AssessmentQuestion.course_id == course_id)
+    if institution_id:
+        questions_stmt = (
+            questions_stmt
+            .join(AssessmentSource, AssessmentQuestion.assessment_source_id == AssessmentSource.id)
+            .join(KnowledgeSource, AssessmentSource.source_id == KnowledgeSource.id)
+            .where(KnowledgeSource.institution_id == institution_id)
+        )
+    matched_questions = db.scalars(questions_stmt.limit(5)).all()
 
     return {
         "query": query,

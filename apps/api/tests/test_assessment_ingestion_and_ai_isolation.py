@@ -84,7 +84,7 @@ def test_document_exam_materializes_questions_with_review_status(db) -> None:
         file_bytes=b"1. What is photosynthesis?\nA. Food making\nB. Breathing\n",
         source_role=SourceRole.ASSESSMENT,
         metadata={"assessment_type": "exam"},
-    )
+    ).source
 
     process_knowledge_source(db, source.id)
 
