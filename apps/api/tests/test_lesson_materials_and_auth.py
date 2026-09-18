@@ -216,7 +216,7 @@ def test_unified_source_detail_endpoint(auth_teacher_client, db):
 
 def test_lesson_material_student_access_and_download(db, tmp_path):
     """Verifies that an enrolled student can see materials in /courses and download them, but non-enrolled gets 403."""
-    from app.core.security import create_session_token, hash_password
+    from app.core.security import hash_password
 
     inst = Institution(name="Test Student Inst", slug=f"chem-inst-{uuid.uuid4().hex[:8]}")
     db.add(inst)
@@ -224,7 +224,7 @@ def test_lesson_material_student_access_and_download(db, tmp_path):
 
     teacher = User(
         institution_id=inst.id,
-        email="teacher_mat@test.com",
+        email="teacher_mat@example.com",
         username="teacher_mat",
         password_hash=hash_password("Pass123!"),
         display_name="Teacher Mat",
@@ -233,7 +233,7 @@ def test_lesson_material_student_access_and_download(db, tmp_path):
     )
     student_enrolled = User(
         institution_id=inst.id,
-        email="student_enrolled@test.com",
+        email="student_enrolled@example.com",
         username="student_enrolled",
         password_hash=hash_password("Pass123!"),
         display_name="Enrolled Student",
@@ -242,7 +242,7 @@ def test_lesson_material_student_access_and_download(db, tmp_path):
     )
     student_other = User(
         institution_id=inst.id,
-        email="student_other@test.com",
+        email="student_other@example.com",
         username="student_other",
         password_hash=hash_password("Pass123!"),
         display_name="Other Student",
@@ -307,11 +307,16 @@ def test_lesson_material_student_access_and_download(db, tmp_path):
     client = TestClient(app, raise_server_exceptions=False)
 
     # 1. Test GET /courses for enrolled student -> materials must be present
-    token_enrolled = create_session_token(student_enrolled)
-    res_courses = client.get(
-        "/api/v1/courses",
-        headers={"Authorization": f"Bearer {token_enrolled}"},
+    enrolled_login = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": student_enrolled.email,
+            "password": "Pass123!",
+            "institution_slug": inst.slug,
+        },
     )
+    assert enrolled_login.status_code == 200, enrolled_login.text
+    res_courses = client.get("/api/v1/courses")
     assert res_courses.status_code == 200
     courses_data = res_courses.json()["items"]
     target_course = next(c for c in courses_data if c["id"] == str(course.id))
@@ -320,19 +325,22 @@ def test_lesson_material_student_access_and_download(db, tmp_path):
     assert target_lesson["materials"][0]["filename"] == "actual_lesson_note.pdf"
 
     # 2. Test download by enrolled student -> 200 OK with binary content
-    res_dl_ok = client.get(
-        f"/api/v1/knowledge-center/sources/{src.id}/download",
-        headers={"Authorization": f"Bearer {token_enrolled}"},
-    )
+    res_dl_ok = client.get(f"/api/v1/knowledge-center/sources/{src.id}/download")
     assert res_dl_ok.status_code == 200
     assert b"%PDF-1.4 chemistry real notes content" in res_dl_ok.content
 
     # 3. Test download by non-enrolled student -> 403 Forbidden
-    token_other = create_session_token(student_other)
-    res_dl_forbidden = client.get(
-        f"/api/v1/knowledge-center/sources/{src.id}/download",
-        headers={"Authorization": f"Bearer {token_other}"},
+    client.cookies.clear()
+    other_login = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": student_other.email,
+            "password": "Pass123!",
+            "institution_slug": inst.slug,
+        },
     )
+    assert other_login.status_code == 200, other_login.text
+    res_dl_forbidden = client.get(f"/api/v1/knowledge-center/sources/{src.id}/download")
     assert res_dl_forbidden.status_code == 403
 
 

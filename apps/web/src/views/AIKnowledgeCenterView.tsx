@@ -127,7 +127,9 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
     });
   }, []);
 
-  const uploading = activeUploads.length > 0;
+  // Uploading and indexing are separate lifecycles.  A queued/processing
+  // source must never prevent the teacher from starting another batch.
+  const uploading = activeUploads.some((task) => task.status === "uploading");
   const currentKnowledgeTask = activeUploads[0];
   const uploadProgress = currentKnowledgeTask
     ? currentKnowledgeTask.status === "processing"
@@ -597,27 +599,24 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
         />
         <button
           type="button"
-          disabled={uploading}
+          disabled={uploading || !selectedGrade}
+          title={!selectedGrade ? "اختر السنة الدراسية أولاً" : "اختر كتابًا أو عدة كتب"}
           onClick={() => {
-            if (!selectedGrade) {
-              toast({ message: "يرجى تحديد الصف الدراسي أولاً قبل رفع الملفات.", tone: "warning" });
-              return;
-            }
             document.getElementById("fileUploadInput")?.click();
           }}
           style={{
             padding: "12px 32px",
             borderRadius: "10px",
-            background: uploading ? "#155e42" : "#2563eb",
+            background: uploading ? "#155e42" : !selectedGrade ? "#94a3b8" : "#2563eb",
             color: "#ffffff",
             border: "none",
             fontSize: "15px",
             fontWeight: "700",
-            cursor: uploading ? "not-allowed" : "pointer",
+            cursor: uploading || !selectedGrade ? "not-allowed" : "pointer",
             display: "inline-flex",
             alignItems: "center",
             gap: "10px",
-            boxShadow: "0 4px 14px rgba(37, 99, 235, 0.35)",
+            boxShadow: selectedGrade && !uploading ? "0 4px 14px rgba(37, 99, 235, 0.35)" : "none",
           }}
         >
           <UploadCloud style={{ width: "20px", height: "20px", color: "#ffffff" }} />
@@ -633,7 +632,9 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                     return `جاري رفع الملفات: MB ${loadedMB} من MB ${totalMB} (${uploadProgress}%)`;
                   })()
                 : "جاري حفظ وتجهيز الملفات..."
-              : "اختر كتابًا أو عدة ملفات لرفعها وفهرستها"}
+              : !selectedGrade
+                ? "اختر السنة الدراسية أولاً"
+                : "اختر كتابًا أو عدة ملفات لرفعها وفهرستها"}
           </span>
         </button>
 
@@ -871,7 +872,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                           onFocus={(e) => { e.currentTarget.style.outline = "2px solid #2563eb"; }}
                           onBlur={(e) => { e.currentTarget.style.outline = "none"; }}
                         >
-                          <Eye style={{ width: "22px", height: "22px", strokeWidth: 2.25 }} />
+                          <Eye style={{ width: "24px", height: "24px", strokeWidth: 2.25 }} />
                         </button>
                         <button
                           type="button"
@@ -898,7 +899,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                           onFocus={(e) => { e.currentTarget.style.outline = "2px solid #059669"; }}
                           onBlur={(e) => { e.currentTarget.style.outline = "none"; }}
                         >
-                          <Download style={{ width: "22px", height: "22px", strokeWidth: 2.25 }} />
+                          <Download style={{ width: "24px", height: "24px", strokeWidth: 2.25 }} />
                         </button>
                         <button
                           type="button"
@@ -925,7 +926,7 @@ export const AIKnowledgeCenterView: React.FC<AIKnowledgeCenterViewProps> = () =>
                           onFocus={(e) => { e.currentTarget.style.outline = "2px solid #dc2626"; }}
                           onBlur={(e) => { e.currentTarget.style.outline = "none"; }}
                         >
-                          <Trash2 style={{ width: "22px", height: "22px", strokeWidth: 2.25 }} />
+                          <Trash2 style={{ width: "24px", height: "24px", strokeWidth: 2.25 }} />
                         </button>
                       </div>
                     </td>

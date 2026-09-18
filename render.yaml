@@ -7,7 +7,7 @@ services:
     runtime: docker
     dockerfilePath: infra/Dockerfile.api
     dockerContext: apps/api
-    preDeployCommand: cd apps/api && alembic upgrade head && python scripts/seed_teacher.py
+    preDeployCommand: alembic upgrade head && python scripts/seed_teacher.py
     dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
     envVars:
       - key: APP_ENV

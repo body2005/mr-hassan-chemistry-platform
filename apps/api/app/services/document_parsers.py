@@ -555,6 +555,15 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
                         if p_idx not in parsed_doc.ocr_pages:
                             parsed_doc.ocr_pages.append(p_idx)
 
+                # Some legacy Egyptian Arabic PDFs expose a valid Unicode text
+                # layer in visual (right-to-left display) order.  It is not
+                # mojibake, so OCR is neither necessary nor desirable, but it
+                # must be restored to logical order before question assembly.
+                # The fixer leaves normal Arabic and Latin chemical formulas
+                # untouched, and reverses only when it finds concrete visual-
+                # order Arabic signals.
+                page_text = fix_reversed_arabic_text(page_text)
+
                 parsed_page.raw_text = page_text
 
                 # 1. Extract tables with strict structural & linguistic validation

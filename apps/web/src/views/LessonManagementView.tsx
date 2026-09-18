@@ -560,8 +560,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "24px", flexWrap: "wrap", gap: "16px" }}>
         <div>
-          <h1 style={{ margin: "0 0 4px", fontSize: "24px", color: "var(--text-main, #0f172a)" }}>
-            إدارة الدروس وتوقعات صعوبة المنهج التفاعلية
+          <h1 style={{ margin: 0, fontSize: "24px", color: "var(--text-main, #0f172a)" }}>
+            إدارة الدروس
           </h1>
         </div>
 
@@ -1354,7 +1354,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                     </p>
                   </div>
 
-                  {/* Actions & AI Status Badge */}
+                  {/* Lesson actions */}
                   <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                     {isDeleteMode && (
                       <button
@@ -1381,7 +1381,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                       </button>
                     )}
 
-                    {isAnalyzed ? (
+                    {isAnalyzed && (
                     <span
                       style={{
                         fontSize: "11px",
@@ -1398,24 +1398,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                     >
                       <Sparkles size={13} />
                       <span>{lesson.expectedStruggleRate > 40 ? "درس عالي الصعوبة" : "صعوبة معتدلة"}</span>
-                    </span>
-                  ) : (
-                    <span
-                      style={{
-                        fontSize: "11px",
-                        fontWeight: 700,
-                        padding: "4px 10px",
-                        borderRadius: "8px",
-                        background: "var(--bg-accent-warm)",
-                        color: "#b45309",
-                        border: "1px solid #fde68a",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "5px",
-                      }}
-                    >
-                      <Clock size={13} />
-                      <span>في انتظار اكتمال المشاهدات ({viewsCount} / {minViewsThreshold})</span>
                     </span>
                   )}
                   </div>

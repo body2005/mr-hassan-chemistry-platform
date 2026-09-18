@@ -7,7 +7,7 @@ from app.models.institution import Institution
 from app.models.user import User, UserRole
 from app.models.course import Course, Enrollment
 
-def seed_load_users(count: int = 100) -> list[str]:
+def seed_load_users(count: int = 10) -> list[str]:
     with SessionLocal() as db:
         institution = db.scalar(select(Institution).where(Institution.slug == "demo"))
         if not institution:
@@ -65,4 +65,4 @@ def seed_load_users(count: int = 100) -> list[str]:
         return tokens
 
 if __name__ == "__main__":
-    seed_load_users(100)
+    seed_load_users(10)

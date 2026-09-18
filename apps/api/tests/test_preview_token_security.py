@@ -3,7 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.database import SessionLocal
-from app.core.security import create_preview_token, create_session_token
+from app.core.security import create_preview_token, hash_password
 from app.main import app
 from app.models.course import Course
 from app.models.institution import Institution
@@ -21,13 +21,13 @@ def setup_preview_test_env():
             db.commit()
             db.refresh(inst)
 
-        teacher = db.query(User).filter(User.email == "teacher_preview@test.com").first()
+        teacher = db.query(User).filter(User.email == "teacher_preview@example.com").first()
         if not teacher:
             teacher = User(
                 institution_id=inst.id,
-                email="teacher_preview@test.com",
+                email="teacher_preview@example.com",
                 username="teacher_preview",
-                password_hash="fakehash",
+                password_hash=hash_password("preview-password"),
                 display_name="Teacher Preview",
                 role=UserRole.TEACHER,
             )
@@ -141,12 +141,22 @@ def test_preview_token_cannot_access_general_endpoints(setup_preview_test_env):
 def test_session_token_still_works(setup_preview_test_env):
     data = setup_preview_test_env
     teacher = data["teacher"]
-    session_token = create_session_token(teacher)
 
     client = TestClient(app)
-    resp = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {session_token}"})
+    login = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": teacher.email,
+            "password": "preview-password",
+            "institution_slug": data["institution"].slug,
+        },
+    )
+    assert login.status_code == 200, login.text
+    resp = client.get("/api/v1/auth/me")
     assert resp.status_code == 200
     assert resp.json()["email"] == teacher.email
+
+
 def test_preview_token_positive_flow_and_headers(setup_preview_test_env, tmp_path):
     data = setup_preview_test_env
     teacher = data["teacher"]

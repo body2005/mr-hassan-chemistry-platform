@@ -1764,7 +1764,13 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
                       type="button"
                       onClick={handleResetNewQuiz}
                       className="btn-secondary"
-                      style={{ fontSize: "12px", gap: "5px", color: "#64748b" }}
+                      style={{
+                        fontSize: "12px",
+                        gap: "5px",
+                        color: "#ffffff",
+                        background: "#dc2626",
+                        borderColor: "#dc2626",
+                      }}
                       title="مسح المسودة الحالية والبدء باختبار جديد من الصفر"
                     >
                       <RotateCcw size={13} />
