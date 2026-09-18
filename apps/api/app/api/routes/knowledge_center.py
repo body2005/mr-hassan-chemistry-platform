@@ -23,7 +23,6 @@ from typing import Annotated, Any
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
 from starlette.concurrency import run_in_threadpool
 
-_PDF_RENDER_LOCK = threading.Lock()
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -1421,24 +1420,6 @@ def view_knowledge_source_file(
         filename=source.filename,
         as_attachment=False,
     )
-
-
-def _pre_cache_adjacent_pages(storage_path: str, cache_dir: str, start_page: int, end_page: int, scale: float = 1.3) -> None:
-    try:
-        import pypdfium2 as pdfium
-        scale_key = int(round(scale * 100))
-        with _PDF_RENDER_LOCK:
-            pdf = pdfium.PdfDocument(storage_path)
-            total = len(pdf)
-            for p in range(start_page, min(end_page + 1, total + 1)):
-                target = os.path.join(cache_dir, f"page_{p}_{scale_key}.jpg")
-                if not os.path.exists(target):
-                    page = pdf[p - 1]
-                    pil_img = page.render(scale=scale).to_pil()
-                    pil_img.save(target, format="JPEG", quality=85, optimize=True)
-            pdf.close()
-    except Exception:
-        pass
 
 
 def _stream_private_object(storage: Any, storage_key: str, media_type: str) -> Response:

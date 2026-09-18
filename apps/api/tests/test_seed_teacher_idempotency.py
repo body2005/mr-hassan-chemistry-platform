@@ -53,3 +53,28 @@ def test_seed_reconciles_email_by_username_without_resetting_password(db):
     assert not verify_password(
         "deployment-secret-that-must-not-replace-the-login", accounts[0].password_hash
     )
+
+
+def test_demo_seed_creates_ten_fixed_student_identities(db, monkeypatch):
+    seed_teacher = _seed_module()
+    monkeypatch.setenv("ENABLE_DEMO_ACCOUNTS", "true")
+    monkeypatch.setenv("DEMO_TEACHER_PASSWORD", "TeacherDemo!2026")
+    monkeypatch.setenv("DEMO_STUDENT_PASSWORD", "StudentDemo!2026")
+    monkeypatch.setenv("DEMO_INSTITUTION_SLUG", "demo")
+
+    seed_teacher.seed()
+    institution = db.query(Institution).filter(Institution.slug == "demo").one()
+    students = (
+        db.query(User)
+        .filter(User.institution_id == institution.id, User.role == UserRole.STUDENT)
+        .order_by(User.email)
+        .all()
+    )
+    assert [student.email for student in students] == [
+        f"student{number:02d}@demo.com" for number in range(1, 11)
+    ]
+    assert all(verify_password("StudentDemo!2026", student.password_hash) for student in students)
+
+    # A normal deployment rerun is idempotent and does not rotate credentials.
+    seed_teacher.seed()
+    assert db.query(User).filter(User.institution_id == institution.id, User.role == UserRole.STUDENT).count() == 10

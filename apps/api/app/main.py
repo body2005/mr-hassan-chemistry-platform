@@ -88,6 +88,12 @@ def classify_rate_limit_category(method: str, path: str) -> str:
         return "auth"
     if normalized_path.startswith(f"{api_prefix}/ai"):
         return "ai"
+    if (
+        "/preview-page/" in normalized_path
+        or normalized_path.endswith("/preview-file")
+        or normalized_path.endswith("/preview-token")
+    ):
+        return "preview"
     if normalized_method == "POST" and (
         normalized_path in {
             f"{api_prefix}/knowledge-center/sources/upload",
@@ -101,6 +107,10 @@ def classify_rate_limit_category(method: str, path: str) -> str:
         "extract-from-file" in normalized_path or "/exam" in normalized_path
     ):
         return "quiz_extraction"
+    if normalized_method in {"PUT", "PATCH", "DELETE"} or normalized_path.endswith(
+        ("/reindex", "/stop-indexing")
+    ):
+        return "mutation"
     if normalized_method in {"GET", "HEAD"}:
         return "read"
     return "default"
@@ -130,7 +140,7 @@ async def security_middleware(request, call_next):
                     },
                     "request_id": request_id,
                 },
-                headers=exc.headers,
+                headers=exc.headers or ({"Retry-After": "1"} if exc.status_code == 503 else None),
             )
             return res
     if unsafe_method and origin and not is_origin_allowed(origin):

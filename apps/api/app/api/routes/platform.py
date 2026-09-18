@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import logging
 import os
 import tempfile
 import uuid
@@ -12,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status, UploadFi
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 import shutil
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import CurrentUser, require_roles
@@ -63,10 +65,12 @@ from app.schemas import (
     QuizResponse,
     UserResponse,
 )
+
 from app.services import platform_service
 from app.services.audit_service import record_audit
 from app.services.payment_service import can_access_lesson_content, student_can_use_ai_for_lesson
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 Db = Annotated[Session, Depends(get_db)]
 Manager = Annotated[
@@ -300,6 +304,12 @@ async def upload_lesson_video(
     storage_key = generate_safe_object_key(f"lesson_videos/{lesson.id}", filename)
     try:
         stored_path = storage.save_file(filepath, storage_key, file.content_type or mimetypes.guess_type(filename)[0])
+    except Exception as exc:
+        try:
+            storage.delete(storage_key)
+        except Exception:
+            logger.exception("Failed to clean up video object after storage failure: %s", storage_key)
+        raise HTTPException(status_code=500, detail="Unable to store lesson video") from exc
     finally:
         if os.path.exists(filepath):
             os.remove(filepath)
@@ -309,15 +319,22 @@ async def upload_lesson_video(
     lesson.video_asset_key = stored_path
     lesson.indexing_status = IndexingStatus.NOT_INDEXED
     lesson.indexing_error = None
-    db.commit()
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        try:
+            storage.delete(stored_path)
+        except Exception:
+            logger.exception("Failed to clean up video object after database failure: %s", stored_path)
+        raise HTTPException(status_code=500, detail="Unable to save lesson video") from exc
     db.refresh(lesson)
 
     if previous_asset and previous_asset != stored_path and not previous_asset.startswith("/api/"):
         try:
             storage.delete(previous_asset)
         except Exception:
-            # The successful new asset must not be rolled back because cleanup failed.
-            pass
+            logger.exception("Failed to clean up replaced video object: %s", previous_asset)
 
     return {
         "id": str(lesson.id),

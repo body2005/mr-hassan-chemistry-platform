@@ -14,14 +14,17 @@ from app.main import classify_rate_limit_category
     ("method", "path", "expected"),
     [
         ("GET", "/api/v1/knowledge-center/sources", "read"),
-        ("GET", "/api/v1/knowledge-center/sources/source-id/preview-page/1", "read"),
+        ("GET", "/api/v1/knowledge-center/sources/source-id/preview-page/1", "preview"),
+        ("POST", "/api/v1/knowledge-center/sources/source-id/preview-token", "preview"),
         ("POST", "/api/v1/knowledge-center/sources/upload", "upload"),
         ("POST", "/api/v1/knowledge-center/sources/upload-batch", "upload"),
         ("POST", "/api/v1/lessons/lesson-id/video", "upload"),
         ("POST", "/api/v1/orders/order-id/receipt", "upload"),
         ("POST", "/api/v1/ai/chat", "ai"),
         ("POST", "/api/v1/quiz/extract-from-file", "quiz_extraction"),
-        ("PATCH", "/api/v1/courses/course-id", "default"),
+        ("POST", "/api/v1/knowledge-center/sources/source-id/reindex", "mutation"),
+        ("DELETE", "/api/v1/knowledge-center/sources/source-id", "mutation"),
+        ("PATCH", "/api/v1/courses/course-id", "mutation"),
     ],
 )
 def test_rate_limit_request_classification(method: str, path: str, expected: str) -> None:
@@ -54,3 +57,4 @@ def test_required_redis_fails_closed_without_memory_fallback(monkeypatch) -> Non
 
     assert exc_info.value.status_code == 503
     assert "Rate limiting" in str(exc_info.value.detail)
+    assert exc_info.value.headers["Retry-After"] == "1"

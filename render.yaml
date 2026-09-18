@@ -10,18 +10,23 @@ services:
 
   - type: web
     name: chemistry-platform-api
+    branch: fix/unified-p1
     runtime: docker
     dockerfilePath: infra/Dockerfile.api
     dockerContext: apps/api
     preDeployCommand: alembic upgrade head && python scripts/seed_teacher.py
-    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
+    # Do not enable Uvicorn's wildcard forwarded-header trust. The app uses
+    # direct peer IPs until Render's documented proxy CIDRs are configured.
+    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: APP_ENV
         value: production
       - key: SECRET_KEY
         generateValue: true
       - key: TRUSTED_PROXIES
-        value: "*"
+        # Keep proxy trust explicit. Do not trust a client-supplied XFF chain
+        # until the Render load-balancer CIDR is configured in the dashboard.
+        value: "127.0.0.1,::1"
       - key: DATABASE_URL
         fromDatabase:
           name: chemistry-platform-db
@@ -36,29 +41,32 @@ services:
       - key: INITIAL_TEACHER_EMAIL
         value: teacher@hassanshaban.com
       - key: INITIAL_TEACHER_PASSWORD
-        sync: false
-      # One-time recovery switch. Set to true in the Render dashboard, deploy,
-      # verify login, then set it back to false and deploy again.
+        # Test-only fixed credential requested for the initial teacher account.
+        value: admin
+      # Force reconciliation of the existing seeded account with the test
+      # credential on the next deployment.
       - key: RESET_INITIAL_TEACHER_PASSWORD
-        sync: false
+        value: "true"
       - key: INITIAL_TEACHER_NAME
         value: "مستر حسن شعبان"
       - key: ENABLE_DEMO_ACCOUNTS
-        sync: false
+        value: "true"
       - key: DEMO_INSTITUTION_SLUG
         value: demo
       - key: DEMO_TEACHER_EMAIL
         value: teacher@demo.com
       - key: DEMO_TEACHER_PASSWORD
-        sync: false
-      - key: DEMO_STUDENT_EMAIL
-        value: student@demo.com
+        # Test-only fixed credential for teacher@demo.com.
+        value: admin
+      # Fixed test accounts: student01@demo.com through student10@demo.com.
+      # Their common password is supplied only through the secret below.
       - key: DEMO_STUDENT_PASSWORD
-        sync: false
-      # Optional manual reset flag. Enabled demo accounts are also reconciled
-      # against the configured secrets on every deploy to prevent stale hashes.
+        # Test-only fixed credential for student01 through student10.
+        value: admin
+      # Optional manual reset flag. Without it, rerunning the seed does not
+      # rotate existing demo passwords.
       - key: RESET_DEMO_PASSWORDS
-        sync: false
+        value: "true"
       - key: DB_POOL_SIZE
         value: "5"
       - key: DB_MAX_OVERFLOW
@@ -122,6 +130,7 @@ services:
 
   - type: worker
     name: chemistry-platform-worker
+    branch: fix/unified-p1
     runtime: docker
     dockerfilePath: infra/Dockerfile.api
     dockerContext: apps/api

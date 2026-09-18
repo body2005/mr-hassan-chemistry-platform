@@ -54,13 +54,13 @@ def test_resolve_client_ip_supports_trusted_proxy_cidr(monkeypatch):
     assert resolve_client_ip(request) == "198.51.100.5"
 
 
-def test_resolve_client_ip_uses_explicit_wildcard_mode(monkeypatch):
+def test_resolve_client_ip_rejects_unsafe_wildcard_mode(monkeypatch):
     monkeypatch.setattr(get_settings(), "trusted_proxies", "*")
     request = MagicMock(spec=Request)
     request.client = MagicMock(host="10.1.2.3")
     request.headers = {"X-Forwarded-For": "198.51.100.5, 10.2.3.4"}
 
-    assert resolve_client_ip(request) == "198.51.100.5"
+    assert resolve_client_ip(request) == "10.1.2.3"
 
 
 def test_resolve_rate_limit_key_guest():

@@ -7,6 +7,7 @@ UTC = timezone.utc
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import CurrentUser
@@ -138,20 +139,22 @@ def register(
     enforce_rate_limit(request, bucket="auth", limit=10, window_seconds=60)
     try:
         user = auth_service.register_student(db, payload)
+        record_audit(
+            db,
+            request,
+            action="register",
+            resource_type="user",
+            actor=user,
+            resource_id=str(user.id),
+        )
+        result = _auth_response(user, uuid.uuid4(), db, response, request)
+        db.commit()
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-
-    record_audit(
-        db,
-        request,
-        action="register",
-        resource_type="user",
-        actor=user,
-        resource_id=str(user.id),
-    )
-    db.commit()
-    result = _auth_response(user, uuid.uuid4(), db, response, request)
-    db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Unable to complete registration") from exc
     return result
 
 

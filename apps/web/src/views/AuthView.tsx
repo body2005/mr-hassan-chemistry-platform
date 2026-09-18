@@ -8,7 +8,6 @@ import {
   EyeOff,
   GraduationCap,
   Moon,
-  ShieldCheck,
   Sparkles,
   Sun,
   UserPlus,
@@ -74,7 +73,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
   const [regGovernorate, setRegGovernorate] = useState("");
   const [regSchoolName, setRegSchoolName] = useState("");
   const [regGender, setRegGender] = useState<"" | "MALE" | "FEMALE">("");
-  const [regReligion, setRegReligion] = useState<"" | "MUSLIM" | "CHRISTIAN" | "OTHER" | "PREFER_NOT_TO_SAY">("");
+  const [regReligion, setRegReligion] = useState<"" | "MUSLIM" | "CHRISTIAN">("");
 
   // Handle Strict Validated Sign In via authService
   async function handleSignIn(e: React.FormEvent) {
@@ -299,7 +298,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
             transition: "transform 0.6s cubic-bezier(0.4, 0, 0.2, 1)",
           }}
         >
-          <div style={{ maxWidth: "440px", width: "100%", margin: "auto 0" }}>
+          <div style={{ maxWidth: "540px", width: "100%", margin: "auto 0" }}>
             {/* Tab Switcher Pill (Moved down into the form header area) */}
             <div
               style={{
@@ -797,7 +796,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                   </div>
                   <div>
                     <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>{lang === "ar" ? "الديانة:" : "Religion:"}</label>
-                    <select required value={regReligion} onChange={(e) => setRegReligion(e.target.value as typeof regReligion)} style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", background: "var(--bg-surface-secondary)", color: "var(--text-main)" }}><option value="" disabled>{lang === "ar" ? "اختر الديانة" : "Select religion"}</option><option value="MUSLIM">{lang === "ar" ? "مسلم" : "Muslim"}</option><option value="CHRISTIAN">{lang === "ar" ? "مسيحي" : "Christian"}</option><option value="OTHER">{lang === "ar" ? "أخرى" : "Other"}</option><option value="PREFER_NOT_TO_SAY">{lang === "ar" ? "أفضل عدم الإفصاح" : "Prefer not to say"}</option></select>
+                    <select required value={regReligion} onChange={(e) => setRegReligion(e.target.value as typeof regReligion)} style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", background: "var(--bg-surface-secondary)", color: "var(--text-main)" }}><option value="" disabled>{lang === "ar" ? "اختر الديانة" : "Select religion"}</option><option value="MUSLIM">{lang === "ar" ? "مسلم" : "Muslim"}</option><option value="CHRISTIAN">{lang === "ar" ? "مسيحي" : "Christian"}</option></select>
                   </div>
                 </div>
 
@@ -936,13 +935,6 @@ export const AuthView: React.FC<AuthViewProps> = ({
             </div>
           </div>
 
-          {/* Bottom Security Footer */}
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "11.5px", opacity: 0.75, zIndex: 2 }}>
-            <ShieldCheck size={16} />
-            <span>
-              {lang === "ar" ? "نظام آمن ومشفر ومعتمد رسمياً من وزارة التربية والتعليم" : "Secure, encrypted & officially accredited platform"}
-            </span>
-          </div>
         </div>
       </div>
     </div>

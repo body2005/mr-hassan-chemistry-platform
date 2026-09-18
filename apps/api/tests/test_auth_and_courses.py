@@ -36,6 +36,13 @@ def register(client: TestClient, email: str, institution_slug: str = "demo"):
     return response
 
 
+def seed_institution(db, slug: str) -> Institution:
+    institution = Institution(name=f"Institution {slug}", slug=slug)
+    db.add(institution)
+    db.commit()
+    return institution
+
+
 def remember_csrf(client: TestClient, response):
     """Model browser behavior: echo the readable CSRF cookie on mutations."""
     if response.is_success:
@@ -71,7 +78,8 @@ def seed_teacher_and_course(db, institution_slug: str = "academy-a") -> tuple[Us
     return teacher, course
 
 
-def test_register_login_me_and_logout() -> None:
+def test_register_login_me_and_logout(db) -> None:
+    seed_institution(db, "demo")
     client = TestClient(app)
 
     response = register(client, "student@example.com")
@@ -89,6 +97,7 @@ def test_register_login_me_and_logout() -> None:
 
 
 def test_password_is_hashed_and_duplicate_registration_is_rejected(db) -> None:
+    seed_institution(db, "demo")
     client = TestClient(app)
     assert register(client, "student@example.com").status_code == 201
     assert register(client, "student@example.com").status_code == 409
@@ -136,6 +145,7 @@ def test_teacher_can_create_and_publish_course_but_student_cannot() -> None:
 
 def test_course_isolation_between_institutions(db) -> None:
     _, course = seed_teacher_and_course(db, "academy-a")
+    seed_institution(db, "academy-b")
     client_a = TestClient(app)
     client_b = TestClient(app)
     assert register(client_a, "a@example.com", "academy-a").status_code == 201
@@ -300,6 +310,7 @@ def test_assignment_versions_are_preserved_and_grading_is_server_side(db) -> Non
 
 
 def test_ai_provider_failure_is_recorded_and_never_silently_falls_back(db) -> None:
+    seed_institution(db, "academy-ai")
     client = TestClient(app)
     assert register(client, "ai-student@example.com", "academy-ai").status_code == 201
     response = client.post(

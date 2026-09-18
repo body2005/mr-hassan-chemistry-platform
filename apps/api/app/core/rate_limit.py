@@ -91,13 +91,9 @@ def resolve_client_ip(request: Request) -> str:
     direct_ip = request.client.host if request.client else "127.0.0.1"
     trusted_raw = getattr(settings, "trusted_proxies", "127.0.0.1,::1")
     if trusted_raw.strip() == "*":
-        # This explicit deployment mode is for platforms such as Render where
-        # the app is not directly reachable and the platform proxy owns XFF.
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            hops = [ip.strip() for ip in forwarded.split(",") if ip.strip()]
-            if hops:
-                return hops[0]
+        # Never trust an arbitrary client-controlled XFF chain. Deployments
+        # must configure the actual proxy addresses or CIDRs explicitly.
+        logger.error("TRUSTED_PROXIES='*' is unsafe; ignoring forwarded headers")
         return direct_ip
 
     trusted_exact: set[str] = set()
@@ -153,7 +149,7 @@ def _get_category_defaults(category: str) -> tuple[int, int]:
 
     if "login" in cat_lower or "auth" in cat_lower:
         return settings.rate_limit_login, window
-    if "read" in cat_lower:
+    if "read" in cat_lower or "preview" in cat_lower:
         return settings.rate_limit_read, window
     if "ai" in cat_lower:
         return settings.rate_limit_ai, window
@@ -233,6 +229,7 @@ def enforce_rate_limit(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Rate limiting is temporarily unavailable.",
+            headers={"Retry-After": "1"},
         )
 
     # Per-process fallback is deliberately restricted to development/testing.
@@ -253,4 +250,6 @@ def reset_rate_limits() -> None:
                 if cursor == 0:
                     break
         except Exception:
-            pass
+            # This is a maintenance-only helper used by tests and trusted
+            # operators. Avoid leaking a Redis URL while preserving evidence.
+            logger.exception("Unable to clear Redis rate-limit keys")

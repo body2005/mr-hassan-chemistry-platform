@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import logging
 import os
 import tempfile
 import uuid
@@ -11,6 +12,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import CurrentUser, require_roles
@@ -29,6 +31,7 @@ from app.models.user import User, UserRole
 from app.services import payment_service
 
 router = APIRouter(prefix="/payments")
+logger = logging.getLogger(__name__)
 Db = Annotated[Session, Depends(get_db)]
 Student = Annotated[User, Depends(require_roles(UserRole.STUDENT))]
 Reviewer = Annotated[
@@ -181,6 +184,12 @@ async def upload_payment_receipt(
     storage_key = generate_safe_object_key(f"payment_receipts/{order.institution_id}/{order.id}", receipt.filename or f"receipt{extension}")
     try:
         stored_path = storage.save_file(destination, storage_key, receipt.content_type or mimetypes.guess_type(storage_key)[0])
+    except Exception as exc:
+        try:
+            storage.delete(storage_key)
+        except Exception:
+            logger.exception("Failed to clean up receipt object after storage failure: %s", storage_key)
+        raise HTTPException(status_code=500, detail="Unable to store payment receipt") from exc
     finally:
         if os.path.exists(destination):
             os.remove(destination)
@@ -188,14 +197,21 @@ async def upload_payment_receipt(
     order.receipt_path = stored_path
     order.payer_reference = (payer_reference or order.payer_reference or "").strip()[:160] or None
     order.status = PaymentStatus.UNDER_REVIEW
-    db.commit()
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        try:
+            storage.delete(stored_path)
+        except Exception:
+            logger.exception("Failed to clean up receipt object after database failure: %s", stored_path)
+        raise HTTPException(status_code=500, detail="Unable to save payment receipt") from exc
     db.refresh(order)
     if previous_path and previous_path != stored_path:
         try:
             storage.delete(previous_path)
         except Exception:
-            # A successful replacement remains valid even if stale-object cleanup fails.
-            pass
+            logger.exception("Failed to clean up replaced receipt object: %s", previous_path)
     return _order_response(order)
 
 

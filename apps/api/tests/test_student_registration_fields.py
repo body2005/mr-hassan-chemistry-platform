@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.models.institution import Institution
 from app.models.user import Gender, Religion, User
 
 
@@ -25,7 +26,13 @@ def payload(**changes: object) -> dict[str, object]:
     return data
 
 
+def _seed_institution(db, slug: str) -> None:
+    db.add(Institution(name=f"Institution {slug}", slug=slug))
+    db.commit()
+
+
 def test_registration_persists_all_student_fields_and_me_returns_private_data(db) -> None:
+    _seed_institution(db, "registration-test")
     client = TestClient(app)
     response = client.post("/api/v1/auth/register", json=payload())
     assert response.status_code == 201, response.text
@@ -60,7 +67,9 @@ def test_registration_rejects_unknown_and_invalid_sensitive_values() -> None:
     assert client.post("/api/v1/auth/register", json=payload(email="extra@example.com", ignored_by_server="no")).status_code == 422
 
 
-def test_duplicate_national_id_is_conflict_only_inside_same_institution() -> None:
+def test_duplicate_national_id_is_conflict_only_inside_same_institution(db) -> None:
+    _seed_institution(db, "registration-test")
+    _seed_institution(db, "another-registration-test")
     client = TestClient(app)
     assert client.post("/api/v1/auth/register", json=payload()).status_code == 201
     duplicate = client.post("/api/v1/auth/register", json=payload(email="duplicate@example.com"))
@@ -72,3 +81,11 @@ def test_duplicate_national_id_is_conflict_only_inside_same_institution() -> Non
         json=payload(email="other@example.com", institution_slug="another-registration-test"),
     )
     assert other_institution.status_code == 201
+
+
+def test_registration_does_not_create_an_unknown_institution(db) -> None:
+    client = TestClient(app)
+    response = client.post("/api/v1/auth/register", json=payload(institution_slug="not-provisioned"))
+
+    assert response.status_code == 409
+    assert db.query(Institution).filter(Institution.slug == "not-provisioned").one_or_none() is None

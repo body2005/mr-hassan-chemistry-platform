@@ -4,11 +4,14 @@ from fastapi.testclient import TestClient
 
 from app.core.security import create_session_token
 from app.main import app
+from app.models.institution import Institution
 from app.models.platform import RefreshSession
 from app.models.user import User
 
 
-def _register(client: TestClient, email: str = "session.student@example.com") -> None:
+def _register(client: TestClient, db, email: str = "session.student@example.com") -> None:
+    db.add(Institution(name="Session Security", slug="session-security"))
+    db.commit()
     response = client.post(
         "/api/v1/auth/register",
         json={
@@ -40,7 +43,7 @@ def _csrf_headers(client: TestClient) -> dict[str, str]:
 
 def test_auth_is_cookie_only_and_refresh_tokens_are_hashed(db) -> None:
     client = TestClient(app)
-    _register(client)
+    _register(client, db)
 
     assert client.get("/api/v1/auth/me").status_code == 200
     # A syntactically valid session token in a header is not an API credential.
@@ -57,9 +60,9 @@ def test_auth_is_cookie_only_and_refresh_tokens_are_hashed(db) -> None:
     assert client.cookies.get("matgar_refresh") not in {None, refresh_session.token_hash}
 
 
-def test_refresh_rotates_and_replay_revokes_its_family() -> None:
+def test_refresh_rotates_and_replay_revokes_its_family(db) -> None:
     client = TestClient(app)
-    _register(client, "rotation.student@example.com")
+    _register(client, db, "rotation.student@example.com")
     original_refresh = client.cookies.get("matgar_refresh")
     assert original_refresh
 
@@ -80,9 +83,9 @@ def test_refresh_rotates_and_replay_revokes_its_family() -> None:
     assert client.get("/api/v1/auth/me").status_code == 401
 
 
-def test_cookie_mutation_requires_csrf_and_password_change_revokes_family() -> None:
+def test_cookie_mutation_requires_csrf_and_password_change_revokes_family(db) -> None:
     client = TestClient(app)
-    _register(client, "csrf.student@example.com")
+    _register(client, db, "csrf.student@example.com")
 
     missing_csrf = client.post(
         "/api/v1/auth/change-password",
