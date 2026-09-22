@@ -101,6 +101,19 @@ export interface VideoLesson {
   materialization_status?: string;
 }
 
+export interface CourseAssessmentRef {
+  id: string;
+  kind: "quiz" | "assignment";
+  title: string;
+  lessonId?: string | null;
+  moduleId?: string | null;
+  durationMinutes?: number;
+  maxScore?: number;
+  dueLabel?: string | null;
+  /** False when the lesson it belongs to is not paid/unlocked for this student. */
+  accessible: boolean;
+}
+
 export interface Course {
   id: string;
   title: string;
@@ -117,6 +130,8 @@ export interface Course {
   lessons: VideoLesson[];
   enrolledStudentsCount: number;
   price?: number;
+  /** Server-published quizzes/assignments scoped to lessons/units. */
+  assessments?: CourseAssessmentRef[];
 }
 
 export interface NotificationSchedule {

@@ -22,7 +22,7 @@ import {
   Zap,
   Plus,
 } from "lucide-react";
-import { Course, CurrentUser, StudentProfile, VideoLesson } from "../types/lms";
+import { Course, CourseAssessmentRef, CurrentUser, StudentProfile, VideoLesson } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
 import { EducationalBookItem, RevisionPackageItem } from "./GeneralHomeView";
 import { VideoTelemetryTracker } from "../services/videoTelemetry";
@@ -279,6 +279,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   // Quizzes Data for Current Course (derived dynamically from course or platform store)
   const courseQuizzes: CourseQuiz[] = courseContent?.quizzes || [];
+
+  // Server-published assessments (real, scoped to lessons/units, payment-gated).
+  // These come from GET /courses/{id}/assessments via courseService.getCourses.
+  const serverAssessments: CourseAssessmentRef[] = currentCourse?.assessments || [];
+  const serverQuizzes = serverAssessments.filter((a) => a.kind === "quiz");
+  const serverAssignments = serverAssessments.filter((a) => a.kind === "assignment");
+  const lessonTitleById = new Map((currentCourse?.lessons || []).map((l) => [l.id, l.title]));
 
   // Helper to determine time availability & deadline status
   function getTimeStatus(availableFromStr: string, dueDateStr: string, isSubmitted: boolean) {
@@ -818,8 +825,35 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       {/* =========================================================================
           SECTION 2: ASSIGNMENTS GRID (في شكل بطاقات زي المقررات مع الـ Deadline)
          ========================================================================= */}
+      {activeContentTab === "assignments" && serverAssignments.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 340px), 1fr))", gap: "20px", marginBottom: "24px" }}>
+          {serverAssignments.map((asg) => (
+            <div key={asg.id} style={{ background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "16px", padding: "20px", boxShadow: "var(--card-shadow)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                <span style={{ fontSize: "11px", fontWeight: 800, color: "#92400e", background: "#fef3c7", padding: "3px 8px", borderRadius: "6px" }}>واجب منشور</span>
+                {asg.maxScore != null && (
+                  <span style={{ fontSize: "12px", fontWeight: 800, color: "#059669", background: "var(--bg-accent)", padding: "3px 8px", borderRadius: "6px" }}>{asg.maxScore} درجة</span>
+                )}
+              </div>
+              <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)" }}>{asg.title}</h3>
+              <p style={{ margin: "0 0 14px", fontSize: "12.5px", color: "var(--text-muted)" }}>
+                تابع للدرس: {asg.lessonId ? lessonTitleById.get(asg.lessonId) || "—" : "مقرر كامل"}
+                {asg.dueLabel ? ` • آخر موعد: ${new Date(asg.dueLabel).toLocaleDateString("ar-EG")}` : ""}
+              </p>
+              {asg.accessible ? (
+                <div style={{ fontSize: "12.5px", fontWeight: 800, color: "#059669", display: "flex", alignItems: "center", gap: 6 }}><CheckCircle2 size={15} /> متاح لك — افتح الدرس لتبدأ</div>
+              ) : (
+                <button className="btn-primary" style={{ width: "100%", justifyContent: "center", gap: 6 }} onClick={() => { const lesson = (currentCourse?.lessons || []).find((l) => l.id === asg.lessonId); if (lesson) handleBuyLesson(lesson); }}>
+                  <Lock size={14} /> اشترِ الدرس لحل الواجب
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       {activeContentTab === "assignments" && (
-        courseAssignments.length === 0 ? (
+        courseAssignments.length === 0 && serverAssignments.length === 0 ? (
           <div style={{ background: "var(--bg-surface)", border: "1.5px dashed var(--border-color)", borderRadius: "18px", padding: "60px 20px", textAlign: "center" }}>
             <FileText size={48} style={{ color: "#059669", margin: "0 auto 12px" }} />
             <h3 style={{ margin: "0 0 6px", fontSize: "18px", fontWeight: 800, color: "var(--text-main)" }}>
@@ -976,8 +1010,37 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       {/* =========================================================================
           SECTION 3: QUIZZES GRID (في شكل بطاقات زي المقررات مع الـ Deadline)
          ========================================================================= */}
+      {activeContentTab === "quizzes" && serverQuizzes.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 340px), 1fr))", gap: "20px", marginBottom: "24px" }}>
+          {serverQuizzes.map((qz) => (
+            <div key={qz.id} style={{ background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "16px", padding: "20px", boxShadow: "var(--card-shadow)", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                  <span style={{ fontSize: "11px", fontWeight: 800, color: "#831843", background: "#fce7f3", padding: "3px 8px", borderRadius: "6px" }}>كويز تقييمي تفاعلي</span>
+                  {qz.durationMinutes != null && (
+                    <span style={{ fontSize: "12px", fontWeight: 800, color: "#059669", background: "var(--bg-accent)", padding: "3px 8px", borderRadius: "6px" }}>{qz.durationMinutes} دقيقة</span>
+                  )}
+                </div>
+                <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)", lineHeight: 1.4 }}>{qz.title}</h3>
+                <p style={{ margin: "0 0 14px", fontSize: "12.5px", color: "var(--text-muted)", lineHeight: 1.5 }}>
+                  تابع للدرس: {qz.lessonId ? lessonTitleById.get(qz.lessonId) || "—" : "مقرر كامل"}
+                  {qz.dueLabel ? ` • متاح حتى ${new Date(qz.dueLabel).toLocaleDateString("ar-EG")}` : ""}
+                </p>
+              </div>
+              {qz.accessible ? (
+                <div style={{ fontSize: "12.5px", fontWeight: 800, color: "#059669", display: "flex", alignItems: "center", gap: 6 }}><CheckCircle2 size={15} /> متاح — افتح الدرس ثم ابدأ الحل</div>
+              ) : (
+                <button className="btn-primary" style={{ width: "100%", justifyContent: "center", gap: 6 }} onClick={() => { const lesson = (currentCourse?.lessons || []).find((l) => l.id === qz.lessonId); if (lesson) handleBuyLesson(lesson); }}>
+                  <Lock size={14} /> اشترِ الدرس لفتح الكويز
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       {activeContentTab === "quizzes" && (
-        courseQuizzes.length === 0 ? (
+        courseQuizzes.length === 0 && serverQuizzes.length === 0 ? (
           <div style={{ background: "var(--bg-surface)", border: "1.5px dashed var(--border-color)", borderRadius: "18px", padding: "60px 20px", textAlign: "center" }}>
             <HelpCircle size={48} style={{ color: "#059669", margin: "0 auto 12px" }} />
             <h3 style={{ margin: "0 0 6px", fontSize: "18px", fontWeight: 800, color: "var(--text-main)" }}>

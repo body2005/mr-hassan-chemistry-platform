@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import { CalendarScheduleEvent, Course, CurrentUser, NotificationItem, QuestionTypeConfig } from "../types/lms";
 import { aiClient } from "../services/aiClient";
-import { calendarService, notificationService } from "../services/lmsService";
+import { calendarService, notificationService, courseService } from "../services/lmsService";
 import { GeneratedQuestion, QuizDraftResponse } from "../types/ai";
 import { useToast } from "../components/ToastProvider";
 import { FormulaRenderer } from "../components/FormulaRenderer";
@@ -747,7 +747,44 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
         await notificationService.saveNotification(newNotif);
       }
 
-      // 3. Save to Teacher Quiz History Archive
+      // 3. Publish to the SERVER (real, student-visible) — questions, quiz/assignment,
+      // then publish. Requires a selected course and a lesson to attach to.
+      if (!currentCourse) {
+        throw new Error("اختر المقرر الدراسي أولاً قبل النشر ليستلمه الطلاب.");
+      }
+      const scopeLessonId = selectedLessonIds[0];
+      if (!scopeLessonId) {
+        throw new Error("يلزم اختيار الدرس الذي يتبعه " + (isQuiz ? "الاختبار" : "الواجب") + " — لن يراه الطلاب بدون ربطه بدرس مفعّل.");
+      }
+      const startIso = publishStartDate && publishStartTime ? `${publishStartDate}T${publishStartTime}:00` : null;
+      const endIso = closeDeadlineDate && closeDeadlineTime ? `${closeDeadlineDate}T${closeDeadlineTime}:00` : null;
+      if (isQuiz) {
+        await courseService.publishQuizToServer({
+          course_id: currentCourse.id,
+          lesson_id: scopeLessonId,
+          title: titleToPublish,
+          duration_minutes: quizDurationMinutes,
+          starts_at: startIso,
+          ends_at: endIso,
+          questions: currentQuestions.map((q) => ({
+            question_text: q.question_text,
+            question_type: q.question_type,
+            options: q.options,
+            correct_answer: q.correct_answer ?? null,
+            points: q.points,
+          })),
+        });
+      } else {
+        await courseService.publishAssignmentToServer({
+          course_id: currentCourse.id,
+          lesson_id: scopeLessonId,
+          title: titleToPublish,
+          prompt: currentQuestions.map((q) => q.question_text).join("\n\n"),
+          due_at: endIso,
+        });
+      }
+
+      // 4. Save to Teacher Quiz History Archive (local mirror for the teacher)
       quizHistoryService.saveQuiz({
         title: titleToPublish,
         assessmentType,
@@ -1399,6 +1436,38 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
               </div>
             </>
           )}
+
+          {/* Lesson scope (REQUIRED): the quiz/assignment attaches to one lesson
+              so students find it inside that lesson and payment gates it. */}
+          <div style={{ marginBottom: "14px", background: "var(--bg-surface-secondary, #f8fafc)", border: "1.5px solid var(--border-color, #e2e8f0)", borderRadius: "10px", padding: "14px" }}>
+            <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, marginBottom: "6px", color: "var(--text-main)" }}>
+              الدرس/الوحدة المرتبط {assessmentType === "quiz" ? "بالاختبار" : "بالواجب"} (يلزم اختيار درس):
+            </label>
+            {courseLessons.length === 0 ? (
+              <div style={{ fontSize: "12px", color: "#b45309", fontWeight: 700 }}>
+                لا توجد دروس في هذا المقرر — أضف درساً أولاً ليُربط {assessmentType === "quiz" ? "الاختبار" : "الواجب"} به.
+              </div>
+            ) : (
+              <select
+                value={selectedLessonIds[0] || ""}
+                onChange={(e) => setSelectedLessonIds(e.target.value ? [e.target.value] : [])}
+                style={{
+                  width: "100%",
+                  padding: "9px 12px",
+                  border: "1px solid var(--border-color-strong)",
+                  borderRadius: "8px",
+                  fontSize: "13px",
+                  fontWeight: 700,
+                  background: "var(--bg-surface)",
+                  color: "var(--text-main)",
+                }}
+              >
+                {courseLessons.map((lesson) => (
+                  <option key={lesson.id} value={lesson.id}>{lesson.title}</option>
+                ))}
+              </select>
+            )}
+          </div>
 
           {/* Schedule & Timing Configuration */}
           <div style={{ marginBottom: "18px", background: "var(--bg-surface-secondary, #f8fafc)", border: "1.5px solid var(--border-color, #e2e8f0)", borderRadius: "10px", padding: "14px" }}>

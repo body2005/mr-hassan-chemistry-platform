@@ -1368,3 +1368,106 @@ def delete_lesson_material(
 
     delete_material(db, user, lesson_id, asset_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/courses/{course_id}/assessments")
+def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
+    """Student-facing per-lesson/unit assessments with access gating.
+
+    Returns published quizzes/assignments for this course grouped by
+    lesson_id/module_id. Every item carries `accessible`: whether this student
+    may open/attempt it (enrollment + payment/entitlement on the lesson).
+    """
+    lesson_ids: list[uuid.UUID] = []
+    lesson_titles: dict[uuid.UUID, str] = {}
+    accessible_lessons: set[uuid.UUID] = set()
+    course = db.get(Course, course_id)
+    if course is None or course.institution_id != user.institution_id:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    enrolled = db.scalar(
+        select(Enrollment.id).where(
+            Enrollment.course_id == course_id,
+            Enrollment.student_id == user.id,
+            Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+        )
+    )
+    modules = list(
+        db.scalars(
+            select(CourseModule)
+            .where(CourseModule.course_id == course_id)
+            .order_by(CourseModule.position)
+        ).all()
+    )
+    for module in modules:
+        for lesson in db.scalars(
+            select(Lesson).where(Lesson.module_id == module.id).order_by(Lesson.position)
+        ).all():
+            lesson_ids.append(lesson.id)
+            lesson_titles[lesson.id] = lesson.title
+            if user.role != UserRole.STUDENT:
+                accessible_lessons.add(lesson.id)
+            elif enrolled and can_access_lesson_content(db, user, lesson.id):
+                accessible_lessons.add(lesson.id)
+
+    quizzes = list(
+        db.scalars(
+            select(Quiz)
+            .where(
+                Quiz.course_id == course_id,
+                Quiz.institution_id == user.institution_id,
+                Quiz.status == "published",
+            )
+            .order_by(Quiz.published_at.desc())
+        ).all()
+    )
+    assignments = list(
+        db.scalars(
+            select(Assignment)
+            .where(
+                Assignment.course_id == course_id,
+                Assignment.institution_id == user.institution_id,
+                Assignment.status == "published",
+            )
+            .order_by(Assignment.created_at.desc())
+        ).all()
+    )
+
+    def quiz_item(q: Quiz) -> dict:
+        return {
+            "id": str(q.id),
+            "kind": "quiz",
+            "title": q.title,
+            "course_id": str(q.course_id),
+            "module_id": str(q.module_id) if q.module_id else None,
+            "lesson_id": str(q.lesson_id) if q.lesson_id else None,
+            "duration_seconds": q.duration_seconds,
+            "starts_at": q.starts_at.isoformat() if q.starts_at else None,
+            "ends_at": q.ends_at.isoformat() if q.ends_at else None,
+            "attempts_allowed": q.attempts_allowed,
+            # Unscoped quizzes fall back to: any enrolled student can try.
+            "accessible": q.lesson_id is None or q.lesson_id in accessible_lessons,
+        }
+
+    def assignment_item(a: Assignment) -> dict:
+        return {
+            "id": str(a.id),
+            "kind": "assignment",
+            "title": a.title,
+            "course_id": str(a.course_id),
+            "module_id": str(a.module_id) if a.module_id else None,
+            "lesson_id": str(a.lesson_id) if a.lesson_id else None,
+            "due_at": a.due_at.isoformat() if a.due_at else None,
+            "max_score": float(a.max_score or 0),
+            "accessible": a.lesson_id is None or a.lesson_id in accessible_lessons,
+        }
+
+    return {
+        "course_id": str(course_id),
+        "lessons": [
+            {"id": str(lid), "title": lesson_titles[lid], "accessible": lid in accessible_lessons}
+            for lid in lesson_ids
+        ],
+        "quizzes": [quiz_item(q) for q in quizzes],
+        "assignments": [assignment_item(a) for a in assignments],
+    }

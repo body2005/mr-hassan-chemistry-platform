@@ -252,6 +252,7 @@ function mapApiCourse(course: ApiCourse): Course {
     lessons,
     enrolledStudentsCount: 0,
     price: Number(course.price_egp || 0),
+    assessments: [],
   };
 }
 
@@ -649,7 +650,40 @@ function parseScheduleClock(value: string): string {
 export const courseService = {
   async getCourses(): Promise<Course[]> {
     const result = await apiRequest<{ items: ApiCourse[] }>("/courses?page=1&page_size=100");
-    return Array.isArray(result.items) ? result.items.map(mapApiCourse) : [];
+    const courses = Array.isArray(result.items) ? result.items.map(mapApiCourse) : [];
+    // Attach published quizzes/assignments (scoped per lesson/unit) once per
+    // course; a failure here must never break the course list itself.
+    await Promise.all(
+      courses.map(async (course) => {
+        try {
+          course.assessments = await courseService.getCourseAssessments(course.id).then((data) => [
+            ...data.quizzes.map((q) => ({
+              id: q.id,
+              kind: "quiz" as const,
+              title: q.title,
+              lessonId: q.lesson_id,
+              moduleId: q.module_id,
+              durationMinutes: q.duration_seconds ? Math.ceil(q.duration_seconds / 60) : undefined,
+              dueLabel: q.ends_at,
+              accessible: q.accessible,
+            })),
+            ...data.assignments.map((a) => ({
+              id: a.id,
+              kind: "assignment" as const,
+              title: a.title,
+              lessonId: a.lesson_id,
+              moduleId: a.module_id,
+              maxScore: a.max_score,
+              dueLabel: a.due_at,
+              accessible: a.accessible,
+            })),
+          ]);
+        } catch {
+          course.assessments = [];
+        }
+      }),
+    );
+    return courses;
   },
 
   async saveCourses(courses: Course[]): Promise<void> {
@@ -683,6 +717,115 @@ export const courseService = {
 
   async getCourseContent(courseId: string): Promise<ApiCourse> {
     return apiRequest<ApiCourse>(`/courses/${courseId}`);
+  },
+
+  /** Server-side shape of a published assessment the student can attempt. */
+  async getCourseAssessments(courseId: string): Promise<{
+    course_id: string;
+    lessons: Array<{ id: string; title: string; accessible: boolean }>;
+    quizzes: Array<{
+      id: string;
+      kind: "quiz";
+      title: string;
+      module_id: string | null;
+      lesson_id: string | null;
+      duration_seconds: number | null;
+      starts_at: string | null;
+      ends_at: string | null;
+      attempts_allowed: number;
+      accessible: boolean;
+    }>;
+    assignments: Array<{
+      id: string;
+      kind: "assignment";
+      title: string;
+      module_id: string | null;
+      lesson_id: string | null;
+      due_at: string | null;
+      max_score: number;
+      accessible: boolean;
+    }>;
+  }> {
+    return apiRequest(`/courses/${courseId}/assessments`);
+  },
+
+  /** Publish a real quiz to the server: questions -> quiz -> publish. */
+  async publishQuizToServer(payload: {
+    course_id: string;
+    module_id?: string;
+    lesson_id?: string;
+    title: string;
+    duration_minutes?: number;
+    starts_at?: string | null;
+    ends_at?: string | null;
+    questions: Array<{
+      question_text: string;
+      question_type: string;
+      options?: Array<{ key: string; text: string; is_correct: boolean }>;
+      correct_answer?: string | null;
+      points?: number;
+    }>;
+  }): Promise<{ quiz_id: string }> {
+    const questionIds: string[] = [];
+    for (const q of payload.questions) {
+      const created = await apiRequest<{ id: string }>("/questions", {
+        method: "POST",
+        body: JSON.stringify({
+          course_id: payload.course_id,
+          question_type: q.question_type,
+          prompt: q.question_text,
+          options: q.options ?? null,
+          correct_answer: q.correct_answer ?? null,
+          points: q.points ?? 1,
+        }),
+      });
+      questionIds.push(created.id);
+    }
+    const quiz = await apiRequest<{ id: string }>("/quizzes", {
+      method: "POST",
+      body: JSON.stringify({
+        course_id: payload.course_id,
+        quiz_title: payload.title,
+        module_id: payload.module_id || null,
+        lesson_id: payload.lesson_id || null,
+        duration_seconds: payload.duration_minutes ? payload.duration_minutes * 60 : null,
+        starts_at: payload.starts_at || null,
+        ends_at: payload.ends_at || null,
+        question_ids: questionIds,
+      }),
+    });
+    await apiRequest(`/quizzes/${quiz.id}/publish`, {
+      method: "POST",
+    });
+    return { quiz_id: quiz.id };
+  },
+
+  /** Publish a real assignment to the server. */
+  async publishAssignmentToServer(payload: {
+    course_id: string;
+    module_id?: string;
+    lesson_id?: string;
+    title: string;
+    prompt: string;
+    due_at?: string | null;
+    max_score?: number;
+  }): Promise<{ assignment_id: string }> {
+    const created = await apiRequest<{ id: string }>("/assignments", {
+      method: "POST",
+      body: JSON.stringify({
+        course_id: payload.course_id,
+        assignment_title: payload.title,
+        prompt: payload.prompt || payload.title,
+        due_at: payload.due_at || null,
+        max_score: payload.max_score ?? 100,
+        module_id: payload.module_id || null,
+        lesson_id: payload.lesson_id || null,
+      }),
+    });
+    await apiRequest(`/assignments/${created.id}/publish`, {
+      method: "POST",
+    });
+    return { assignment_id: created.id };
   },
 
   async addModule(courseId: string, payload: { title: string; position: number }): Promise<ApiCourse["modules"][number]> {

@@ -210,6 +210,14 @@ class Quiz(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     randomize_questions: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     attempts_allowed: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # Scope: the quiz belongs to a module (unit) and optionally to one lesson.
+    # Students see it inside that lesson/unit and must have paid access to it.
+    module_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("course_modules.id", ondelete="SET NULL"), index=True
+    )
+    lesson_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("lessons.id", ondelete="SET NULL"), index=True
+    )
 
 
 class QuizQuestion(UUIDPrimaryKeyMixin, Base):
@@ -291,6 +299,13 @@ class Assignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     max_score: Mapped[float] = mapped_column(Float, default=100.0, nullable=False)
     status: Mapped[AssignmentStatus] = mapped_column(
         String(20), default=AssignmentStatus.DRAFT, nullable=False
+    )
+    # Scope: the assignment belongs to a module (unit) and optionally a lesson.
+    module_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("course_modules.id", ondelete="SET NULL"), index=True
+    )
+    lesson_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("lessons.id", ondelete="SET NULL"), index=True
     )
 
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Bot, CheckCircle2, Clock3, CreditCard, FileUp, RefreshCw, XCircle } from "lucide-react";
+import { CheckCircle2, Clock3, CreditCard, FileUp, RefreshCw, XCircle } from "lucide-react";
 import { Course } from "../types/lms";
 import {
   PaymentConfig,
@@ -123,7 +123,7 @@ export function PaymentView({ courses, initialTarget, onEntitlementsChanged }: P
       <header className="section-heading payment-heading">
         <div>
           <span className="eyebrow">المدفوعات والاشتراكات</span>
-          <h1>تفعيل المحتوى والمساعد الذكي</h1>
+          <h1>تفعيل المحتوى التعليمي</h1>
           <p>اختر ما تريد تفعيله، حوّل المبلغ إلى الحساب الظاهر، ثم أرسل الإيصال للمراجعة.</p>
         </div>
         <div className="payment-total" aria-label="المبلغ المطلوب">
@@ -138,10 +138,9 @@ export function PaymentView({ courses, initialTarget, onEntitlementsChanged }: P
           <div className="segmented-control" role="tablist" aria-label="نوع المنتج">
             {([
               ["lesson", "درس منفرد"],
-              ["ai_subscription", "اشتراك AI"],
             ] as Array<[PaymentProductType, string]>).map(([value, label]) => (
               <button key={value} className={productType === value ? "active" : ""} onClick={() => { setProductType(value); setProductId(""); }}>
-                {value === "ai_subscription" && <Bot size={16} />}{label}
+                {label}
               </button>
             ))}
           </div>
@@ -156,9 +155,7 @@ export function PaymentView({ courses, initialTarget, onEntitlementsChanged }: P
               </select>
             </label>
           )}
-          {productType === "ai_subscription" && (
-            <div className="plain-notice"><Bot size={20} /><div><strong>AI لكل دروسك المتاحة</strong><span>صالح لمدة {config?.ai_subscription_days || 30} يومًا من تاريخ الموافقة.</span></div></div>
-          )}
+          {productType === "ai_subscription" && null}
 
           <fieldset className="payment-methods">
             <legend>طريقة التحويل</legend>

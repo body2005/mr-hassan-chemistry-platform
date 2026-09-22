@@ -437,6 +437,9 @@ class QuizCreateRequest(BaseModel):
     randomize_questions: bool = False
     attempts_allowed: int = Field(default=1, ge=1, le=10)
     question_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
+    # Attach the quiz to a unit and optionally to the exact lesson it covers.
+    module_id: uuid.UUID | None = None
+    lesson_id: uuid.UUID | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -465,6 +468,8 @@ class QuizResponse(BaseModel):
     starts_at: datetime | None
     ends_at: datetime | None
     published_at: datetime | None
+    module_id: uuid.UUID | None = None
+    lesson_id: uuid.UUID | None = None
     randomize_questions: bool
     attempts_allowed: int
     created_at: datetime
@@ -520,6 +525,9 @@ class AssignmentCreateRequest(BaseModel):
     assignment_title: str | None = Field(default=None, max_length=200)
     prompt: str = Field(min_length=2, max_length=20_000)
     due_at: datetime | None = None
+    # Attach the assignment to a unit and optionally to one lesson.
+    module_id: uuid.UUID | None = None
+    lesson_id: uuid.UUID | None = None
     max_score: float = Field(default=100.0, gt=0, le=100_000)
 
     @model_validator(mode="before")
@@ -548,6 +556,8 @@ class AssignmentResponse(BaseModel):
     max_score: float
     status: AssignmentStatus
     created_at: datetime
+    module_id: uuid.UUID | None = None
+    lesson_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
     def populate_assignment_title(self) -> "AssignmentResponse":

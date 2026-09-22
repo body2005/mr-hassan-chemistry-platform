@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus
+from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus, Lesson
 from app.models.platform import (
     Assignment,
     AssignmentAttempt,
@@ -206,9 +206,26 @@ def create_question(db: Session, user: User, payload: QuestionCreateRequest) -> 
     return question
 
 
+def _validate_assessment_scope(db: Session, course, module_id: uuid.UUID | None, lesson_id: uuid.UUID | None) -> tuple[uuid.UUID | None, uuid.UUID | None]:
+    """Ensure the module/lesson belong to the same course being assessed."""
+    if module_id is not None:
+        module = db.get(CourseModule, module_id)
+        if module is None or module.course_id != course.id:
+            raise ValueError("Module does not belong to this course")
+    if lesson_id is not None:
+        lesson = db.get(Lesson, lesson_id)
+        if lesson is None:
+            raise ValueError("Lesson not found")
+        module = db.get(CourseModule, lesson.module_id)
+        if module is None or module.course_id != course.id:
+            raise ValueError("Lesson does not belong to this course")
+    return module_id, lesson_id
+
+
 def create_quiz(db: Session, user: User, payload: QuizCreateRequest) -> Quiz:
     course = course_for_user(db, user, payload.course_id)
     ensure_course_manager(user, course)
+    module_id, lesson_id = _validate_assessment_scope(db, course, payload.module_id, payload.lesson_id)
     quiz = Quiz(
         institution_id=course.institution_id,
         course_id=course.id,
@@ -219,6 +236,8 @@ def create_quiz(db: Session, user: User, payload: QuizCreateRequest) -> Quiz:
         ends_at=payload.ends_at,
         randomize_questions=payload.randomize_questions,
         attempts_allowed=payload.attempts_allowed,
+        module_id=module_id,
+        lesson_id=lesson_id,
     )
     db.add(quiz)
     db.flush()
@@ -393,6 +412,7 @@ def submit_quiz(
 def create_assignment(db: Session, user: User, payload: AssignmentCreateRequest) -> Assignment:
     course = course_for_user(db, user, payload.course_id)
     ensure_course_manager(user, course)
+    module_id, lesson_id = _validate_assessment_scope(db, course, payload.module_id, payload.lesson_id)
     assignment = Assignment(
         institution_id=course.institution_id,
         course_id=course.id,
@@ -401,6 +421,8 @@ def create_assignment(db: Session, user: User, payload: AssignmentCreateRequest)
         prompt=payload.prompt.strip(),
         due_at=payload.due_at,
         max_score=payload.max_score,
+        module_id=module_id,
+        lesson_id=lesson_id,
     )
     db.add(assignment)
     db.commit()
