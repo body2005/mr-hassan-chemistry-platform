@@ -183,8 +183,23 @@ class LessonCreateRequest(BaseModel):
     content: str | None = Field(default=None, max_length=100_000)
     # Deliberately no video_asset_key: native videos are attached only via the
     # authorization-checked upload endpoint, never through lesson creation.
+    # Public embed URLs (YouTube/Drive) entered by the teacher are accepted
+    # through this dedicated, scheme-validated field instead.
+    external_video_url: str | None = Field(default=None, max_length=2048)
     video_duration_seconds: int | None = Field(default=None, ge=1, le=24 * 60 * 60)
     price_egp: float = Field(default=0, ge=0, le=1_000_000)
+
+    @field_validator("external_video_url")
+    @classmethod
+    def _validate_external_video_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        if not trimmed:
+            return None
+        if not (trimmed.startswith("https://") or trimmed.startswith("http://")):
+            raise ValueError("external_video_url must be an http(s) URL")
+        return trimmed
 
 
 class LessonMaterialSummary(BaseModel):

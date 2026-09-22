@@ -120,6 +120,8 @@ def add_lesson(db: Session, user: User, module_id: uuid.UUID, payload: LessonCre
         content=payload.content.strip() if payload.content else None,
         # Native videos are attached only through the protected upload
         # endpoint; the create payload can never plant a storage key.
+        # Public embed URLs (validated http(s) only) are public by design.
+        video_asset_key=payload.external_video_url,
         video_duration_seconds=payload.video_duration_seconds,
         price_egp=payload.price_egp,
     )

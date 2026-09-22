@@ -412,11 +412,13 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         module = await courseService.addModule(course.id, { title: "الوحدة الأولى", position: 1 });
       }
       const savedTitle = lessonTitle.trim();
+      const externalUrl = videoSourceType === "url" && videoExternalUrl.trim() ? videoExternalUrl.trim() : undefined;
       const addedLesson = await courseService.addLesson(module.id, {
         title: savedTitle,
         kind: "video",
         position: module.lessons.length + 1,
         content: lessonDescription.trim() || undefined,
+        external_video_url: externalUrl,
         video_duration_seconds: lessonDuration * 60,
       });
 

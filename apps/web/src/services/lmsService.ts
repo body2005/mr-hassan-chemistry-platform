@@ -697,6 +697,7 @@ export const courseService = {
     kind: "video" | "article" | "live";
     position: number;
     content?: string;
+    external_video_url?: string;
     video_duration_seconds?: number;
     price_egp?: number;
   }): Promise<{ id: string }> {
