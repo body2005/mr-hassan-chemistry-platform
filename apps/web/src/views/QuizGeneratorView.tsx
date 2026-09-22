@@ -61,13 +61,13 @@ async function computeFileFingerprint(file: File): Promise<string> {
 }
 
 const DEFAULT_TYPE_CONFIGS: QuestionTypeConfig[] = [
-  { id: "multiple_choice", label: "اختيار من متعدد (MCQ)", count: 2 },
-  { id: "essay", label: "سؤال مقالي (Essay)", count: 1 },
-  { id: "true_false", label: "صح أو خطأ (True/False)", count: 1, withCorrection: true },
-  { id: "fill_in_blank", label: "أكمل الفراغات (Fill in the blank)", count: 1 },
-  { id: "short_answer", label: "إجابة قصيرة (Short Answer)", count: 0 },
-  { id: "numerical", label: "سؤال رقمي من المصدر (Numerical)", count: 0 },
-  { id: "image_question", label: "سؤال مرتبط بصورة (Image)", count: 0 },
+  { id: "multiple_choice", label: "اختيار من متعدد", count: 2 },
+  { id: "essay", label: "سؤال مقالي", count: 1 },
+  { id: "true_false", label: "صح أو خطأ", count: 1, withCorrection: true },
+  { id: "fill_in_blank", label: "أكمل الفراغات", count: 1 },
+  { id: "short_answer", label: "إجابة قصيرة", count: 0 },
+  { id: "numerical", label: "سؤال رقمي", count: 0 },
+  { id: "image_question", label: "سؤال مرتبط بصورة", count: 0 },
 ];
 
 // Start a manual assessment empty; the teacher adds the first real question.
@@ -201,13 +201,13 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     const norm = normalizeQuestionType(t);
     switch (norm) {
       case "multiple_choice":
-        return { code: "MCQ", label: "اختيار من متعدد (MCQ)", bg: "rgba(16, 185, 129, 0.12)", color: "#065f46" };
+        return { code: "MCQ", label: "اختيار من متعدد", bg: "rgba(16, 185, 129, 0.12)", color: "#065f46" };
       case "true_false":
-        return { code: "TRUE_FALSE", label: "صح أو خطأ (True/False)", bg: "rgba(59, 130, 246, 0.12)", color: "#1e40af" };
+        return { code: "TRUE_FALSE", label: "صح أو خطأ", bg: "rgba(59, 130, 246, 0.12)", color: "#1e40af" };
       case "essay":
-        return { code: "ESSAY", label: "سؤال مقالي (Essay)", bg: "rgba(245, 158, 11, 0.12)", color: "#92400e" };
+        return { code: "ESSAY", label: "سؤال مقالي", bg: "rgba(245, 158, 11, 0.12)", color: "#92400e" };
       case "fill_in_blank":
-        return { code: "FILL_BLANK", label: "أكمل الفراغات (Fill in the blank)", bg: "rgba(139, 92, 246, 0.12)", color: "#5b21b6" };
+        return { code: "FILL_BLANK", label: "أكمل الفراغات", bg: "rgba(139, 92, 246, 0.12)", color: "#5b21b6" };
     }
   }
 
@@ -603,7 +603,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
           const nextKey = keys[q.options.length] || `خيار ${q.options.length + 1}`;
           return {
             ...q,
-            options: [...q.options, { key: nextKey, text: `خيار جديد (${nextKey})`, is_correct: false }],
+            options: [...q.options, { key: nextKey, text: `خيار ${nextKey}`, is_correct: false }],
           };
         }
         return q;
@@ -1014,7 +1014,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
             }}
           >
             <PenTool size={14} />
-            <span>إنشاء يدوي مباشر (بدون AI)</span>
+            <span>إنشاء يدوي مباشر</span>
           </button>
         </div>
       </div>
@@ -1046,7 +1046,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                   cursor: "pointer",
                 }}
               >
-                <span>اختبار إلكتروني (Quiz)</span>
+                <span>اختبار إلكتروني</span>
               </button>
 
               <button
@@ -1067,7 +1067,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                   cursor: "pointer",
                 }}
               >
-                <span>واجب منزلي (Assignment)</span>
+                <span>واجب منزلي</span>
               </button>
             </div>
           </div>
@@ -1144,7 +1144,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
               {/* Quiz Generation Mode (Mix vs Extract vs Generate) */}
               <div style={{ marginBottom: "16px" }}>
                 <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "6px", color: "var(--text-main)" }}>
-                  طريقة اشتقاق الأسئلة (Quiz Mode):
+                  طريقة اشتقاق الأسئلة:
                 </label>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "6px" }}>
                   {[
@@ -1294,7 +1294,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
 
               <div style={{ marginBottom: "16px" }}>
                 <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
-                  توجيهات إضافية للذكاء الاصطناعي (Prompt اختياري):
+                  توجيهات إضافية اختيارية:
                 </label>
                 <textarea
                   rows={2}
@@ -1424,7 +1424,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
               {/* AI Grading Prompt (Empty by default) */}
               <div style={{ marginBottom: "16px" }}>
                 <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
-                  معايير التصحيح الذاتي (AI Grading Prompt - اختياري):
+                  معايير التصحيح الذاتي (اختياري):
                 </label>
                 <textarea
                   rows={2}
@@ -1536,7 +1536,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
             {/* Close Date & Time */}
             <div style={{ marginBottom: "12px" }}>
               <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
-                {assessmentType === "quiz" ? "موعد انتهاء الإتاحة وإغلاق الاختبار:" : "آخر موعد لتسليم الواجب (Deadline):"}
+                {assessmentType === "quiz" ? "موعد انتهاء الإتاحة وإغلاق الاختبار:" : "آخر موعد لتسليم الواجب:"}
               </label>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "6px" }}>
                 <input
@@ -1871,10 +1871,10 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                                 color: "var(--text-main)",
                               }}
                             >
-                              <option value="multiple_choice">اختيار من متعدد (MCQ)</option>
-                              <option value="true_false">صح أو خطأ (True/False)</option>
-                              <option value="essay">سؤال مقالي (Essay)</option>
-                              <option value="fill_in_blank">أكمل الفراغات (Fill in the blank)</option>
+                              <option value="multiple_choice">اختيار من متعدد</option>
+                              <option value="true_false">صح أو خطأ</option>
+                              <option value="essay">سؤال مقالي</option>
+                              <option value="fill_in_blank">أكمل الفراغات</option>
                             </select>
 
                             <span
@@ -2162,7 +2162,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                         <div style={{ marginTop: "12px", padding: "12px 14px", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "10px" }}>
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
                             <span style={{ fontSize: "12px", fontWeight: 800, color: "#0f392b" }}>
-                              ✏️ سؤال إكمال الفراغ (Fill in the blank):
+                              ✏️ سؤال إكمال الفراغ:
                             </span>
                             {!isEditing && q.correct_answer && (
                               <span style={{ fontSize: "12px", color: "#059669", fontWeight: 700 }}>

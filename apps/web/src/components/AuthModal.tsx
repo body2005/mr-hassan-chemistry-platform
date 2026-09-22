@@ -187,7 +187,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             }}
           >
             <GraduationCap size={18} />
-            <span>حساب طالب (Student)</span>
+            <span>حساب طالب</span>
           </button>
 
           <button
@@ -208,7 +208,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             }}
           >
             <Users size={18} />
-            <span>حساب معلم (Teacher)</span>
+            <span>حساب معلم</span>
           </button>
         </div>
 
@@ -228,7 +228,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               cursor: "pointer",
             }}
           >
-            تسجيل الدخول (Sign In)
+            تسجيل الدخول
           </button>
           <button
             onClick={() => setAuthTab("register")}
@@ -244,7 +244,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               cursor: "pointer",
             }}
           >
-            إنشاء حساب جديد (Register)
+            إنشاء حساب جديد
           </button>
         </div>
 
@@ -322,7 +322,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <div style={{ border: "1px dashed #cbd5e1", padding: "10px", borderRadius: "8px", textAlign: "center", background: "#f8fafc" }}>
                 <Upload size={18} style={{ color: "#64748b", margin: "0 auto 4px" }} />
                 <span style={{ fontSize: "11px", color: "#475569" }}>
-                  {stdIdFile ? "تم اختيار الصورة بنجاح" : "اضغط لرفع صورة بطاقة الرقم القومي (JPG/PNG)"}
+                  {stdIdFile ? "تم اختيار الصورة بنجاح" : "اضغط لرفع صورة بطاقة الرقم القومي"}
                 </span>
                 <input
                   type="file"

@@ -93,7 +93,7 @@ export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ curr
             onClick={() => setExportDropdownOpen(!exportDropdownOpen)}
             style={{ fontSize: "12px", gap: "6px" }}
           >
-            <Download size={15} /> تصدير التقرير (Generate Report)
+            <Download size={15} /> تصدير التقرير
           </button>
 
           {exportDropdownOpen && (
@@ -204,7 +204,7 @@ export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ curr
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: "12px" }}>
               <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", padding: "12px", borderRadius: "8px", fontSize: "12px" }}>
                 <strong style={{ display: "flex", alignItems: "center", gap: "4px", color: "#166534", marginBottom: "4px" }}>
-                  <Sparkles size={14} /> ملاحظات المصحح الذكي (AI):
+                  <Sparkles size={14} /> ملاحظات المصحح الذكي:
                 </strong>
                 <p style={{ margin: 0, color: "#1e3a8a", lineHeight: "1.4" }}>
                   {sub.aiFeedbackSummary}

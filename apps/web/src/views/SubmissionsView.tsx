@@ -349,7 +349,7 @@ export const SubmissionsView: React.FC = () => {
                   <td style={{ textAlign: "center" }}>
                     {isBelowMin ? (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "3px 8px", background: "var(--bg-accent-warm)", color: "#ef4444", borderRadius: "6px", fontSize: "11px", fontWeight: 800 }}>
-                        <AlertTriangle size={12} /> تحت المعدل الأدنى ({minThreshold}%)
+                        <AlertTriangle size={12} /> تحت المعدل الأدنى
                       </span>
                     ) : (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "3px 8px", background: "var(--bg-accent)", color: "#059669", borderRadius: "6px", fontSize: "11px", fontWeight: 800 }}>

@@ -1707,7 +1707,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                   />
                   <div>
                     <strong style={{ fontSize: "12px", color: "var(--text-main)", display: "block" }}>
-                      تكرار أسبوعي (كل {getArabicDayName(new Date(wizardState.selectedDate))})
+                      تكرار أسبوعي كل {getArabicDayName(new Date(wizardState.selectedDate))}
                     </strong>
                     <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
                       تثبيت هذا الموعد بشكل دائم لطلاب {getGradeLabel(selectedGrade)}

@@ -224,7 +224,7 @@ export const translations: Record<Language, Translations> = {
     notificationsTitle: "الإشعارات والمواعيد",
     newBadge: "جديد",
     authButton: "تسجيل الدخول / إنشاء حساب",
-    exportReport: "تصدير التقرير (Generate Report)",
+    exportReport: "تصدير التقرير",
     exportWord: "تصدير Word (.docx حقيقي)",
     exportExcel: "تصدير Excel / CSV",
     exportPdf: "تصدير / طباعة PDF",
@@ -274,7 +274,7 @@ export const translations: Record<Language, Translations> = {
     searchFilterPlaceholder: "بحث في دروس ومذكرات الكيمياء...",
     enrolledStudentsCount: "طالب مسجل",
     instructorLabel: "معلم الكيمياء المسؤول:",
-    addCourseBtn: "إضافة للمقررات (Add)",
+    addCourseBtn: "إضافة للمقررات",
     allCoursesEnrolledTitle: "جميع مقررات الكيمياء متاحة ومسجلة في حسابك بالفعل!",
     allCoursesEnrolledDesc: "أضفت كل المقررات المتاحة، يمكنك الانتقال إلى صفحة مقرراتي ودروسي لمتابعة شروحات الكيمياء.",
 

@@ -107,7 +107,7 @@ export const AssignmentModal: React.FC<AssignmentModalProps> = ({
                   border: "1px solid var(--border-accent, #a7f3d0)",
                 }}
               >
-                معالج تصحيح الواجبات (Grading Wizard)
+                معالج تصحيح الواجبات
               </span>
               <span style={{ fontSize: "11px", color: "var(--text-muted, #64748b)" }}>
                 {submission.academicYearLabel} • {submission.submittedAt}
@@ -366,7 +366,7 @@ export const AssignmentModal: React.FC<AssignmentModalProps> = ({
                   </div>
                   <div>
                     <strong style={{ display: "block", fontSize: "14px", color: "#166534" }}>
-                      تقييم الذكاء الاصطناعي الذاتي (AI Rubric Scoring)
+                      تقييم معايير التصحيح
                     </strong>
                     <span style={{ fontSize: "11px", color: "#15803d" }}>
                       تم تحليل الإجابة وتدقيق خطوات الحل وفق معايير المنهج

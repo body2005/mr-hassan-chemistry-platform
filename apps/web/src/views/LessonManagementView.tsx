@@ -20,6 +20,23 @@ import { courseService } from "../services/lmsService";
 import { uploadManager } from "../services/uploadManager";
 import { apiRequest, apiUrl, fetchApiBlob } from "../services/apiClient";
 import { useConfirm } from "../components/ConfirmWizard";
+import { useTranslation } from "../utils/i18nContext";
+
+/** Tracks the app-wide light/dark theme by watching the `data-theme`
+ * attribute on <html>, so inline styles can pick theme-aware colors. */
+function useDataTheme(): "light" | "dark" {
+  const [theme, setTheme] = useState<"light" | "dark">(() =>
+    document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light",
+  );
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light");
+    });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => observer.disconnect();
+  }, []);
+  return theme;
+}
 
 /** Lightweight in-app toast — replaces window.alert for transient notices. */
 function useWizardToast() {
@@ -99,6 +116,9 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   courses: availableCourses,
   onCoursesChanged,
 }) => {
+  const { lang } = useTranslation();
+  const isDark = useDataTheme() === "dark";
+  void lang;
 
   const [courses, setCourses] = useState<Course[]>(availableCourses);
   React.useEffect(() => setCourses(availableCourses), [availableCourses]);
@@ -542,7 +562,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
             onClick={() => setExportDropdownOpen(!exportDropdownOpen)}
             style={{ fontSize: "12px", gap: "6px" }}
           >
-            <Download size={15} /> تصدير التقرير (Generate Report)
+            <Download size={15} /> تصدير التقرير
           </button>
 
           {exportDropdownOpen && (
@@ -736,7 +756,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                     type="url"
                     value={videoExternalUrl}
                     onChange={(e) => setVideoExternalUrl(e.target.value)}
-                    placeholder="ضع رابط الفيديو هنا (YouTube / Google Drive / MP4 سحابي مباشر)..."
+                    placeholder="ضع رابط الفيديو هنا (يوتيوب أو جوجل درايف أو رابط مباشر)..."
                     style={{
                       width: "100%",
                       padding: "10px 12px",
@@ -767,7 +787,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                       <div style={{ padding: "8px 12px", background: "#0f392b", color: "#ffffff", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11.5px" }}>
                         <span style={{ fontWeight: 700, display: "flex", alignItems: "center", gap: "6px" }}>
                           <Film size={14} style={{ color: "#34d399" }} />
-                          معاينة وتشغيل الفيديو قبل الرفع ({selectedVideo?.name})
+                          معاينة وتشغيل الفيديو قبل الرفع — {selectedVideo?.name}
                         </span>
                         <button
                           type="button"
@@ -829,7 +849,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
             {/* Lesson Materials / PDFs Upload Box */}
             <div>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
-                المذكرات والملفات المرفقة (PDF / Word):
+                المذكرات والملفات المرفقة:
               </label>
 
               <input
@@ -922,7 +942,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
             <h3 style={{ margin: 0, fontSize: "17px", fontWeight: 800, color: "var(--text-main, #0f172a)" }}>
-              الدروس المرفوعة وتوقعات صعوبة كل درس ({activeLessons.length} دروس)
+              الدروس المرفوعة ({activeLessons.length} دروس)
             </h3>
 
             {activeLessons.length > 0 && (
@@ -932,9 +952,13 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                   type="button"
                   onClick={() => setIsDeleteMode((prev) => !prev)}
                   style={{
-                    background: isDeleteMode ? "#b91c1c" : "#fee2e2",
-                    color: isDeleteMode ? "#ffffff" : "#b91c1c",
-                    border: isDeleteMode ? "1.5px solid #991b1b" : "1px solid #fca5a5",
+                    background: isDeleteMode ? "#b91c1c" : isDark ? "rgb(63 22 22)" : "rgb(246 246 246)",
+                    color: isDeleteMode ? "#ffffff" : "rgb(185, 28, 28)",
+                    border: isDeleteMode
+                      ? "1.5px solid #991b1b"
+                      : isDark
+                        ? "1px solid rgb(90 28 28)"
+                        : "1px solid rgb(215 204 204)",
                     borderRadius: "8px",
                     padding: "6px 14px",
                     fontSize: "12px",
@@ -954,7 +978,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                   ) : (
                     <>
                       <Trash2 size={14} />
-                      <span>تحديد للحذف (Select to Delete)</span>
+                      <span>تحديد للحذف</span>
                     </>
                   )}
                 </button>
@@ -1085,7 +1109,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
             >
               <Video size={44} style={{ color: "#059669", opacity: 0.6, margin: "0 auto 12px" }} />
               <h4 style={{ margin: "0 0 6px", fontSize: "17px", fontWeight: 800, color: "var(--text-main)" }}>
-                لا توجد دروس مرفوعة بعد ({activeYearLabel})
+                لا توجد دروس مرفوعة بعد — {activeYearLabel}
               </h4>
               <p style={{ margin: "0 auto 16px", maxWidth: "420px", color: "var(--text-muted)", fontSize: "13px", lineHeight: "1.5" }}>
                 تم تفريغ كافة الأمثلة السابقة بالكامل لتبدأ برفع فيديوهاتك ومذكراتك الحقيقية وتجربة توقعات الذكاء الاصطناعي من الصفر!
@@ -1507,7 +1531,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                       marginTop: "4px",
                     }}
                   >
-                    عرض المزيد من المقاطع ({visibleTranscriptModalCount} معروض من إجمالي {filteredTranscriptModalSegments.length})
+                    عرض المزيد من المقاطع ({visibleTranscriptModalCount} من {filteredTranscriptModalSegments.length})
                   </button>
                 )}
               </div>
