@@ -1008,6 +1008,58 @@ def all_submissions(user: Manager, db: Db) -> list[AssignmentSubmissionResponse]
     return _submission_responses(db, list(items))
 
 
+@router.get("/submissions/{submission_id}/file")
+def download_submission_file(
+    submission_id: uuid.UUID,
+    user: CurrentUser,
+    db: Db,
+):
+    """Stream a student's uploaded solution file to the course manager.
+
+    Managers only; the owning student has no re-download path here (their
+    copy was the upload itself). The native object_key never appears in the
+    response — the file is streamed from storage.
+    """
+    submission = db.get(AssignmentSubmission, submission_id)
+    if submission is None or submission.institution_id != user.institution_id:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    assignment = db.get(Assignment, submission.assignment_id)
+    if assignment is None:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    course = db.get(Course, assignment.course_id)
+    if course is None:
+        raise HTTPException(status_code=404, detail="Course not found")
+    if user.role == UserRole.STUDENT:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    try:
+        platform_service.ensure_course_manager(user, course)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    if not submission.object_key:
+        raise HTTPException(status_code=404, detail="Submission has no attached file")
+
+    from app.core.storage import get_storage_provider
+    from urllib.parse import quote
+
+    storage = get_storage_provider()
+    if not storage.exists(submission.object_key):
+        raise HTTPException(status_code=404, detail="File missing from storage")
+
+    filename = f"{str(submission.student_id)[:8]}-v{submission.version}.pdf"
+    stream = storage.open_stream(submission.object_key)
+    return StreamingResponse(
+        stream,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
 @router.post("/submissions/{submission_id}/grade", response_model=AssignmentSubmissionResponse)
 def grade_submission(
     submission_id: uuid.UUID,

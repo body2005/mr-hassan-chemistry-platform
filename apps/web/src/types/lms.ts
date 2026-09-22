@@ -201,6 +201,11 @@ export interface AssignmentSubmission {
   lessonTitle: string;
   questionPrompt: string;
   studentAnswer: string;
+  /** Student uploaded a photographed/typed solution file (PDF/image). */
+  hasFile?: boolean;
+  /** Manager-only streaming URL for the uploaded solution file. */
+  fileUrl?: string;
+  version?: number;
   submittedAt: string;
   maxScore: number;
   aiScore: number;

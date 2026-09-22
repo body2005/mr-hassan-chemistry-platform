@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   ArrowRight,
   CheckCircle2,
+  Download,
   FileCheck2,
   FileText,
   HelpCircle,
@@ -303,6 +304,60 @@ export const AssignmentModal: React.FC<AssignmentModalProps> = ({
                   {submission.questionPrompt}
                 </p>
               </div>
+
+              {/* Student Uploaded Solution File (photographed/typed paper) */}
+              {submission.hasFile && submission.fileUrl && (
+                <div
+                  style={{
+                    background: "var(--bg-surface, #ffffff)",
+                    padding: "16px",
+                    borderRadius: "12px",
+                    border: "1.5px solid var(--border-color-strong, #cbd5e1)",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", marginBottom: "10px", flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--text-main, #0f172a)" }}>
+                      <FileText size={16} style={{ color: "#059669" }} />
+                      <strong style={{ fontSize: "13px" }}>
+                        ورقة الحل المرفوعة من الطالب{submission.version ? ` — نسخة رقم ${submission.version}` : ""}
+                      </strong>
+                    </div>
+                    <a
+                      href={submission.fileUrl}
+                      download
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        background: "#0f392b",
+                        color: "#ffffff",
+                        borderRadius: "8px",
+                        padding: "7px 14px",
+                        fontSize: "12.5px",
+                        fontWeight: 800,
+                        textDecoration: "none",
+                      }}
+                    >
+                      <Download size={14} />
+                      <span>تنزيل ورقة الحل</span>
+                    </a>
+                  </div>
+                  <iframe
+                    src={submission.fileUrl}
+                    title="ورقة حل الواجب"
+                    style={{
+                      width: "100%",
+                      height: "420px",
+                      border: "1px solid var(--border-color, #e2e8f0)",
+                      borderRadius: "10px",
+                      background: "#f8fafc",
+                    }}
+                  />
+                  <small style={{ display: "block", marginTop: "8px", color: "var(--text-muted, #64748b)", fontSize: "11.5px" }}>
+                    المعاينة تعمل مع ملفات PDF — للصور استخدم زر التنزيل ثم افتحها من جهازك.
+                  </small>
+                </div>
+              )}
 
               {/* Student Written Answer */}
               <div
