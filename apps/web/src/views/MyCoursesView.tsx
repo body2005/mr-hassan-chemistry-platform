@@ -16,6 +16,7 @@ import {
   ShoppingCart,
   Sparkles,
   Timer,
+  Upload,
   Video,
   VideoOff,
   X,
@@ -27,7 +28,7 @@ import { Language, translations } from "../utils/i18n";
 import { EducationalBookItem, RevisionPackageItem } from "./GeneralHomeView";
 import { VideoTelemetryTracker } from "../services/videoTelemetry";
 import { courseService } from "../services/lmsService";
-import { apiRequest, apiUrl, fetchApiBlob } from "../services/apiClient";
+import { apiRequest, apiUrl, fetchApiBlob, uploadWithProgress } from "../services/apiClient";
 import { useToast } from "../components/ToastProvider";
 import { FormulaRenderer } from "../components/FormulaRenderer";
 import { PaymentTarget } from "../services/paymentService";
@@ -244,6 +245,159 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   const [activeAssignmentModal, setActiveAssignmentModal] = useState<CourseAssignment | null>(null);
   const [activeQuizModal, setActiveQuizModal] = useState<CourseQuiz | null>(null);
+
+  // ── Server-driven quiz solving (standalone page) ──
+  // ServerQuizSolve = real published quiz from GET /quizzes/{id}/solve.
+  // Legacy local quizzes (activeQuizModal.questions) keep the old local path.
+  type ServerQuizSolve = {
+    quizId: string;
+    title: string;
+    durationSeconds: number | null;
+    totalPoints: number;
+    questions: Array<{
+      id: string;
+      question_type: string;
+      prompt: string;
+      options: Array<{ key?: string; text: string; is_correct?: boolean }> | null;
+      points: number;
+    }>;
+  };
+  const [serverQuiz, setServerQuiz] = useState<ServerQuizSolve | null>(null);
+  const [serverQuizLoading, setServerQuizLoading] = useState(false);
+  const [serverQuizError, setServerQuizError] = useState<string | null>(null);
+  const [serverQuizAnswers, setServerQuizAnswers] = useState<Record<string, string>>({});
+  const [serverQuizSubmitting, setServerQuizSubmitting] = useState(false);
+  const [serverQuizResult, setServerQuizResult] = useState<{ score: number; total: number; attemptNumber: number } | null>(null);
+
+  // ── Server-driven assignment solving (standalone page) ──
+  type ServerAssignmentSolve = {
+    id: string;
+    title: string;
+    prompt: string;
+    dueAt: string | null;
+    maxScore: number;
+    latestSubmission: { version: number; status: string; submittedAt: string | null; hasFile: boolean } | null;
+  };
+  const [serverAssignment, setServerAssignment] = useState<ServerAssignmentSolve | null>(null);
+  const [serverAssignmentLoading, setServerAssignmentLoading] = useState(false);
+  const [serverAssignmentError, setServerAssignmentError] = useState<string | null>(null);
+  const [assignmentFile, setAssignmentFile] = useState<File | null>(null);
+  const [assignmentUploading, setAssignmentUploading] = useState(false);
+  const [assignmentUploadDone, setAssignmentUploadDone] = useState<{ version: number; submittedAt: string } | null>(null);
+
+  /** Open the standalone quiz-solving page with the real server quiz. */
+  async function openServerQuiz(assessment: CourseAssessmentRef) {
+    setServerQuiz(null);
+    setServerQuizError(null);
+    setServerQuizAnswers({});
+    setServerQuizResult(null);
+    setServerQuizLoading(true);
+    try {
+      const data = await apiRequest<{
+        quiz: { id: string; title: string; duration_seconds: number | null; total_points: number };
+        questions: ServerQuizSolve["questions"];
+      }>(`/quizzes/${assessment.id}/solve`);
+      setServerQuiz({
+        quizId: data.quiz.id,
+        title: data.quiz.title,
+        durationSeconds: data.quiz.duration_seconds,
+        totalPoints: data.quiz.total_points,
+        questions: data.questions,
+      });
+    } catch (err) {
+      setServerQuizError(err instanceof Error ? err.message : "تعذر فتح الاختبار");
+    } finally {
+      setServerQuizLoading(false);
+    }
+  }
+
+  /** Submit the solved server quiz: real attempt + server-side grading. */
+  async function submitServerQuiz() {
+    if (!serverQuiz) return;
+    setServerQuizSubmitting(true);
+    try {
+      const attempt = await apiRequest<{ id: string; attempt_number: number }>(`/quizzes/${serverQuiz.quizId}/attempts`, { method: "POST" });
+      await apiRequest<{ score: number | null; total_points: number | null; attempt_number: number }>(`/quiz-attempts/${attempt.id}/submit`, {
+        method: "POST",
+        body: JSON.stringify({
+          submission_key: `web-${attempt.id}`.slice(0, 60),
+          answers: serverQuiz.questions.map((q) => ({
+            question_id: q.id,
+            answer: serverQuizAnswers[q.id] ?? null,
+          })),
+        }),
+      }).then((submitted) => {
+        setServerQuizResult({
+          score: submitted.score ?? 0,
+          total: submitted.total_points ?? serverQuiz.totalPoints,
+          attemptNumber: submitted.attempt_number,
+        });
+      });
+    } catch (err) {
+      toast({ message: err instanceof Error ? err.message : "تعذر تسليم الاختبار", tone: "danger" });
+    } finally {
+      setServerQuizSubmitting(false);
+    }
+  }
+
+  /** Open the standalone assignment page: PDF download → solve → upload. */
+  async function openServerAssignment(assessment: CourseAssessmentRef) {
+    setServerAssignment(null);
+    setServerAssignmentError(null);
+    setAssignmentFile(null);
+    setAssignmentUploadDone(null);
+    setServerAssignmentLoading(true);
+    try {
+      const data = await apiRequest<{
+        id: string;
+        title: string;
+        prompt: string;
+        due_at: string | null;
+        max_score: number;
+        my_latest_submission: { version: number; status: string; submitted_at: string | null; has_file: boolean } | null;
+      }>(`/assignments/${assessment.id}/solve`);
+      setServerAssignment({
+        id: data.id,
+        title: data.title,
+        prompt: data.prompt,
+        dueAt: data.due_at,
+        maxScore: data.max_score,
+        latestSubmission: data.my_latest_submission
+          ? {
+              version: data.my_latest_submission.version,
+              status: data.my_latest_submission.status,
+              submittedAt: data.my_latest_submission.submitted_at,
+              hasFile: data.my_latest_submission.has_file,
+            }
+          : null,
+      });
+    } catch (err) {
+      setServerAssignmentError(err instanceof Error ? err.message : "تعذر فتح الواجب");
+    } finally {
+      setServerAssignmentLoading(false);
+    }
+  }
+
+  /** Upload the photographed/typed solution file (PDF or image). */
+  async function submitAssignmentFile() {
+    if (!serverAssignment || !assignmentFile) return;
+    setAssignmentUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", assignmentFile);
+      const result = await uploadWithProgress<{ version: number; submitted_at: string }>(
+        `/assignments/${serverAssignment.id}/submissions/file`,
+        form,
+      );
+      setAssignmentUploadDone({ version: result.version, submittedAt: result.submitted_at });
+      setAssignmentFile(null);
+      toast({ message: "تم تسليم حل الواجب بنجاح", tone: "success" });
+    } catch (err) {
+      toast({ message: err instanceof Error ? err.message : "تعذر رفع ملف الحل", tone: "danger" });
+    } finally {
+      setAssignmentUploading(false);
+    }
+  }
 
   // Quiz Player State
   const [quizAnswers, setQuizAnswers] = useState<Record<string, number>>({});
@@ -703,7 +857,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                             style={{ fontSize: "12px", padding: "7px 14px", gap: "6px", background: "#059669" }}
                           >
                             <ShoppingCart size={13} />
-                            <span>شراء الدرس ({price} ج.م)</span>
+                            <span>شراء الدرس — {price} ج.م</span>
                           </button>
                         )}
                       </div>
@@ -841,7 +995,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 {asg.dueLabel ? ` • آخر موعد: ${new Date(asg.dueLabel).toLocaleDateString("ar-EG")}` : ""}
               </p>
               {asg.accessible ? (
-                <div style={{ fontSize: "12.5px", fontWeight: 800, color: "#059669", display: "flex", alignItems: "center", gap: 6 }}><CheckCircle2 size={15} /> متاح لك — افتح الدرس لتبدأ</div>
+                <button
+                  className="btn-primary"
+                  style={{ width: "100%", justifyContent: "center", gap: 6 }}
+                  onClick={() => void openServerAssignment(asg)}
+                >
+                  <FileCheck size={14} /> فتح الواجب وتسليم الحل
+                </button>
               ) : (
                 <button className="btn-primary" style={{ width: "100%", justifyContent: "center", gap: 6 }} onClick={() => { const lesson = (currentCourse?.lessons || []).find((l) => l.id === asg.lessonId); if (lesson) handleBuyLesson(lesson); }}>
                   <Lock size={14} /> اشترِ الدرس لحل الواجب
@@ -1028,7 +1188,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 </p>
               </div>
               {qz.accessible ? (
-                <div style={{ fontSize: "12.5px", fontWeight: 800, color: "#059669", display: "flex", alignItems: "center", gap: 6 }}><CheckCircle2 size={15} /> متاح — افتح الدرس ثم ابدأ الحل</div>
+                <button
+                  className="btn-primary"
+                  style={{ width: "100%", justifyContent: "center", gap: 6 }}
+                  onClick={() => void openServerQuiz(qz)}
+                >
+                  <Play size={14} /> بدء حل الاختبار
+                </button>
               ) : (
                 <button className="btn-primary" style={{ width: "100%", justifyContent: "center", gap: 6 }} onClick={() => { const lesson = (currentCourse?.lessons || []).find((l) => l.id === qz.lessonId); if (lesson) handleBuyLesson(lesson); }}>
                   <Lock size={14} /> اشترِ الدرس لفتح الكويز
@@ -1294,6 +1460,286 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       )}
 
       {/* =========================================================================
+          STANDALONE PAGE A: SERVER QUIZ SOLVING (full page, not a dialog)
+         ========================================================================= */}
+      {(serverQuiz || serverQuizLoading || serverQuizError) && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "var(--bg-app, #f8fafc)",
+            zIndex: 100000,
+            overflowY: "auto",
+            padding: "28px 20px 60px",
+          }}
+        >
+          <div
+            style={{
+              background: "var(--bg-surface, #ffffff)",
+              border: "1px solid var(--border-color)",
+              borderRadius: "20px",
+              maxWidth: "880px",
+              width: "100%",
+              margin: "0 auto",
+              padding: "26px",
+              boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border-color)", paddingBottom: "14px", marginBottom: "18px", gap: "10px" }}>
+              <div>
+                <span style={{ fontSize: "11px", fontWeight: 800, color: "#831843", background: "#fce7f3", padding: "3px 8px", borderRadius: "6px" }}>
+                  اختبار إلكتروني{serverQuiz?.durationSeconds ? ` • ${Math.ceil(serverQuiz.durationSeconds / 60)} دقيقة` : ""}
+                </span>
+                <h2 style={{ margin: "6px 0 0", fontSize: "19px", color: "var(--text-main)" }}>{serverQuiz?.title || "جاري التحميل…"}</h2>
+              </div>
+              <button
+                onClick={() => { setServerQuiz(null); setServerQuizError(null); }}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: "6px",
+                  background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)",
+                  borderRadius: "8px", padding: "7px 14px", fontSize: "12.5px", fontWeight: 800,
+                  color: "var(--text-main)", cursor: "pointer", flexShrink: 0,
+                }}
+              >
+                <X size={16} />
+                <span>خروج</span>
+              </button>
+            </div>
+
+            {serverQuizLoading && <div style={{ padding: "40px", textAlign: "center", color: "var(--text-muted)" }}>جاري تحميل أسئلة الاختبار…</div>}
+
+            {serverQuizError && (
+              <div style={{ padding: "16px", background: "#fee2e2", color: "#b91c1c", borderRadius: "10px", fontWeight: 800, fontSize: "13.5px" }}>
+                {serverQuizError}
+              </div>
+            )}
+
+            {serverQuizResult && (
+              <div style={{ padding: "18px", background: "#dcfce7", border: "1.5px solid #86efac", borderRadius: "12px", marginBottom: "18px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <Sparkles size={24} style={{ color: "#059669" }} />
+                  <div>
+                    <strong style={{ fontSize: "15px", color: "var(--text-main)", display: "block" }}>تم تسليم الاختبار وتصحيحه فورياً</strong>
+                    <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>المحاولة رقم {serverQuizResult.attemptNumber} — النتيجة مسجلة في كشف الدرجات.</span>
+                  </div>
+                </div>
+                <div style={{ fontSize: "22px", fontWeight: 900, color: "#059669" }}>
+                  {serverQuizResult.score} / {serverQuizResult.total} درجة
+                </div>
+              </div>
+            )}
+
+            {serverQuiz && !serverQuizResult && (
+              <>
+                <div style={{ display: "flex", flexDirection: "column", gap: "16px", marginBottom: "22px" }}>
+                  {serverQuiz.questions.map((q, qIdx) => {
+                    const opts = q.options || [];
+                    const isMcq = Array.isArray(opts) && opts.length > 0;
+                    return (
+                      <div key={q.id} style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "12px", padding: "16px" }}>
+                        <div style={{ display: "flex", alignItems: "flex-start", gap: "8px", marginBottom: "10px" }}>
+                          <span style={{ width: "24px", height: "24px", borderRadius: "50%", background: "#0f392b", color: "#ffffff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", fontWeight: 800, flexShrink: 0 }}>
+                            {qIdx + 1}
+                          </span>
+                          <div style={{ fontSize: "14px", color: "var(--text-main)", lineHeight: "1.6", flex: 1 }}>
+                            <FormulaRenderer text={q.prompt} />
+                          </div>
+                          <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 800, flexShrink: 0 }}>{q.points} درجة</span>
+                        </div>
+
+                        {isMcq ? (
+                          <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginInlineStart: "32px" }}>
+                            {opts.map((opt, optIdx) => {
+                              const chosen = serverQuizAnswers[q.id] === opt.text;
+                              return (
+                                <label
+                                  key={optIdx}
+                                  style={{
+                                    display: "flex", alignItems: "center", gap: "10px", padding: "8px 12px",
+                                    borderRadius: "8px",
+                                    border: chosen ? "1.5px solid #059669" : "1px solid var(--border-color)",
+                                    background: chosen ? "var(--bg-accent)" : "var(--bg-surface)",
+                                    cursor: "pointer", fontSize: "13px", color: "var(--text-main)",
+                                  }}
+                                >
+                                  <input
+                                    type="radio"
+                                    name={q.id}
+                                    checked={chosen}
+                                    onChange={() => setServerQuizAnswers({ ...serverQuizAnswers, [q.id]: opt.text })}
+                                  />
+                                  <div style={{ flex: 1 }}>
+                                    <FormulaRenderer inline text={opt.text} />
+                                  </div>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <textarea
+                            rows={4}
+                            value={serverQuizAnswers[q.id] || ""}
+                            onChange={(e) => setServerQuizAnswers({ ...serverQuizAnswers, [q.id]: e.target.value })}
+                            placeholder="اكتب إجابتك هنا…"
+                            style={{ width: "100%", padding: "10px 12px", borderRadius: "8px", border: "1px solid var(--border-color)", background: "var(--bg-surface)", color: "var(--text-main)", fontSize: "13px", fontFamily: "inherit", boxSizing: "border-box" }}
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", borderTop: "1px solid var(--border-color)", paddingTop: "16px" }}>
+                  <button type="button" className="btn-secondary" onClick={() => setServerQuiz(null)}>
+                    خروج دون تسليم
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={() => void submitServerQuiz()}
+                    disabled={serverQuizSubmitting || Object.keys(serverQuizAnswers).length < serverQuiz.questions.length}
+                    style={{ gap: "6px" }}
+                  >
+                    <Zap size={16} />
+                    <span>{serverQuizSubmitting ? "جاري التصحيح…" : "إنهاء وتسليم الاختبار"}</span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================================
+          STANDALONE PAGE B: ASSIGNMENT SOLVE (download PDF → solve → upload)
+         ========================================================================= */}
+      {(serverAssignment || serverAssignmentLoading || serverAssignmentError) && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "var(--bg-app, #f8fafc)",
+            zIndex: 100000,
+            overflowY: "auto",
+            padding: "28px 20px 60px",
+          }}
+        >
+          <div
+            style={{
+              background: "var(--bg-surface, #ffffff)",
+              border: "1px solid var(--border-color)",
+              borderRadius: "20px",
+              maxWidth: "880px",
+              width: "100%",
+              margin: "0 auto",
+              padding: "26px",
+              boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: "1px solid var(--border-color)", paddingBottom: "14px", marginBottom: "18px", gap: "10px" }}>
+              <div>
+                <span style={{ fontSize: "11px", fontWeight: 800, color: "#1e3a8a", background: "#dbeafe", padding: "3px 8px", borderRadius: "6px" }}>
+                  واجب منزلي • الدرجة: {serverAssignment?.maxScore ?? "—"}
+                </span>
+                <h2 style={{ margin: "6px 0 2px", fontSize: "19px", color: "var(--text-main)" }}>{serverAssignment?.title || "جاري التحميل…"}</h2>
+                {serverAssignment?.dueAt && (
+                  <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                    آخر موعد للتسليم: <strong>{new Date(serverAssignment.dueAt).toLocaleDateString("ar-EG")}</strong>
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={() => { setServerAssignment(null); setServerAssignmentError(null); }}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: "6px",
+                  background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)",
+                  borderRadius: "8px", padding: "7px 14px", fontSize: "12.5px", fontWeight: 800,
+                  color: "var(--text-main)", cursor: "pointer", flexShrink: 0,
+                }}
+              >
+                <X size={16} />
+                <span>رجوع للمقرر</span>
+              </button>
+            </div>
+
+            {serverAssignmentLoading && <div style={{ padding: "40px", textAlign: "center", color: "var(--text-muted)" }}>جاري تحميل الواجب…</div>}
+
+            {serverAssignmentError && (
+              <div style={{ padding: "16px", background: "#fee2e2", color: "#b91c1c", borderRadius: "10px", fontWeight: 800, fontSize: "13.5px" }}>
+                {serverAssignmentError}
+              </div>
+            )}
+
+            {serverAssignment && (
+              <>
+                <div style={{ background: "var(--bg-surface-secondary)", padding: "16px", borderRadius: "12px", border: "1px solid var(--border-color)", marginBottom: "18px" }}>
+                  <strong style={{ display: "block", fontSize: "13.5px", color: "var(--text-main)", marginBottom: "6px" }}>تعليمات الواجب:</strong>
+                  <p style={{ margin: 0, fontSize: "13px", color: "var(--text-muted)", lineHeight: "1.7", whiteSpace: "pre-line" }}>
+                    <FormulaRenderer text={serverAssignment.prompt} />
+                  </p>
+                </div>
+
+                {assignmentUploadDone ? (
+                  <div style={{ padding: "16px", background: "#dcfce7", border: "1.5px solid #86efac", borderRadius: "12px", display: "flex", alignItems: "center", gap: "10px", marginBottom: "18px" }}>
+                    <CheckCircle2 size={22} style={{ color: "#059669" }} />
+                    <div>
+                      <strong style={{ display: "block", fontSize: "14px", color: "#166534" }}>تم إرسال حل الواجب للمعلم بنجاح</strong>
+                      <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                        نسخة رقم {assignmentUploadDone.version} • {new Date(assignmentUploadDone.submittedAt).toLocaleString("ar-EG")}
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {/* Step 1: download the assignment PDF (lesson materials) */}
+                    {serverAssignment.latestSubmission?.hasFile && (
+                      <div style={{ padding: "12px 14px", background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: "10px", fontSize: "12.5px", color: "#065f46", fontWeight: 700, marginBottom: "14px" }}>
+                        ✓ سبق أن سلّمت نسخة رقم {serverAssignment.latestSubmission.version} — يمكنك رفع نسخة أحدث إن لزم.
+                      </div>
+                    )}
+
+                    {/* Step 2: solve on paper then upload a photographed PDF/images */}
+                    <div style={{ border: "1.5px dashed var(--border-color)", borderRadius: "14px", padding: "22px", textAlign: "center", marginBottom: "16px" }}>
+                      <Upload size={30} style={{ color: "#059669", margin: "0 auto 10px" }} />
+                      <strong style={{ display: "block", fontSize: "14px", color: "var(--text-main)", marginBottom: "4px" }}>
+                        ارفع ملف حل الواجب
+                      </strong>
+                      <p style={{ margin: "0 0 14px", fontSize: "12.5px", color: "var(--text-muted)", lineHeight: 1.6 }}>
+                        حمّل ورقة الواجب، حلها بالكتابة، صوّر أوراقك أو امسحها ضوئياً، وارفعها ملف PDF أو صور واضحة (حتى 50 ميجا).
+                      </p>
+                      <input
+                        type="file"
+                        accept=".pdf,.png,.jpg,.jpeg"
+                        onChange={(e) => setAssignmentFile(e.target.files?.[0] || null)}
+                        style={{ maxWidth: "320px", margin: "0 auto 12px", display: "block", fontSize: "12.5px" }}
+                      />
+                      {assignmentFile && (
+                        <div style={{ fontSize: "12.5px", color: "var(--text-main)", fontWeight: 800, marginBottom: "12px" }}>
+                          الملف المختار: {assignmentFile.name} ({Math.round(assignmentFile.size / 1024)} كيلوبايت)
+                        </div>
+                      )}
+                      <div>
+                        <button
+                          type="button"
+                          className="btn-primary"
+                          onClick={() => void submitAssignmentFile()}
+                          disabled={!assignmentFile || assignmentUploading}
+                          style={{ gap: "6px" }}
+                        >
+                          <FileCheck size={16} />
+                          <span>{assignmentUploading ? "جاري الرفع…" : "تسليم الواجب الآن"}</span>
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================================
           MODAL 0: BOOK READER MODAL
          ========================================================================= */}
       {activeBookModal && (
@@ -1349,7 +1795,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             <div style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "12px", padding: "30px 20px", textAlign: "center", marginBottom: "20px" }}>
               <BookOpen size={48} style={{ color: "#059669", margin: "0 auto 12px" }} />
               <strong style={{ display: "block", fontSize: "15px", color: "var(--text-main)", marginBottom: "6px" }}>
-                نسخة إلكترونية عالية الجودة (PDF Interactive)
+                نسخة إلكترونية تفاعلية عالية الجودة
               </strong>
               <p style={{ margin: 0, fontSize: "13px", color: "var(--text-muted)" }}>
                 تم فك تشفير النسخة الخاصة بحسابك ومتاحة للقراءة الفورية والتنزيل المباشر على جهازك.
@@ -1388,14 +1834,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           style={{
             position: "fixed",
             inset: 0,
-            backgroundColor: "rgba(0, 0, 0, 0.75)",
-            backdropFilter: "blur(12px)",
-            WebkitBackdropFilter: "blur(12px)",
+            backgroundColor: "var(--bg-app, #f8fafc)",
             zIndex: 99999,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "20px",
+            overflowY: "auto",
+            padding: "28px 20px 60px",
           }}
         >
           <div
@@ -1403,10 +1845,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               background: "var(--bg-surface, #ffffff)",
               border: "1px solid var(--border-color)",
               borderRadius: "20px",
-              maxWidth: "850px",
+              maxWidth: "980px",
               width: "100%",
-              maxHeight: "90vh",
-              overflowY: "auto",
+              margin: "0 auto",
               padding: "26px",
               boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)",
             }}
@@ -1422,9 +1863,22 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               </div>
               <button
                 onClick={() => setActiveLessonModal(null)}
-                style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: "4px" }}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  background: "var(--bg-surface-secondary)",
+                  border: "1px solid var(--border-color)",
+                  borderRadius: "8px",
+                  padding: "7px 14px",
+                  fontSize: "12.5px",
+                  fontWeight: 800,
+                  color: "var(--text-main)",
+                  cursor: "pointer",
+                }}
               >
-                <X size={22} />
+                <X size={16} />
+                <span>رجوع للمقرر</span>
               </button>
             </div>
 
@@ -1432,7 +1886,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             <div
               style={{
                 width: "100%",
-                height: "360px",
+                height: "min(62vh, 560px)",
                 background: "#0f172a",
                 borderRadius: "14px",
                 display: "flex",
@@ -1595,14 +2049,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           style={{
             position: "fixed",
             inset: 0,
-            backgroundColor: "rgba(0, 0, 0, 0.75)",
-            backdropFilter: "blur(12px)",
-            WebkitBackdropFilter: "blur(12px)",
+            backgroundColor: "var(--bg-app, #f8fafc)",
             zIndex: 99999,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "20px",
+            overflowY: "auto",
+            padding: "28px 20px 60px",
           }}
         >
           <div
@@ -1610,10 +2060,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               background: "var(--bg-surface, #ffffff)",
               border: "1px solid var(--border-color)",
               borderRadius: "20px",
-              maxWidth: "740px",
+              maxWidth: "880px",
               width: "100%",
-              maxHeight: "90vh",
-              overflowY: "auto",
+              margin: "0 auto",
               padding: "26px",
               boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)",
             }}
@@ -1632,9 +2081,22 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               </div>
               <button
                 onClick={() => setActiveAssignmentModal(null)}
-                style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer" }}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  background: "var(--bg-surface-secondary)",
+                  border: "1px solid var(--border-color)",
+                  borderRadius: "8px",
+                  padding: "7px 14px",
+                  fontSize: "12.5px",
+                  fontWeight: 800,
+                  color: "var(--text-main)",
+                  cursor: "pointer",
+                }}
               >
-                <X size={22} />
+                <X size={16} />
+                <span>رجوع للمقرر</span>
               </button>
             </div>
 
@@ -1720,14 +2182,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           style={{
             position: "fixed",
             inset: 0,
-            backgroundColor: "rgba(0, 0, 0, 0.75)",
-            backdropFilter: "blur(12px)",
-            WebkitBackdropFilter: "blur(12px)",
+            backgroundColor: "var(--bg-app, #f8fafc)",
             zIndex: 99999,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "20px",
+            overflowY: "auto",
+            padding: "28px 20px 60px",
           }}
         >
           <div
@@ -1735,10 +2193,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               background: "var(--bg-surface, #ffffff)",
               border: "1px solid var(--border-color)",
               borderRadius: "20px",
-              maxWidth: "760px",
+              maxWidth: "880px",
               width: "100%",
-              maxHeight: "90vh",
-              overflowY: "auto",
+              margin: "0 auto",
               padding: "26px",
               boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)",
             }}
@@ -1755,9 +2212,22 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               </div>
               <button
                 onClick={() => setActiveQuizModal(null)}
-                style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer" }}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  background: "var(--bg-surface-secondary)",
+                  border: "1px solid var(--border-color)",
+                  borderRadius: "8px",
+                  padding: "7px 14px",
+                  fontSize: "12.5px",
+                  fontWeight: 800,
+                  color: "var(--text-main)",
+                  cursor: "pointer",
+                }}
               >
-                <X size={22} />
+                <X size={16} />
+                <span>خروج</span>
               </button>
             </div>
 

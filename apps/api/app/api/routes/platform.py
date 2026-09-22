@@ -34,6 +34,8 @@ from app.models.platform import (
     Notification,
     Question,
     Quiz,
+    QuizQuestion,
+    QuizStatus,
 )
 from app.models.progress import LessonProgress
 from app.models.user import User, UserRole
@@ -1470,4 +1472,248 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
         ],
         "quizzes": [quiz_item(q) for q in quizzes],
         "assignments": [assignment_item(a) for a in assignments],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Standalone solving pages: quiz questions for the student + assignment PDF
+# ---------------------------------------------------------------------------
+
+
+def _quiz_for_student(db: Session, quiz_id: uuid.UUID, user: CurrentUser) -> Quiz:
+    quiz = db.scalar(
+        select(Quiz).where(
+            Quiz.id == quiz_id,
+            Quiz.institution_id == user.institution_id,
+            Quiz.status == QuizStatus.PUBLISHED,
+        )
+    )
+    if quiz is None:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    if user.role == UserRole.STUDENT and not _enrolled(db, user, quiz.course_id):
+        raise HTTPException(status_code=403, detail="Not enrolled")
+    return quiz
+
+
+@router.get("/quizzes/{quiz_id}/solve")
+def get_quiz_solve_view(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
+    """Questions for the standalone quiz-solving page.
+
+    Serves the published quiz's questions WITHOUT `correct_answer` — the
+    correct answer is only applied server-side at submit time.
+    """
+    from app.services.platform_service import _as_utc, _enrolled
+
+    quiz = db.scalar(
+        select(Quiz).where(
+            Quiz.id == quiz_id,
+            Quiz.institution_id == user.institution_id,
+            Quiz.status == QuizStatus.PUBLISHED,
+        )
+    )
+    if quiz is None:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    if user.role == UserRole.STUDENT:
+        if not _enrolled(db, user, quiz.course_id):
+            raise HTTPException(status_code=403, detail="Not enrolled")
+        # Lesson/payment gating mirrors the assessments listing.
+        if quiz.lesson_id is not None and not can_access_lesson_content(db, user, quiz.lesson_id):
+            raise HTTPException(status_code=403, detail="Lesson not unlocked")
+        now = datetime.now(UTC)
+        if _as_utc(quiz.starts_at) and _as_utc(quiz.starts_at) > now:
+            raise HTTPException(status_code=403, detail="Quiz is not open yet")
+        if _as_utc(quiz.ends_at) and _as_utc(quiz.ends_at) <= now:
+            raise HTTPException(status_code=403, detail="Quiz is closed")
+
+    rows = db.execute(
+        select(QuizQuestion, Question)
+        .join(Question, Question.id == QuizQuestion.question_id)
+        .where(QuizQuestion.quiz_id == quiz.id, Question.is_active.is_(True))
+        .order_by(QuizQuestion.position)
+    ).all()
+    total_points = sum(qq.points for qq, _q in rows)
+
+    def _safe_options(raw: object) -> object:
+        """Strip answer-revealing flags (is_correct) from stored options."""
+        if not isinstance(raw, list):
+            return raw
+        cleaned: list = []
+        for opt in raw:
+            if isinstance(opt, dict):
+                cleaned.append({k: v for k, v in opt.items() if k not in {"is_correct", "correct"}})
+            else:
+                cleaned.append(opt)
+        return cleaned
+
+    return {
+        "quiz": {
+            "id": str(quiz.id),
+            "title": quiz.title,
+            "course_id": str(quiz.course_id),
+            "lesson_id": str(quiz.lesson_id) if quiz.lesson_id else None,
+            "duration_seconds": quiz.duration_seconds,
+            "attempts_allowed": quiz.attempts_allowed,
+            "starts_at": quiz.starts_at.isoformat() if quiz.starts_at else None,
+            "ends_at": quiz.ends_at.isoformat() if quiz.ends_at else None,
+            "total_points": float(total_points),
+        },
+        "questions": [
+            {
+                "id": str(question.id),
+                "question_type": question.question_type,
+                "prompt": question.prompt,
+                "options": _safe_options(question.options),
+                "points": float(qq.points),
+            }
+            for qq, question in rows
+        ],
+    }
+
+
+@router.get("/assignments/{assignment_id}/solve")
+def get_assignment_solve_view(assignment_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
+    """Assignment details for the standalone solving page (download + upload)."""
+    from app.services.platform_service import _as_utc, _enrolled
+
+    assignment = db.scalar(
+        select(Assignment).where(
+            Assignment.id == assignment_id,
+            Assignment.institution_id == user.institution_id,
+            Assignment.status == AssignmentStatus.PUBLISHED,
+        )
+    )
+    if assignment is None:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    if user.role == UserRole.STUDENT:
+        if not _enrolled(db, user, assignment.course_id):
+            raise HTTPException(status_code=403, detail="Not enrolled")
+        if assignment.lesson_id is not None and not can_access_lesson_content(db, user, assignment.lesson_id):
+            raise HTTPException(status_code=403, detail="Lesson not unlocked")
+
+    latest_submission = db.scalar(
+        select(AssignmentSubmission)
+        .where(
+            AssignmentSubmission.assignment_id == assignment.id,
+            AssignmentSubmission.student_id == user.id,
+        )
+        .order_by(AssignmentSubmission.version.desc())
+    ) if user.role == UserRole.STUDENT else None
+
+    return {
+        "id": str(assignment.id),
+        "title": assignment.title,
+        "prompt": assignment.prompt,
+        "course_id": str(assignment.course_id),
+        "lesson_id": str(assignment.lesson_id) if assignment.lesson_id else None,
+        "due_at": assignment.due_at.isoformat() if assignment.due_at else None,
+        "max_score": float(assignment.max_score or 0),
+        "my_latest_submission": (
+            {
+                "id": str(latest_submission.id),
+                "version": latest_submission.version,
+                "status": latest_submission.status,
+                "submitted_at": latest_submission.submitted_at.isoformat() if latest_submission.submitted_at else None,
+                "has_file": bool(latest_submission.object_key),
+            }
+            if latest_submission
+            else None
+        ),
+    }
+
+
+ALLOWED_SUBMISSION_EXT = {".pdf", ".png", ".jpg", ".jpeg"}
+MAX_SUBMISSION_BYTES = 50 * 1024 * 1024  # 50MB
+
+
+@router.post("/assignments/{assignment_id}/submissions/file", status_code=201)
+async def upload_assignment_submission_file(
+    request: Request,
+    assignment_id: uuid.UUID,
+    user: Student,
+    db: Db,
+    file: UploadFile = File(...),
+) -> dict:
+    """Store the student's photographed/typed solution file (PDF or image)."""
+    enforce_rate_limit(request, bucket="upload")
+
+    from app.core.storage import generate_safe_object_key, get_storage_provider
+    from app.services.platform_service import _as_utc, _enrolled, submit_assignment
+
+    assignment = db.scalar(
+        select(Assignment).where(
+            Assignment.id == assignment_id,
+            Assignment.institution_id == user.institution_id,
+            Assignment.status == AssignmentStatus.PUBLISHED,
+        )
+    )
+    if assignment is None or not _enrolled(db, user, assignment.course_id):
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    if assignment.lesson_id is not None and not can_access_lesson_content(db, user, assignment.lesson_id):
+        raise HTTPException(status_code=403, detail="Lesson not unlocked")
+
+    filename = os.path.basename(file.filename or "submission")
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ALLOWED_SUBMISSION_EXT:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unsupported submission type: {ext or 'unknown'} — upload a PDF or image",
+        )
+
+    storage = get_storage_provider()
+    object_key = generate_safe_object_key("assignment_submissions", filename)
+    size = 0
+    tmp_dir = os.path.join(os.getenv("STORAGE_DIR", "storage"), "extraction_tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    staged = os.path.join(tmp_dir, f"sub_{uuid.uuid4().hex[:12]}_{filename}")
+    try:
+        with open(staged, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_SUBMISSION_BYTES:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail="Submission exceeds the 50MB limit",
+                    )
+                out.write(chunk)
+        if size == 0:
+            raise HTTPException(status_code=400, detail="Empty file")
+        storage.save_file(staged, object_key)
+    finally:
+        if os.path.exists(staged):
+            try:
+                os.remove(staged)
+            except OSError:
+                pass
+
+    try:
+        submission = submit_assignment(
+            db,
+            user,
+            assignment_id,
+            AssignmentSubmissionCreateRequest(
+                answer_text=f"تسليم بملف: {filename}",
+                object_key=object_key,
+                idempotency_key=f"file-{uuid.uuid4().hex[:24]}",
+            ),
+        )
+    except (LookupError, PermissionError, ValueError) as exc:
+        # Roll the stored file back if the submission is not acceptable.
+        try:
+            if storage.exists(object_key):
+                storage.delete(object_key)
+        except Exception:  # pragma: no cover
+            pass
+        detail = str(exc) or "Submission rejected"
+        code = 404 if isinstance(exc, LookupError) else (403 if isinstance(exc, PermissionError) else 422)
+        raise HTTPException(status_code=code, detail=detail) from exc
+
+    return {
+        "id": str(submission.id),
+        "version": submission.version,
+        "object_key": submission.object_key,
+        "status": submission.status,
+        "submitted_at": submission.submitted_at.isoformat() if submission.submitted_at else None,
     }
