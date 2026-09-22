@@ -20,16 +20,14 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
-from app.models.course import Course, IndexingStatus, Lesson
+from app.models.course import Course, MaterializationStatus, Lesson
 from app.models.transcript import (
-    KnowledgeChunk,
     Transcript,
     TranscriptSegment,
     TranscriptionJob,
     TranscriptionJobStatus,
     TranscriptionStatus,
 )
-from app.services.knowledge_pipeline import create_semantic_chunks, normalize_transcript_text
 from app.services.remote_compute.base import RemoteComputeProvider
 from app.services.remote_compute.kaggle_provider import KaggleProvider
 from app.services.remote_compute.local_provider import LocalFallbackProvider
@@ -226,8 +224,8 @@ class TranscriptionJobManager:
             job.current_stage = "failed"
             lesson = db.get(Lesson, job.lesson_id)
             if lesson:
-                lesson.indexing_status = IndexingStatus.FAILED
-                lesson.indexing_error = job.error_message
+                lesson.materialization_status = MaterializationStatus.FAILED
+                lesson.materialization_error = job.error_message
             db.commit()
             return {"status": "failed_recorded", "job_id": str(job.id)}
 
@@ -257,8 +255,8 @@ class TranscriptionJobManager:
             job.error_message = f"Transcript coverage ({coverage_ratio*100:.1f}%) is below minimum required {min_coverage_threshold*100:.0f}% ({final_timestamp:.1f}s of {expected_duration:.1f}s)"
             lesson = db.get(Lesson, job.lesson_id)
             if lesson:
-                lesson.indexing_status = IndexingStatus.FAILED
-                lesson.indexing_error = job.error_message
+                lesson.materialization_status = MaterializationStatus.FAILED
+                lesson.materialization_error = job.error_message
             db.commit()
             return {"error": "TRUNCATED_TRANSCRIPT", "message": job.error_message}
 
@@ -276,7 +274,6 @@ class TranscriptionJobManager:
             transcript.completed_at = datetime.now(UTC)
             # Remove old segments and chunks
             db.query(TranscriptSegment).filter(TranscriptSegment.transcript_id == transcript.id).delete()
-            db.query(KnowledgeChunk).filter(KnowledgeChunk.transcript_id == transcript.id).delete()
         else:
             transcript = Transcript(
                 lesson_id=job.lesson_id,
@@ -316,21 +313,9 @@ class TranscriptionJobManager:
             )
             for s in seg_models
         ]
-        raw_chunks = create_semantic_chunks(seg_data_list)
-        chunk_models = []
-        for rc in raw_chunks:
-            chunk_models.append(
-                KnowledgeChunk(
-                    transcript_id=transcript.id,
-                    lesson_id=job.lesson_id,
-                    course_id=job.course_id,
-                    sequence=rc["sequence"],
-                    start_time=rc["start_time"],
-                    end_time=rc["end_time"],
-                    text=rc["text"],
-                )
-            )
-        db.add_all(chunk_models)
+        # RAG chunk persistence removed with the Knowledge Center. Transcripts
+        # keep full-text + segments for playback; no chunk rows are created.
+        chunk_models: list = []
 
         # 7. Update Job and Lesson Status
         job.status = TranscriptionJobStatus.COMPLETED
@@ -343,8 +328,8 @@ class TranscriptionJobManager:
 
         lesson = db.get(Lesson, job.lesson_id)
         if lesson:
-            lesson.indexing_status = IndexingStatus.INDEXED
-            lesson.indexing_error = None
+            lesson.materialization_status = MaterializationStatus.INDEXED
+            lesson.materialization_error = None
             lesson.video_duration_seconds = int(expected_duration)
 
         db.commit()
@@ -422,8 +407,8 @@ class TranscriptionJobManager:
                     job.error_message = "Remote compute provider is offline or unreachable and local fallback is disabled"
                     lesson = db.get(Lesson, job.lesson_id)
                     if lesson:
-                        lesson.indexing_status = IndexingStatus.FAILED
-                        lesson.indexing_error = job.error_message
+                        lesson.materialization_status = MaterializationStatus.FAILED
+                        lesson.materialization_error = job.error_message
                     db.commit()
         finally:
             db.close()

@@ -21,7 +21,6 @@ import {
   X,
   Zap,
   Plus,
-  Bot,
 } from "lucide-react";
 import { Course, CurrentUser, StudentProfile, VideoLesson } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
@@ -183,32 +182,47 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     };
   }, [activeLessonModal, playbackUrl]);
 
-  // Interactive Transcript & AI Grounded Q&A State
-  const [studentAIQuestion, setStudentAIQuestion] = useState("");
-  const [studentAIAnswer, setStudentAIAnswer] = useState<string | null>(null);
-  const [studentAICitations, setStudentAICitations] = useState<Array<{
-    chunk_id: string;
-    start_time: number;
-    end_time: number;
-    time_formatted: string;
-    text_snippet: string;
-  }>>([]);
-  const [isAskingAI, setIsAskingAI] = useState(false);
-  const [activeModalTab, setActiveModalTab] = useState<"ask_ai" | "materials">("ask_ai");
-
+  // Watermark cycles through fixed spots on a timer (no smooth animation) so
+  // screen recordings cannot reliably crop around one corner. It shows the
+  // student name plus a short account fragment and the wall-clock time only.
+  const [watermarkSpot, setWatermarkSpot] = useState(0);
+  const [watermarkClock, setWatermarkClock] = useState("");
   useEffect(() => {
-    if (!activeLessonModal) {
-      setStudentAIAnswer(null);
-      setStudentAIQuestion("");
-    }
-  }, [activeLessonModal]);
+    if (!activeLessonModal) return;
+    const interval = window.setInterval(() => {
+      setWatermarkSpot((s) => (s + 1) % 4);
+      const now = new Date();
+      const hh = String(now.getHours()).padStart(2, "0");
+      const mm = String(now.getMinutes()).padStart(2, "0");
+      setWatermarkClock(`${hh}:${mm}`);
+    }, 30_000);
+    return () => window.clearInterval(interval);
+  }, [activeLessonModal?.id]);
+  const watermarkStyle: React.CSSProperties = (() => {
+    const spots = [
+      { top: "8%", right: "6%" },
+      { top: "8%", left: "6%" },
+      { bottom: "14%", left: "6%" },
+      { bottom: "14%", right: "6%" },
+    ];
+    return {
+      position: "absolute",
+      color: "rgba(255, 255, 255, 0.5)",
+      fontSize: "12.5px",
+      fontWeight: 700,
+      fontFamily: "monospace",
+      pointerEvents: "none",
+      userSelect: "none",
+      letterSpacing: "0.5px",
+      textShadow: "1px 1px 3px rgba(0,0,0,0.85)",
+      zIndex: 10,
+      ...spots[watermarkSpot],
+    };
+  })();
 
-  function seekVideoToTime(sec: number) {
-    if (videoElementRef.current) {
-      videoElementRef.current.currentTime = sec;
-      videoElementRef.current.play().catch(() => undefined);
-    }
-  }
+  // Interactive Transcript & AI Grounded Q&A State
+
+
 
   async function downloadLessonMaterial(url: string, filename: string) {
     try {
@@ -227,20 +241,6 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     }
   }
 
-  async function handleAskAITutor(e: React.FormEvent) {
-    e.preventDefault();
-    if (!activeLessonModal || !studentAIQuestion.trim() || isAskingAI) return;
-    setIsAskingAI(true);
-    try {
-      const res = await courseService.askAIAboutLesson(activeLessonModal.id, studentAIQuestion.trim());
-      setStudentAIAnswer(res.answer);
-      setStudentAICitations(res.citations || []);
-    } catch (err: unknown) {
-      setStudentAIAnswer("تعذر الحصول على إجابة حالياً: " + (err instanceof Error ? err.message : "يرجى المحاولة لاحقاً"));
-    } finally {
-      setIsAskingAI(false);
-    }
-  }
 
   const [activeAssignmentModal, setActiveAssignmentModal] = useState<CourseAssignment | null>(null);
   const [activeQuizModal, setActiveQuizModal] = useState<CourseQuiz | null>(null);
@@ -1430,25 +1430,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         style={{ width: "100%", height: "100%", objectFit: "contain", userSelect: "none" }}
                         aria-label={activeLessonModal.title}
                       />
-                      {/* Dynamic Moving Watermark: Student Name + Masked ID (Privacy Compliant, No Phone) */}
+                      {/* Moving watermark: identity + watch time (no PII beyond name/short id) */}
                       {currentUser && (
-                        <div
-                          style={{
-                            position: "absolute",
-                            top: "16%",
-                            right: "14%",
-                            color: "rgba(255, 255, 255, 0.45)",
-                            fontSize: "12.5px",
-                            fontWeight: 700,
-                            fontFamily: "monospace",
-                            pointerEvents: "none",
-                            userSelect: "none",
-                            letterSpacing: "0.5px",
-                            textShadow: "1px 1px 3px rgba(0,0,0,0.85)",
-                            zIndex: 10,
-                          }}
-                        >
+                        <div style={watermarkStyle}>
                           {currentUser.name || "طالب معتمد"} • {currentUser.id.slice(0, 8)}
+                          {watermarkClock ? ` • ${watermarkClock}` : ""}
                         </div>
                       )}
                     </div>
@@ -1492,128 +1478,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               </button>
             </div>
 
-            {/* Tab Navigation: Ask AI / Materials */}
+            {/* Lesson attachments */}
             <div style={{ borderTop: "1px solid var(--border-color)", paddingTop: "16px" }}>
-              <div style={{ display: "flex", gap: "8px", marginBottom: "16px", borderBottom: "1px solid var(--border-color)", paddingBottom: "10px" }}>
-                <button
-                  type="button"
-                  onClick={() => setActiveModalTab("ask_ai")}
-                  style={{
-                    padding: "8px 16px",
-                    borderRadius: "8px",
-                    border: activeModalTab === "ask_ai" ? "1.5px solid #059669" : "1px solid var(--border-color)",
-                    background: activeModalTab === "ask_ai" ? "var(--bg-accent, #ecfdf5)" : "transparent",
-                    color: activeModalTab === "ask_ai" ? "#059669" : "var(--text-muted)",
-                    fontWeight: 800,
-                    fontSize: "12.5px",
-                    cursor: "pointer",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "6px",
-                  }}
-                >
-                  <Bot size={15} />
-                  <span>اسأل الذكاء الاصطناعي حول الدرس</span>
-                </button>
 
-                <button
-                  type="button"
-                  onClick={() => setActiveModalTab("materials")}
-                  style={{
-                    padding: "8px 16px",
-                    borderRadius: "8px",
-                    border: activeModalTab === "materials" ? "1.5px solid #059669" : "1px solid var(--border-color)",
-                    background: activeModalTab === "materials" ? "var(--bg-accent, #ecfdf5)" : "transparent",
-                    color: activeModalTab === "materials" ? "#059669" : "var(--text-muted)",
-                    fontWeight: 800,
-                    fontSize: "12.5px",
-                    cursor: "pointer",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "6px",
-                  }}
-                >
-                  <BookOpen size={15} />
-                  <span>المذكرات والملفات المرفقة</span>
-                </button>
-              </div>
-
-              {/* TAB 2: GROUNDED STUDENT AI TUTOR Q&A */}
-              {activeModalTab === "ask_ai" && (
-                <div>
-                  <form onSubmit={handleAskAITutor} style={{ display: "flex", gap: "8px", marginBottom: "14px" }}>
-                    <input
-                      type="text"
-                      placeholder="اسأل المساعد الذكي عن أي نقطة وردت في هذا الدرس..."
-                      value={studentAIQuestion}
-                      onChange={(e) => setStudentAIQuestion(e.target.value)}
-                      disabled={isAskingAI}
-                      style={{
-                        flex: 1,
-                        padding: "10px 14px",
-                        borderRadius: "8px",
-                        border: "1px solid var(--border-color)",
-                        background: "var(--bg-surface-secondary)",
-                        color: "var(--text-main)",
-                        fontSize: "13px",
-                      }}
-                    />
-                    <button
-                      type="submit"
-                      disabled={isAskingAI || !studentAIQuestion.trim()}
-                      className="btn-primary"
-                      style={{ padding: "0 18px", fontSize: "12.5px", fontWeight: 800, gap: "6px", whiteSpace: "nowrap" }}
-                    >
-                      <Sparkles size={14} />
-                      {isAskingAI ? "جاري البحث..." : "اسأل"}
-                    </button>
-                  </form>
-
-                  {studentAIAnswer && (
-                    <div style={{ background: "var(--bg-surface-secondary)", border: "1px solid #a7f3d0", borderRadius: "10px", padding: "16px", marginTop: "10px" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#059669", fontWeight: 800, fontSize: "13px", marginBottom: "8px" }}>
-                        <Bot size={16} />
-                        <span>إجابة المساعد الذكي (الموثقة من شرح الدرس):</span>
-                      </div>
-                      <div style={{ margin: "0 0 12px", fontSize: "13px", color: "var(--text-main)", lineHeight: "1.6" }}>
-                        <FormulaRenderer text={studentAIAnswer} />
-                      </div>
-
-                      {studentAICitations && studentAICitations.length > 0 && (
-                        <div style={{ borderTop: "1px dashed var(--border-color)", paddingTop: "10px", display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}>
-                          <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)" }}>التوقيتات المرتبطة في الفيديو:</span>
-                          {studentAICitations.map((cit, idx) => (
-                            <button
-                              key={idx}
-                              type="button"
-                              onClick={() => seekVideoToTime(cit.start_time)}
-                              style={{
-                                background: "#ecfdf5",
-                                color: "#065f46",
-                                border: "1px solid #a7f3d0",
-                                borderRadius: "6px",
-                                padding: "2px 8px",
-                                fontSize: "11px",
-                                fontWeight: 800,
-                                cursor: "pointer",
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: "4px",
-                              }}
-                            >
-                              <Play size={10} fill="#065f46" />
-                              <span>{cit.time_formatted}</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* TAB 3: MATERIALS & ATTACHMENTS */}
-              {activeModalTab === "materials" && (
                 <div>
                   {activeLessonModal.materials && activeLessonModal.materials.length > 0 ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
@@ -1652,7 +1519,6 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     </div>
                   )}
                 </div>
-              )}
             </div>
           </div>
         </div>

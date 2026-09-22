@@ -8,7 +8,7 @@ from app.core.security import hash_password
 from app.main import app
 from app.models.course import Course, CourseModule, CourseStatus, Enrollment, Lesson, LessonKind
 from app.models.institution import Institution
-from app.models.platform import AIInvocation, AssignmentSubmission, QuizAttempt
+from app.models.platform import AssignmentSubmission, QuizAttempt
 from app.models.progress import LessonProgress, VideoEvent
 from app.models.user import User, UserRole
 
@@ -307,24 +307,3 @@ def test_assignment_versions_are_preserved_and_grading_is_server_side(db) -> Non
     assert graded.status_code == 200
     assert graded.json()["status"] == "approved"
     assert db.query(AssignmentSubmission).count() == 2
-
-
-def test_ai_provider_failure_is_recorded_and_never_silently_falls_back(db) -> None:
-    seed_institution(db, "academy-ai")
-    client = TestClient(app)
-    assert register(client, "ai-student@example.com", "academy-ai").status_code == 201
-    response = client.post(
-        "/api/v1/ai/invocations",
-        json={
-            "task": "tutor",
-            "prompt": "Return a JSON answer",
-            "provider": "not-configured",
-            "prompt_version": "v1",
-        },
-    )
-    assert response.status_code == 503
-    error = response.json()["error"]
-    assert error["code"] == "unsupported_provider"
-    invocation = db.query(AIInvocation).one()
-    assert invocation.status == "failed"
-    assert invocation.output_json is None

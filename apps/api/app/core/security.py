@@ -116,10 +116,13 @@ def create_video_token(
     lesson_id: uuid.UUID,
     expires_in_seconds: int = 300,
     nonce: str | None = None,
+    family_id: uuid.UUID | None = None,
 ) -> str:
     """
     Creates a tightly scoped, short-lived video streaming token (default 5 minutes).
     Scoped strictly to lesson_id with aud='video_stream', purpose='video_stream'.
+    ``nonce`` binds the token to the live session (its jti) that requested it;
+    ``family_id`` lets the stream endpoint verify the session family survives.
     """
     settings = get_settings()
     now = datetime.now(UTC)
@@ -132,6 +135,7 @@ def create_video_token(
         "purpose": "video_stream",
         "aud": "video_stream",
         "nonce": nonce or uuid.uuid4().hex[:12],
+        "family_id": str(family_id) if family_id else None,
         "jti": str(uuid.uuid4()),
         "iat": now,
         "exp": now + timedelta(seconds=expires_in_seconds),

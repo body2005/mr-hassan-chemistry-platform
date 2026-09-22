@@ -97,15 +97,8 @@ export interface VideoLesson {
   uploadedByTeacherName: string;
   uploadedAt: string;
   order: number;
-  // AI Difficulty analytics per lesson
-  predictedDifficultyScore: number; // 0-100
-  expectedStruggleRate: number; // percentage
-  predictedMisconceptionRate: number; // percentage
-  flaggedHardConcepts: string[];
-  aiSignals?: LessonAISignals;
-  indexing_status?: "not_indexed" | "in_progress" | "indexed" | "failed";
-  indexing_error?: string;
-  indexed_chunks_count?: number;
+  // Transcript materialization status (real processing state, no AI)
+  materialization_status?: string;
 }
 
 export interface Course {

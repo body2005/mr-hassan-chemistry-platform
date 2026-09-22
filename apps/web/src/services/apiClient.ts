@@ -1,7 +1,17 @@
 const API_BASE_URL = (import.meta.env.VITE_API_URL || "/api/v1").replace(/\/$/, "");
 let sessionInvalidationDispatched = false;
+let sessionKnownInvalid = false;
 let refreshInFlight: Promise<boolean> | null = null;
 let browserSessionActive = false;
+
+/**
+ * True once a request proved the session is gone (401 that did not survive a
+ * refresh). Callers that merely re-probe identity can skip redundant /auth/me
+ * calls until a successful login resets the flag.
+ */
+export function isSessionKnownInvalid(): boolean {
+  return sessionKnownInvalid;
+}
 
 export function markBrowserSessionActive(active: boolean): void {
   browserSessionActive = active;
@@ -70,6 +80,7 @@ function csrfToken(): string | undefined {
 function clearStaleSession(path: string): void {
   const normalized = path.replace(/^\/api\/v1/, "");
   if (["/auth/login", "/auth/register", "/auth/refresh"].includes(normalized)) return;
+  sessionKnownInvalid = true;
   if (!sessionInvalidationDispatched && typeof window !== "undefined") {
     browserSessionActive = false;
     sessionInvalidationDispatched = true;
@@ -82,8 +93,13 @@ function isAuthPath(path: string): boolean {
   return ["/auth/login", "/auth/register", "/auth/refresh", "/auth/logout"].includes(normalized);
 }
 
+let lastFailedRefreshAt = 0;
+
 async function refreshSession(): Promise<boolean> {
   if (refreshInFlight) return refreshInFlight;
+  // A refresh that just failed means the session is genuinely gone; do not
+  // hammer the endpoint once per subsequent 401 (storm guard).
+  if (Date.now() - lastFailedRefreshAt < 10_000) return false;
   refreshInFlight = (async () => {
     const headers = new Headers();
     const csrf = csrfToken();
@@ -94,7 +110,11 @@ async function refreshSession(): Promise<boolean> {
         headers,
         credentials: "include",
       });
-      if (!response.ok) return false;
+      if (!response.ok) {
+        lastFailedRefreshAt = Date.now();
+        return false;
+      }
+      lastFailedRefreshAt = 0;
       browserSessionActive = true;
       sessionInvalidationDispatched = false;
       return true;
@@ -137,6 +157,12 @@ export async function apiRequest<T>(path: string, init: ApiRequestInit = {}, ret
       signal: controller.signal,
     });
   } catch (error) {
+    if (requestInit.signal?.aborted) {
+      // Caller-initiated cancellation (component unmount / page change).
+      // Never label this as a timeout so callers cannot mistake it for a
+      // failure and retry it.
+      throw new ApiClientError("REQUEST_CANCELLED", "Request cancelled", 0, { cause: error });
+    }
     if (controller.signal.aborted) {
       throw new ApiClientError("REQUEST_TIMEOUT", "Request timed out", 0, { cause: error });
     }
@@ -170,6 +196,7 @@ export async function apiRequest<T>(path: string, init: ApiRequestInit = {}, ret
   }
   if (path === "/auth/login" || path === "/auth/register") {
     sessionInvalidationDispatched = false;
+    sessionKnownInvalid = false;
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;

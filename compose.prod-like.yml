@@ -101,6 +101,7 @@ services:
       # Local test credentials. The seed reconciles the existing records on
       # every compose start so the browser always has usable test accounts.
       INITIAL_TEACHER_EMAIL: teacher@hassanshaban.com
+      INITIAL_TEACHER_USERNAME: hassan_teacher
       INITIAL_TEACHER_PASSWORD: admin
       RESET_INITIAL_TEACHER_PASSWORD: "true"
       ENABLE_DEMO_ACCOUNTS: "true"
@@ -122,7 +123,6 @@ services:
     environment:
       APP_ENV: production_like
       PROCESS_TYPE: api
-      ALLOW_IN_PROCESS_OCR: "false"
       SECRET_KEY: ${SECRET_KEY:-local-docker-production-secret-key-at-least-32-chars-long}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-chemistry_platform}
       REDIS_URL: redis://redis:6379/0

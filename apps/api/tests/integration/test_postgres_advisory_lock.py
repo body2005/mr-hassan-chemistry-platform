@@ -3,7 +3,13 @@ from __future__ import annotations
 import os
 import uuid
 
+import pytest
 from sqlalchemy import create_engine
+
+pytest.importorskip(
+    "psycopg",
+    reason="Postgres integration test requires the psycopg driver (pip install 'psycopg[binary]')",
+)
 
 
 def test_source_advisory_lock_is_connection_scoped(monkeypatch) -> None:

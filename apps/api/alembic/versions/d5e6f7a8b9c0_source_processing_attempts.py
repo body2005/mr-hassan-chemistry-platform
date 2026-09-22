@@ -24,26 +24,17 @@ def upgrade() -> None:
     if not inspector.has_table("knowledge_sources"):
         return
 
-    op.add_column(
-        "knowledge_sources",
-        sa.Column("upload_percent", sa.Integer(), nullable=False, server_default="100"),
-    )
-    op.add_column(
-        "knowledge_sources",
-        sa.Column("indexing_percent", sa.Integer(), nullable=False, server_default="0"),
-    )
-    op.add_column(
-        "knowledge_sources",
-        sa.Column("processing_generation", sa.Integer(), nullable=False, server_default="1"),
-    )
-    op.add_column(
-        "knowledge_sources",
-        sa.Column("processing_attempt_id", sa.Uuid(), nullable=True),
-    )
-    op.add_column(
-        "knowledge_sources",
-        sa.Column("active_task_id", sa.String(length=255), nullable=True),
-    )
+    existing_cols = {c["name"] for c in inspector.get_columns("knowledge_sources")}
+
+    def _add(column):
+        if column.name not in existing_cols:
+            op.add_column("knowledge_sources", column)
+
+    _add(sa.Column("upload_percent", sa.Integer(), nullable=False, server_default="100"))
+    _add(sa.Column("indexing_percent", sa.Integer(), nullable=False, server_default="0"))
+    _add(sa.Column("processing_generation", sa.Integer(), nullable=False, server_default="1"))
+    _add(sa.Column("processing_attempt_id", sa.Uuid(), nullable=True))
+    _add(sa.Column("active_task_id", sa.String(length=255), nullable=True))
 
     bind.execute(
         sa.text(
@@ -56,14 +47,15 @@ def upgrade() -> None:
             sa.text(
                 "UPDATE knowledge_sources SET processing_attempt_id = :attempt_id WHERE id = :source_id"
             ),
-            {"attempt_id": uuid.uuid4(), "source_id": source_id},
+            {"attempt_id": str(uuid.uuid4()), "source_id": str(source_id)},
         )
-    op.alter_column(
-        "knowledge_sources",
-        "processing_attempt_id",
-        existing_type=sa.Uuid(),
-        nullable=False,
-    )
+    # SQLite cannot ALTER COLUMN in place; batch mode rebuilds the table.
+    with op.batch_alter_table("knowledge_sources") as batch_op:
+        batch_op.alter_column(
+            "processing_attempt_id",
+            existing_type=sa.Uuid(),
+            nullable=False,
+        )
 
 
 def downgrade() -> None:

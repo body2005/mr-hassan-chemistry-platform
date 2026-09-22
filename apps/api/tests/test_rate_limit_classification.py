@@ -13,17 +13,11 @@ from app.main import classify_rate_limit_category
 @pytest.mark.parametrize(
     ("method", "path", "expected"),
     [
-        ("GET", "/api/v1/knowledge-center/sources", "read"),
-        ("GET", "/api/v1/knowledge-center/sources/source-id/preview-page/1", "preview"),
-        ("POST", "/api/v1/knowledge-center/sources/source-id/preview-token", "preview"),
-        ("POST", "/api/v1/knowledge-center/sources/upload", "upload"),
-        ("POST", "/api/v1/knowledge-center/sources/upload-batch", "upload"),
+        ("POST", "/api/v1/lessons/lesson-id/materials", "upload"),
         ("POST", "/api/v1/lessons/lesson-id/video", "upload"),
         ("POST", "/api/v1/orders/order-id/receipt", "upload"),
         ("POST", "/api/v1/ai/chat", "ai"),
         ("POST", "/api/v1/quiz/extract-from-file", "quiz_extraction"),
-        ("POST", "/api/v1/knowledge-center/sources/source-id/reindex", "mutation"),
-        ("DELETE", "/api/v1/knowledge-center/sources/source-id", "mutation"),
         ("PATCH", "/api/v1/courses/course-id", "mutation"),
     ],
 )

@@ -20,10 +20,6 @@ class Settings(BaseSettings):
     app_env: str = "development"
     api_v1_prefix: str = "/api/v1"
     secret_key: str = Field(default="development-only-change-me", min_length=16)
-    gemini_api_key: str | None = None
-    groq_api_key: str | None = None
-    groq_model: str = "qwen/qwen3.6-27b"
-    qa_model: str = "gemini-2.5-flash"
     session_cookie_name: str = "matgar_session"
     csrf_cookie_name: str = "matgar_csrf"
     refresh_cookie_name: str = "matgar_refresh"
@@ -88,8 +84,11 @@ class Settings(BaseSettings):
     rate_limit_ai: int = Field(default=60, ge=1, le=1000)
     rate_limit_upload: int = Field(default=60, ge=1, le=1000)
     rate_limit_quiz_extraction: int = Field(default=30, ge=1, le=1000)
+    rate_limit_pdf_render: int = Field(default=240, ge=1, le=10000)
     rate_limit_api_default: int = Field(default=600, ge=1, le=10000)
     rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
+    # Max simultaneous video playback sessions per (account, lesson) pair.
+    video_max_concurrent_sessions: int = Field(default=2, ge=1, le=10)
 
     @property
     def secure_cookies(self) -> bool:

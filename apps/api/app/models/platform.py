@@ -4,10 +4,12 @@ import uuid
 from datetime import datetime
 try:
     from enum import StrEnum
-except ImportError:
+except ImportError:  # Python 3.10: enum.StrEnum arrived in 3.11
     from enum import Enum
+
     class StrEnum(str, Enum):
-        pass
+        def __str__(self) -> str:
+            return str(self.value)
 
 
 from sqlalchemy import (
@@ -380,45 +382,3 @@ class Certificate(UUIDPrimaryKeyMixin, Base):
     score: Mapped[float | None] = mapped_column(Float)
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-
-class AIInvocation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    __tablename__ = "ai_invocations"
-
-    institution_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("institutions.id", ondelete="SET NULL"), index=True
-    )
-    actor_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), index=True
-    )
-    task: Mapped[str] = mapped_column(String(60), index=True, nullable=False)
-    provider: Mapped[str] = mapped_column(String(60), nullable=False)
-    model: Mapped[str] = mapped_column(String(120), nullable=False)
-    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
-    input_tokens: Mapped[int | None] = mapped_column(Integer)
-    output_tokens: Mapped[int | None] = mapped_column(Integer)
-    estimated_cost: Mapped[float | None] = mapped_column(Float)
-    latency_ms: Mapped[int | None] = mapped_column(Integer)
-    status: Mapped[str] = mapped_column(String(20), nullable=False)
-    error_code: Mapped[str | None] = mapped_column(String(80))
-    output_json: Mapped[dict | list | None] = mapped_column(JSON)
-    approved_by: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL")
-    )
-
-
-class AIRefusalLog(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    __tablename__ = "ai_refusal_logs"
-
-    institution_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=True
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
-    )
-    course_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("courses.id", ondelete="CASCADE"), index=True, nullable=True
-    )
-    question_text: Mapped[str] = mapped_column(Text, nullable=False)
-    reason: Mapped[str] = mapped_column(String(200), default="no_matching_coverage", nullable=False)
-

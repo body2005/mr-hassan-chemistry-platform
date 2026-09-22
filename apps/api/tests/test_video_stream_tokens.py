@@ -106,6 +106,14 @@ def test_video_stream_requires_a_scoped_token_and_supports_ranges(db, monkeypatc
     assert set(payload) == {"video_token", "stream_url", "expires_in"}
     assert "manifest" not in payload
 
+    # Range streaming works with the SAME session that requested the token:
+    # the stream is bound to the issuing session (nonce == session jti), so
+    # sharing the URL with another account or an anonymous client dies here.
+    response = client.get(payload["stream_url"], headers={"Range": "bytes=0-3"})
+    assert response.status_code == 206
+    assert response.content == b"pers"
+    assert response.headers["accept-ranges"] == "bytes"
+
     student_login = client.post(
         "/api/v1/auth/login",
         json={
@@ -119,10 +127,11 @@ def test_video_stream_requires_a_scoped_token_and_supports_ranges(db, monkeypatc
     no_access = client.post(f"/api/v1/lessons/{lesson.id}/video-token", headers=student_csrf_headers)
     assert no_access.status_code == 403
 
-    assert client.get(f"/api/v1/lessons/{lesson.id}/stream").status_code == 401
+    # Missing token is now uniformly 403 (invalid/absent credentials are not
+    # distinguished to avoid revealing which part failed).
+    assert client.get(f"/api/v1/lessons/{lesson.id}/stream").status_code == 403
     assert client.get(f"/api/v1/lessons/{lesson.id}/manifest.m3u8?token={payload['video_token']}").status_code == 404
 
-    response = client.get(payload["stream_url"], headers={"Range": "bytes=0-3"})
-    assert response.status_code == 206
-    assert response.content == b"pers"
-    assert response.headers["accept-ranges"] == "bytes"
+    # Replay with the WRONG session (student cookies + teacher token) fails.
+    replay = client.get(payload["stream_url"], headers={"Range": "bytes=0-3"})
+    assert replay.status_code == 403

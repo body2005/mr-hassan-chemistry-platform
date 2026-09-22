@@ -1,5 +1,5 @@
-"""Extended API surface: chapters, lesson assets, question versioning,
-grades, AI jobs, report jobs, mastery & risk analytics."""
+"""Extended API surface: chapters, lesson assets, question versioning, grades,
+report jobs and mastery analytics."""
 from __future__ import annotations
 
 import uuid
@@ -15,15 +15,12 @@ from app.api.dependencies import CurrentUser, require_roles
 from app.core.database import get_db
 from app.core.errors import ApiError
 from app.models.extended import (
-    AIJob,
-    AIRun,
     Chapter,
     Grade,
     LessonAsset,
     QuestionBank,
     QuestionVersion,
     ReportJob,
-    RiskAssessment,
 )
 from app.models.platform import Question
 from app.models.user import User, UserRole
@@ -326,47 +323,6 @@ def read_student_grades(student_id: uuid.UUID, db: Db, user: CurrentUser):
 
 
 # ---------------------------------------------------------------------------
-# AI jobs & runs
-# ---------------------------------------------------------------------------
-
-@router.post("/ai/jobs", response_model=AIJobResponse, status_code=202)
-def create_ai_job(payload: AIJobCreateRequest, request: Request, db: Db, user: CurrentUser):
-    try:
-        job = extended_service.enqueue_ai_job(
-            db, user,
-            task=payload.task,
-            payload=payload.payload,
-            idempotency_key=payload.idempotency_key,
-        )
-    except Exception as exc:
-        _translate(exc)
-    return job
-
-
-@router.get("/ai/jobs/{job_id}", response_model=AIJobResponse)
-def read_ai_job(job_id: uuid.UUID, db: Db, user: CurrentUser):
-    try:
-        return extended_service.get_ai_job(db, user, job_id)
-    except Exception as exc:
-        _translate(exc)
-
-
-@router.get("/ai/runs", response_model=list[AIRunResponse])
-def list_ai_runs(
-    db: Db,
-    user: Annotated[User, Depends(require_roles(UserRole.INSTITUTION_ADMIN, UserRole.PLATFORM_ADMIN))],
-    limit: int = Query(default=50, ge=1, le=200),
-):
-    rows = db.scalars(
-        select(AIRun)
-        .where(AIRun.institution_id == user.institution_id)
-        .order_by(AIRun.created_at.desc())
-        .limit(limit)
-    ).all()
-    return list(rows)
-
-
-# ---------------------------------------------------------------------------
 # Report jobs
 # ---------------------------------------------------------------------------
 
@@ -394,20 +350,12 @@ def read_report_job(job_id: uuid.UUID, db: Db, user: CurrentUser):
 
 
 # ---------------------------------------------------------------------------
-# Mastery & risk
+# Mastery analytics
 # ---------------------------------------------------------------------------
 
 @router.get("/analytics/students/{student_id}/mastery")
 def student_mastery(student_id: uuid.UUID, db: Db, user: CurrentUser):
     try:
         return {"items": extended_service.compute_student_mastery(db, user, student_id)}
-    except Exception as exc:
-        _translate(exc)
-
-
-@router.post("/analytics/students/{student_id}/risk")
-def student_risk(student_id: uuid.UUID, db: Db, user: CurrentUser):
-    try:
-        return extended_service.assess_student_risk(db, user, student_id, None)
     except Exception as exc:
         _translate(exc)

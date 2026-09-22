@@ -13,7 +13,7 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
-from app.models.course import CourseStatus, EnrollmentStatus, LessonKind, IndexingStatus
+from app.models.course import CourseStatus, EnrollmentStatus, LessonKind, MaterializationStatus
 from app.models.platform import (
     AssignmentStatus,
     AttemptStatus,
@@ -181,7 +181,8 @@ class LessonCreateRequest(BaseModel):
     kind: LessonKind
     position: int = Field(ge=1, le=10_000)
     content: str | None = Field(default=None, max_length=100_000)
-    video_asset_key: str | None = Field(default=None, max_length=512)
+    # Deliberately no video_asset_key: native videos are attached only via the
+    # authorization-checked upload endpoint, never through lesson creation.
     video_duration_seconds: int | None = Field(default=None, ge=1, le=24 * 60 * 60)
     price_egp: float = Field(default=0, ge=0, le=1_000_000)
 
@@ -206,12 +207,13 @@ class LessonResponse(BaseModel):
     kind: LessonKind
     position: int
     content: str | None
-    video_asset_key: str | None
+    # The raw storage key is never serialized: it is a private-path secret and
+    # clients only need the boolean plus the token-gated stream URL.
+    has_video: bool = False
+    video_url: str | None = None
     video_duration_seconds: int | None
-    indexing_status: IndexingStatus = IndexingStatus.NOT_INDEXED
-    indexing_error: str | None = None
-    indexed_chunks_count: int = 0
-    rag_synced: bool = False
+    materialization_status: MaterializationStatus = MaterializationStatus.NOT_INDEXED
+    materialization_error: str | None = None
     price_egp: float = 0
     materials: list[LessonMaterialSummary] = []
 
@@ -585,32 +587,6 @@ class CertificateResponse(BaseModel):
     score: float | None
     issued_at: datetime
     revoked_at: datetime | None
-
-
-class AIInvocationResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    task: str
-    provider: str
-    model: str
-    prompt_version: str
-    status: str
-    latency_ms: int | None
-    input_tokens: int | None
-    output_tokens: int | None
-    estimated_cost: float | None
-    error_code: str | None
-    output_json: dict | list | None
-    created_at: datetime
-
-
-class AIInvocationRequest(BaseModel):
-    task: str = Field(min_length=2, max_length=60)
-    prompt: str = Field(min_length=1, max_length=100_000)
-    provider: str = Field(default="ollama", min_length=2, max_length=60)
-    model: str | None = Field(default=None, max_length=120)
-    prompt_version: str = Field(default="v1", min_length=1, max_length=40)
 
 
 class AuditLogResponse(BaseModel):

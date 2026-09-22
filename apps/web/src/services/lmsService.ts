@@ -1,4 +1,4 @@
-import { apiRequest, uploadWithProgress, ApiClientError, markBrowserSessionActive } from "./apiClient";
+import { apiRequest, uploadWithProgress, ApiClientError, markBrowserSessionActive, isSessionKnownInvalid } from "./apiClient";
 /**
  * ============================================================================
  * MATGAR LMS - UNIFIED DATA ACCESS LAYER (DAL)
@@ -76,12 +76,12 @@ type ApiCourse = {
       kind: "video" | "article" | "live";
       position: number;
       content: string | null;
-      video_asset_key: string | null;
+      /** The private storage key is never serialized by the API. */
+      has_video?: boolean;
+      video_url?: string | null;
       video_duration_seconds: number | null;
-      indexing_status?: "not_indexed" | "in_progress" | "indexed" | "failed";
-      indexing_error?: string | null;
-      indexed_chunks_count?: number;
       price_egp?: number;
+      materialization_status?: string;
       materials?: Array<{
         id: string;
         filename: string;
@@ -215,15 +215,12 @@ function mapApiCourse(course: ApiCourse): Course {
           durationFormatted: lesson.video_duration_seconds
             ? `${Math.ceil(lesson.video_duration_seconds / 60)} دقيقة`
             : "",
-          // A native upload never becomes a browser URL here. The player asks
-          // the API for a short-lived, lesson-scoped stream token when opened.
-          // This explicit flag avoids inventing a pseudo URL, which browsers
-          // cannot safely resolve.
-          videoUrl: lesson.video_asset_key && /^https?:\/\//i.test(lesson.video_asset_key)
-            ? lesson.video_asset_key
-            : "",
+          // Playback entry points only: the API never exposes the private
+          // storage key. External URLs entered by the teacher stay as-is;
+          // native uploads resolve through the short-lived token endpoint.
+          videoUrl: lesson.video_url || "",
           requiresProtectedPlayback: Boolean(
-            lesson.video_asset_key && !/^https?:\/\//i.test(lesson.video_asset_key),
+            lesson.has_video && lesson.video_url && lesson.video_url.startsWith("/api/v1/lessons/"),
           ),
           price: Number(lesson.price_egp || 0),
           materials: (lesson.materials || []).map((m) => ({
@@ -237,13 +234,7 @@ function mapApiCourse(course: ApiCourse): Course {
           uploadedByTeacherName: "",
           uploadedAt: lesson.video_duration_seconds ? course.updated_at : course.created_at,
           order: lesson.position,
-          predictedDifficultyScore: 0,
-          expectedStruggleRate: 0,
-          predictedMisconceptionRate: 0,
-          flaggedHardConcepts: [],
-          indexing_status: lesson.indexing_status || "not_indexed",
-          indexing_error: lesson.indexing_error || undefined,
-          indexed_chunks_count: lesson.indexed_chunks_count || 0,
+          materialization_status: lesson.materialization_status || "NOT_INDEXED",
         })),
     );
   return {
@@ -400,12 +391,30 @@ export function deduplicateNotifications(list: NotificationItem[]): Notification
 // ============================================================================
 // 1. AUTH & USER SERVICE (Server session is the ONLY source of identity)
 // ============================================================================
+let meInFlight: Promise<CurrentUser | null> | null = null;
+
 export const authService = {
   async getRegisteredUsers(): Promise<never[]> {
     return [];
   },
 
   async getCurrentUser(): Promise<CurrentUser | null> {
+    // Skip the probe entirely when a previous request already proved the
+    // session is gone. Re-probing only generates duplicate 401/refresh churn.
+    if (isSessionKnownInvalid()) {
+      markBrowserSessionActive(false);
+      return null;
+    }
+    // Concurrent callers (mount + sync events) share one in-flight /me call
+    // instead of firing several identical requests in parallel.
+    if (meInFlight) return meInFlight;
+    meInFlight = this.getCurrentUserUncached().finally(() => {
+      meInFlight = null;
+    });
+    return meInFlight;
+  },
+
+  async getCurrentUserUncached(): Promise<CurrentUser | null> {
     try {
       const apiUser = await apiRequest<ApiUser>("/auth/me");
       markBrowserSessionActive(true);
@@ -688,7 +697,6 @@ export const courseService = {
     kind: "video" | "article" | "live";
     position: number;
     content?: string;
-    video_asset_key?: string;
     video_duration_seconds?: number;
     price_egp?: number;
   }): Promise<{ id: string }> {
@@ -698,15 +706,7 @@ export const courseService = {
     });
   },
 
-  async reindexLesson(lessonId: string): Promise<{ status: string; lesson_id: string }> {
-    return apiRequest<{ status: string; lesson_id: string }>(`/lessons/${lessonId}/reindex`, {
-      method: "POST",
-    });
-  },
 
-  async getLessonIndexingStatus(lessonId: string): Promise<{ status: "not_indexed" | "in_progress" | "indexed" | "failed"; indexed_chunks_count: number; error?: string }> {
-    return apiRequest<{ status: "not_indexed" | "in_progress" | "indexed" | "failed"; indexed_chunks_count: number; error?: string }>(`/lessons/${lessonId}/indexing-status`);
-  },
 
   async getLessonTranscript(lessonId: string): Promise<{
     lesson_id: string;
@@ -737,43 +737,6 @@ export const courseService = {
     return apiRequest(`/lessons/${lessonId}/transcript/segments${queryStr}`);
   },
 
-  async askAIAboutLesson(lessonId: string, question: string): Promise<{
-    answer: string;
-    is_grounded: boolean;
-    citations: Array<{
-      chunk_id: string;
-      start_time: number;
-      end_time: number;
-      time_formatted: string;
-      text_snippet: string;
-    }>;
-  }> {
-    return apiRequest(`/lessons/${lessonId}/ai/ask`, {
-      method: "POST",
-      body: JSON.stringify({ question }),
-    });
-  },
-
-  async getLessonAISummary(lessonId: string): Promise<{
-    title: string;
-    full_overview: string;
-    total_duration_sec: number;
-    language: string;
-    sections: Array<{
-      time_range: string;
-      start_time: number;
-      end_time: number;
-      summary_snippet: string;
-    }>;
-  }> {
-    return apiRequest(`/lessons/${lessonId}/ai/summary`);
-  },
-
-  async reindexAllCourseLessons(courseId: string): Promise<{ queued_lessons: number; skipped: Array<{ lesson_id: string; reason: string }> }> {
-    return apiRequest<{ queued_lessons: number; skipped: Array<{ lesson_id: string; reason: string }> }>(`/courses/${courseId}/reindex-all`, {
-      method: "POST",
-    });
-  },
 
   async uploadLessonVideo(
     lessonId: string,

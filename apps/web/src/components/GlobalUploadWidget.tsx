@@ -354,11 +354,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                           }}
                           title={task.title}
                         >
-                          {task.title.startsWith("فهرسة:")
-                            ? task.title
-                            : task.type === "knowledge_source"
-                            ? `فهرسة: ${task.fileName || task.title}`
-                            : task.title}
+                          {task.title}
                         </div>
                         <div style={{ fontSize: "10px", color: "var(--text-muted, #64748b)" }}>
                           {task.formattedSize}
@@ -383,7 +379,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                             alignItems: "center",
                             justifyContent: "center",
                           }}
-                          title="إيقاف الفهرسة (مع حفظ الملف بالسيرفر)"
+                          title="إلغاء الرفع"
                         >
                           <X size={15} />
                         </button>

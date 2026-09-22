@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from app.core.security import hash_password
 from app.main import app
 from app.models.course import Course, CourseModule, CourseStatus, Lesson, LessonKind
-from app.models.extended import AIJob, Grade, IdempotencyKey, QuestionVersion
+from app.models.extended import Grade, IdempotencyKey, QuestionVersion, ReportJob
 from app.models.institution import Institution
 from app.models.platform import Quiz, QuizStatus
 from app.models.user import User, UserRole
@@ -302,34 +302,34 @@ def test_duplicate_submission_same_key_returns_same_row(db) -> None:
     assert len(submissions) == 1
 
 
-def test_ai_job_task_whitelist_and_idempotency(db) -> None:
-    inst = make_institution(db, "ai-inst")
-    teacher = make_user(db, inst.id, UserRole.TEACHER, "ai")
+def test_report_job_kind_whitelist_and_idempotency(db) -> None:
+    inst = make_institution(db, "report-inst")
+    teacher = make_user(db, inst.id, UserRole.TEACHER, "report")
     client = TestClient(app)
-    login(client, teacher, "ai-inst")
+    login(client, teacher, "report-inst")
 
     bad = client.post(
-        "/api/v1/ai/jobs",
-        json={"task": "destroy_world", "payload": {}},
+        "/api/v1/reports/jobs",
+        json={"report_kind": "destroy_world", "params": {}, "format": "xlsx"},
         headers=csrf_headers(client),
     )
     assert bad.status_code == 400
     assert bad.json()["error"]["code"] == "BAD_REQUEST"
 
     good = client.post(
-        "/api/v1/ai/jobs",
-        json={"task": "quiz_generation", "payload": {"lesson": "x"}, "idempotency_key": "ai-key-111"},
+        "/api/v1/reports/jobs",
+        json={"report_kind": "course", "params": {"course": "x"}, "format": "xlsx", "idempotency_key": "report-key-111"},
         headers=csrf_headers(client),
     )
     assert good.status_code == 202
     replay = client.post(
-        "/api/v1/ai/jobs",
-        json={"task": "quiz_generation", "payload": {"lesson": "x"}, "idempotency_key": "ai-key-111"},
+        "/api/v1/reports/jobs",
+        json={"report_kind": "course", "params": {"course": "x"}, "format": "xlsx", "idempotency_key": "report-key-111"},
         headers=csrf_headers(client),
     )
     assert replay.status_code == 202
     assert good.json()["id"] == replay.json()["id"]
-    jobs = db.query(AIJob).filter(AIJob.task == "quiz_generation").all()
+    jobs = db.query(ReportJob).filter(ReportJob.report_kind == "course").all()
     assert len(jobs) == 1
 
 
@@ -396,8 +396,8 @@ def test_csrf_protection_enforcement(db) -> None:
 
     # Request with Origin header and session cookie, but WITHOUT X-CSRF-Token header -> MUST return 403
     resp_blocked = client.post(
-        "/api/v1/ai/jobs",
-        json={"task": "quiz_generation", "payload": {}},
+        "/api/v1/reports/jobs",
+        json={"report_kind": "course", "params": {}},
         headers={"Origin": "http://localhost:5173"},
     )
     assert resp_blocked.status_code == 403
@@ -406,8 +406,8 @@ def test_csrf_protection_enforcement(db) -> None:
     # Request WITH matching X-CSRF-Token header -> MUST pass CSRF check
     csrf_token = client.cookies.get("matgar_csrf")
     resp_allowed = client.post(
-        "/api/v1/ai/jobs",
-        json={"task": "quiz_generation", "payload": {}, "idempotency_key": "csrf-valid-1"},
+        "/api/v1/reports/jobs",
+        json={"report_kind": "course", "params": {}, "idempotency_key": "csrf-valid-1"},
         headers={"Origin": "http://localhost:5173", "X-CSRF-Token": csrf_token},
     )
     assert resp_allowed.status_code == 202

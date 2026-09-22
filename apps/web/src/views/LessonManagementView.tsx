@@ -1,21 +1,13 @@
 import React, { useState, useRef, useEffect } from "react";
 import {
   Film,
-  Bot,
-  Brain,
   Download,
-  Eye,
   FileSpreadsheet,
   FileText,
-  HelpCircle,
-  MessageSquare,
   Paperclip,
   Plus,
   Printer,
-  RotateCcw,
-  Sparkles,
   Trash2,
-  TrendingDown,
   Upload,
   Video,
   X,
@@ -123,7 +115,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
 
 
   // Minimum Views Threshold Configured by Teacher (Requirement: AI predicts after X students watch)
-  const [minViewsThreshold, setMinViewsThreshold] = useState<number>(20);
 
   // New Lesson Form State
   const [lessonTitle, setLessonTitle] = useState("");
@@ -219,10 +210,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   const [visibleTranscriptModalCount, setVisibleTranscriptModalCount] = useState(60);
   const [loadingTranscriptModal] = useState(false);
 
-  const [summaryModalLesson, setSummaryModalLesson] = useState<VideoLesson | null>(null);
-  const [summaryData] = useState<{ title: string; full_overview: string; total_duration_sec: number; language: string; sections: Array<{ time_range: string; start_time: number; end_time: number; summary_snippet: string }> } | null>(null);
-  const [visibleSummaryCount, setVisibleSummaryCount] = useState(50);
-  const [loadingSummary] = useState(false);
 
   const filteredTranscriptModalSegments = React.useMemo(() => {
     if (!transcriptModalSearch.trim()) return transcriptModalSegments;
@@ -267,11 +254,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       : selectedYear === "2nd_secondary"
       ? "الصف الثاني الثانوي"
       : "الصف الثالث الثانوي";
-
-  function handleThresholdChange(val: number) {
-    const num = Math.max(1, Math.min(val, 200));
-    setMinViewsThreshold(num);
-  }
 
   // Handle Video File Selection
   function handleVideoChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -430,14 +412,12 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         module = await courseService.addModule(course.id, { title: "الوحدة الأولى", position: 1 });
       }
       const savedTitle = lessonTitle.trim();
-      const directCloudUrl = videoSourceType === "url" && videoExternalUrl.trim() ? videoExternalUrl.trim() : undefined;
       const addedLesson = await courseService.addLesson(module.id, {
         title: savedTitle,
         kind: "video",
         position: module.lessons.length + 1,
         content: lessonDescription.trim() || undefined,
         video_duration_seconds: lessonDuration * 60,
-        video_asset_key: directCloudUrl,
       });
 
       if (videoSourceType === "file" && selectedVideoFile) {
@@ -472,8 +452,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         notify(`تم إنشاء درس "${savedTitle}" بنجاح! جاري رفع الفيديو الآن في الخلفية إلى السحابة... يمكنك التنقل ومتابعة عملك بحرية.`);
       } else if (noteFiles.length > 0) {
         notify(`تم إنشاء درس "${savedTitle}" بنجاح! جاري رفع المذكرات الآن في الخلفية إلى السحابة... يمكنك التنقل ومتابعة عملك بحرية.`);
-      } else if (directCloudUrl) {
-        notify(`تم حفظ درس "${savedTitle}" بنجاح مع رابط الفيديو السحابي المباشر!`);
       } else {
         notify(`تم حفظ درس "${savedTitle}" بنجاح!`);
       }
@@ -505,34 +483,25 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     const headers = [
       "عنوان الدرس",
       "المدة",
-      "المشاهدات",
-      "نسبة المتابعة %",
-      "توقع التعثر %",
-      "نسبة عدم الفهم %",
-      "المقطع الأكثر إعادة",
-      "أبرز نقاط التردد والخلط",
+      "عدد الملفات المرفقة",
+      "حالة تجهيز التفريغ",
     ];
 
     const rows = activeLessons.map((l) => [
       l.title,
-      l.durationFormatted,
-      `${l.aiSignals?.viewsCount || 0} طالب`,
-      `${l.aiSignals?.completionRate || 0}%`,
-      `${l.expectedStruggleRate}%`,
-      `${l.predictedMisconceptionRate}%`,
-      l.aiSignals?.mostRewatchedSegment ? `${l.aiSignals.mostRewatchedSegment.timeRange} (${l.aiSignals.mostRewatchedSegment.conceptLabel})` : "—",
-      l.flaggedHardConcepts.join(" ، ") || "—",
+      l.durationFormatted || "—",
+      String((l.materials || []).length),
+      l.materialization_status === "INDEXED" ? "جاهز" : "غير معالج",
     ]);
 
     return {
-      title: `تقرير تحليل وتوقعات صعوبة الدروس بالذكاء الاصطناعي - ${activeYearLabel}`,
-      subtitle: `عدد الدروس: ${activeLessons.length} • الحد الأدنى للمشاهدات: ${minViewsThreshold} طالب`,
+      title: `تقرير الدروس والمذكرات - ${activeYearLabel}`,
+      subtitle: `عدد الدروس: ${activeLessons.length}`,
       headers,
       rows,
       summaryStats: [
         { label: "المادة الدراسية", value: activeCourse?.title || "المقرر الدراسي" },
         { label: "إجمالي الدروس", value: activeLessons.length },
-        { label: "معيار تفعيل الذكاء الاصطناعي", value: `${minViewsThreshold} مشاهدة` },
       ],
     };
   }
@@ -655,45 +624,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
           ))}
         </div>
 
-        {/* AI Threshold Configuration Pill (Teacher Control) */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-            background: "var(--bg-surface, #ffffff)",
-            border: "1px solid var(--border-color, #e2e8f0)",
-            padding: "6px 14px",
-            borderRadius: "10px",
-          }}
-        >
-          <Bot size={18} style={{ color: "#059669" }} />
-          <span style={{ fontSize: "12px", color: "var(--text-main)", fontWeight: 700 }}>
-            الحد الأدنى لمشاهدات الطلاب لتفعيل تحليل الـ AI:
-          </span>
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <input
-              type="number"
-              min={1}
-              max={200}
-              value={minViewsThreshold}
-              onChange={(e) => handleThresholdChange(parseInt(e.target.value) || 20)}
-              style={{
-                width: "54px",
-                padding: "3px 6px",
-                textAlign: "center",
-                fontWeight: 800,
-                fontSize: "13px",
-                borderRadius: "6px",
-                border: "1.5px solid #059669",
-                background: "var(--bg-accent, #ecfdf5)",
-                color: "var(--text-main)",
-                outline: "none",
-              }}
-            />
-            <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>طالب</span>
-          </div>
-        </div>
       </div>
 
       {/* Main 2-Column Layout: Lesson Upload Form + Per-Lesson Detailed Archive */}
@@ -1198,10 +1128,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
             </div>
           ) : (
             filteredLessons.map((lesson, idx) => {
-            const viewsCount = lesson.aiSignals?.viewsCount || 0;
-            const hasRealTelemetry = viewsCount > 0 && Boolean(lesson.aiSignals);
-            const isAnalyzed = hasRealTelemetry && viewsCount >= minViewsThreshold;
-            const completionRate = lesson.aiSignals?.completionRate || 0;
 
             return (
               <div
@@ -1210,7 +1136,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                   background: "var(--bg-surface, #ffffff)",
                   border: isDeleteMode
                     ? "1.5px solid #ef4444"
-                    : (isAnalyzed ? "1px solid var(--border-color, #e2e8f0)" : "1.5px dashed #cbd5e1"),
+                    : "1.5px dashed #cbd5e1",
                   borderRadius: "16px",
                   padding: "22px",
                   boxShadow: isDeleteMode ? "0 2px 10px rgba(239, 68, 68, 0.12)" : "0 1px 4px rgba(0,0,0,0.03)",
@@ -1320,7 +1246,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                           })()}
                           <div style={{ padding: "8px 12px", background: "#0f392b", color: "#ecfdf5", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px" }}>
                             <span>{lesson.title}</span>
-                            <span style={{ color: "#34d399", fontWeight: 700 }}>تشغيل فائق الدقة وسلس للمشاهدة والشرح</span>
+                            <span style={{ color: "#34d399", fontWeight: 700 }}>مشاهدة مباشرة</span>
                           </div>
                         </div>
                       )}
@@ -1339,7 +1265,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                         {lesson.durationFormatted}
                       </span>
                       <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>
-                        • {viewsCount} مشاهدة طالب
                       </span>
                     </div>
 
@@ -1380,145 +1305,9 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                       </button>
                     )}
 
-                    {isAnalyzed && (
-                    <span
-                      style={{
-                        fontSize: "11px",
-                        fontWeight: 800,
-                        padding: "4px 10px",
-                        borderRadius: "8px",
-                        background: lesson.expectedStruggleRate > 40 ? "var(--bg-accent-warm)" : "var(--bg-accent)",
-                        color: lesson.expectedStruggleRate > 40 ? "#ef4444" : "#059669",
-                        border: lesson.expectedStruggleRate > 40 ? "1px solid #fca5a5" : "1px solid #a7f3d0",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "5px",
-                      }}
-                    >
-                      <Sparkles size={13} />
-                      <span>{lesson.expectedStruggleRate > 40 ? "درس عالي الصعوبة" : "صعوبة معتدلة"}</span>
-                    </span>
-                  )}
                   </div>
                 </div>
 
-                {/* Show analytics only after actual student telemetry is available. */}
-                {isAnalyzed ? (
-                  <>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px", marginBottom: "16px" }}>
-                      <div style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "10px", padding: "12px 14px" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#059669", marginBottom: "2px" }}>
-                          <Eye size={15} />
-                          <span style={{ fontSize: "11px", fontWeight: 800 }}>نسبة متابعة الدرس:</span>
-                        </div>
-                        <strong style={{ display: "block", fontSize: "20px", color: "var(--text-main)" }}>
-                          {completionRate}%
-                        </strong>
-                        <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>متوسط إتمام المشاهدة</span>
-                      </div>
-
-                      <div style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "10px", padding: "12px 14px" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#d97706", marginBottom: "2px" }}>
-                          <TrendingDown size={15} />
-                          <span style={{ fontSize: "11px", fontWeight: 800 }}>توقع التعثر وصعوبة الدرس:</span>
-                        </div>
-                        <strong style={{ display: "block", fontSize: "20px", color: "var(--text-main)" }}>
-                          {lesson.expectedStruggleRate}%
-                        </strong>
-                        <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>نسبة الطلاب المتوقع تعثرهم</span>
-                      </div>
-
-                      <div style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "10px", padding: "12px 14px" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#d97706", marginBottom: "2px" }}>
-                          <Brain size={15} />
-                          <span style={{ fontSize: "11px", fontWeight: 800 }}>نسبة عدم الفهم المرصودة:</span>
-                        </div>
-                        <strong style={{ display: "block", fontSize: "20px", color: "var(--text-main)" }}>
-                          {lesson.predictedMisconceptionRate}%
-                        </strong>
-                        <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>خلط المفاهيم</span>
-                      </div>
-                    </div>
-
-                    {lesson.aiSignals && (
-                      <div
-                        style={{
-                          background: "var(--bg-surface-secondary)",
-                          border: "1px solid var(--border-color)",
-                          borderRadius: "12px",
-                          padding: "14px",
-                          marginBottom: "14px",
-                        }}
-                      >
-                        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "10px" }}>
-                          <Bot size={15} style={{ color: "#059669" }} />
-                          <strong style={{ fontSize: "12px", color: "var(--text-main)" }}>
-                            مصادر تحليل الذكاء الاصطناعي لهذا الدرس (AI Telemetry Signals):
-                          </strong>
-                        </div>
-
-                        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "10px" }}>
-                          {lesson.aiSignals.mostRewatchedSegment && (
-                            <div style={{ background: "var(--bg-surface)", padding: "10px", borderRadius: "8px", border: "1px solid var(--border-color)" }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#2563eb", marginBottom: "3px" }}>
-                                <RotateCcw size={13} />
-                                <strong style={{ fontSize: "11px" }}>١. أكثر مقطع تمت إعادته (Heatmap):</strong>
-                              </div>
-                              <span style={{ display: "block", fontSize: "11.5px", color: "var(--text-main)", fontWeight: 700 }}>
-                                {lesson.aiSignals.mostRewatchedSegment.timeRange}
-                                <small style={{ color: "#2563eb", marginInlineStart: "6px" }}>
-                                  ({lesson.aiSignals.mostRewatchedSegment.replayCount} إعادة تكرار)
-                                </small>
-                              </span>
-                              <small style={{ display: "block", fontSize: "10.5px", color: "var(--text-muted)", marginTop: "2px" }}>
-                                {lesson.aiSignals.mostRewatchedSegment.conceptLabel}
-                              </small>
-                            </div>
-                          )}
-
-                          {lesson.aiSignals.commentsSentiment && (
-                            <div style={{ background: "var(--bg-surface)", padding: "10px", borderRadius: "8px", border: "1px solid var(--border-color)" }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#d97706", marginBottom: "3px" }}>
-                                <MessageSquare size={13} />
-                                <strong style={{ fontSize: "11px" }}>٢. تحليل تعليقات وأسئلة الطلاب:</strong>
-                              </div>
-                              <span style={{ display: "block", fontSize: "11.5px", color: "var(--text-main)", fontWeight: 700 }}>
-                                رصد {lesson.aiSignals.commentsSentiment.confusionQuestionsCount} سؤال عدم فهم
-                              </span>
-                              <small style={{ display: "block", fontSize: "10.5px", color: "#d97706", marginTop: "2px" }}>
-                                {lesson.aiSignals.commentsSentiment.sampleQuestion}
-                              </small>
-                            </div>
-                          )}
-
-                          {lesson.aiSignals.assignmentPerformance && (
-                            <div style={{ background: "var(--bg-surface)", padding: "10px", borderRadius: "8px", border: "1px solid var(--border-color)" }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#059669", marginBottom: "3px" }}>
-                                <FileText size={13} />
-                                <strong style={{ fontSize: "11px" }}>٣. متوسط درجات واجب الدرس:</strong>
-                              </div>
-                              <span style={{ display: "block", fontSize: "11.5px", color: "var(--text-main)", fontWeight: 700 }}>
-                                {lesson.aiSignals.assignmentPerformance.averageScore}%
-                              </span>
-                            </div>
-                          )}
-
-                          {lesson.aiSignals.quizPerformance && (
-                            <div style={{ background: "var(--bg-surface)", padding: "10px", borderRadius: "8px", border: "1px solid var(--border-color)" }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#059669", marginBottom: "3px" }}>
-                                <HelpCircle size={13} />
-                                <strong style={{ fontSize: "11px" }}>٤. نتائج ونسب خطأ الكويز:</strong>
-                              </div>
-                              <span style={{ display: "block", fontSize: "11.5px", color: "var(--text-main)", fontWeight: 700 }}>
-                                {lesson.aiSignals.quizPerformance.averageScore}% نسبة الدقة
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </>
-                ) : null}
 
                 {/* Attached Materials Section & Add Material Button */}
                 <div style={{ background: "var(--bg-surface-secondary, #f8fafc)", padding: "10px 14px", borderRadius: "10px", border: "1px solid var(--border-color)" }}>
@@ -1718,137 +1507,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                   >
                     عرض المزيد من المقاطع ({visibleTranscriptModalCount} معروض من إجمالي {filteredTranscriptModalSegments.length})
                   </button>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* TEACHER AI SUMMARY MODAL */}
-      {summaryModalLesson && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            backgroundColor: "rgba(0, 0, 0, 0.75)",
-            backdropFilter: "blur(12px)",
-            WebkitBackdropFilter: "blur(12px)",
-            zIndex: 99999,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "20px",
-          }}
-        >
-          <div
-            style={{
-              background: "var(--bg-surface, #ffffff)",
-              border: "1px solid var(--border-color)",
-              borderRadius: "20px",
-              maxWidth: "760px",
-              width: "100%",
-              maxHeight: "88vh",
-              overflowY: "auto",
-              padding: "26px",
-              boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "18px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <Bot size={20} style={{ color: "#0f766e" }} />
-                <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 800, color: "var(--text-main)" }}>
-                  ملخص الذكاء الاصطناعي للدرس: {summaryModalLesson.title}
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSummaryModalLesson(null)}
-                style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", display: "flex" }}
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            {loadingSummary ? (
-              <div style={{ textAlign: "center", padding: "30px", color: "var(--text-muted)" }}>
-                جاري توليد ملخص الدرس والمفاهيم الجوهرية...
-              </div>
-            ) : !summaryData ? (
-              <div style={{ padding: "20px", textAlign: "center", background: "var(--bg-surface-secondary)", borderRadius: "10px", color: "var(--text-muted)" }}>
-                تعذر توليد الملخص لعدم توفر نص كافي مفهرس.
-              </div>
-            ) : (
-              <div>
-                <div style={{ background: "var(--bg-accent, #ecfdf5)", border: "1px solid #a7f3d0", borderRadius: "12px", padding: "16px", marginBottom: "18px" }}>
-                  <h4 style={{ margin: "0 0 8px", fontSize: "14px", fontWeight: 800, color: "#065f46" }}>
-                    نظرة شاملة على الدرس ({summaryData.language === "ar" ? "اللغة العربية" : summaryData.language}):
-                  </h4>
-                  <p style={{ margin: 0, fontSize: "13px", color: "var(--text-main)", lineHeight: "1.6" }}>
-                    {summaryData.full_overview}
-                  </p>
-                </div>
-
-                {summaryData.sections && summaryData.sections.length > 0 && (
-                  <div>
-                    <h4 style={{ margin: "0 0 10px", fontSize: "13.5px", fontWeight: 800, color: "var(--text-main)" }}>
-                      المحاور والمقاطع الزمنية المفهرسة:
-                    </h4>
-                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                      {summaryData.sections.slice(0, visibleSummaryCount).map((sec, idx) => (
-                        <div
-                          key={idx}
-                          style={{
-                            display: "flex",
-                            alignItems: "flex-start",
-                            gap: "10px",
-                            padding: "10px 14px",
-                            borderRadius: "10px",
-                            background: "var(--bg-surface-secondary)",
-                            border: "1px solid var(--border-color)",
-                          }}
-                        >
-                          <span
-                            style={{
-                              background: "#0f766e",
-                              color: "#ffffff",
-                              padding: "2px 8px",
-                              borderRadius: "6px",
-                              fontSize: "11px",
-                              fontWeight: 800,
-                              flexShrink: 0,
-                              marginTop: "2px",
-                            }}
-                          >
-                            {sec.time_range}
-                          </span>
-                          <span style={{ fontSize: "12.5px", color: "var(--text-main)", lineHeight: "1.5" }}>
-                            {sec.summary_snippet}
-                          </span>
-                        </div>
-                      ))}
-
-                      {summaryData.sections.length > visibleSummaryCount && (
-                        <button
-                          type="button"
-                          onClick={() => setVisibleSummaryCount((prev) => prev + 50)}
-                          style={{
-                            padding: "8px",
-                            borderRadius: "8px",
-                            border: "1px dashed #0f766e",
-                            background: "var(--bg-accent, #ecfdf5)",
-                            color: "#0f766e",
-                            fontSize: "12px",
-                            fontWeight: 700,
-                            cursor: "pointer",
-                            marginTop: "4px",
-                          }}
-                        >
-                          عرض المزيد من المحاور المفهرسة ({visibleSummaryCount} معروض من إجمالي {summaryData.sections.length})
-                        </button>
-                      )}
-                    </div>
-                  </div>
                 )}
               </div>
             )}

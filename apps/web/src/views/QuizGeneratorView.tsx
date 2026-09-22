@@ -20,7 +20,7 @@ import {
   UploadCloud,
   X,
 } from "lucide-react";
-import { CalendarScheduleEvent, Course, NotificationItem, QuestionTypeConfig } from "../types/lms";
+import { CalendarScheduleEvent, Course, CurrentUser, NotificationItem, QuestionTypeConfig } from "../types/lms";
 import { aiClient } from "../services/aiClient";
 import { calendarService, notificationService } from "../services/lmsService";
 import { GeneratedQuestion, QuizDraftResponse } from "../types/ai";
@@ -31,16 +31,32 @@ import { formatChemicalFormula } from "../utils/formulaUtils";
 import { quizHistoryService, PublishedQuizRecord } from "../services/quizHistoryService";
 import { QuizHistorySection } from "../components/QuizHistorySection";
 
-const QUIZ_DRAFT_STORAGE_KEY = "lms_quiz_maker_unuploaded_draft_v1";
+const QUIZ_DRAFT_STORAGE_KEY_PREFIX = "lms_quiz_maker_unuploaded_draft_v2";
 
-function getInitialQuizDraft() {
+function getQuizDraftStorageKey(userId: string): string {
+  return `${QUIZ_DRAFT_STORAGE_KEY_PREFIX}:${userId}`;
+}
+
+function getInitialQuizDraft(userId: string) {
   try {
-    const raw = localStorage.getItem(QUIZ_DRAFT_STORAGE_KEY);
+    const raw = localStorage.getItem(getQuizDraftStorageKey(userId));
     if (!raw) return null;
     return JSON.parse(raw);
   } catch (e) {
     console.error("Error reading saved quiz draft:", e);
     return null;
+  }
+}
+
+async function computeFileFingerprint(file: File): Promise<string> {
+  try {
+    const buf = await file.arrayBuffer();
+    const digest = await crypto.subtle.digest("SHA-256", buf);
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  } catch {
+    return "";
   }
 }
 
@@ -67,17 +83,25 @@ function formatLocalDate(d: Date): string {
 
 interface QuizGeneratorViewProps {
   courses: Course[];
+  currentUser: CurrentUser;
 }
 
-export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses }) => {
+export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, currentUser }) => {
   const toast = useToast();
-  const initialDraftRef = useRef(getInitialQuizDraft());
+  const quizDraftStorageKey = getQuizDraftStorageKey(currentUser.id);
+  const initialDraftRef = useRef(getInitialQuizDraft(currentUser.id));
   const initialDraft = initialDraftRef.current;
 
   const [hasRestoredDraft, setHasRestoredDraft] = useState<boolean>(() => !!initialDraft);
 
   const [extractingFile, setExtractingFile] = useState(false);
   const [extractedFileName, setExtractedFileName] = useState<string | null>(null);
+  // The draft is bound to the exact file it came from: name + SHA-256 + time.
+  // A new extraction replaces all three, so a restored draft can never be
+  // mistaken for the result of a different file.
+  const [extractedFileFingerprint, setExtractedFileFingerprint] = useState<string | null>(null);
+  const [extractedAt, setExtractedAt] = useState<string | null>(null);
+  const extractionRequestRef = useRef(0);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -262,7 +286,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
     return DEFAULT_MANUAL_QUESTIONS;
   });
 
-  const [loading, setLoading] = useState(false);
+  const [loading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<QuizDraftResponse | null>(() => initialDraft?.draft || null);
   const [approved, setApproved] = useState(false);
@@ -281,7 +305,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
   useEffect(() => {
     // If the quiz is approved/published, remove the un-uploaded draft
     if (approved) {
-      localStorage.removeItem(QUIZ_DRAFT_STORAGE_KEY);
+      localStorage.removeItem(quizDraftStorageKey);
       setHasRestoredDraft(false);
       return;
     }
@@ -318,7 +342,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
     };
 
     try {
-      localStorage.setItem(QUIZ_DRAFT_STORAGE_KEY, JSON.stringify(payload));
+      localStorage.setItem(quizDraftStorageKey, JSON.stringify(payload));
       setHasRestoredDraft(true);
     } catch (e) {
       console.error("Failed to auto-save un-uploaded quiz draft:", e);
@@ -345,11 +369,12 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
     manualDescription,
     manualQuestions,
     draft,
+    quizDraftStorageKey,
   ]);
 
   function handleResetNewQuiz() {
     if (window.confirm("هل أنت متأكد من رغبتك في مسح مسودة هذا الاختبار الحالية والبدء باختبار جديد من البداية؟")) {
-      localStorage.removeItem(QUIZ_DRAFT_STORAGE_KEY);
+      localStorage.removeItem(quizDraftStorageKey);
       setDraft(null);
       setManualTitle("");
       setManualDescription("");
@@ -403,77 +428,46 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
     setTypeConfigs(newConfigs);
   }
 
-  // ================= AI GENERATION HANDLER =================
-  async function handleGenerate() {
-    setLoading(true);
-    setError(null);
-    setApproved(false);
-
-    try {
-      const selectedLessons = courseLessons.filter((l) =>
-        selectedLessonIds.includes(l.id)
-      );
-      const targetLessons = selectedLessons.length > 0 ? selectedLessons : courseLessons;
-      const lessonPassages = targetLessons.map(
-        (l) => `${l.title}\n${l.description}\n${(l.flaggedHardConcepts || []).join("، ")}`.trim()
-      );
-
-      const allowedTypesList = typeConfigs
-        .filter((t) => t.count > 0)
-        .map((t) => t.id);
-
-      const typeContext = assessmentType === "quiz" ? "اختبار تقييمي إلكتروني" : "واجب منزلي وتدريبات وتكليفات تطبيقية";
-      const promptContext = teacherPrompt.trim()
-        ? `نوع النشاط المطلوب: ${typeContext}\nتوجيهات المعلم: ${teacherPrompt.trim()}\n`
-        : `نوع النشاط المطلوب: ${typeContext}\n`;
-
-      const selectedCourseId = currentCourse?.id;
-      if (!selectedCourseId) {
-        setError("يرجى اختيار مادة دراسية صالحة أولاً لتوليد الاختبار منها.");
-        return;
-      }
-
-      const resp = await aiClient.generateQuiz(
-        {
-          course_id: selectedCourseId,
-          lesson_ids: targetLessons.map((l) => l.id),
-          lesson_contents: lessonPassages.length > 0 ? lessonPassages : [promptContext],
-          question_count: totalQuestions,
-          allowed_types: allowedTypesList.length > 0 ? allowedTypesList : ["multiple_choice", "essay"],
-          type_allocations: typeConfigs,
-          topics: targetLessons.length > 0 ? targetLessons.map((l) => l.title) : [currentCourse?.title || "محتوى الدرس"],
-          quiz_mode: quizMode,
-          title: manualTitle.trim() || `${assessmentType === "quiz" ? "اختبار" : "واجب"}: ${currentCourse.title}`,
-        },
-        false
-      );
-
-      setDraft(resp);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "عذراً، حدث خطأ أثناء توليد مسودة الاختبار. تأكد من تشغيل خادم الذكاء الاصطناعي ورفع محتوى الدرس.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
   // ================= EXTRACT QUIZ DIRECTLY FROM UPLOADED FILE =================
   async function handleExtractFromFile(file: File) {
     if (!file) return;
+    const requestNumber = extractionRequestRef.current + 1;
+    extractionRequestRef.current = requestNumber;
     setExtractingFile(true);
     setError(null);
+    setDraft(null);
+    setExtractedFileName(null);
+    setExtractedFileFingerprint(null);
+    setExtractedAt(null);
+    localStorage.removeItem(quizDraftStorageKey);
     try {
       const resp = await aiClient.extractQuizFromFile(
         file,
         currentCourse?.id,
-        selectedLessonIds.length > 0 ? selectedLessonIds[0] : undefined
+        selectedLessonIds.length > 0 ? selectedLessonIds[0] : undefined,
+        assessmentType === "assignment" ? "assignment" : "quiz",
       );
+
+      if (extractionRequestRef.current !== requestNumber) return;
 
       if (!resp.questions || resp.questions.length === 0) {
         throw new Error("لم يتم العثور على أسئلة واضحة في الملف. يرجى التأكد من احتواء الملف على أسئلة أو ورقة امتحان.");
       }
 
+      // Fail loudly on a checksum mismatch: the saved questions must belong
+      // to the exact bytes the teacher selected, not a stale or cached copy.
+      const fingerprint = await computeFileFingerprint(file);
+      const serverChecksum = String(
+        (resp.metadata as Record<string, unknown> | undefined)?.source_checksum ?? "",
+      );
+      if (fingerprint && serverChecksum && fingerprint !== serverChecksum) {
+        throw new Error("فشل التحقق من بصمة الملف. النتيجة لا تطابق الملف المرفوع — أعد المحاولة.");
+      }
+
       setDraft(resp);
       setExtractedFileName(file.name);
+      setExtractedFileFingerprint(fingerprint || null);
+      setExtractedAt(new Date().toISOString());
       setCreationMode("ai");
       setApproved(false);
 
@@ -482,6 +476,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
         tone: "success",
       });
     } catch (err: unknown) {
+      if (extractionRequestRef.current !== requestNumber) return;
       const errMsg = err instanceof Error ? err.message : "فشل استخراج الأسئلة من الملف. يرجى التأكد من صحة الملف وصيغته.";
       setError(errMsg);
       toast({
@@ -489,77 +484,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
         tone: "danger",
       });
     } finally {
-      setExtractingFile(false);
-    }
-  }
-
-  // ================= GENERATE MORE FROM CONTEXT =================
-  async function handleGenerateMore() {
-    if (!draft || draft.questions.length === 0) return;
-    setLoading(true);
-    setError(null);
-
-    try {
-      const selectedLessons = courseLessons.filter((l) =>
-        selectedLessonIds.includes(l.id)
-      );
-      const targetLessons = selectedLessons.length > 0 ? selectedLessons : courseLessons;
-      const lessonPassages = targetLessons.map(
-        (l) => `${l.title}\n${l.description}\n${(l.flaggedHardConcepts || []).join("، ")}`.trim()
-      );
-
-      const allowedTypesList = typeConfigs
-        .filter((t) => t.count > 0)
-        .map((t) => t.id);
-
-      const existingStems = draft.questions.map((q) => q.question_text);
-
-      const selectedCourseId = currentCourse?.id;
-      if (!selectedCourseId) {
-        setError("يرجى اختيار مادة دراسية صالحة أولاً.");
-        return;
-      }
-
-      const resp = await aiClient.generateQuiz(
-        {
-          course_id: selectedCourseId,
-          lesson_ids: targetLessons.map((l) => l.id),
-          lesson_contents: lessonPassages.length > 0 ? lessonPassages : [""],
-          question_count: totalQuestions,
-          allowed_types: allowedTypesList.length > 0 ? allowedTypesList : ["multiple_choice", "essay"],
-          type_allocations: typeConfigs,
-          topics: targetLessons.length > 0 ? targetLessons.map((l) => l.title) : [currentCourse?.title || "محتوى الدرس"],
-          quiz_mode: quizMode,
-          exclude_stems: existingStems,
-          title: manualTitle.trim() || `${assessmentType === "quiz" ? "اختبار" : "واجب"}: ${currentCourse.title}`,
-        },
-        true
-      );
-
-      const newQuestions = (resp.questions || []).filter(
-        (nq) => !existingStems.some((stem) => stem.trim().toLowerCase() === nq.question_text.trim().toLowerCase())
-      );
-
-      if (newQuestions.length === 0) {
-        setError("لم يتم العثور على أسئلة إضافية جديدة لم تُذكر من قبل في هذا الدرس.");
-        return;
-      }
-
-      const startId = draft.questions.length + 1;
-      const renumbered = newQuestions.map((q, idx) => ({ ...q, id: startId + idx }));
-      const combined = [...draft.questions, ...renumbered];
-      const newTotal = combined.reduce((sum, q) => sum + (q.points || 0), 0);
-
-      setDraft({
-        ...draft,
-        questions: combined,
-        total_points: newTotal,
-        is_complete: resp.is_complete !== false,
-      });
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "حدث خطأ أثناء توليد المزيد من الأسئلة.");
-    } finally {
-      setLoading(false);
+      if (extractionRequestRef.current === requestNumber) setExtractingFile(false);
     }
   }
 
@@ -846,7 +771,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
 
       setApproved(true);
       setShowPublishConfirmModal(false);
-      localStorage.removeItem(QUIZ_DRAFT_STORAGE_KEY);
+      localStorage.removeItem(quizDraftStorageKey);
       setHasRestoredDraft(false);
       toast({
         message: `تم اعتماد ونشر ${isQuiz ? "الاختبار" : "الواجب"} وإدراجه في سجل الاختبارات المرفوعة وجدول الطلاب بنجاح!`,
@@ -1271,13 +1196,25 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
                         </span>
                         <button
                           type="button"
-                          onClick={() => setExtractedFileName(null)}
+                          onClick={() => {
+                            setExtractedFileName(null);
+                            setExtractedFileFingerprint(null);
+                            setExtractedAt(null);
+                          }}
                           style={{ background: "none", border: "none", cursor: "pointer", padding: "2px", color: "#991b1b" }}
                           title="إلغاء الملف"
                         >
                           <X size={14} />
                         </button>
                       </div>
+                      {extractedFileFingerprint && (
+                        <div style={{ fontSize: "10px", color: "var(--text-muted)", marginBottom: "8px", lineHeight: 1.6 }}>
+                          <div>
+                            بصمة الملف: <span style={{ fontFamily: "monospace", direction: "ltr", unicodeBidi: "embed" }}>{extractedFileFingerprint.slice(0, 16)}…</span>
+                          </div>
+                          {extractedAt && <div>استُخرجت في: {new Date(extractedAt).toLocaleString("ar-EG")}</div>}
+                        </div>
+                      )}
                       <button
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
@@ -1606,13 +1543,13 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
           {/* Action Trigger Button */}
           {creationMode === "ai" ? (
             <button
-              onClick={handleGenerate}
-              disabled={loading}
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
               className="btn-primary"
               style={{ width: "100%", justifyContent: "center", padding: "12px", fontSize: "14px", fontWeight: 800, background: assessmentType === "quiz" ? "#0f766e" : "#0f392b" }}
             >
-              {loading ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}
-              {loading ? "جاري صياغة الأسئلة بدقة..." : (assessmentType === "quiz" ? "اصنع الاختبار بالذكاء الاصطناعي الآن" : "اصنع الواجب بالذكاء الاصطناعي الآن")}
+              <UploadCloud size={18} />
+              {assessmentType === "quiz" ? "ارفع ملف الأسئلة للاستخراج الآن" : "ارفع ملف الواجب للاستخراج الآن"}
             </button>
           ) : (
             <button
@@ -1746,18 +1683,6 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
                 </div>
 
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                  {creationMode === "ai" && draft && (
-                    <button
-                      type="button"
-                      onClick={handleGenerateMore}
-                      disabled={loading}
-                      className="btn-secondary"
-                      style={{ fontSize: "12px", gap: "6px", color: "#0f766e", borderColor: "#0f766e" }}
-                    >
-                      {loading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-                      <span>توليد المزيد من هذا الدرس</span>
-                    </button>
-                  )}
 
                   {hasRestoredDraft && !approved && (
                     <button
@@ -2019,7 +1944,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses })
                               }}
                             >
                               <img
-                                src={`/api/v1/knowledge-center/assets/${assetId}/view`}
+                                src={`/api/v1/lessons/assets/${assetId}/view`}
                                 alt="رسم توضيحي للسؤال"
                                 style={{ width: "100%", maxHeight: "180px", objectFit: "contain", display: "block", borderRadius: "6px" }}
                                 onError={(e) => {

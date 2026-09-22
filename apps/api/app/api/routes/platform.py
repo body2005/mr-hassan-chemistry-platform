@@ -5,7 +5,8 @@ import logging
 import os
 import tempfile
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from collections import defaultdict, deque
 UTC = timezone.utc
 from typing import Annotated
 
@@ -18,13 +19,11 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import CurrentUser, require_roles
 from app.core.database import get_db
+from app.core.config import get_settings
 from app.core.rate_limit import enforce_rate_limit
 from app.core.storage import generate_safe_object_key, get_storage_provider
-from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus, Lesson, IndexingStatus
-from app.models.transcript import KnowledgeChunk, Transcript, TranscriptSegment, TranscriptionStatus
-from app.services.knowledge_pipeline import generate_grounded_answer, generate_grounded_summary
-from app.services.ai_access_policy import can_access_course_knowledge, enforce_ai_access
-from app.services.transcript_indexer import execute_lesson_indexing, sync_lesson_rag
+from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus, Lesson, MaterializationStatus
+from app.models.transcript import Transcript, TranscriptSegment, TranscriptionStatus
 from app.models.platform import (
     Assignment,
     AssignmentStatus,
@@ -68,7 +67,106 @@ from app.schemas import (
 
 from app.services import platform_service
 from app.services.audit_service import record_audit
-from app.services.payment_service import can_access_lesson_content, student_can_use_ai_for_lesson
+from app.services.payment_service import can_access_lesson_content
+from app.models.platform import RefreshSession, RevokedSession
+
+VIDEO_TOKEN_TTL_SECONDS = 300
+# A video session is keyed by (account, lesson). Issue a token only while the
+# concurrent-session budget for that pair is not exhausted; return its expiry.
+def _register_video_session(db: Session, user_id: uuid.UUID, lesson_id: uuid.UUID, ttl_seconds: int) -> datetime:
+    settings = get_settings()
+    max_sessions = settings.video_max_concurrent_sessions
+    now = datetime.now(UTC)
+    base_key = f"video-session:{user_id}:{lesson_id}"
+    r = _video_session_redis()
+    if r is not None:
+        try:
+            # Drop expired entries first so the budget reflects live sessions.
+            r.zremrangebyscore(base_key, "-inf", now.timestamp())
+            if r.zcard(base_key) >= max_sessions:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Too many concurrent video sessions for this account.",
+                    headers={"Retry-After": "30"},
+                )
+            r.zadd(base_key, {str(uuid.uuid4()): now.timestamp() + ttl_seconds})
+            r.expire(base_key, ttl_seconds + 5)
+            return now + timedelta(seconds=ttl_seconds)
+        except HTTPException:
+            raise
+        except Exception:
+            logger.warning("Redis unavailable for video session tracking; falling back to memory")
+    # Dev/test fallback: best-effort in-process ledger.
+    entries = _memory_video_sessions[base_key]
+    cutoff = now.timestamp()
+    while entries and entries[0] <= cutoff:
+        entries.popleft()
+    if len(entries) >= max_sessions:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many concurrent video sessions for this account.",
+            headers={"Retry-After": "30"},
+        )
+    entries.append(now.timestamp() + ttl_seconds)
+    return now + timedelta(seconds=ttl_seconds)
+
+
+_memory_video_sessions: dict[str, deque[float]] = defaultdict(deque)
+
+
+def _video_session_redis():
+    try:
+        import redis as _redis
+
+        client = _redis.Redis.from_url(get_settings().redis_url, socket_timeout=1.0, socket_connect_timeout=1.0)
+        client.ping()
+        return client
+    except Exception:
+        return None
+
+
+def _revoke_video_sessions(db: Session, user_id: uuid.UUID, family_id: uuid.UUID | None) -> None:
+    """Record a deny-until marker that outlives the 5-minute token TTL."""
+    from app.core.rate_limit import _get_redis_client
+
+    now = datetime.now(UTC)
+    until = now + timedelta(seconds=VIDEO_TOKEN_TTL_SECONDS + 30)
+    r = _get_redis_client()
+    keys = [f"video-deny:{user_id}"]
+    if family_id is not None:
+        keys.append(f"video-deny:{family_id}")
+    if r is not None:
+        try:
+            for key in keys:
+                r.set(key, until.isoformat(), ex=VIDEO_TOKEN_TTL_SECONDS + 30)
+            return
+        except Exception:
+            logger.warning("Redis unavailable for video revocation; using memory marker")
+    for key in keys:
+        _memory_video_deny[key] = until
+
+
+_memory_video_deny: dict[str, datetime] = {}
+
+
+def _video_denied(db: Session, user_id: uuid.UUID, family_id: uuid.UUID | None) -> bool:
+    from app.core.rate_limit import _get_redis_client
+
+    now = datetime.now(UTC)
+    r = _get_redis_client()
+    keys = [f"video-deny:{user_id}"]
+    if family_id is not None:
+        keys.append(f"video-deny:{family_id}")
+    if r is not None:
+        try:
+            for key in keys:
+                if r.get(key):
+                    return True
+            return False
+        except Exception:
+            pass
+    return any(_memory_video_deny.get(key, now) > now for key in keys)
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -317,7 +415,7 @@ async def upload_lesson_video(
     previous_asset = lesson.video_asset_key
     video_url = f"/api/v1/lessons/{lesson_id}/video"
     lesson.video_asset_key = stored_path
-    lesson.indexing_status = IndexingStatus.NOT_INDEXED
+    lesson.materialization_status = MaterializationStatus.NOT_INDEXED
     lesson.indexing_error = None
     try:
         db.commit()
@@ -346,6 +444,10 @@ async def upload_lesson_video(
 
 @router.get("/lessons/{lesson_id}/video")
 def stream_lesson_video(lesson_id: uuid.UUID, request: Request, user: CurrentUser, db: Db) -> Response:
+    # Teacher/admin management preview. Students must use the token stream.
+    if user.role == UserRole.STUDENT:
+        raise HTTPException(status_code=403, detail="Student playback requires a video stream token")
+    enforce_rate_limit(request, bucket="lesson-video-preview", category="read")
     lesson, _ = _require_lesson_access(db, user, lesson_id)
     if lesson.video_asset_key and not lesson.video_asset_key.startswith("/api/"):
         media_type = mimetypes.guess_type(lesson.video_asset_key)[0] or "video/mp4"
@@ -364,14 +466,40 @@ def stream_lesson_video(lesson_id: uuid.UUID, request: Request, user: CurrentUse
 
 
 @router.post("/lessons/{lesson_id}/video-token")
-def create_lesson_video_token(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
-    from app.core.security import create_video_token
+def create_lesson_video_token(lesson_id: uuid.UUID, request: Request, user: CurrentUser, db: Db) -> dict:
+    from app.core.security import create_video_token, decode_session_token
+
+    enforce_rate_limit(request, bucket="lesson-video-token", category="read")
     lesson, _ = _require_lesson_access(db, user, lesson_id)
-    token = create_video_token(user=user, lesson_id=lesson.id, expires_in_seconds=300)
+
+    session_cookie = request.cookies.get(get_settings().session_cookie_name)
+    session_payload = decode_session_token(session_cookie) if session_cookie else None
+    if not session_payload:
+        raise HTTPException(status_code=401, detail="A live session is required for video playback")
+    if _video_denied(db, user.id, session_payload.get("family_id")):
+        raise HTTPException(status_code=403, detail="Video access has been revoked")
+    session_id = str(session_payload.get("jti") or "")
+    if not session_id:
+        raise HTTPException(status_code=401, detail="A live session is required for video playback")
+    family_id: uuid.UUID | None = None
+    raw_family = session_payload.get("family_id")
+    if raw_family:
+        try:
+            family_id = uuid.UUID(str(raw_family))
+        except (TypeError, ValueError):
+            family_id = None
+    expires_at = _register_video_session(db, user.id, lesson.id, VIDEO_TOKEN_TTL_SECONDS)
+    token = create_video_token(
+        user=user,
+        lesson_id=lesson.id,
+        expires_in_seconds=VIDEO_TOKEN_TTL_SECONDS,
+        nonce=session_id,
+        family_id=family_id,
+    )
     return {
         "video_token": token,
         "stream_url": f"/api/v1/lessons/{lesson.id}/stream?token={token}",
-        "expires_in": 300,
+        "expires_in": VIDEO_TOKEN_TTL_SECONDS,
     }
 
 
@@ -382,13 +510,39 @@ def stream_lesson_authenticated_range(
     db: Db,
     token: str | None = None,
 ) -> Response:
-    from app.core.security import decode_video_token
-    if token:
-        payload = decode_video_token(token)
-        if not payload or payload.get("lesson_id") != str(lesson_id):
-            raise HTTPException(status_code=403, detail="Invalid or expired video stream token")
-    else:
-        raise HTTPException(status_code=401, detail="Authentication required for video stream")
+    from app.core.security import decode_session_token, decode_video_token
+
+    enforce_rate_limit(request, bucket="lesson-video-stream", category="read")
+    payload = decode_video_token(token) if token else None
+    if not payload or payload.get("lesson_id") != str(lesson_id):
+        raise HTTPException(status_code=403, detail="Invalid or expired video stream token")
+    if payload.get("purpose") != "video_stream" or payload.get("aud") != "video_stream":
+        raise HTTPException(status_code=403, detail="Invalid or expired video stream token")
+    nonce = str(payload.get("nonce") or "")
+    if not nonce:
+        raise HTTPException(status_code=403, detail="Invalid or expired video stream token")
+
+    user_id = uuid.UUID(str(payload["sub"]))
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=403, detail="Invalid or expired video stream token")
+
+    # Replay the same authorization the token endpoint enforced at issue time.
+    if _video_denied(db, user.id, payload.get("family_id")):
+        raise HTTPException(status_code=403, detail="Video access has been revoked")
+    # Strict session binding: the streaming client must present the live
+    # session that requested the token (nonce == session jti, same subject).
+    # Same-origin <video> requests carry cookies automatically, so browser
+    # playback works; link sharing, other accounts, and anonymous replays die.
+    session_cookie = request.cookies.get(get_settings().session_cookie_name)
+    session_payload = decode_session_token(session_cookie) if session_cookie else None
+    session_ok = bool(
+        session_payload
+        and str(session_payload.get("sub")) == str(user.id)
+        and str(session_payload.get("jti") or "") == nonce
+    )
+    if not session_ok:
+        raise HTTPException(status_code=403, detail="Video session is no longer active")
 
     lesson, _ = _lesson_course(db, lesson_id)
     if lesson.video_asset_key and not lesson.video_asset_key.startswith("/api/"):
@@ -414,7 +568,7 @@ def get_lesson_transcript(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> di
     if not transcript:
         return {
             "lesson_id": str(lesson.id),
-            "status": "not_indexed" if lesson.indexing_status == IndexingStatus.NOT_INDEXED else "processing",
+            "status": "not_indexed" if lesson.materialization_status == MaterializationStatus.NOT_INDEXED else "processing",
             "language": "ar",
             "duration_seconds": 0.0,
             "full_text": lesson.transcript_text or "",
@@ -462,52 +616,6 @@ def get_lesson_transcript_segments(
     }
 
 
-@router.post("/lessons/{lesson_id}/ai/ask")
-def ask_ai_about_lesson(
-    lesson_id: uuid.UUID,
-    payload: dict,
-    user: CurrentUser,
-    request: Request,
-    db: Db,
-) -> dict:
-    lesson, course = _require_lesson_access(db, user, lesson_id)
-    course_id = course.id
-    enforce_ai_access(db, user, request, {"feature": "lesson_ask", "lesson_id": str(lesson_id)})
-    if user.role == UserRole.STUDENT and not student_can_use_ai_for_lesson(db, user, lesson_id):
-        raise HTTPException(status_code=402, detail="An AI subscription or paid lesson entitlement is required")
-    if not can_access_course_knowledge(db, user, course_id):
-        raise HTTPException(status_code=403, detail="Course access denied")
-
-    question = payload.get("question", "").strip()
-    if not question:
-        raise HTTPException(status_code=422, detail="Question cannot be empty")
-
-    return generate_grounded_answer(
-        db=db,
-        course_id=course_id,
-        lesson_id=lesson_id,
-        student_id=user.id,
-        question=question,
-    )
-
-
-@router.get("/lessons/{lesson_id}/ai/summary")
-def get_lesson_ai_summary(
-    lesson_id: uuid.UUID,
-    user: CurrentUser,
-    request: Request,
-    db: Db,
-) -> dict:
-    lesson, course = _require_lesson_access(db, user, lesson_id)
-    course_id = course.id
-    enforce_ai_access(db, user, request, {"feature": "lesson_summary", "lesson_id": str(lesson_id)})
-    if user.role == UserRole.STUDENT and not student_can_use_ai_for_lesson(db, user, lesson_id):
-        raise HTTPException(status_code=402, detail="An AI subscription or paid lesson entitlement is required")
-    if not can_access_course_knowledge(db, user, course_id):
-        raise HTTPException(status_code=403, detail="Course access denied")
-    return generate_grounded_summary(db=db, lesson_id=lesson_id)
-
-
 @router.post("/modules/{module_id}/lessons", response_model=dict, status_code=201)
 def create_lesson(
     module_id: uuid.UUID,
@@ -522,7 +630,7 @@ def create_lesson(
         raise _bad_request(exc) from exc
 
     # Video files are pure playback assets; AI indexing is permanently disabled for video lessons.
-    lesson.indexing_status = IndexingStatus.NOT_INDEXED
+    lesson.materialization_status = MaterializationStatus.NOT_INDEXED
     db.commit()
 
     return {
@@ -530,66 +638,8 @@ def create_lesson(
         "title": lesson.title,
         "kind": lesson.kind,
         "position": lesson.position,
-        "indexing_status": "not_indexed",
+        "materialization_status": "not_indexed",
         "price_egp": float(lesson.price_egp or 0),
-    }
-
-
-@router.post("/lessons/{lesson_id}/reindex", status_code=200)
-def reindex_lesson(
-    lesson_id: uuid.UUID,
-    db: Db,
-    user: Manager,
-) -> JSONResponse:
-    lesson, course = _lesson_course(db, lesson_id)
-    try:
-        platform_service.ensure_course_manager(user, course)
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-    lesson.indexing_status = IndexingStatus.NOT_INDEXED
-    lesson.indexing_error = None
-    db.commit()
-
-    return JSONResponse(
-        status_code=status.HTTP_200_OK,
-        content={"status": "not_indexed", "lesson_id": str(lesson.id), "message": "Video indexing is permanently disabled."},
-    )
-
-
-@router.get("/lessons/{lesson_id}/indexing-status")
-def get_lesson_indexing_status(
-    lesson_id: uuid.UUID,
-    db: Db,
-    user: CurrentUser,
-) -> dict:
-    lesson, _ = _require_lesson_access(db, user, lesson_id)
-
-    status_val = lesson.indexing_status.value if hasattr(lesson.indexing_status, "value") else str(lesson.indexing_status)
-    return {
-        "status": status_val,
-        "indexed_chunks_count": lesson.indexed_chunks_count or 0,
-        "error": lesson.indexing_error,
-        "rag_synced": bool(getattr(lesson, "rag_synced", False)),
-    }
-
-
-@router.post("/lessons/{lesson_id}/sync-rag")
-async def sync_lesson_rag_endpoint(
-    lesson_id: uuid.UUID,
-    db: Db,
-    user: Manager,
-) -> dict:
-    lesson, course = _lesson_course(db, lesson_id)
-    try:
-        platform_service.ensure_course_manager(user, course)
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-    result = await sync_lesson_rag(str(lesson.id), max_retries=3)
-    return {
-        "lesson_id": str(lesson.id),
-        **result,
     }
 
 
@@ -1256,3 +1306,65 @@ def update_asr_config(payload: ASRConfigPayload):
         "mode": "remote_kaggle" if os.environ["KAGGLE_ASR_URL"] else "local_whisper",
         "provider": "QwenCleo-ASR (Kaggle GPU)" if os.environ["KAGGLE_ASR_URL"] else "Faster-Whisper Small (Local CPU)"
     }
+
+
+# ---------------------------------------------------------------------------
+# Lesson materials (standalone; replaces Knowledge-Center based materials)
+# ---------------------------------------------------------------------------
+
+@router.post("/lessons/{lesson_id}/materials", status_code=201)
+async def upload_lesson_material(
+    request: Request,
+    lesson_id: uuid.UUID,
+    user: Manager,
+    db: Db,
+    file: UploadFile = File(...),
+) -> dict:
+    enforce_rate_limit(request, bucket="upload")
+    from app.services.lesson_materials import upload_material
+
+    asset = await upload_material(db, user, lesson_id, file)
+    return {
+        "id": str(asset.id),
+        "lesson_id": str(asset.lesson_id),
+        "filename": asset.filename,
+        "size_bytes": asset.size_bytes or 0,
+        "mime_type": asset.mime_type,
+        "download_url": f"/api/v1/lessons/{asset.lesson_id}/materials/{asset.id}/download",
+    }
+
+
+@router.get("/lessons/{lesson_id}/materials/{asset_id}/download")
+def download_lesson_material(
+    lesson_id: uuid.UUID,
+    asset_id: uuid.UUID,
+    user: CurrentUser,
+    db: Db,
+):
+    from app.services.lesson_materials import open_material_stream
+
+    stream, media_type, filename = open_material_stream(db, user, lesson_id, asset_id, as_attachment=True)
+    from urllib.parse import quote
+
+    return StreamingResponse(
+        stream,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename or 'material')}",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.delete("/lessons/{lesson_id}/materials/{asset_id}", status_code=204)
+def delete_lesson_material(
+    lesson_id: uuid.UUID,
+    asset_id: uuid.UUID,
+    user: Manager,
+    db: Db,
+) -> Response:
+    from app.services.lesson_materials import delete_material
+
+    delete_material(db, user, lesson_id, asset_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

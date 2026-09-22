@@ -118,7 +118,8 @@ def add_lesson(db: Session, user: User, module_id: uuid.UUID, payload: LessonCre
         kind=payload.kind,
         position=payload.position,
         content=payload.content.strip() if payload.content else None,
-        video_asset_key=payload.video_asset_key,
+        # Native videos are attached only through the protected upload
+        # endpoint; the create payload can never plant a storage key.
         video_duration_seconds=payload.video_duration_seconds,
         price_egp=payload.price_egp,
     )
@@ -130,7 +131,7 @@ def add_lesson(db: Session, user: User, module_id: uuid.UUID, payload: LessonCre
 
 def delete_lesson(db: Session, user: User, module_id: uuid.UUID, lesson_id: uuid.UUID) -> None:
     from app.models.course import Lesson
-    from app.models.transcript import Transcript, TranscriptSegment, KnowledgeChunk, TranscriptionJob
+    from app.models.transcript import Transcript, TranscriptSegment, TranscriptionJob
     from app.models.progress import LessonProgress, VideoEvent
     from app.models.extended import LessonAsset
 
@@ -157,7 +158,6 @@ def delete_lesson(db: Session, user: User, module_id: uuid.UUID, lesson_id: uuid
                 pass
 
     # 2. Clean up all child relational entities
-    db.query(KnowledgeChunk).filter(KnowledgeChunk.lesson_id == lesson_id).delete()
     db.query(TranscriptSegment).filter(TranscriptSegment.lesson_id == lesson_id).delete()
     db.query(Transcript).filter(Transcript.lesson_id == lesson_id).delete()
     db.query(TranscriptionJob).filter(TranscriptionJob.lesson_id == lesson_id).delete()

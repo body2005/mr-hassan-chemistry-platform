@@ -20,7 +20,6 @@ export type NavTab =
   | "MyCourses"
   | "MySubmissions"
   | "LessonManagement"
-  | "AIKnowledgeCenter"
   | "QuizGen"
   | "Submissions"
   | "StudentAnalytics"
@@ -61,7 +60,6 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
 
   const teacherNavItems: Array<{ id: NavTab; label: string; sub: string; icon: LucideIcon }> = [
     { id: "LessonManagement", label: t.navLessonManagement, sub: t.navLessonManagementSub, icon: UploadCloud },
-    { id: "AIKnowledgeCenter", label: lang === "ar" ? "مركز المعرفة الذكي" : "AI Knowledge Center", sub: lang === "ar" ? "مصادر وتغذية المنهج الذكي" : "Manage AI teaching sources", icon: BookOpen },
     { id: "QuizGen", label: lang === "ar" ? "صانع وسجل الاختبارات" : "Quizzes & History", sub: lang === "ar" ? "توليد، نشر، وأرشيف الاختبارات" : "Create, publish & quiz history", icon: FileQuestion },
     { id: "Submissions", label: t.navSubmissions, sub: t.navSubmissionsSub, icon: Layers },
     { id: "StudentAnalytics", label: t.navStudentAnalytics, sub: t.navStudentAnalyticsSub, icon: Users },

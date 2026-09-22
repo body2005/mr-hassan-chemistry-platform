@@ -174,12 +174,23 @@ def is_text_garbled(text: str) -> bool:
     if pres_arabic_ratio > 0.20:
         return True
 
-    words = [w.strip('.,()!?[]:\"\'') for w in text.split()]
-    words = [w for w in words if w]
+    raw_words = text.split()
+    # MCQ option markers - '(a)', '(b)', 'A)', unicode bracket markers - are
+    # deliberate answer choices, not mojibake fragments. Detect them on the RAW
+    # token (before stripping punctuation) so '(a) S' never counts as fragmented.
+    option_marker = re.compile(r"^[\(\[]?[A-Za-zء-ي][\)\]]?$")
+    stripped_words = [w.strip('.,()!?[]' + chr(34) + chr(39)) for w in raw_words]
+    words = [w for w in stripped_words if w]
     if len(words) > 5:
         # Check 4: Mixed fragmented non-words (single Latin letters separated by spaces e.g. 'c R Ú e C G')
-        single_char_words = sum(1 for w in words if len(w) == 1 and w.isascii())
-        if (single_char_words / len(words)) > 0.35 and arabic_ratio < 0.30:
+        option_positions = {i for i, w in enumerate(raw_words) if option_marker.match(w)}
+        adjacent_answers = {i + 1 for i in option_positions}  # answer text right after a marker
+        single_char_words = sum(
+            1
+            for i, w in enumerate(stripped_words)
+            if w and len(w) == 1 and w.isascii() and i not in option_positions and i not in adjacent_answers
+        )
+        if (single_char_words / max(len(words), 1)) > 0.35 and arabic_ratio < 0.30:
             return True
 
         # Check 5: Reversed Arabic (visual order instead of logical order)
@@ -410,9 +421,12 @@ def ocr_pdf_page(file_bytes: bytes | None = None, page_number: int = 1, lang: st
     except Exception:
         pass
 
-    if os.getenv("PROCESS_TYPE") == "api" or os.getenv("ALLOW_IN_PROCESS_OCR", "").lower() in ("false", "0", "no"):
-        if os.getenv("APP_ENV", "").lower() in ("production", "production_like"):
-            raise RuntimeError("Heavy OCR is strictly disallowed inside the Web API process in production to preserve memory. Work must be handled by Celery worker.")
+    # Quiz/assignment extraction is now the ONLY consumer of OCR, and it runs
+    # synchronously per single page/image inside the API process. The old
+    # blanket production ban made every scanned upload fail with 422. Allow
+    # in-process OCR for single-page requests, keep it configurable off.
+    if os.getenv("ALLOW_IN_PROCESS_OCR", "true").strip().lower() in ("false", "0", "no"):
+        raise RuntimeError("In-process OCR is disabled by configuration (ALLOW_IN_PROCESS_OCR=false).")
 
     pdf = None
     try:
@@ -674,7 +688,11 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
                 # PyMuPDF extraction is optional so installations without it keep the
                 # existing text/table pipeline working.
                 image_limit = int(os.getenv("IMAGE_OCR_MAX_PER_PAGE", "12"))
-                img_data_list = extract_pdf_page_images(file_bytes, p_idx)[:image_limit]
+                img_data_list = extract_pdf_page_images(
+                    file_bytes,
+                    p_idx,
+                    file_path=file_path,
+                )[:image_limit]
                 for img_idx, img_item in enumerate(img_data_list, start=1):
                     img_bytes = img_item[0]
                     width = img_item[1]
@@ -1130,9 +1148,12 @@ def ocr_image_bytes(image_bytes: bytes, lang: str = "ara+eng") -> tuple[str, str
         except Exception:
             logger.debug("PaddleOCR image extraction unavailable; using Tesseract fallback")
 
-    if os.getenv("PROCESS_TYPE") == "api" or os.getenv("ALLOW_IN_PROCESS_OCR", "").lower() in ("false", "0", "no"):
-        if os.getenv("APP_ENV", "").lower() in ("production", "production_like"):
-            raise RuntimeError("Heavy OCR is strictly disallowed inside the Web API process in production to preserve memory. Work must be handled by Celery worker.")
+    # Quiz/assignment extraction is now the ONLY consumer of OCR, and it runs
+    # synchronously per single page/image inside the API process. The old
+    # blanket production ban made every scanned upload fail with 422. Allow
+    # in-process OCR for single-page requests, keep it configurable off.
+    if os.getenv("ALLOW_IN_PROCESS_OCR", "true").strip().lower() in ("false", "0", "no"):
+        raise RuntimeError("In-process OCR is disabled by configuration (ALLOW_IN_PROCESS_OCR=false).")
 
     try:
         import pytesseract
@@ -1148,7 +1169,12 @@ def ocr_image_bytes(image_bytes: bytes, lang: str = "ara+eng") -> tuple[str, str
         return "", None
 
 
-def extract_pdf_page_images(file_bytes: bytes, page_number: int) -> list[tuple[bytes, int, int, list[float] | None]]:
+def extract_pdf_page_images(
+    file_bytes: bytes | None,
+    page_number: int,
+    *,
+    file_path: str | None = None,
+) -> list[tuple[bytes, int, int, list[float] | None]]:
     """Extract original raster images and their bounding box from a PDF page via PyMuPDF when available."""
     try:
         try:
@@ -1156,7 +1182,12 @@ def extract_pdf_page_images(file_bytes: bytes, page_number: int) -> list[tuple[b
         except ImportError:
             import fitz  # fallback PyMuPDF alias
 
-        document = fitz.open(stream=file_bytes, filetype="pdf")
+        if file_path and os.path.exists(file_path):
+            document = fitz.open(file_path)
+        elif file_bytes:
+            document = fitz.open(stream=file_bytes, filetype="pdf")
+        else:
+            return []
         try:
             page = document.load_page(page_number - 1)
             images: list[tuple[bytes, int, int, list[float] | None]] = []

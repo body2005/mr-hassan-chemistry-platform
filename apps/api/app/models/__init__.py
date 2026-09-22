@@ -2,7 +2,6 @@ from app.models.base import Base
 from app.models.course import Course, CourseModule, Enrollment, Lesson
 from app.models.institution import Institution
 from app.models.platform import (
-    AIInvocation,
     Assignment,
     AssignmentAttempt,
     AssignmentSubmission,
@@ -22,12 +21,9 @@ from app.models.progress import LessonProgress, VideoEvent
 from app.models.payment import PaymentOrder, StudentEntitlement
 from app.models.user import PasswordResetToken, User
 from app.models.extended import (
-    AIJob,
-    AIRun,
     Chapter,
     Grade,
     IdempotencyKey,
-    Intervention,
     LearningObjective,
     LessonAsset,
     NotificationDelivery,
@@ -39,28 +35,8 @@ from app.models.extended import (
     RubricCriterion,
     StudentMastery,
 )
-from app.models.knowledge_center import (
-    AssessmentQuestion,
-    AssessmentQuestionUsage,
-    AssessmentSource,
-    KnowledgeAsset,
-    KnowledgeConcept,
-    KnowledgeConceptLink,
-    KnowledgeConceptRelation,
-    KnowledgeConversationTurn,
-    KnowledgeDocument,
-    KnowledgeLessonRelation,
-    KnowledgeOutlineNode,
-    KnowledgeQuestionImageLink,
-    KnowledgeQuestionRecord,
-    KnowledgeSource,
-    KnowledgeQueryEvent,
-    KnowledgeUnitRecord,
-    SourceRole,
-    SourceStatus,
-)
 from app.models.transcript import (
-    KnowledgeChunk,
+
     Transcript,
     TranscriptSegment,
     TranscriptionJob,
@@ -77,7 +53,6 @@ __all__ = [
     "Lesson",
     "Transcript",
     "TranscriptSegment",
-    "KnowledgeChunk",
     "TranscriptionStatus",
     "TranscriptionJob",
     "TranscriptionJobStatus",
@@ -87,7 +62,6 @@ __all__ = [
     "VideoEvent",
     "PaymentOrder",
     "StudentEntitlement",
-    "AIInvocation",
     "Assignment",
     "AssignmentAttempt",
     "AssignmentSubmission",
@@ -113,19 +87,6 @@ __all__ = [
     "NotificationDelivery",
     "LearningObjective",
     "StudentMastery",
-    "RiskAssessment",
-    "Intervention",
     "ReportJob",
-    "AIJob",
-    "AIRun",
     "IdempotencyKey",
-    "KnowledgeQuestionRecord",
-    "KnowledgeQuestionImageLink",
-    "KnowledgeOutlineNode",
-    "KnowledgeLessonRelation",
-    "KnowledgeConcept",
-    "KnowledgeConceptLink",
-    "KnowledgeConceptRelation",
-    "KnowledgeQueryEvent",
-    "KnowledgeConversationTurn",
 ]

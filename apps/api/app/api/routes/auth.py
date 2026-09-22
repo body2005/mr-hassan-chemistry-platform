@@ -260,6 +260,15 @@ def logout(
                         RefreshSession.family_id == uuid.UUID(str(family_id)),
                         RefreshSession.revoked_at.is_(None),
                     ).update({RefreshSession.revoked_at: datetime.now(UTC)}, synchronize_session=False)
+                # Kill any short-lived video tokens issued from this session:
+                # playback must die with the session, not outlive it.
+                from app.api.routes.platform import _revoke_video_sessions
+
+                _revoke_video_sessions(
+                    db,
+                    user.id,
+                    uuid.UUID(str(family_id)) if family_id else None,
+                )
                 record_audit(db, request, action="logout", resource_type="session", actor=user)
                 db.commit()
         except (KeyError, TypeError, ValueError):

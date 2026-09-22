@@ -2,7 +2,6 @@ import { PageLoadingScreen } from "./components/PageLoadingScreen";
 import { lazy, Suspense, useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Sidebar, NavTab } from "./components/Sidebar";
 import { Header } from "./components/Header";
-import { FloatingAITutor } from "./components/FloatingAITutor";
 import { GlobalUploadWidget } from "./components/GlobalUploadWidget";
 import { Course, CurrentUser, NotificationItem } from "./types/lms";
 import { useTranslation } from "./utils/i18n";
@@ -20,7 +19,6 @@ const viewLoaders = {
   MyCourses: () => import("./views/MyCoursesView"),
   MySubmissions: () => import("./views/MySubmissionsView"),
   LessonManagement: () => import("./views/LessonManagementView"),
-  AIKnowledgeCenter: () => import("./views/AIKnowledgeCenterView"),
   QuizGen: () => import("./views/QuizGeneratorView"),
   Submissions: () => import("./views/SubmissionsView"),
   StudentAnalytics: () => import("./views/StudentAnalyticsView"),
@@ -45,7 +43,6 @@ const GeneralHomeView = lazy(() => viewLoaders.GeneralHome().then((m) => ({ defa
 const MyCoursesView = lazy(() => viewLoaders.MyCourses().then((m) => ({ default: m.MyCoursesView })));
 const MySubmissionsView = lazy(() => viewLoaders.MySubmissions().then((m) => ({ default: m.MySubmissionsView })));
 const LessonManagementView = lazy(() => viewLoaders.LessonManagement().then((m) => ({ default: m.LessonManagementView })));
-const AIKnowledgeCenterView = lazy(() => viewLoaders.AIKnowledgeCenter().then((m) => ({ default: m.AIKnowledgeCenterView })));
 const QuizGeneratorView = lazy(() => viewLoaders.QuizGen().then((m) => ({ default: m.QuizGeneratorView })));
 const SubmissionsView = lazy(() => viewLoaders.Submissions().then((m) => ({ default: m.SubmissionsView })));
 const StudentAnalyticsView = lazy(() => viewLoaders.StudentAnalytics().then((m) => ({ default: m.StudentAnalyticsView })));
@@ -62,7 +59,6 @@ const VALID_TABS = [
   "MyCourses",
   "MySubmissions",
   "LessonManagement",
-  "AIKnowledgeCenter",
   "QuizGen",
   "Submissions",
   "StudentAnalytics",
@@ -75,7 +71,7 @@ const VALID_TABS = [
 type AllTabs = (typeof VALID_TABS)[number];
 
 const STUDENT_TABS = new Set<AllTabs>(["GeneralHome", "MyCourses", "MySubmissions", "Notifications", "Payments", "Profile"]);
-const STAFF_TABS = new Set<AllTabs>(["LessonManagement", "AIKnowledgeCenter", "QuizGen", "Submissions", "StudentAnalytics", "Notifications", "PaymentManagement", "Profile"]);
+const STAFF_TABS = new Set<AllTabs>(["LessonManagement", "QuizGen", "Submissions", "StudentAnalytics", "Notifications", "PaymentManagement", "Profile"]);
 
 function homeTab(user: CurrentUser): AllTabs {
   return user.role === "student" ? "GeneralHome" : "LessonManagement";
@@ -123,7 +119,6 @@ function App() {
   const [enrolledCourseIds, setEnrolledCourseIds] = useState<string[]>([]);
   const [entitlements, setEntitlements] = useState<StudentEntitlement[]>([]);
   const [checkoutTarget, setCheckoutTarget] = useState<PaymentTarget | null>(null);
-  const [aiAccessAllowed, setAiAccessAllowed] = useState(false);
 
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
 
@@ -373,30 +368,6 @@ function App() {
   });
 
   const activeEntitlements = useMemo(() => entitlements.filter((item) => item.active), [entitlements]);
-  const globalAIEntitlement = activeEntitlements.some((item) => item.entitlement_type === "ai_global");
-  const activeCourse = enrolledCoursesList[0];
-  const activeLesson = activeCourse?.lessons.find((lesson) => {
-    if (Number(activeCourse.price || 0) > 0) return activeEntitlements.some((item) => item.entitlement_type === "course" && item.resource_id === activeCourse.id);
-    return Number(lesson.price || 0) === 0 || activeEntitlements.some((item) => item.entitlement_type === "lesson" && item.resource_id === lesson.id);
-  });
-
-  useEffect(() => {
-    if (!currentUser) {
-      setAiAccessAllowed(false);
-      return;
-    }
-    if (currentUser.role !== "student") {
-      setAiAccessAllowed(true);
-      return;
-    }
-    if (!activeLesson) {
-      setAiAccessAllowed(globalAIEntitlement);
-      return;
-    }
-    void paymentService.getAIAccess(activeLesson.id)
-      .then((result) => setAiAccessAllowed(result.allowed))
-      .catch(() => setAiAccessAllowed(false));
-  }, [currentUser, activeLesson, globalAIEntitlement]);
 
   if (isInitialRefresh || (authLoading && !currentUser && authStatus === "loading") || isLoggingIn) {
     return <PageLoadingScreen brandTitle="منصة الكيمياء التعليمية — مستر حسن شعبان" />;
@@ -611,11 +582,9 @@ function App() {
           />
           )}
 
-          {activeTab === "AIKnowledgeCenter" && currentUser.role !== "student" && (
-            <AIKnowledgeCenterView lang={lang} />
+          {activeTab === "QuizGen" && currentUser.role !== "student" && (
+            <QuizGeneratorView courses={courses} currentUser={currentUser} />
           )}
-
-          {activeTab === "QuizGen" && currentUser.role !== "student" && <QuizGeneratorView courses={courses} />}
 
           {activeTab === "Submissions" && currentUser.role !== "student" && <SubmissionsView />}
 
@@ -643,20 +612,6 @@ function App() {
           )}
         </Suspense>
       </main>
-
-      {/* Floating AI Assistant FAB at Bottom-Left in Emerald */}
-      <FloatingAITutor
-        currentCourseId={currentUser.role === "student" ? activeCourse?.id : courses[0]?.id}
-        currentLessonId={currentUser.role === "student" ? activeLesson?.id : undefined}
-        currentCourseTitle={(currentUser.role === "student" ? activeCourse?.title : courses[0]?.title) || (lang === "ar" ? "الكيمياء" : "Chemistry")}
-        currentUser={currentUser}
-        lang={lang}
-        accessAllowed={aiAccessAllowed}
-        onRequestAccess={() => {
-          setCheckoutTarget({ productType: "ai_subscription" });
-          navigateToTab("Payments");
-        }}
-      />
 
       {/* Global Background Upload Manager Widget - strictly for teachers only */}
       {currentUser?.role !== "student" && (

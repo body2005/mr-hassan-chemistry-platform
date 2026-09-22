@@ -157,6 +157,8 @@ def _get_category_defaults(category: str) -> tuple[int, int]:
         return settings.rate_limit_upload, window
     if "quiz" in cat_lower or "exam" in cat_lower or "extract" in cat_lower:
         return settings.rate_limit_quiz_extraction, window
+    if "pdf" in cat_lower or "render" in cat_lower:
+        return settings.rate_limit_pdf_render, window
     return settings.rate_limit_api_default, window
 
 

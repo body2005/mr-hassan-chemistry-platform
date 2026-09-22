@@ -2,10 +2,12 @@ import uuid
 from datetime import datetime
 try:
     from enum import StrEnum
-except ImportError:
+except ImportError:  # Python 3.10: enum.StrEnum arrived in 3.11
     from enum import Enum
+
     class StrEnum(str, Enum):
-        pass
+        def __str__(self) -> str:
+            return str(self.value)
 
 
 from sqlalchemy import (
@@ -43,7 +45,7 @@ class LessonKind(StrEnum):
     LIVE = "live"
 
 
-class IndexingStatus(StrEnum):
+class MaterializationStatus(StrEnum):
     NOT_INDEXED = "not_indexed"
     IN_PROGRESS = "in_progress"
     INDEXED = "indexed"
@@ -119,15 +121,13 @@ class Lesson(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     content: Mapped[str | None] = mapped_column(Text)
     video_asset_key: Mapped[str | None] = mapped_column(String(512))
     video_duration_seconds: Mapped[int | None] = mapped_column(Integer)
-    indexing_status: Mapped[IndexingStatus] = mapped_column(
-        Enum(IndexingStatus, name="indexing_status", native_enum=False, values_callable=enum_values),
-        default=IndexingStatus.NOT_INDEXED,
+    materialization_status: Mapped[MaterializationStatus] = mapped_column(
+        Enum(MaterializationStatus, name="materialization_status", native_enum=False, values_callable=enum_values),
+        default=MaterializationStatus.NOT_INDEXED,
         nullable=False,
     )
-    indexing_error: Mapped[str | None] = mapped_column(Text)
-    indexed_chunks_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    materialization_error: Mapped[str | None] = mapped_column(Text)
     transcript_text: Mapped[str | None] = mapped_column(Text)
-    rag_synced: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     price_egp: Mapped[float] = mapped_column(Numeric(10, 2), default=0, nullable=False)
 
     module = relationship("CourseModule", back_populates="lessons")

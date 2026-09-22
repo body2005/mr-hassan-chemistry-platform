@@ -22,40 +22,9 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Resume interrupted indexing tasks with centralized dispatch."""
-    from datetime import datetime, timezone, timedelta
-    from sqlalchemy import select, or_, and_
-    from app.core.database import SessionLocal
-    from app.models.knowledge_center import KnowledgeSource, SourceStatus
-    from app.services.knowledge_center_service import dispatch_source_processing
-
-    try:
-        stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
-        with SessionLocal() as db:
-            stmt = (
-                select(KnowledgeSource.id)
-                .where(
-                    or_(
-                        KnowledgeSource.status == SourceStatus.QUEUED,
-                        and_(
-                            KnowledgeSource.status == SourceStatus.PROCESSING,
-                            KnowledgeSource.updated_at <= stale_cutoff,
-                        ),
-                    )
-                )
-            )
-            candidate_ids = list(db.scalars(stmt).all())
-
-        dispatched_count = 0
-        for source_id in candidate_ids:
-            with SessionLocal() as db:
-                if dispatch_source_processing(db, source_id, is_startup=True):
-                    dispatched_count += 1
-        if candidate_ids:
-            logger.info("Startup recovery: dispatched %s / %s eligible source(s)", dispatched_count, len(candidate_ids))
-    except Exception:
-        logger.exception("Unable to resume interrupted indexing tasks at startup")
+    """Application lifespan (indexing recovery removed with the Knowledge Center)."""
     yield
+
 
 app = FastAPI(
     title=settings.app_name,
@@ -95,12 +64,9 @@ def classify_rate_limit_category(method: str, path: str) -> str:
     ):
         return "preview"
     if normalized_method == "POST" and (
-        normalized_path in {
-            f"{api_prefix}/knowledge-center/sources/upload",
-            f"{api_prefix}/knowledge-center/sources/upload-batch",
-        }
-        or normalized_path.endswith("/video")
+        normalized_path.endswith("/video")
         or normalized_path.endswith("/receipt")
+        or normalized_path.endswith("/materials")
     ):
         return "upload"
     if normalized_method == "POST" and (
@@ -181,32 +147,6 @@ async def security_middleware(request, call_next):
                 },
             )
             return res
-
-    if request.method == "POST" and request.url.path in {
-        f"{settings.api_v1_prefix}/knowledge-center/sources/upload",
-        f"{settings.api_v1_prefix}/knowledge-center/sources/upload-batch",
-    }:
-        content_length_header = request.headers.get("content-length")
-        if content_length_header:
-            try:
-                content_length = int(content_length_header)
-                maximum_http_body = (
-                    settings.max_request_size_mb + settings.multipart_overhead_mb
-                ) * 1024 * 1024
-                if content_length > maximum_http_body:
-                    res = JSONResponse(
-                        status_code=413,
-                        content={
-                            "error": {
-                                "code": "PAYLOAD_TOO_LARGE",
-                                "message": f"Request size exceeds the {settings.max_request_size_mb} MB limit",
-                            },
-                            "request_id": request_id,
-                        },
-                    )
-                    return res
-            except (ValueError, TypeError):
-                pass
 
     request.state.request_id = request_id
     started = time.perf_counter()

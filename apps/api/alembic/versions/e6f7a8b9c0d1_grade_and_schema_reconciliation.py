@@ -44,10 +44,9 @@ def upgrade() -> None:
         # Ensure users.role is VARCHAR(32)
         role_col = next((c for c in inspector.get_columns("users") if c["name"] == "role"), None)
         if role_col and getattr(role_col.get("type"), "length", None) != 32:
-            try:
-                op.alter_column("users", "role", type_=sa.String(length=32), existing_type=role_col["type"])
-            except Exception:
-                pass
+            # SQLite cannot ALTER COLUMN in place; batch mode rebuilds the table.
+            with op.batch_alter_table("users") as batch_op:
+                batch_op.alter_column("role", type_=sa.String(length=32), existing_type=role_col["type"])
 
     # 2. Add grade_level to courses
     if inspector.has_table("courses"):
@@ -78,12 +77,13 @@ def upgrade() -> None:
         # Make course_id nullable for grade-level COURSE_KNOWLEDGE sources
         course_id_col = next((c for c in inspector.get_columns("knowledge_sources") if c["name"] == "course_id"), None)
         if course_id_col and not course_id_col.get("nullable", True):
-            op.alter_column(
-                "knowledge_sources",
-                "course_id",
-                existing_type=course_id_col.get("type", sa.Uuid()),
-                nullable=True,
-            )
+            # SQLite cannot ALTER COLUMN in place; batch mode rebuilds the table.
+            with op.batch_alter_table("knowledge_sources") as batch_op:
+                batch_op.alter_column(
+                    "course_id",
+                    existing_type=course_id_col.get("type", sa.Uuid()),
+                    nullable=True,
+                )
 
         if is_postgres:
             op.execute(
@@ -105,12 +105,13 @@ def upgrade() -> None:
         if inspector.has_table(related_table):
             c_col = next((c for c in inspector.get_columns(related_table) if c["name"] == "course_id"), None)
             if c_col and not c_col.get("nullable", True):
-                op.alter_column(
-                    related_table,
-                    "course_id",
-                    existing_type=c_col.get("type", sa.Uuid()),
-                    nullable=True,
-                )
+                # SQLite cannot ALTER COLUMN in place; batch mode rebuilds the table.
+                with op.batch_alter_table(related_table) as batch_op:
+                    batch_op.alter_column(
+                        "course_id",
+                        existing_type=c_col.get("type", sa.Uuid()),
+                        nullable=True,
+                    )
 
     # 4. Ensure CURRENT_TIMESTAMP defaults on created_at
     tables_to_check = [

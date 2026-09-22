@@ -14,6 +14,11 @@ httpx>=0.27.2
 pytest>=8.3.2
 pillow>=11.0.0
 sympy>=1.13.0
+python-dotenv>=1.0.1
+
+# Optional heavy OCR engine (Arabic). Only used when PADDLE_OCR_ENABLED=1;
+# Tesseract (pytesseract) is the default fallback.
+# paddleocr>=2.7.0
 
 # Audio/video processing and document extraction (P0)
 # openai-whisper>=20250625  # Heavy (pulls torch) - omitted for lightweight cloud deployment

@@ -1,15 +1,18 @@
 /**
  * Global Background Upload Manager (LMS Cloud Ingestion Engine)
- * 
- * Enables non-blocking background uploads for large lesson videos and batch knowledge sources.
- * Uploads persist across internal page navigation, view changes, modal dismissals, and browser reloads.
- * Protects active network transfers while allowing safe closure during server-side indexing.
+ *
+ * Enables non-blocking background uploads for large lesson videos and lesson
+ * materials (PDF/Word notes). Uploads persist across internal page navigation,
+ * view changes, modal dismissals, and browser reloads.
+ *
+ * Materials are stored standalone on the backend (lesson_assets); there is no
+ * AI indexing, RAG, or knowledge-center polling in this pipeline anymore.
  */
 
 import { courseService } from "./lmsService";
-import { uploadWithProgress, apiRequest, hasBrowserSession } from "./apiClient";
+import { ApiClientError, uploadWithProgress } from "./apiClient";
 
-export type UploadType = "lesson_video" | "lesson_material" | "knowledge_source";
+export type UploadType = "lesson_video" | "lesson_material";
 export type UploadStatus = "queued" | "uploading" | "processing" | "completed" | "error" | "cancelled";
 
 export interface UploadTask {
@@ -19,18 +22,15 @@ export interface UploadTask {
   fileSizeBytes: number;
   loadedBytes?: number;
   formattedSize: string;
-  progress: number; // Legacy display progress for the active phase
+  progress: number; // 0-100 overall progress for the active phase
   uploadPercent: number;
-  indexingPercent: number;
-  processingGeneration?: number;
-  processingAttemptId?: string;
   status: UploadStatus;
+  statusDetail?: string;
   error?: string;
   type: UploadType;
   lessonId?: string;
   courseId?: string;
   gradeLevel?: string;
-  sourceIds?: string[];
   createdAt: number;
   completedAt?: number;
   file?: File;
@@ -39,22 +39,14 @@ export interface UploadTask {
   onSuccess?: () => void;
 }
 
-interface ServerKnowledgeSource {
+interface ServerMaterial {
   id: string;
+  lesson_id: string;
   filename: string;
   size_bytes?: number;
-  progress_percent?: number;
-  upload_percent?: number;
-  indexing_percent?: number;
-  processing_generation?: number;
-  processing_attempt_id?: string;
-  status: "QUEUED" | "PROCESSING" | "INDEXED" | "FAILED" | string;
-  error_message?: string | null;
-  course_id?: string;
-  created_at?: string;
 }
 
-const STORAGE_KEY = "lms_global_upload_tasks_v2";
+const STORAGE_KEY = "lms_global_upload_tasks_v3";
 
 export function formatFileSize(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -69,91 +61,18 @@ class UploadManager {
   private listeners: Set<(tasks: UploadTask[]) => void> = new Set();
   private maxConcurrent = 2;
   private isProcessingQueue = false;
-  private syncTimer: ReturnType<typeof setTimeout> | null = null;
-  private activeAbortController: AbortController | null = null;
-  private consecutivePollFailures = 0;
 
   constructor() {
     this.tasks = this.loadTasksFromStorage();
     this.initBeforeUnloadHandler();
-    this.initLifecycleListeners();
-    if (this.hasProcessingTasks()) {
-      this.ensurePollingActive();
-    }
-  }
-
-  private hasAuthenticatedSession(): boolean {
-    return hasBrowserSession();
-  }
-
-  public hasProcessingTasks(): boolean {
-    return this.tasks.some((t) => t.status === "processing");
-  }
-
-  private initLifecycleListeners() {
-    if (typeof window !== "undefined") {
-      window.addEventListener("lms_user_updated", () => {
-        if (!this.hasAuthenticatedSession()) {
-          this.stopPolling();
-        } else if (this.hasProcessingTasks()) {
-          this.ensurePollingActive();
-        }
-      });
-      if (typeof document !== "undefined") {
-        document.addEventListener("visibilitychange", () => {
-          if (!document.hidden && this.hasProcessingTasks() && this.hasAuthenticatedSession()) {
-            this.ensurePollingActive();
-            void this.syncWithServer();
-          }
-        });
-      }
-    }
-  }
-
-  public ensurePollingActive() {
-    if (!this.hasAuthenticatedSession() || !this.hasProcessingTasks()) return;
-    if (this.syncTimer) return;
-    this.scheduleNextPoll();
-  }
-
-  public stopPolling() {
-    if (this.syncTimer) {
-      clearTimeout(this.syncTimer);
-      this.syncTimer = null;
-    }
-    if (this.activeAbortController) {
-      this.activeAbortController.abort();
-      this.activeAbortController = null;
-    }
-    this.consecutivePollFailures = 0;
-  }
-
-  private scheduleNextPoll() {
-    if (this.syncTimer) clearTimeout(this.syncTimer);
-    if (!this.hasAuthenticatedSession() || !this.hasProcessingTasks()) {
-      this.syncTimer = null;
-      return;
-    }
-
-    const isHidden = typeof document !== "undefined" && document.hidden;
-    const activeDelay = Math.min(60_000, 3_500 * 2 ** this.consecutivePollFailures);
-    const delay = isHidden ? Math.max(30_000, activeDelay) : activeDelay;
-    this.syncTimer = setTimeout(async () => {
-      await this.syncWithServer();
-      if (this.hasProcessingTasks() && this.hasAuthenticatedSession()) {
-        this.scheduleNextPoll();
-      } else {
-        this.syncTimer = null;
-      }
-    }, delay);
   }
 
   private initBeforeUnloadHandler() {
     if (typeof window !== "undefined") {
       window.addEventListener("beforeunload", (e) => {
-        // ONLY warn if active byte transfer is in-flight across the wire (uploading / queued).
-        // If status === 'processing', the file is already safely stored on the server,
-        // and backend indexing continues completely uninterrupted!
+        // ONLY warn if an active byte transfer is in-flight across the wire
+        // (uploading / queued). Once status === 'processing' the bytes are
+        // already safely stored server-side.
         const hasInFlightTransfer = this.tasks.some(
           (t) => t.status === "uploading" || t.status === "queued"
         );
@@ -183,7 +102,6 @@ class UploadManager {
           const normalizedTask = {
             ...t,
             uploadPercent: t.uploadPercent ?? (t.status === "processing" || t.status === "completed" ? 100 : t.progress || 0),
-            indexingPercent: t.indexingPercent ?? (t.status === "processing" || t.status === "completed" ? t.progress || 0 : 0),
           };
           // If task was mid-upload over network when browser was closed, it was interrupted
           if (t.status === "uploading" || t.status === "queued") {
@@ -193,7 +111,6 @@ class UploadManager {
               error: "انقطع نقل الملف لإغلاق المتصفح أثناء الإرسال. يمكنك إعادة المحاولة.",
             } as UploadTask;
           }
-          // If task was processing on the server, keep it as processing so server sync checks its status!
           return normalizedTask;
         });
     } catch {
@@ -219,130 +136,67 @@ class UploadManager {
     }
   }
 
-  public async syncWithServer(): Promise<void> {
-    if (typeof window === "undefined" || !this.hasAuthenticatedSession() || !this.hasProcessingTasks()) return;
-
-    if (this.activeAbortController) {
-      this.activeAbortController.abort();
-    }
-    this.activeAbortController = new AbortController();
-    const signal = this.activeAbortController.signal;
-
-    try {
-      let hasChanges = false;
-      let sourceLookupFailed = false;
-
-      // 1. Check specific source IDs for active tasks
-      const activeTasks = this.tasks.filter(
-        (t) => (t.type === "knowledge_source" || t.type === "lesson_material") && (t.status === "processing" || t.status === "uploading")
-      );
-
-      for (const task of activeTasks) {
-        if (task.sourceIds && task.sourceIds.length > 0) {
-          const matched: ServerKnowledgeSource[] = [];
-          for (const sId of task.sourceIds) {
-            try {
-              const item = await apiRequest<ServerKnowledgeSource>(`/knowledge-center/sources/${sId}`, { signal });
-              if (item && item.id) matched.push(item);
-            } catch {
-              // A transient API outage is handled by bounded exponential
-              // backoff below; never mark a durable server-side job failed.
-              sourceLookupFailed = true;
-            }
-          }
-
-          if (matched.length > 0) {
-            const allIndexed = matched.every((s) => s.status === "INDEXED");
-            const anyFailed = matched.find((s) => s.status === "FAILED");
-            const avgProgress = Math.round(
-              matched.reduce((acc, s) => acc + (s.indexing_percent ?? s.progress_percent ?? 0), 0) / matched.length
-            );
-            const newestGeneration = Math.max(...matched.map((s) => s.processing_generation ?? 1));
-            const attemptKey = matched.map((s) => s.processing_attempt_id || "legacy").sort().join(":");
-            task.uploadPercent = Math.max(task.uploadPercent || 0, ...matched.map((s) => s.upload_percent ?? 100));
-            if (task.processingGeneration !== newestGeneration || task.processingAttemptId !== attemptKey) {
-              task.processingGeneration = newestGeneration;
-              task.processingAttemptId = attemptKey;
-              task.indexingPercent = avgProgress;
-            } else {
-              task.indexingPercent = Math.max(task.indexingPercent || 0, avgProgress);
-            }
-
-            if (allIndexed) {
-              task.status = "completed";
-              task.progress = 100;
-              task.indexingPercent = 100;
-              task.completedAt = Date.now();
-              task.error = undefined;
-              hasChanges = true;
-              task.onSuccess?.();
-              window.dispatchEvent(new CustomEvent("lms_knowledge_updated"));
-              if (task.lessonId) window.dispatchEvent(new CustomEvent("lms_courses_updated"));
-              window.dispatchEvent(
-                new CustomEvent("lms_toast_notification", {
-                  detail: {
-                    message: `✅ اكتملت فهرسة ملفات "${task.title}" بنجاح في السحابة!`,
-                    tone: "success",
-                  },
-                })
-              );
-            } else if (anyFailed) {
-              task.status = "error";
-              task.error = anyFailed.error_message || "فشلت عملية الفهرسة بالسيرفر";
-              hasChanges = true;
-            } else {
-              if (task.progress !== task.indexingPercent) {
-                task.progress = task.indexingPercent;
-                hasChanges = true;
-              }
-            }
-          }
-        }
-      }
-
-      if (hasChanges) {
-        this.notify();
-        this.persistTasks();
-      }
-      this.consecutivePollFailures = sourceLookupFailed
-        ? Math.min(this.consecutivePollFailures + 1, 5)
-        : 0;
-    } catch {
-      // Backend might be momentarily offline or rate-limited. Keep the task
-      // and progressively back off, capped at one minute.
-      this.consecutivePollFailures = Math.min(this.consecutivePollFailures + 1, 5);
-    }
-  }
-
-  public getTasks(): UploadTask[] {
-    return [...this.tasks];
-  }
-
-  public hasActiveUploads(): boolean {
-    return this.tasks.some(
-      (t) => t.status === "queued" || t.status === "uploading" || t.status === "processing"
-    );
-  }
-
   public subscribe(listener: (tasks: UploadTask[]) => void): () => void {
     this.listeners.add(listener);
-    listener(this.getTasks());
-    return () => this.listeners.delete(listener);
+    listener(this.tasks);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   private notify() {
-    const current = this.getTasks();
-    this.listeners.forEach((listener) => {
-      try {
-        listener(current);
-      } catch (err) {
-        console.error("Error notifying upload listener", err);
-      }
-    });
+    this.listeners.forEach((listener) => listener(this.tasks));
+  }
+
+  public getTasks(): UploadTask[] {
+    return this.tasks;
   }
 
   /**
-   * Enqueue a lesson video upload in the background.
+   * Enqueue a batch upload of lesson materials (PDFs, docs) in the background.
+   * Files are stored standalone against the lesson — no AI indexing involved.
+   */
+  public enqueueKnowledgeBatchUpload(params: {
+    files: File[];
+    courseId?: string;
+    gradeLevel?: string;
+    lessonId?: string;
+    lessonTitle?: string;
+    onSuccess?: () => void;
+  }): string {
+    const taskId = `mat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const totalBytes = params.files.reduce((sum, f) => sum + f.size, 0);
+    const count = params.files.length;
+    const taskTitle = params.lessonTitle
+      ? `مذكرات درس: ${params.lessonTitle} (${count} ${count === 1 ? "ملف" : "ملفات"})`
+      : `رفع دفعة مستندات (${count} ${count === 1 ? "ملف" : "ملفات"})`;
+    const task: UploadTask = {
+      id: taskId,
+      title: taskTitle,
+      fileName: params.files[0]?.name + (count > 1 ? ` (+${count - 1} ملفات أخرى)` : ""),
+      fileSizeBytes: totalBytes,
+      formattedSize: formatFileSize(totalBytes),
+      progress: 0,
+      uploadPercent: 0,
+      status: "queued",
+      type: "lesson_material",
+      courseId: params.courseId,
+      gradeLevel: params.gradeLevel,
+      lessonId: params.lessonId,
+      createdAt: Date.now(),
+      files: params.files,
+      onSuccess: params.onSuccess,
+    };
+
+    this.tasks.unshift(task);
+    this.notify();
+    this.persistTasks();
+    this.processQueue();
+    return taskId;
+  }
+
+  /**
+   * Enqueue a large lesson video upload in the background.
    */
   public enqueueVideoUpload(params: {
     lessonId: string;
@@ -354,13 +208,12 @@ class UploadManager {
     const taskId = `vid_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const task: UploadTask = {
       id: taskId,
-      title: `فيديو: ${params.lessonTitle}`,
+      title: `فيديو درس: ${params.lessonTitle}`,
       fileName: params.file.name,
       fileSizeBytes: params.file.size,
       formattedSize: formatFileSize(params.file.size),
       progress: 0,
       uploadPercent: 0,
-      indexingPercent: 0,
       status: "queued",
       type: "lesson_video",
       lessonId: params.lessonId,
@@ -377,60 +230,7 @@ class UploadManager {
     return taskId;
   }
 
-  /**
-   * Enqueue a batch upload of knowledge documents (PDFs, docs) in the background.
-   */
-  public enqueueKnowledgeBatchUpload(params: {
-    files: File[];
-    courseId?: string;
-    gradeLevel?: string;
-    lessonId?: string;
-    lessonTitle?: string;
-    onSuccess?: () => void;
-  }): string {
-    const taskId = `knw_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const totalBytes = params.files.reduce((sum, f) => sum + f.size, 0);
-    const count = params.files.length;
-    const gradeLabel = params.gradeLevel === "SECONDARY_1"
-      ? "الصف الأول الثانوي"
-      : params.gradeLevel === "SECONDARY_2"
-      ? "الصف الثاني الثانوي"
-      : params.gradeLevel === "SECONDARY_3"
-      ? "الصف الثالث الثانوي"
-      : "";
-    const taskTitle = params.lessonTitle
-      ? `مذكرات درس: ${params.lessonTitle} (${count} ${count === 1 ? "ملف" : "ملفات"})`
-      : gradeLabel
-      ? `مصادر ${gradeLabel} (${count} ${count === 1 ? "ملف" : "ملفات"})`
-      : `رفع دفعة مستندات (${count} ${count === 1 ? "ملف" : "ملفات"})`;
-    const isMaterial = Boolean(params.lessonId);
-    const task: UploadTask = {
-      id: taskId,
-      title: taskTitle,
-      fileName: params.files[0]?.name + (count > 1 ? ` (+${count - 1} ملفات أخرى)` : ""),
-      fileSizeBytes: totalBytes,
-      formattedSize: formatFileSize(totalBytes),
-      progress: 0,
-      uploadPercent: 0,
-      indexingPercent: 0,
-      status: "queued",
-      type: isMaterial ? "lesson_material" : "knowledge_source",
-      courseId: params.courseId,
-      gradeLevel: params.gradeLevel,
-      lessonId: params.lessonId,
-      createdAt: Date.now(),
-      files: params.files,
-      onSuccess: params.onSuccess,
-    };
-
-    this.tasks.unshift(task);
-    this.notify();
-    this.persistTasks();
-    this.processQueue();
-    return taskId;
-  }
-
-  private async processQueue() {
+  private processQueue() {
     if (this.isProcessingQueue) return;
     this.isProcessingQueue = true;
 
@@ -443,8 +243,8 @@ class UploadManager {
 
       if (nextTask.type === "lesson_video" && nextTask.file && nextTask.lessonId) {
         this.startVideoUpload(nextTask);
-      } else if ((nextTask.type === "knowledge_source" || nextTask.type === "lesson_material") && nextTask.files && nextTask.files.length > 0) {
-        this.startKnowledgeBatchUpload(nextTask);
+      } else if (nextTask.type === "lesson_material" && nextTask.files && nextTask.files.length > 0) {
+        this.startMaterialBatchUpload(nextTask);
       }
     } finally {
       this.isProcessingQueue = false;
@@ -517,102 +317,88 @@ class UploadManager {
     }
   }
 
-  private async startKnowledgeBatchUpload(task: UploadTask) {
+  private async startMaterialBatchUpload(task: UploadTask) {
+    if (!task.lessonId) {
+      task.status = "error";
+      task.error = "لا يمكن رفع المذكرات بدون تحديد الدرس.";
+      this.notify();
+      this.persistTasks();
+      return;
+    }
+
     task.status = "uploading";
     task.progress = 1;
     this.notify();
     this.persistTasks();
 
-    try {
-      const formData = new FormData();
-      task.files!.forEach((file) => {
-        formData.append("files", file);
-      });
-      if (task.gradeLevel) {
-        formData.append("grade_level", task.gradeLevel);
-      }
-      if (task.courseId) {
-        formData.append("course_id", task.courseId);
-      }
-      if (task.lessonId) {
-        formData.append("lesson_id", task.lessonId);
-      }
-      const role = task.type === "lesson_material" || Boolean(task.lessonId)
-        ? "LESSON_MATERIAL"
-        : "COURSE_KNOWLEDGE";
-      formData.append("source_role", role);
+    const files = task.files!;
+    let uploadedCount = 0;
 
-      const createdSources = await uploadWithProgress<ServerKnowledgeSource[]>(
-        "/knowledge-center/sources/upload-batch",
-        formData,
-        (percent, loaded) => {
-          task.progress = Math.max(1, Math.min(99, percent));
-          task.uploadPercent = Math.max(task.uploadPercent, Math.min(100, percent));
-          if (typeof loaded === "number") {
-            task.loadedBytes = loaded;
+    for (const file of files) {
+      try {
+        task.statusDetail = `جاري رفع: ${file.name}`;
+        task.progress = Math.max(1, Math.round((uploadedCount / files.length) * 100));
+        this.notify();
+
+        const formData = new FormData();
+        formData.append("file", file);
+
+        await uploadWithProgress<ServerMaterial>(
+          `/lessons/${task.lessonId}/materials`,
+          formData,
+          (percent, loaded) => {
+            const perFileShare = 100 / files.length;
+            const overall = uploadedCount * perFileShare + (percent / 100) * perFileShare;
+            task.progress = Math.max(1, Math.min(99, Math.round(overall)));
+            task.uploadPercent = Math.max(task.uploadPercent, Math.min(100, percent));
+            if (typeof loaded === "number") {
+              task.loadedBytes = loaded;
+            }
+            this.notify();
+          },
+          0,
+          (xhr) => {
+            task.xhr = xhr;
           }
-          if (percent >= 100) {
-            task.status = "processing";
-            this.ensurePollingActive();
-          }
-          this.notify();
-          this.persistTasks();
-        },
-        0,
-        (xhr) => {
-          task.xhr = xhr;
-        }
-      );
-
-      task.status = "processing";
-      task.uploadPercent = 100;
-      task.indexingPercent = 0;
-      task.progress = 0;
-      if (Array.isArray(createdSources)) {
-        task.sourceIds = createdSources.map((s) => s.id);
-        task.indexingPercent = Math.round(
-          createdSources.reduce((sum, source) => sum + (source.indexing_percent ?? 0), 0)
-          / Math.max(createdSources.length, 1)
         );
-        task.progress = task.indexingPercent;
-        task.processingGeneration = Math.max(...createdSources.map((source) => source.processing_generation ?? 1));
-        task.processingAttemptId = createdSources.map((source) => source.processing_attempt_id || "legacy").sort().join(":");
-      }
-      this.ensurePollingActive();
-      this.notify();
-      this.persistTasks();
 
-      if (task.onSuccess) {
-        task.onSuccess();
-      }
-
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("lms_knowledge_updated"));
-        if (task.courseId && task.lessonId) {
-          window.dispatchEvent(new CustomEvent("lms_courses_updated"));
-        }
-        window.dispatchEvent(
-          new CustomEvent("lms_toast_notification", {
-            detail: {
-              message: `📥 تم حفظ الملفات بالسيرفر بنجاح! بدأت الفهرسة.`,
-              tone: "success",
-            },
-          })
-        );
-      }
-
-      // Trigger immediate sync
-      void this.syncWithServer();
-    } catch (err: unknown) {
-      if ((task.status as string) !== "cancelled") {
+        uploadedCount += 1;
+        if ((task.status as string) === "cancelled") return;
+      } catch (err: unknown) {
+        if ((task.status as string) === "cancelled") return;
         task.status = "error";
-        task.error = (err as Error)?.message || "تعذر رفع الملفات. تأكد من سرعة الاتصال وحجم الملفات.";
+        const detail = err instanceof ApiClientError ? err.message : (err as Error)?.message;
+        task.error = detail || "تعذر رفع الملفات. تأكد من سرعة الاتصال وحجم الملفات.";
         this.notify();
         this.persistTasks();
+        this.processQueue();
+        return;
       }
-    } finally {
-      this.processQueue();
     }
+
+    task.status = "completed";
+    task.progress = 100;
+    task.uploadPercent = 100;
+    task.completedAt = Date.now();
+    task.files = undefined;
+    this.notify();
+    this.persistTasks();
+
+    task.onSuccess?.();
+    if (typeof window !== "undefined") {
+      if (task.courseId) {
+        window.dispatchEvent(new CustomEvent("lms_courses_updated"));
+      }
+      window.dispatchEvent(
+        new CustomEvent("lms_toast_notification", {
+          detail: {
+            message: `✅ تم حفظ مذكرات "${task.title}" على السحابة بنجاح.`,
+            tone: "success",
+          },
+        })
+      );
+    }
+    this.processQueue();
   }
 
   public cancelUpload(taskId: string) {
@@ -627,32 +413,16 @@ class UploadManager {
       }
     }
 
-    // If source exists on server, stop indexing without deleting the file!
-    const sourceIds = [...(task.sourceIds || [])];
-    if (taskId.startsWith("srv_")) {
-      const parsedId = taskId.replace("srv_", "");
-      if (!sourceIds.includes(parsedId)) {
-        sourceIds.push(parsedId);
-      }
-    }
-
-    if (sourceIds.length > 0) {
-      sourceIds.forEach((sId) => {
-        apiRequest(`/knowledge-center/sources/${sId}/stop-indexing`, { method: "POST" }).catch(() => {});
-      });
-    }
-
     this.tasks = this.tasks.filter((t) => t.id !== taskId);
     this.notify();
     this.persistTasks();
     this.processQueue();
 
     if (typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("lms_knowledge_updated"));
       window.dispatchEvent(
         new CustomEvent("lms_toast_notification", {
           detail: {
-            message: "تم إيقاف الفهرسة، والملف محفوظ بالسيرفر.",
+            message: "تم إلغاء عملية الرفع.",
             tone: "info",
           },
         })
@@ -667,9 +437,6 @@ class UploadManager {
     task.status = "queued";
     task.progress = 0;
     task.uploadPercent = 0;
-    task.indexingPercent = 0;
-    task.processingGeneration = undefined;
-    task.processingAttemptId = undefined;
     task.error = undefined;
     this.notify();
     this.persistTasks();

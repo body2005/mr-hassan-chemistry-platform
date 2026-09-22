@@ -40,13 +40,16 @@ services:
         value: "true"
       - key: INITIAL_TEACHER_EMAIL
         value: teacher@hassanshaban.com
+      - key: INITIAL_TEACHER_USERNAME
+        value: hassan_teacher
       - key: INITIAL_TEACHER_PASSWORD
         # Test-only fixed credential requested for the initial teacher account.
         value: admin
-      # Force reconciliation of the existing seeded account with the test
-      # credential on the next deployment.
+      # Keep this off in production: the seed must never reset the password
+      # of an existing account, otherwise every deploy silently reverts
+      # operator password changes back to the fixed seed credential.
       - key: RESET_INITIAL_TEACHER_PASSWORD
-        value: "true"
+        value: "false"
       - key: INITIAL_TEACHER_NAME
         value: "مستر حسن شعبان"
       - key: ENABLE_DEMO_ACCOUNTS
