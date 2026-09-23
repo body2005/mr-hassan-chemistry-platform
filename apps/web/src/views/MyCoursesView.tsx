@@ -26,12 +26,12 @@ import {
 import { Course, CourseAssessmentRef, CurrentUser, StudentProfile, VideoLesson } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
 import { EducationalBookItem, RevisionPackageItem } from "./GeneralHomeView";
-import { VideoTelemetryTracker } from "../services/videoTelemetry";
 import { courseService } from "../services/lmsService";
-import { apiRequest, apiUrl, fetchApiBlob, uploadWithProgress } from "../services/apiClient";
+import { apiRequest, fetchApiBlob, uploadWithProgress } from "../services/apiClient";
 import { useToast } from "../components/ToastProvider";
 import { FormulaRenderer } from "../components/FormulaRenderer";
 import { PaymentTarget } from "../services/paymentService";
+import { VideoLessonPage } from "../components/VideoLessonPage";
 
 export interface CourseAssignment {
   id: string;
@@ -138,88 +138,6 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   // Interactive Modals State
   const [activeLessonModal, setActiveLessonModal] = useState<VideoLesson | null>(null);
-  const [playbackUrl, setPlaybackUrl] = useState("");
-  const [playbackError, setPlaybackError] = useState<string | null>(null);
-  const videoElementRef = useRef<HTMLVideoElement | null>(null);
-  const telemetryTrackerRef = useRef<VideoTelemetryTracker | null>(null);
-
-  useEffect(() => {
-    let disposed = false;
-    setPlaybackUrl("");
-    setPlaybackError(null);
-    if (!activeLessonModal?.videoUrl && !activeLessonModal?.requiresProtectedPlayback) {
-      return () => { disposed = true; };
-    }
-
-    if (!activeLessonModal.requiresProtectedPlayback) {
-      setPlaybackUrl(activeLessonModal.videoUrl);
-      return () => { disposed = true; };
-    }
-
-    void apiRequest<{ stream_url: string }>(`/lessons/${activeLessonModal.id}/video-token`, {
-      method: "POST",
-    })
-      .then(({ stream_url }) => {
-        if (!disposed) setPlaybackUrl(apiUrl(stream_url));
-      })
-      .catch(() => {
-        if (!disposed) setPlaybackError("تعذر تجهيز بث الفيديو المحمي. تأكد من صلاحية الوصول ثم أعد المحاولة.");
-      });
-
-    return () => { disposed = true; };
-  }, [activeLessonModal?.id, activeLessonModal?.videoUrl, activeLessonModal?.requiresProtectedPlayback]);
-
-  useEffect(() => {
-    telemetryTrackerRef.current?.detach();
-    telemetryTrackerRef.current = null;
-    if (!activeLessonModal || !playbackUrl || !videoElementRef.current) return;
-
-    const tracker = new VideoTelemetryTracker(activeLessonModal.id);
-    tracker.attach(videoElementRef.current);
-    telemetryTrackerRef.current = tracker;
-    return () => {
-      tracker.detach();
-      if (telemetryTrackerRef.current === tracker) telemetryTrackerRef.current = null;
-    };
-  }, [activeLessonModal, playbackUrl]);
-
-  // Watermark cycles through fixed spots on a timer (no smooth animation) so
-  // screen recordings cannot reliably crop around one corner. It shows the
-  // student name plus a short account fragment and the wall-clock time only.
-  const [watermarkSpot, setWatermarkSpot] = useState(0);
-  const [watermarkClock, setWatermarkClock] = useState("");
-  useEffect(() => {
-    if (!activeLessonModal) return;
-    const interval = window.setInterval(() => {
-      setWatermarkSpot((s) => (s + 1) % 4);
-      const now = new Date();
-      const hh = String(now.getHours()).padStart(2, "0");
-      const mm = String(now.getMinutes()).padStart(2, "0");
-      setWatermarkClock(`${hh}:${mm}`);
-    }, 30_000);
-    return () => window.clearInterval(interval);
-  }, [activeLessonModal?.id]);
-  const watermarkStyle: React.CSSProperties = (() => {
-    const spots = [
-      { top: "8%", right: "6%" },
-      { top: "8%", left: "6%" },
-      { bottom: "14%", left: "6%" },
-      { bottom: "14%", right: "6%" },
-    ];
-    return {
-      position: "absolute",
-      color: "rgba(255, 255, 255, 0.5)",
-      fontSize: "12.5px",
-      fontWeight: 700,
-      fontFamily: "monospace",
-      pointerEvents: "none",
-      userSelect: "none",
-      letterSpacing: "0.5px",
-      textShadow: "1px 1px 3px rgba(0,0,0,0.85)",
-      zIndex: 10,
-      ...spots[watermarkSpot],
-    };
-  })();
 
   // Interactive Transcript & AI Grounded Q&A State
 
@@ -249,6 +167,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   // ── Server-driven quiz solving (standalone page) ──
   // ServerQuizSolve = real published quiz from GET /quizzes/{id}/solve.
   // Legacy local quizzes (activeQuizModal.questions) keep the old local path.
+
+
   type ServerQuizSolve = {
     quizId: string;
     title: string;
@@ -268,6 +188,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   const [serverQuizAnswers, setServerQuizAnswers] = useState<Record<string, string>>({});
   const [serverQuizSubmitting, setServerQuizSubmitting] = useState(false);
   const [serverQuizResult, setServerQuizResult] = useState<{ score: number; total: number; attemptNumber: number } | null>(null);
+  // Server-authoritative attempt: the clock starts when the page opens.
+  const [serverQuizAttempt, setServerQuizAttempt] = useState<{ id: string; attemptNumber: number; expiresAt: string | null } | null>(null);
+  const [serverQuizDeadline, setServerQuizDeadline] = useState<number | null>(null);
+  const [serverQuizRemaining, setServerQuizRemaining] = useState<number | null>(null);
+  const serverQuizAutoSubmitted = useRef(false);
 
   // ── Server-driven assignment solving (standalone page) ──
   type ServerAssignmentSolve = {
@@ -291,10 +216,15 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     setServerQuizError(null);
     setServerQuizAnswers({});
     setServerQuizResult(null);
+    setServerQuizAttempt(null);
+    setServerQuizDeadline(null);
+    setServerQuizRemaining(null);
+    serverQuizAutoSubmitted.current = false;
     setServerQuizLoading(true);
     try {
       const data = await apiRequest<{
         quiz: { id: string; title: string; duration_seconds: number | null; total_points: number };
+        attempt: { id: string; attempt_number: number; started_at: string | null; expires_at: string | null } | null;
         questions: ServerQuizSolve["questions"];
       }>(`/quizzes/${assessment.id}/solve`);
       setServerQuiz({
@@ -304,6 +234,14 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         totalPoints: data.quiz.total_points,
         questions: data.questions,
       });
+      if (data.attempt) {
+        setServerQuizAttempt({
+          id: data.attempt.id,
+          attemptNumber: data.attempt.attempt_number,
+          expiresAt: data.attempt.expires_at,
+        });
+        setServerQuizDeadline(data.attempt.expires_at ? new Date(data.attempt.expires_at).getTime() : null);
+      }
     } catch (err) {
       setServerQuizError(err instanceof Error ? err.message : "تعذر فتح الاختبار");
     } finally {
@@ -311,16 +249,44 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     }
   }
 
+  // ── Countdown tick: recompute remaining seconds from the server deadline ──
+  useEffect(() => {
+    if (serverQuizDeadline === null || !serverQuiz || serverQuizResult) {
+      setServerQuizRemaining(null);
+      return;
+    }
+    const compute = () => setServerQuizRemaining(Math.max(0, Math.floor((serverQuizDeadline - Date.now()) / 1000)));
+    compute();
+    const interval = setInterval(compute, 1000);
+    return () => clearInterval(interval);
+  }, [serverQuizDeadline, serverQuiz, serverQuizResult]);
+
+  // Auto-submit exactly once when the timer hits zero (server also enforces).
+  useEffect(() => {
+    if (serverQuizRemaining !== null && serverQuizRemaining <= 0 && serverQuiz && !serverQuizResult && !serverQuizSubmitting && !serverQuizAutoSubmitted.current) {
+      serverQuizAutoSubmitted.current = true;
+      toast({ message: "انتهى وقت الاختبار — جاري التسليم التلقائي", tone: "warning" });
+      void submitServerQuiz(true);
+    }
+  }, [serverQuizRemaining, serverQuiz, serverQuizResult, serverQuizSubmitting]);
+
   /** Submit the solved server quiz: real attempt + server-side grading. */
-  async function submitServerQuiz() {
+  async function submitServerQuiz(force = false) {
     if (!serverQuiz) return;
+    if (!force && serverQuizRemaining !== null && serverQuizRemaining <= 0) return; // manual submit after expiry
     setServerQuizSubmitting(true);
     try {
-      const attempt = await apiRequest<{ id: string; attempt_number: number }>(`/quizzes/${serverQuiz.quizId}/attempts`, { method: "POST" });
-      await apiRequest<{ score: number | null; total_points: number | null; attempt_number: number }>(`/quiz-attempts/${attempt.id}/submit`, {
+      // The attempt was already started when the page opened (server-side
+      // clock). Reuse it — creating a new one here would restart the timer.
+      let attemptId = serverQuizAttempt?.id;
+      if (!attemptId) {
+        const created = await apiRequest<{ id: string }>(`/quizzes/${serverQuiz.quizId}/attempts`, { method: "POST" });
+        attemptId = created.id;
+      }
+      await apiRequest<{ score: number | null; total_points: number | null; attempt_number: number }>(`/quiz-attempts/${attemptId}/submit`, {
         method: "POST",
         body: JSON.stringify({
-          submission_key: `web-${attempt.id}`.slice(0, 60),
+          submission_key: `web-${attemptId}`.slice(0, 60),
           answers: serverQuiz.questions.map((q) => ({
             question_id: q.id,
             answer: serverQuizAnswers[q.id] ?? null,
@@ -334,7 +300,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         });
       });
     } catch (err) {
-      toast({ message: err instanceof Error ? err.message : "تعذر تسليم الاختبار", tone: "danger" });
+      const expired = serverQuizRemaining !== null && serverQuizRemaining <= 0;
+      toast({
+        message: expired ? "انتهى وقت الاختبار وأُغلق التسليم" : err instanceof Error ? err.message : "تعذر تسليم الاختبار",
+        tone: expired ? "warning" : "danger",
+      });
     } finally {
       setServerQuizSubmitting(false);
     }
@@ -574,6 +544,22 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           </button>
         </div>
       </div>
+    );
+  }
+
+  if (activeLessonModal && currentCourse) {
+    return (
+      <VideoLessonPage
+        lesson={activeLessonModal}
+        course={currentCourse}
+        allCourses={validEnrolledCourses}
+        currentUser={currentUser}
+        completedLessonIds={completedLessonIds}
+        onToggleCompleteLesson={toggleCompleteLesson}
+        onSelectLesson={(ls) => setActiveLessonModal(ls)}
+        onClose={() => setActiveLessonModal(null)}
+        onDownloadMaterial={downloadLessonMaterial}
+      />
     );
   }
 
@@ -1492,6 +1478,30 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 </span>
                 <h2 style={{ margin: "6px 0 0", fontSize: "19px", color: "var(--text-main)" }}>{serverQuiz?.title || "جاري التحميل…"}</h2>
               </div>
+              {serverQuizRemaining !== null && !serverQuizResult && (
+                <div
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "7px",
+                    padding: "8px 16px",
+                    borderRadius: "10px",
+                    fontWeight: 900,
+                    fontSize: "16px",
+                    fontVariantNumeric: "tabular-nums",
+                    direction: "ltr",
+                    flexShrink: 0,
+                    background: serverQuizRemaining <= 60 ? "#fef2f2" : "var(--bg-surface-secondary)",
+                    color: serverQuizRemaining <= 60 ? "#b91c1c" : "var(--text-main)",
+                    border: serverQuizRemaining <= 60 ? "1.5px solid #fca5a5" : "1px solid var(--border-color)",
+                  }}
+                >
+                  <Timer size={18} style={{ color: serverQuizRemaining <= 60 ? "#b91c1c" : "#059669" }} />
+                  <span>
+                    {Math.floor(serverQuizRemaining / 60)}:{String(serverQuizRemaining % 60).padStart(2, "0")}
+                  </span>
+                </div>
+              )}
               <button
                 onClick={() => { setServerQuiz(null); setServerQuizError(null); }}
                 style={{
@@ -1590,18 +1600,18 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 </div>
 
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", borderTop: "1px solid var(--border-color)", paddingTop: "16px" }}>
-                  <button type="button" className="btn-secondary" onClick={() => setServerQuiz(null)}>
+                  <button type="button" className="btn-secondary" onClick={() => setServerQuiz(null)} disabled={serverQuizSubmitting}>
                     خروج دون تسليم
                   </button>
                   <button
                     type="button"
                     className="btn-primary"
                     onClick={() => void submitServerQuiz()}
-                    disabled={serverQuizSubmitting || Object.keys(serverQuizAnswers).length < serverQuiz.questions.length}
+                    disabled={serverQuizSubmitting || serverQuizRemaining === 0 || Object.keys(serverQuizAnswers).length < serverQuiz.questions.length}
                     style={{ gap: "6px" }}
                   >
                     <Zap size={16} />
-                    <span>{serverQuizSubmitting ? "جاري التصحيح…" : "إنهاء وتسليم الاختبار"}</span>
+                    <span>{serverQuizRemaining === 0 ? "انتهى الوقت" : serverQuizSubmitting ? "جاري التصحيح…" : "إنهاء وتسليم الاختبار"}</span>
                   </button>
                 </div>
               </>
@@ -1826,220 +1836,6 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         </div>
       )}
 
-      {/* =========================================================================
-          MODAL 1: LESSON VIDEO PLAYER & MATERIALS VIEWER
-         ========================================================================= */}
-      {activeLessonModal && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            backgroundColor: "var(--bg-app, #f8fafc)",
-            zIndex: 99999,
-            overflowY: "auto",
-            padding: "28px 20px 60px",
-          }}
-        >
-          <div
-            style={{
-              background: "var(--bg-surface, #ffffff)",
-              border: "1px solid var(--border-color)",
-              borderRadius: "20px",
-              maxWidth: "980px",
-              width: "100%",
-              margin: "0 auto",
-              padding: "26px",
-              boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px" }}>
-              <div>
-                <span style={{ fontSize: "11.5px", fontWeight: 800, color: "#059669", background: "var(--bg-accent)", padding: "3px 8px", borderRadius: "6px" }}>
-                  مشغل الدرس التفاعلي • {activeLessonModal.durationFormatted}
-                </span>
-                <h2 style={{ margin: "6px 0 2px", fontSize: "20px", color: "var(--text-main)" }}>
-                  {activeLessonModal.title}
-                </h2>
-              </div>
-              <button
-                onClick={() => setActiveLessonModal(null)}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  background: "var(--bg-surface-secondary)",
-                  border: "1px solid var(--border-color)",
-                  borderRadius: "8px",
-                  padding: "7px 14px",
-                  fontSize: "12.5px",
-                  fontWeight: 800,
-                  color: "var(--text-main)",
-                  cursor: "pointer",
-                }}
-              >
-                <X size={16} />
-                <span>رجوع للمقرر</span>
-              </button>
-            </div>
-
-            {/* Player telemetry is attached only to a real media element. */}
-            <div
-              style={{
-                width: "100%",
-                height: "min(62vh, 560px)",
-                background: "#0f172a",
-                borderRadius: "14px",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "#ffffff",
-                marginBottom: "20px",
-                position: "relative",
-              }}
-            >
-              {activeLessonModal.videoUrl || activeLessonModal.requiresProtectedPlayback ? (
-                (() => {
-                  const url = playbackUrl;
-                  if (!url) {
-                    return (
-                      <div style={{ display: "grid", placeItems: "center", width: "100%", height: "100%", color: "#cbd5e1", padding: "24px", textAlign: "center" }}>
-                        {playbackError || "جاري تجهيز بث الفيديو المحمي..."}
-                      </div>
-                    );
-                  }
-                  const ytMatch = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
-                  if (ytMatch && ytMatch[1]) {
-                    return (
-                      <iframe
-                        src={`https://www.youtube-nocookie.com/embed/${ytMatch[1]}`}
-                        title={activeLessonModal.title}
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                        allowFullScreen
-                        style={{ width: "100%", height: "100%", border: "none", display: "block" }}
-                      />
-                    );
-                  }
-                  if (url.includes("drive.google.com")) {
-                    const driveEmbed = url.replace(/\/view(\?.*)?$/, "/preview");
-                    return (
-                      <iframe
-                        src={driveEmbed}
-                        title={activeLessonModal.title}
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                        allowFullScreen
-                        style={{ width: "100%", height: "100%", border: "none", display: "block" }}
-                      />
-                    );
-                  }
-                  return (
-                    <div style={{ position: "relative", width: "100%", height: "100%" }}>
-                      <video
-                        ref={videoElementRef}
-                        src={url}
-                        controls
-                        controlsList="nodownload noremoteplayback"
-                        disablePictureInPicture
-                        disableRemotePlayback
-                        onContextMenu={(e) => e.preventDefault()}
-                        playsInline
-                        preload="metadata"
-                        style={{ width: "100%", height: "100%", objectFit: "contain", userSelect: "none" }}
-                        aria-label={activeLessonModal.title}
-                      />
-                      {/* Moving watermark: identity + watch time (no PII beyond name/short id) */}
-                      {currentUser && (
-                        <div style={watermarkStyle}>
-                          {currentUser.name || "طالب معتمد"} • {currentUser.id.slice(0, 8)}
-                          {watermarkClock ? ` • ${watermarkClock}` : ""}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()
-              ) : (
-                <>
-                  <div style={{ width: "64px", height: "64px", borderRadius: "50%", background: "rgba(255,255,255,0.2)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
-                    <Play size={28} fill="white" style={{ marginInlineStart: "3px" }} />
-                  </div>
-                  <strong style={{ marginTop: "14px", fontSize: "15px" }}>{activeLessonModal.title}</strong>
-                  <span style={{ fontSize: "12px", opacity: 0.8 }}>معلم المادة: {currentCourse.teacherName}</span>
-                </>
-              )}
-            </div>
-
-            {/* Description & Action */}
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", flexWrap: "wrap", gap: "10px" }}>
-              <p style={{ margin: 0, fontSize: "13.5px", color: "var(--text-muted)", maxWidth: "540px" }}>
-                {activeLessonModal.description || "شرح تفصيلي للمفاهيم الأساسية وحل التدريبات التطبيقية النموذجية."}
-              </p>
-
-              <button
-                onClick={() => toggleCompleteLesson(activeLessonModal.id)}
-                style={{
-                  padding: "8px 16px",
-                  borderRadius: "8px",
-                  border: completedLessonIds.includes(activeLessonModal.id) ? "1px solid #166534" : "1px solid #0f392b",
-                  background: completedLessonIds.includes(activeLessonModal.id) ? "#dcfce7" : "#0f392b",
-                  color: completedLessonIds.includes(activeLessonModal.id) ? "#166534" : "#ffffff",
-                  fontSize: "12.5px",
-                  fontWeight: 800,
-                  cursor: "pointer",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "6px",
-                }}
-              >
-                <CheckCircle2 size={15} />
-                <span>{completedLessonIds.includes(activeLessonModal.id) ? "تم إنجاز الدرس" : "تحديد كمكتمل"}</span>
-              </button>
-            </div>
-
-            {/* Lesson attachments */}
-            <div style={{ borderTop: "1px solid var(--border-color)", paddingTop: "16px" }}>
-
-                <div>
-                  {activeLessonModal.materials && activeLessonModal.materials.length > 0 ? (
-                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                      {activeLessonModal.materials.map((mat) => (
-                        <div
-                          key={mat.id}
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                            padding: "10px 14px",
-                            background: "var(--bg-surface-secondary)",
-                            border: "1px solid var(--border-color)",
-                            borderRadius: "8px",
-                          }}
-                        >
-                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                            <FileText size={18} style={{ color: "#059669" }} />
-                            <span style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-main)" }}>{mat.title}</span>
-                          </div>
-
-                          <button
-                            onClick={() => void downloadLessonMaterial(mat.fileUrl, mat.title)}
-                            className="btn-outline"
-                            style={{ padding: "6px 12px", fontSize: "12px", gap: "4px", cursor: "pointer" }}
-                          >
-                            <Download size={13} />
-                            <span>تنزيل المذكرة</span>
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div style={{ padding: "12px 14px", background: "var(--bg-surface-secondary)", borderRadius: "8px", fontSize: "12.5px", color: "var(--text-muted)" }}>
-                      تم إرفاق ملخص الدرس بصيغة PDF داخل منصة التعلم الذكية.
-                    </div>
-                  )}
-                </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* =========================================================================
           MODAL 2: ASSIGNMENT SOLVING & SUBMISSION MODAL
