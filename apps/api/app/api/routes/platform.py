@@ -1585,6 +1585,23 @@ def get_quiz_solve_view(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
     ).all()
     total_points = sum(qq.points for qq, _q in rows)
 
+    # The attempt clock starts when the student opens the solving page (or
+    # resumes the already-running attempt) — otherwise duration_seconds would
+    # never constrain anything. The countdown must be server-authoritative.
+    attempt = None
+    expires_at_iso: str | None = None
+    if user.role == UserRole.STUDENT:
+        try:
+            attempt = platform_service.start_quiz(db, user, quiz.id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if attempt.expires_at is not None:
+            expires_at_iso = attempt.expires_at.isoformat()
+
     def _safe_options(raw: object) -> object:
         """Strip answer-revealing flags (is_correct) from stored options."""
         if not isinstance(raw, list):
@@ -1609,6 +1626,16 @@ def get_quiz_solve_view(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
             "ends_at": quiz.ends_at.isoformat() if quiz.ends_at else None,
             "total_points": float(total_points),
         },
+        "attempt": (
+            {
+                "id": str(attempt.id),
+                "attempt_number": attempt.attempt_number,
+                "started_at": attempt.started_at.isoformat() if attempt.started_at else None,
+                "expires_at": expires_at_iso,
+            }
+            if attempt is not None
+            else None
+        ),
         "questions": [
             {
                 "id": str(question.id),
