@@ -1529,9 +1529,17 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               zIndex: 20,
             }}
           >
-            <h2 style={{ margin: 0, fontSize: "17px", fontWeight: 900, color: "var(--text-main)" }}>
-              {serverQuiz?.title || (serverQuizLoading ? "جاري التحميل…" : "اختبار")}
-            </h2>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", minWidth: 0 }}>
+              <h2 style={{ margin: 0, fontSize: "17px", fontWeight: 900, color: "var(--text-main)" }}>
+                {serverQuiz?.title || (serverQuizLoading ? "جاري التحميل…" : "اختبار")}
+              </h2>
+              {serverQuiz && !serverQuizResult && (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11.5px", fontWeight: 900, color: "#059669", background: "var(--bg-accent)", border: "1px solid var(--border-accent)", padding: "4px 11px", borderRadius: "999px", flexShrink: 0 }}>
+                  <CheckCircle2 size={12} />
+                  {Number(serverQuiz.totalPoints || 0)} درجة • {serverQuiz.questions.length} أسئلة
+                </span>
+              )}
+            </div>
             <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
               {serverQuizAttempt?.isPractice && (
                 <span style={{ fontSize: "11px", fontWeight: 800, color: "#92400e", background: "#fef3c7", padding: "4px 10px", borderRadius: "8px" }}>
@@ -1555,12 +1563,12 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     fontSize: "15px",
                     fontVariantNumeric: "tabular-nums",
                     direction: "ltr",
-                    background: serverQuizRemaining <= 60 ? "#fef2f2" : "var(--bg-surface-secondary)",
-                    color: serverQuizRemaining <= 60 ? "#b91c1c" : "#059669",
-                    border: serverQuizRemaining <= 60 ? "1.5px solid #fca5a5" : "1.5px solid #a7f3d0",
+                    background: "#fef2f2",
+                    color: "#b91c1c",
+                    border: "1.5px solid #fca5a5",
                   }}
                 >
-                  <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: serverQuizRemaining <= 60 ? "#dc2626" : "#10b981" }} />
+                  <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: serverQuizRemaining <= 60 ? "#dc2626" : "#ef4444" }} />
                   <span>
                     {Math.floor(serverQuizRemaining / 60)}:{String(serverQuizRemaining % 60).padStart(2, "0")}
                   </span>
@@ -1597,7 +1605,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             <div style={{ width: "280px", flexShrink: 0, display: "flex", flexDirection: "column", gap: "16px", position: "sticky", top: "84px" }}>
               <div style={{ background: "var(--bg-surface, #ffffff)", border: "1px solid var(--border-color)", borderRadius: "16px", padding: "18px" }}>
                 <h3 style={{ margin: "0 0 14px", fontSize: "14px", fontWeight: 900, color: "var(--text-main)" }}>خريطة أسئلة الاختبار</h3>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "8px", direction: "ltr" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "8px", direction: "rtl" }}>
                   {serverQuiz?.questions.map((q, qIdx) => {
                     const answered = Boolean(serverQuizAnswers[q.id]);
                     const flagged = serverQuizFlagged[q.id];
@@ -1627,7 +1635,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       >
                         {qIdx + 1}
                         {flagged && !answered && (
-                          <span style={{ position: "absolute", top: "-2px", insetInlineEnd: "-2px", width: "10px", height: "10px", borderRadius: "50%", background: "#f59e0b", border: "1.5px solid var(--bg-surface, #fff)" }} />
+                          <span style={{ position: "absolute", top: "-2px", insetInlineStart: "-2px", width: "10px", height: "10px", borderRadius: "50%", background: "#f59e0b", border: "1.5px solid var(--bg-surface, #fff)" }} />
                         )}
                       </button>
                     );
@@ -1700,7 +1708,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   <div style={{ background: "var(--bg-surface, #ffffff)", border: "1px solid var(--border-color)", borderRadius: "16px", padding: "26px", boxShadow: "var(--card-shadow)" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
                       <span style={{ fontSize: "12px", fontWeight: 900, color: "#059669", background: "var(--bg-accent)", padding: "4px 12px", borderRadius: "8px" }}>
-                        السؤال {serverQuizQuestionIndex + 1}
+                        السؤال {ORDINAL_AR[serverQuizQuestionIndex] || serverQuizQuestionIndex + 1}
                       </span>
                       <button
                         type="button"
@@ -1748,6 +1756,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                               <div style={{ flex: 1 }}>
                                 <FormulaRenderer inline text={opt.text} />
                               </div>
+                              <span style={{ fontSize: "12px", fontWeight: 900, color: chosen ? "#059669" : "var(--text-muted)", flexShrink: 0 }}>
+                                {OPTION_LETTERS_AR[optIdx] || ""}
+                              </span>
                             </label>
                           );
                         })}
@@ -2454,3 +2465,26 @@ function formatDueCountdown(dueAt: string): string {
     ? `${days.toLocaleString("ar-EG")} يوم و ${remHours.toLocaleString("ar-EG")} ساعة`
     : `${days.toLocaleString("ar-EG")} يوم`;
 }
+
+/* ── Quiz page Arabic ordinals and MCQ letter prefixes (per approved mock) ── */
+
+const ORDINAL_AR: Record<number, string> = {
+  0: "الأول",
+  1: "الثاني",
+  2: "الثالث",
+  3: "الرابع",
+  4: "الخامس",
+  5: "السادس",
+  6: "السابع",
+  7: "الثامن",
+  8: "التاسع",
+  9: "العاشر",
+};
+
+const OPTION_LETTERS_AR: Record<number, string> = {
+  0: "أ",
+  1: "ب",
+  2: "ج",
+  3: "د",
+  4: "هـ",
+};
