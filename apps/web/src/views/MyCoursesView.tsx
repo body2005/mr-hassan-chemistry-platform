@@ -1172,7 +1172,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   {qz.dueLabel ? ` • متاح حتى ${new Date(qz.dueLabel).toLocaleDateString("ar-EG")}` : ""}
                 </p>
               </div>
-              {qz.accessible ? (
+              {qz.accessible && (qz.attemptsAllowed == null || (qz.attemptsUsed ?? 0) < qz.attemptsAllowed) ? (
                 <button
                   className="btn-primary"
                   style={{ width: "100%", justifyContent: "center", gap: 6 }}
@@ -1180,6 +1180,25 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 >
                   <Play size={14} /> بدء حل الاختبار
                 </button>
+              ) : qz.accessible ? (
+                <div
+                  style={{
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                    padding: "10px 12px",
+                    borderRadius: "10px",
+                    background: "var(--bg-surface-secondary)",
+                    border: "1px dashed var(--border-color)",
+                    fontSize: "12.5px",
+                    fontWeight: 800,
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  <CheckCircle2 size={14} /> انتهت المحاولات المسموحة ({qz.attemptsUsed ?? 0} من {qz.attemptsAllowed})
+                </div>
               ) : (
                 <button className="btn-primary" style={{ width: "100%", justifyContent: "center", gap: 6 }} onClick={() => { const lesson = (currentCourse?.lessons || []).find((l) => l.id === qz.lessonId); if (lesson) handleBuyLesson(lesson); }}>
                   <Lock size={14} /> اشترِ الدرس لفتح الكويز

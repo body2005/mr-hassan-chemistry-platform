@@ -668,6 +668,8 @@ export const courseService = {
               moduleId: q.module_id,
               durationMinutes: q.duration_seconds ? Math.ceil(q.duration_seconds / 60) : undefined,
               dueLabel: q.ends_at,
+              attemptsUsed: q.attempts_used,
+              attemptsAllowed: q.attempts_allowed,
               accessible: q.accessible,
             })),
             ...data.assignments.map((a) => ({
@@ -736,6 +738,7 @@ export const courseService = {
       starts_at: string | null;
       ends_at: string | null;
       attempts_allowed: number;
+      attempts_used: number;
       accessible: boolean;
     }>;
     assignments: Array<{

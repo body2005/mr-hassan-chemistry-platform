@@ -110,6 +110,10 @@ export interface CourseAssessmentRef {
   durationMinutes?: number;
   maxScore?: number;
   dueLabel?: string | null;
+  /** Total attempts this student has already consumed on this quiz. */
+  attemptsUsed?: number;
+  /** Maximum attempts the teacher allows (undefined = unlimited display). */
+  attemptsAllowed?: number;
   /** False when the lesson it belongs to is not paid/unlocked for this student. */
   accessible: boolean;
 }

@@ -38,6 +38,7 @@ from app.models.platform import (
     QuizStatus,
 )
 from app.models.progress import LessonProgress
+from app.models.platform import LessonComment, AttemptStatus, QuizAttempt
 from app.models.user import User, UserRole
 from app.schemas import (
     AnalyticsResponse,
@@ -1488,6 +1489,16 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
     )
 
     def quiz_item(q: Quiz) -> dict:
+        attempts_used = (
+            db.scalar(
+                select(func.count(QuizAttempt.id)).where(
+                    QuizAttempt.quiz_id == q.id,
+                    QuizAttempt.student_id == user.id,
+                )
+            )
+            if user.role == UserRole.STUDENT
+            else 0
+        )
         return {
             "id": str(q.id),
             "kind": "quiz",
@@ -1499,6 +1510,7 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
             "starts_at": q.starts_at.isoformat() if q.starts_at else None,
             "ends_at": q.ends_at.isoformat() if q.ends_at else None,
             "attempts_allowed": q.attempts_allowed,
+            "attempts_used": attempts_used,
             # Unscoped quizzes fall back to: any enrolled student can try.
             "accessible": q.lesson_id is None or q.lesson_id in accessible_lessons,
         }
@@ -1795,4 +1807,109 @@ async def upload_assignment_submission_file(
         "object_key": submission.object_key,
         "status": submission.status,
         "submitted_at": submission.submitted_at.isoformat() if submission.submitted_at else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Lesson comments (discussion under each lesson's video)
+# ---------------------------------------------------------------------------
+
+
+def _comment_tree(db: Session, lesson_id: uuid.UUID, user: CurrentUser) -> list[dict]:
+    rows = list(
+        db.scalars(
+            select(LessonComment)
+            .where(LessonComment.lesson_id == lesson_id)
+            .order_by(LessonComment.created_at.asc())
+        ).all()
+    )
+    author_ids = {c.student_id for c in rows}
+    user_map = {
+        u.id: u
+        for u in db.scalars(select(User).where(User.id.in_(author_ids))).all()
+    } if author_ids else {}
+
+    def to_dict(c: LessonComment) -> dict:
+        u = user_map.get(c.student_id)
+        is_teacher = bool(u and u.role == UserRole.TEACHER)
+        return {
+            "id": str(c.id),
+            "author": (u.display_name if u else None) or ("المعلم" if is_teacher else "طالب"),
+            "is_teacher": is_teacher,
+            "role": u.role.value if u else "student",
+            "is_mine": c.student_id == user.id,
+            "parent_id": str(c.parent_id) if c.parent_id else None,
+            "body": c.body,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+        }
+
+    tops = [to_dict(c) for c in rows if c.parent_id is None]
+    replies = [to_dict(c) for c in rows if c.parent_id is not None]
+    by_parent: dict[str, list[dict]] = {}
+    for r in replies:
+        by_parent.setdefault(r["parent_id"] or "", []).append(r)
+    for t in tops:
+        t["replies"] = by_parent.get(t["id"], [])
+    tops.reverse()  # newest first, replies stay chronological
+    return tops
+
+
+@router.get("/lessons/{lesson_id}/comments")
+def list_lesson_comments(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
+    lesson = db.get(Lesson, lesson_id)
+    if lesson is None:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    module = db.get(CourseModule, lesson.module_id) if lesson.module_id else None
+    course = db.get(Course, module.course_id) if module else None
+    if course is None or course.institution_id != user.institution_id:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    return {"comments": _comment_tree(db, lesson_id, user)}
+
+
+@router.post("/lessons/{lesson_id}/comments", status_code=201)
+def add_lesson_comment(
+    lesson_id: uuid.UUID,
+    payload: dict,
+    user: CurrentUser,
+    db: Db,
+    request: Request,
+) -> dict:
+    enforce_rate_limit(request, bucket="read")
+    body = (payload.get("body") or "").strip()
+    parent_raw = payload.get("parent_id")
+    if not body or len(body) > 2000:
+        raise HTTPException(status_code=422, detail="Comment must be 1..2000 characters")
+    lesson = db.get(Lesson, lesson_id)
+    if lesson is None:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    module = db.get(CourseModule, lesson.module_id) if lesson.module_id else None
+    course = db.get(Course, module.course_id) if module else None
+    if course is None or course.institution_id != user.institution_id:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    parent: LessonComment | None = None
+    if parent_raw:
+        parent = db.get(LessonComment, uuid.UUID(str(parent_raw)))
+        if parent is None or parent.lesson_id != lesson.id:
+            raise HTTPException(status_code=422, detail="Parent comment not found")
+    comment = LessonComment(
+        institution_id=course.institution_id,
+        lesson_id=lesson.id,
+        student_id=user.id,
+        parent_id=parent.id if parent else None,
+        body=body,
+    )
+    db.add(comment)
+    db.commit()
+    db.refresh(comment)
+    is_teacher = user.role == UserRole.TEACHER
+    return {
+        "id": str(comment.id),
+        "author": user.display_name or ("المعلم" if is_teacher else "طالب"),
+        "is_teacher": is_teacher,
+        "role": user.role.value,
+        "is_mine": True,
+        "parent_id": str(comment.parent_id) if comment.parent_id else None,
+        "body": comment.body,
+        "created_at": comment.created_at.isoformat() if comment.created_at else None,
+        "replies": [],
     }

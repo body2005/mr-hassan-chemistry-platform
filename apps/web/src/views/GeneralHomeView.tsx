@@ -324,8 +324,12 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
                       overflow: "hidden",
                     }}
                   >
-                    {/* Video / Snapshot background if available */}
-                    {course.lessons?.[0]?.videoUrl && (
+                    {/* Video / Snapshot background if available.
+                        Protected (locally-stored) videos resolve their real
+                        source only through a POST-token handshake, so rendering
+                        them as <video src> would fire a GET at that endpoint
+                        (405). Thumbnails or public URLs only. */}
+                    {course.lessons?.[0]?.videoUrl && !course.lessons[0].requiresProtectedPlayback && (
                       <div
                         style={{
                           position: "absolute",
