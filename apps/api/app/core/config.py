@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     csrf_cookie_name: str = "matgar_csrf"
     refresh_cookie_name: str = "matgar_refresh"
     session_issuer: str = "mr-hassan-chemistry-platform"
-    session_ttl_seconds: int = Field(default=15 * 60, ge=300, le=60 * 60)
+    session_ttl_seconds: int = Field(default=12 * 60 * 60, ge=300, le=60 * 60 * 24)
     refresh_ttl_seconds: int = Field(default=60 * 60 * 24 * 30, ge=60 * 60, le=60 * 60 * 24 * 365)
     password_reset_ttl_minutes: int = Field(default=30, ge=5, le=24 * 60)
     default_institution_slug: str = "demo"

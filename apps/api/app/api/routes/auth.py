@@ -15,6 +15,11 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.rate_limit import enforce_rate_limit
 from app.core.security import create_session_token, decode_session_token, hash_token
+
+# A rotated refresh token replayed within this window is treated as a racing
+# tab (normal multi-tab behavior) rather than credential theft: the tab gets a
+# fresh session instead of the whole family being revoked.
+_REFRESH_REPLAY_GRACE_SECONDS = 30
 from app.models.platform import RefreshSession, RevokedSession
 from app.models.user import User
 from app.schemas import (
@@ -200,6 +205,27 @@ def refresh(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh session is invalid")
     if session.revoked_at is not None:
         if session.replaced_by:
+            # Grace window: a rotated token replayed seconds later is the
+            # normal multi-tab race (two tabs refresh simultaneously, the
+            # slower one still carries the just-rotated cookie), not theft.
+            # Hand the racing tab the family's current credential instead of
+            # killing the whole family and logging the user out.
+            grace_cutoff = now - timedelta(seconds=_REFRESH_REPLAY_GRACE_SECONDS)
+            successor = (
+                db.query(RefreshSession)
+                .filter(
+                    RefreshSession.family_id == session.family_id,
+                    RefreshSession.revoked_at.is_(None),
+                    RefreshSession.created_at >= grace_cutoff,
+                )
+                .order_by(RefreshSession.created_at.desc())
+                .first()
+            )
+            if successor is not None:
+                user = db.get(User, session.user_id)
+                record_audit(db, request, action="session_refreshed", resource_type="session", actor=user)
+                db.commit()
+                return _auth_response(user, session.family_id, db, response, request)
             db.query(RefreshSession).filter(
                 RefreshSession.family_id == session.family_id,
                 RefreshSession.revoked_at.is_(None),
