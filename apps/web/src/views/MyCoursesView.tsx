@@ -209,6 +209,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     dueAt: string | null;
     maxScore: number;
     latestSubmission: { version: number; status: string; submittedAt: string | null; hasFile: boolean } | null;
+    sheetUrl: string;
   };
   const [serverAssignment, setServerAssignment] = useState<ServerAssignmentSolve | null>(null);
   const [serverAssignmentLoading, setServerAssignmentLoading] = useState(false);
@@ -342,6 +343,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         prompt: data.prompt,
         dueAt: data.due_at,
         maxScore: data.max_score,
+        sheetUrl: `/api/v1/assignments/${data.id}/sheet.pdf`,
         latestSubmission: data.my_latest_submission
           ? {
               version: data.my_latest_submission.version,
@@ -355,6 +357,25 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       setServerAssignmentError(err instanceof Error ? err.message : "تعذر فتح الواجب");
     } finally {
       setServerAssignmentLoading(false);
+    }
+  }
+
+  /** Download the printable assignment sheet (server-rendered Arabic PDF). */
+  async function downloadAssignmentSheet() {
+    if (!serverAssignment) return;
+    try {
+      const blob = await fetchApiBlob(serverAssignment.sheetUrl);
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = `${serverAssignment.title || "assignment"}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+      toast({ message: "تم تحميل ورقة الواجب", tone: "success" });
+    } catch {
+      toast({ message: "تعذر تحميل ورقة الواجب", tone: "danger" });
     }
   }
 
@@ -1782,130 +1803,206 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
 
       {/* =========================================================================
-          STANDALONE PAGE B: ASSIGNMENT SOLVE (download PDF → solve → upload)
+          STANDALONE PAGE B: ASSIGNMENT SOLVE — site topbar + breadcrumb title +
+          countdown to due date + PDF sheet card + upload card (per approved mock).
          ========================================================================= */}
       {(serverAssignment || serverAssignmentLoading || serverAssignmentError) && (
         <div
+          dir="rtl"
           style={{
             position: "fixed",
             inset: 0,
             backgroundColor: "var(--bg-primary, #f8fafc)",
             zIndex: 100000,
             overflowY: "auto",
-            padding: "28px 20px 60px",
           }}
         >
-          <div
-            style={{
-              background: "var(--bg-surface, #ffffff)",
-              border: "1px solid var(--border-color)",
-              borderRadius: "20px",
-              maxWidth: "880px",
-              width: "100%",
-              margin: "0 auto",
-              padding: "26px",
-              boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: "1px solid var(--border-color)", paddingBottom: "14px", marginBottom: "18px", gap: "10px" }}>
-              <div>
-                <span style={{ fontSize: "11px", fontWeight: 800, color: "#1e3a8a", background: "#dbeafe", padding: "3px 8px", borderRadius: "6px" }}>
-                  واجب منزلي • الدرجة: {serverAssignment?.maxScore ?? "—"}
-                </span>
-                <h2 style={{ margin: "6px 0 2px", fontSize: "19px", color: "var(--text-main)" }}>{serverAssignment?.title || "جاري التحميل…"}</h2>
-                {serverAssignment?.dueAt && (
-                  <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                    آخر موعد للتسليم: <strong>{new Date(serverAssignment.dueAt).toLocaleDateString("ar-EG")}</strong>
-                  </span>
-                )}
+          {/* Our site's own topbar (same Header component used app-wide) */}
+          <div style={{ height: "68px", flexShrink: 0 }}>
+            <Header
+              onToggleMenu={() => undefined}
+              menuOpen={false}
+              notifications={[]}
+              onMarkNotificationRead={() => undefined}
+              theme={typeof document !== "undefined" && document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light"}
+              onToggleTheme={() => undefined}
+              lang={lang}
+              onToggleLang={() => undefined}
+              currentUser={currentUser}
+            />
+          </div>
+
+          <div style={{ maxWidth: "760px", margin: "0 auto", padding: "26px 20px 70px" }}>
+            {/* ── Breadcrumb lesson context + centered title + countdown chip ── */}
+            <div style={{ textAlign: "center", marginBottom: "22px" }}>
+              <div style={{ fontSize: "12px", fontWeight: 800, color: "#059669", marginBottom: "6px", display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                <FileText size={14} />
+                {currentCourse?.title || "المقرر الدراسي"}
               </div>
+              <h1 style={{ margin: "0 0 10px", fontSize: "25px", fontWeight: 900, color: "var(--text-main)" }}>
+                {serverAssignment?.title || "واجب"}
+              </h1>
+              {serverAssignment?.dueAt && (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", fontWeight: 800, color: "var(--text-muted)", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", padding: "5px 14px", borderRadius: "999px" }}>
+                  <Clock size={13} />
+                  متبقٍ: {formatDueCountdown(serverAssignment.dueAt)}
+                </span>
+              )}
+            </div>
+
+            {/* ── Card 1: the printable assignment sheet (PDF) ── */}
+            <div style={{ ...assignmentPageCard, marginBottom: "20px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "12px", minWidth: 0 }}>
+                  <div style={{ width: "44px", height: "44px", borderRadius: "12px", background: "#fee2e2", color: "#dc2626", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <FileText size={22} />
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <strong style={{ display: "block", fontSize: "13.5px", fontWeight: 900, color: "var(--text-main)" }}>
+                      ملف أسئلة الواجب — ورقة الأسئلة
+                    </strong>
+                    <small style={{ display: "block", fontSize: "11.5px", color: "var(--text-muted)", marginTop: "2px" }}>
+                      ملف PDF • حمّله وحلّه على الورق ثم صوّر إجابتك
+                    </small>
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    onClick={() => void downloadAssignmentSheet()}
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: "6px",
+                      background: "#0f392b", color: "#ffffff", border: "none",
+                      borderRadius: "9px", padding: "9px 16px", fontSize: "12.5px", fontWeight: 900,
+                      cursor: "pointer",
+                    }}
+                  >
+                    <Download size={15} />
+                    <span>تحميل PDF</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => window.open(serverAssignment?.sheetUrl || "", "_blank", "noopener")}
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: "6px",
+                      background: "var(--bg-surface)", color: "var(--text-main)",
+                      border: "1px solid var(--border-color)",
+                      borderRadius: "9px", padding: "9px 14px", fontSize: "12.5px", fontWeight: 800,
+                      cursor: "pointer",
+                    }}
+                  >
+                    <BookOpen size={15} />
+                    <span>معاينة</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* ── Card 2: upload the solved answer ── */}
+            <div style={{ ...assignmentPageCard, padding: "24px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px", fontSize: "13.5px", fontWeight: 900, color: "var(--text-main)" }}>
+                <FileCheck size={17} style={{ color: "#059669" }} />
+                <span>رفع ملف إجابتك</span>
+                <small style={{ fontSize: "11.5px", fontWeight: 600, color: "var(--text-muted)", marginInlineStart: "auto" }}>
+                  PDF أو صور (PNG, JPG)
+                </small>
+              </div>
+
+              {assignmentUploadDone ? (
+                <div style={{ padding: "18px", background: "#dcfce7", border: "1.5px solid #86efac", borderRadius: "14px", display: "flex", alignItems: "center", gap: "12px" }}>
+                  <CheckCircle2 size={24} style={{ color: "#059669", flexShrink: 0 }} />
+                  <div>
+                    <strong style={{ display: "block", fontSize: "14px", color: "#166534" }}>تم إرسال حل الواجب للمعلم بنجاح</strong>
+                    <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                      نسخة رقم {assignmentUploadDone.version} • {new Date(assignmentUploadDone.submittedAt).toLocaleString("ar-EG")}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {serverAssignmentLoading && <div style={{ padding: "30px", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>جاري تحميل الواجب…</div>}
+
+                  {serverAssignmentError && (
+                    <div style={{ padding: "16px", background: "#fee2e2", color: "#b91c1c", borderRadius: "12px", fontWeight: 800, fontSize: "13.5px", marginBottom: "14px" }}>
+                      {serverAssignmentError}
+                    </div>
+                  )}
+
+                  {serverAssignment && (
+                    <>
+                      {serverAssignment.latestSubmission?.hasFile && (
+                        <div style={{ padding: "12px 14px", background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: "10px", fontSize: "12.5px", color: "#065f46", fontWeight: 700, marginBottom: "14px" }}>
+                          ✓ سبق أن سلّمت نسخة رقم {serverAssignment.latestSubmission.version} — يمكنك رفع نسخة أحدث إن لزم.
+                        </div>
+                      )}
+
+                      {/* Dropzone */}
+                      <label
+                        style={{
+                          display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                          gap: "8px", padding: "34px 18px", borderRadius: "14px", cursor: "pointer", textAlign: "center",
+                          border: assignmentFile ? "2px solid #059669" : "2px dashed var(--border-color)",
+                          background: assignmentFile ? "var(--bg-accent)" : "transparent",
+                          transition: "all 0.15s ease", marginBottom: "14px",
+                        }}
+                      >
+                        {assignmentFile ? <CheckCircle2 size={28} style={{ color: "#059669" }} /> : <Upload size={28} style={{ color: "#059669" }} />}
+                        <strong style={{ fontSize: "13.5px", fontWeight: 900, color: "var(--text-main)" }}>
+                          {assignmentFile ? assignmentFile.name : "اضغط لاختيار ملف الحل أو اسحبه هنا"}
+                        </strong>
+                        <small style={{ fontSize: "11.5px", color: "var(--text-muted)" }}>
+                          يمكنك رفع صور شاشوئية أو ملف PDF مجمع (حتى 50 ميجابايت)
+                        </small>
+                        <input
+                          type="file"
+                          accept=".pdf,.png,.jpg,.jpeg"
+                          style={{ display: "none" }}
+                          onChange={(e) => setAssignmentFile(e.target.files?.[0] || null)}
+                        />
+                      </label>
+
+                      {assignmentUploading && (
+                        <div style={{ height: "7px", borderRadius: "4px", background: "var(--bg-surface-secondary)", overflow: "hidden", marginBottom: "14px" }}>
+                          <div style={{ height: "100%", width: "100%", background: "linear-gradient(90deg, #059669, #10b981)", animation: "assignmentProgress 1.2s ease-in-out infinite" }} />
+                        </div>
+                      )}
+
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        onClick={() => void submitAssignmentFile()}
+                        disabled={!assignmentFile || assignmentUploading}
+                        style={{
+                          width: "100%", justifyContent: "center", gap: "8px", height: "48px",
+                          fontSize: "14px", fontWeight: 900,
+                          background: "#065f46", opacity: !assignmentFile || assignmentUploading ? 0.55 : 1,
+                        }}
+                      >
+                        <FileCheck size={17} />
+                        <span>{assignmentUploading ? "جاري الرفع…" : "إرسال الحل للمعلم"}</span>
+                      </button>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* ── Return to course ── */}
+            <div style={{ textAlign: "center", marginTop: "18px" }}>
               <button
+                type="button"
                 onClick={() => { setServerAssignment(null); setServerAssignmentError(null); }}
                 style={{
                   display: "inline-flex", alignItems: "center", gap: "6px",
                   background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)",
-                  borderRadius: "8px", padding: "7px 14px", fontSize: "12.5px", fontWeight: 800,
-                  color: "var(--text-main)", cursor: "pointer", flexShrink: 0,
+                  borderRadius: "9px", padding: "9px 18px", fontSize: "12.5px", fontWeight: 800,
+                  color: "var(--text-main)", cursor: "pointer",
                 }}
               >
-                <X size={16} />
+                <ArrowRight size={15} />
                 <span>رجوع للمقرر</span>
               </button>
             </div>
-
-            {serverAssignmentLoading && <div style={{ padding: "40px", textAlign: "center", color: "var(--text-muted)" }}>جاري تحميل الواجب…</div>}
-
-            {serverAssignmentError && (
-              <div style={{ padding: "16px", background: "#fee2e2", color: "#b91c1c", borderRadius: "10px", fontWeight: 800, fontSize: "13.5px" }}>
-                {serverAssignmentError}
-              </div>
-            )}
-
-            {serverAssignment && (
-              <>
-                <div style={{ background: "var(--bg-surface-secondary)", padding: "16px", borderRadius: "12px", border: "1px solid var(--border-color)", marginBottom: "18px" }}>
-                  <strong style={{ display: "block", fontSize: "13.5px", color: "var(--text-main)", marginBottom: "6px" }}>تعليمات الواجب:</strong>
-                  <p style={{ margin: 0, fontSize: "13px", color: "var(--text-muted)", lineHeight: "1.7", whiteSpace: "pre-line" }}>
-                    <FormulaRenderer text={serverAssignment.prompt} />
-                  </p>
-                </div>
-
-                {assignmentUploadDone ? (
-                  <div style={{ padding: "16px", background: "#dcfce7", border: "1.5px solid #86efac", borderRadius: "12px", display: "flex", alignItems: "center", gap: "10px", marginBottom: "18px" }}>
-                    <CheckCircle2 size={22} style={{ color: "#059669" }} />
-                    <div>
-                      <strong style={{ display: "block", fontSize: "14px", color: "#166534" }}>تم إرسال حل الواجب للمعلم بنجاح</strong>
-                      <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                        نسخة رقم {assignmentUploadDone.version} • {new Date(assignmentUploadDone.submittedAt).toLocaleString("ar-EG")}
-                      </span>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    {/* Step 1: download the assignment PDF (lesson materials) */}
-                    {serverAssignment.latestSubmission?.hasFile && (
-                      <div style={{ padding: "12px 14px", background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: "10px", fontSize: "12.5px", color: "#065f46", fontWeight: 700, marginBottom: "14px" }}>
-                        ✓ سبق أن سلّمت نسخة رقم {serverAssignment.latestSubmission.version} — يمكنك رفع نسخة أحدث إن لزم.
-                      </div>
-                    )}
-
-                    {/* Step 2: solve on paper then upload a photographed PDF/images */}
-                    <div style={{ border: "1.5px dashed var(--border-color)", borderRadius: "14px", padding: "22px", textAlign: "center", marginBottom: "16px" }}>
-                      <Upload size={30} style={{ color: "#059669", margin: "0 auto 10px" }} />
-                      <strong style={{ display: "block", fontSize: "14px", color: "var(--text-main)", marginBottom: "4px" }}>
-                        ارفع ملف حل الواجب
-                      </strong>
-                      <p style={{ margin: "0 0 14px", fontSize: "12.5px", color: "var(--text-muted)", lineHeight: 1.6 }}>
-                        حمّل ورقة الواجب، حلها بالكتابة، صوّر أوراقك أو امسحها ضوئياً، وارفعها ملف PDF أو صور واضحة (حتى 50 ميجا).
-                      </p>
-                      <input
-                        type="file"
-                        accept=".pdf,.png,.jpg,.jpeg"
-                        onChange={(e) => setAssignmentFile(e.target.files?.[0] || null)}
-                        style={{ maxWidth: "320px", margin: "0 auto 12px", display: "block", fontSize: "12.5px" }}
-                      />
-                      {assignmentFile && (
-                        <div style={{ fontSize: "12.5px", color: "var(--text-main)", fontWeight: 800, marginBottom: "12px" }}>
-                          الملف المختار: {assignmentFile.name} ({Math.round(assignmentFile.size / 1024)} كيلوبايت)
-                        </div>
-                      )}
-                      <div>
-                        <button
-                          type="button"
-                          className="btn-primary"
-                          onClick={() => void submitAssignmentFile()}
-                          disabled={!assignmentFile || assignmentUploading}
-                          style={{ gap: "6px" }}
-                        >
-                          <FileCheck size={16} />
-                          <span>{assignmentUploading ? "جاري الرفع…" : "تسليم الواجب الآن"}</span>
-                        </button>
-                      </div>
-                    </div>
-                  </>
-                )}
-              </>
-            )}
           </div>
         </div>
       )}
@@ -2331,3 +2428,29 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     </div>
   );
 };
+
+/* ── Assignment standalone page helpers ── */
+
+const assignmentPageCard: React.CSSProperties = {
+  background: "var(--bg-surface, #ffffff)",
+  border: "1px solid var(--border-color, #e2e8f0)",
+  borderRadius: "16px",
+  padding: "20px 22px",
+  boxShadow: "0 2px 12px rgba(0,0,0,0.04)",
+};
+
+/** Human Arabic countdown to the assignment due date. */
+function formatDueCountdown(dueAt: string): string {
+  const ms = new Date(dueAt).getTime() - Date.now();
+  if (Number.isNaN(ms)) return "—";
+  if (ms <= 0) return "انتهى الموعد النهائي";
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${minutes.toLocaleString("ar-EG")} دقيقة`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours.toLocaleString("ar-EG")} يوم و ${((minutes % 60) / 60 >= 0.5 ? 1 : 0).toLocaleString("ar-EG")} ساعات`.replace(" و 1 ساعات", " و نصف");
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  return remHours > 0
+    ? `${days.toLocaleString("ar-EG")} يوم و ${remHours.toLocaleString("ar-EG")} ساعة`
+    : `${days.toLocaleString("ar-EG")} يوم`;
+}

@@ -1718,6 +1718,58 @@ ALLOWED_SUBMISSION_EXT = {".pdf", ".png", ".jpg", ".jpeg"}
 MAX_SUBMISSION_BYTES = 50 * 1024 * 1024  # 50MB
 
 
+@router.get("/assignments/{assignment_id}/sheet.pdf")
+def download_assignment_sheet(assignment_id: uuid.UUID, user: CurrentUser, db: Db):
+    """Render the assignment questions as a printable Arabic PDF sheet.
+
+    Students download this, solve on paper, then upload photographed/scanned
+    copies through the submission endpoint. Content comes only from the
+    assignment record — nothing is invented.
+    """
+    from app.services.assignment_sheet import render_assignment_sheet_pdf
+
+    assignment = db.scalar(
+        select(Assignment).where(
+            Assignment.id == assignment_id,
+            Assignment.institution_id == user.institution_id,
+            Assignment.status == AssignmentStatus.PUBLISHED,
+        )
+    )
+    if assignment is None:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    if user.role == UserRole.STUDENT:
+        from app.services.platform_service import _enrolled
+
+        if not _enrolled(db, user, assignment.course_id):
+            raise HTTPException(status_code=403, detail="Not enrolled")
+        if assignment.lesson_id is not None and not can_access_lesson_content(db, user, assignment.lesson_id):
+            raise HTTPException(status_code=403, detail="Lesson not unlocked")
+
+    try:
+        pdf_bytes = render_assignment_sheet_pdf(
+            title=assignment.title,
+            prompt=assignment.prompt,
+            max_score=float(assignment.max_score or 0),
+            due_at=assignment.due_at,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    from urllib.parse import quote
+
+    filename = f"assignment-{assignment.id}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
 @router.post("/assignments/{assignment_id}/submissions/file", status_code=201)
 async def upload_assignment_submission_file(
     request: Request,

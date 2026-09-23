@@ -1714,3 +1714,8 @@ img, video, canvas, svg {
     white-space: normal;
   }
 }
+
+@keyframes assignmentProgress {
+  0% { transform: translateX(100%); }
+  100% { transform: translateX(-100%); }
+}
