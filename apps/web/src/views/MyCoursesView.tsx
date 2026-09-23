@@ -552,7 +552,6 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       <VideoLessonPage
         lesson={activeLessonModal}
         course={currentCourse}
-        allCourses={validEnrolledCourses}
         currentUser={currentUser}
         completedLessonIds={completedLessonIds}
         onToggleCompleteLesson={toggleCompleteLesson}

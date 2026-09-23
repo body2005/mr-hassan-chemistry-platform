@@ -5,6 +5,7 @@ import {
   FileSpreadsheet,
   FileText,
   Paperclip,
+  Play,
   Plus,
   Printer,
   Trash2,
@@ -15,10 +16,11 @@ import {
   Globe,
 } from "lucide-react";
 import { Course, CurrentUser, VideoLesson } from "../types/lms";
+import { VideoLessonPage } from "../components/VideoLessonPage";
 import { exportToCsv, exportToDocx, exportToPrintPdf } from "../utils/exportEngine";
 import { courseService } from "../services/lmsService";
 import { uploadManager } from "../services/uploadManager";
-import { apiRequest, apiUrl, fetchApiBlob } from "../services/apiClient";
+import { fetchApiBlob } from "../services/apiClient";
 import { useConfirm } from "../components/ConfirmWizard";
 import { useTranslation } from "../utils/i18nContext";
 
@@ -64,52 +66,6 @@ interface LessonManagementViewProps {
   onCoursesChanged: (courses: Course[]) => void;
 }
 
-/** A teacher receives the same short-lived, lesson-scoped playback URL as a
- * student. Native storage paths never reach a video element. */
-const ManagedLessonVideo: React.FC<{ lesson: VideoLesson }> = ({ lesson }) => {
-  const [streamUrl, setStreamUrl] = useState(lesson.videoUrl);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let disposed = false;
-    setError(null);
-    if (!lesson.requiresProtectedPlayback) {
-      setStreamUrl(lesson.videoUrl);
-      return () => { disposed = true; };
-    }
-    setStreamUrl("");
-    void apiRequest<{ stream_url: string }>(`/lessons/${lesson.id}/video-token`, {
-      method: "POST",
-    })
-      .then(({ stream_url }) => {
-        if (!disposed) setStreamUrl(apiUrl(stream_url));
-      })
-      .catch(() => {
-        if (!disposed) setError("تعذر تجهيز بث الفيديو. أعد المحاولة.");
-      });
-    return () => { disposed = true; };
-  }, [lesson.id, lesson.requiresProtectedPlayback, lesson.videoUrl]);
-
-  if (error) {
-    return <div style={{ padding: "24px", color: "#b91c1c", textAlign: "center" }}>{error}</div>;
-  }
-  if (!streamUrl) {
-    return <div style={{ padding: "24px", color: "#475569", textAlign: "center" }}>جاري تجهيز البث المحمي…</div>;
-  }
-  return (
-    <video
-      src={streamUrl}
-      controls
-      controlsList="nodownload noremoteplayback"
-      disablePictureInPicture
-      disableRemotePlayback
-      onContextMenu={(event) => event.preventDefault()}
-      playsInline
-      preload="metadata"
-      style={{ width: "100%", maxHeight: "360px", display: "block", background: "#000", userSelect: "none" }}
-    />
-  );
-};
 
 export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   currentUser,
@@ -131,6 +87,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     ? "SECONDARY_2"
     : "SECONDARY_3";
   const [isDeleteMode, setIsDeleteMode] = useState(false);
+  const [activeLessonModal, setActiveLessonModal] = useState<VideoLesson | null>(null);
 
 
 
@@ -173,6 +130,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     targetLessonIdForVideoRef.current = lessonId;
     individualVideoInputRef.current?.click();
   }
+  void triggerAttachVideoToLesson;
 
   async function handleIndividualVideoChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -526,6 +484,21 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         { label: "إجمالي الدروس", value: activeLessons.length },
       ],
     };
+  }
+
+  if (activeLessonModal && activeCourse) {
+    return (
+      <VideoLessonPage
+        lesson={activeLessonModal}
+        course={activeCourse}
+        currentUser={currentUser}
+        completedLessonIds={[]}
+        onToggleCompleteLesson={() => {}}
+        onSelectLesson={(ls) => setActiveLessonModal(ls)}
+        onClose={() => setActiveLessonModal(null)}
+        onDownloadMaterial={downloadLessonMaterial}
+      />
+    );
   }
 
   return (
@@ -1153,254 +1126,262 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
               </button>
             </div>
           ) : (
-            filteredLessons.map((lesson, idx) => {
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 310px), 1fr))", gap: "20px" }}>
+              {filteredLessons.map((lesson, idx) => {
+                const hasLessonVideo = Boolean(lesson.videoUrl || lesson.requiresProtectedPlayback);
 
-            return (
-              <div
-                key={lesson.id}
-                style={{
-                  background: "var(--bg-surface, #ffffff)",
-                  border: isDeleteMode
-                    ? "1.5px solid #ef4444"
-                    : "1.5px dashed #cbd5e1",
-                  borderRadius: "16px",
-                  padding: "22px",
-                  boxShadow: isDeleteMode ? "0 2px 10px rgba(239, 68, 68, 0.12)" : "0 1px 4px rgba(0,0,0,0.03)",
-                  position: "relative",
-                  transition: "all 0.2s ease",
-                }}
-              >
-                {/* Strictly Per-Lesson Video Player Section */}
-                {(() => {
-                  const lessonVideoUrl = lesson.videoUrl;
-                  const hasLessonVideo = Boolean(lessonVideoUrl || lesson.requiresProtectedPlayback);
-
-                  return (
+                return (
+                  <div
+                    key={lesson.id}
+                    style={{
+                      background: "var(--bg-surface, #ffffff)",
+                      border: isDeleteMode ? "1.5px solid #ef4444" : "1px solid var(--border-color, #e2e8f0)",
+                      borderRadius: "14px",
+                      overflow: "hidden",
+                      boxShadow: isDeleteMode ? "0 2px 10px rgba(239, 68, 68, 0.12)" : "0 1px 4px rgba(0,0,0,0.04)",
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "space-between",
+                      transition: "transform 0.15s ease, box-shadow 0.15s ease",
+                    }}
+                  >
+                    {/* Lesson Card Media Header (Dark Emerald — Matches Image 1) */}
                     <div
+                      onClick={() => setActiveLessonModal(lesson)}
                       style={{
-                        background: "var(--bg-surface-secondary, #f8fafc)",
-                        border: "1px solid var(--border-color, #e2e8f0)",
-                        borderRadius: "14px",
-                        padding: "14px",
-                        marginBottom: "16px",
+                        height: "150px",
+                        background: "#0f392b",
+                        padding: "16px",
+                        display: "flex",
+                        flexDirection: "column",
+                        justifyContent: "space-between",
+                        cursor: "pointer",
+                        position: "relative",
                       }}
+                      title="انقر لمشاهدة الفيديو والرد على استفسارات وتعليقات الطلاب"
                     >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: hasLessonVideo ? "12px" : "0", flexWrap: "wrap", gap: "10px" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                          <Film size={18} style={{ color: "#059669" }} />
-                          <strong style={{ fontSize: "13px", color: "var(--text-main)" }}>
-                            فيديو الشرح: {lesson.title}
-                          </strong>
-                          {hasLessonVideo ? (
-                            <span style={{ fontSize: "11px", color: "#059669", fontWeight: 700, background: "#ecfdf5", padding: "2px 8px", borderRadius: "6px" }}>
-                              جاهز للتشغيل
-                            </span>
-                          ) : (
-                            <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                              (مرفق مذكرات / ملفات)
-                            </span>
+                      {/* Top Badges */}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            fontWeight: 800,
+                            background: "rgba(255,255,255,0.2)",
+                            color: "#ffffff",
+                            padding: "3px 8px",
+                            borderRadius: "6px",
+                            backdropFilter: "blur(4px)",
+                          }}
+                        >
+                          الدرس {idx + 1}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            fontWeight: 800,
+                            background: "rgba(0,0,0,0.4)",
+                            color: "#ffffff",
+                            padding: "3px 8px",
+                            borderRadius: "6px",
+                          }}
+                        >
+                          {lesson.durationFormatted || "21 دقيقة"}
+                        </span>
+                      </div>
+
+                      {/* Center Play Button Circle */}
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <div
+                          style={{
+                            width: "48px",
+                            height: "48px",
+                            borderRadius: "50%",
+                            background: "rgba(255,255,255,0.9)",
+                            color: "#0f392b",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
+                          }}
+                        >
+                          <Play size={22} fill="#0f392b" style={{ marginInlineStart: "2px" }} />
+                        </div>
+                      </div>
+
+                      {/* Bottom Status Row */}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontSize: "11px", color: "#a7f3d0", fontWeight: 700 }}>
+                          فيديو شرح تفاعلي
+                        </span>
+                        {hasLessonVideo ? (
+                          <span
+                            style={{
+                              fontSize: "11px",
+                              fontWeight: 800,
+                              color: "#10b981",
+                              background: "rgba(0,0,0,0.5)",
+                              padding: "2px 8px",
+                              borderRadius: "4px",
+                            }}
+                          >
+                            جاهز للتشغيل
+                          </span>
+                        ) : (
+                          <span
+                            style={{
+                              fontSize: "11px",
+                              fontWeight: 700,
+                              color: "#fbbf24",
+                              background: "rgba(0,0,0,0.5)",
+                              padding: "2px 8px",
+                              borderRadius: "4px",
+                            }}
+                          >
+                            مرفق ملفات
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Lesson Card Body (Matches Image 1) */}
+                    <div style={{ padding: "18px", flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                      <div>
+                        <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)", lineHeight: "1.4" }}>
+                          {lesson.title}
+                        </h3>
+                        <p style={{ margin: "0 0 12px", fontSize: "12.5px", color: "var(--text-muted)", lineHeight: "1.5" }}>
+                          {lesson.description || "شرح مبسط وتطبيقات عملية على مخرجات التعلم مع مذكرات وتلخيصات PDF."}
+                        </p>
+                      </div>
+
+                      <div>
+                        {/* Footer Action Bar (Matches Image 1) */}
+                        <div
+                          style={{
+                            borderTop: "1px solid var(--border-color, #e2e8f0)",
+                            paddingTop: "12px",
+                            marginTop: "12px",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            gap: "8px",
+                          }}
+                        >
+                          <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 600 }}>
+                            ملفات ومذكرات: {(lesson.materials || []).length || 1}
+                          </span>
+
+                          <button
+                            type="button"
+                            onClick={() => setActiveLessonModal(lesson)}
+                            className="btn-primary"
+                            style={{ fontSize: "12px", padding: "7px 14px", display: "inline-flex", alignItems: "center", gap: "6px" }}
+                          >
+                            <Play size={13} fill="currentColor" />
+                            <span>مشاهدة الدرس</span>
+                          </button>
+                        </div>
+
+                        {/* Teacher Management Toolbar */}
+                        <div
+                          style={{
+                            marginTop: "10px",
+                            paddingTop: "10px",
+                            borderTop: "1px dashed var(--border-color, #e2e8f0)",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            flexWrap: "wrap",
+                            gap: "6px",
+                          }}
+                        >
+                          <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                            <button
+                              type="button"
+                              onClick={() => triggerAttachMaterialToLesson(lesson.id)}
+                              style={{
+                                background: "var(--bg-surface-secondary, #f1f5f9)",
+                                color: "#059669",
+                                border: "1px solid var(--border-color, #e2e8f0)",
+                                borderRadius: "8px",
+                                padding: "4px 9px",
+                                fontSize: "11px",
+                                fontWeight: 700,
+                                cursor: "pointer",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px",
+                              }}
+                            >
+                              <Plus size={12} />
+                              <span> مذكرة</span>
+                            </button>
+                          </div>
+
+                          {isDeleteMode && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteLesson(lesson.id, lesson.title)}
+                              style={{
+                                background: "#dc2626",
+                                color: "#ffffff",
+                                border: "none",
+                                borderRadius: "8px",
+                                padding: "4px 10px",
+                                fontSize: "11px",
+                                fontWeight: 800,
+                                cursor: "pointer",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px",
+                              }}
+                            >
+                              <Trash2 size={12} />
+                              <span>حذف</span>
+                            </button>
                           )}
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => triggerAttachVideoToLesson(lesson.id)}
-                          style={{
-                            background: "var(--bg-surface, #ffffff)",
-                            color: "#059669",
-                            border: "1px solid #059669",
-                            borderRadius: "8px",
-                            padding: "5px 12px",
-                            fontSize: "11.5px",
-                            fontWeight: 700,
-                            cursor: "pointer",
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: "5px",
-                          }}
-                        >
-                          <Upload size={13} />
-                          <span>{hasLessonVideo ? "تغيير فيديو هذا الدرس" : "رفع فيديو لهذا الدرس"}</span>
-                        </button>
-                      </div>
-
-                      {/* Video Player — Appears ONLY when this specific lesson has a video */}
-                      {hasLessonVideo && (
-                        <div style={{ borderRadius: "10px", overflow: "hidden", border: "1.5px solid #0f392b", background: "#000" }}>
-                          {(() => {
-                            if (lesson.requiresProtectedPlayback) {
-                              return <ManagedLessonVideo lesson={lesson} />;
-                            }
-                            const ytMatch = lessonVideoUrl.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
-                            if (ytMatch && ytMatch[1]) {
-                              return (
-                                <iframe
-                                  src={`https://www.youtube-nocookie.com/embed/${ytMatch[1]}`}
-                                  title={lesson.title}
-                                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                                  allowFullScreen
-                                  style={{ width: "100%", height: "360px", border: "none", display: "block" }}
-                                />
-                              );
-                            }
-                            if (lessonVideoUrl.includes("drive.google.com")) {
-                              const driveEmbed = lessonVideoUrl.replace(/\/view(\?.*)?$/, "/preview");
-                              return (
-                                <iframe
-                                  src={driveEmbed}
-                                  title={lesson.title}
-                                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                                  allowFullScreen
-                                  style={{ width: "100%", height: "360px", border: "none", display: "block" }}
-                                />
-                              );
-                            }
-                            return (
-                              <video
-                                key={lessonVideoUrl}
-                                src={lessonVideoUrl}
-                                controls
-                                controlsList="nodownload nofullscreen noremoteplayback"
-                                disablePictureInPicture
-                                disableRemotePlayback
-                                onContextMenu={(e) => e.preventDefault()}
-                                playsInline
-                                preload="metadata"
-                                style={{ width: "100%", maxHeight: "360px", display: "block", background: "#000", userSelect: "none" }}
-                              />
-                            );
-                          })()}
-                          <div style={{ padding: "8px 12px", background: "#0f392b", color: "#ecfdf5", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px" }}>
-                            <span>{lesson.title}</span>
-                            <span style={{ color: "#34d399", fontWeight: 700 }}>مشاهدة مباشرة</span>
+                        {/* Attached Material Chips if any */}
+                        {lesson.materials && lesson.materials.length > 0 && (
+                          <div style={{ marginTop: "8px", display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                            {lesson.materials.map((mat) => (
+                              <div
+                                key={mat.id}
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "5px",
+                                  padding: "3px 8px",
+                                  background: "var(--bg-surface-secondary, #f8fafc)",
+                                  borderRadius: "6px",
+                                  fontSize: "10.5px",
+                                  border: "1px solid var(--border-color, #e2e8f0)",
+                                }}
+                              >
+                                <FileText size={11} style={{ color: "#2563eb" }} />
+                                <span style={{ fontWeight: 600, maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {mat.title}
+                                </span>
+                                <button
+                                  type="button"
+                                  title="تنزيل المذكرة"
+                                  onClick={() => void downloadLessonMaterial(mat.fileUrl, mat.title)}
+                                  style={{ background: "none", border: "none", color: "#059669", cursor: "pointer", padding: "0 2px" }}
+                                >
+                                  <Download size={11} />
+                                </button>
+                              </div>
+                            ))}
                           </div>
-                        </div>
-                      )}
+                        )}
+                      </div>
                     </div>
-                  );
-                })()}
-
-                {/* Lesson Top Header: Title, Duration, Views Badge */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "14px", flexWrap: "wrap", gap: "10px" }}>
-                  <div>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
-                      <span style={{ fontSize: "11px", fontWeight: 800, color: "var(--text-main)", background: "var(--bg-accent, #ecfdf5)", padding: "2px 8px", borderRadius: "6px" }}>
-                        الدرس {idx + 1}
-                      </span>
-                      <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>
-                        {lesson.durationFormatted}
-                      </span>
-                      <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>
-                      </span>
-                    </div>
-
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", margin: "0 0 4px", flexWrap: "wrap" }}>
-                      <h4 style={{ margin: 0, fontSize: "16px", fontWeight: 800, color: "var(--text-main)" }}>
-                        {lesson.title}
-                      </h4>
-                    </div>
-                    <p style={{ margin: 0, fontSize: "12px", color: "var(--text-muted)", lineHeight: "1.4" }}>
-                      {lesson.description}
-                    </p>
                   </div>
-
-                  {/* Lesson actions */}
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                    {isDeleteMode && (
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteLesson(lesson.id, lesson.title)}
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "6px",
-                          padding: "6px 14px",
-                          borderRadius: "8px",
-                          background: "#dc2626",
-                          color: "#ffffff",
-                          border: "none",
-                          fontSize: "12px",
-                          fontWeight: 800,
-                          cursor: "pointer",
-                          boxShadow: "0 2px 6px rgba(220, 38, 38, 0.3)",
-                        }}
-                        title="حذف هذا الفيديو"
-                      >
-                        <Trash2 size={14} />
-                        <span>حذف الفيديو</span>
-                      </button>
-                    )}
-
-                  </div>
-                </div>
-
-
-                {/* Attached Materials Section & Add Material Button */}
-                <div style={{ background: "var(--bg-surface-secondary, #f8fafc)", padding: "10px 14px", borderRadius: "10px", border: "1px solid var(--border-color)" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: (lesson.materials && lesson.materials.length > 0) ? "8px" : "0" }}>
-                    <strong style={{ fontSize: "11.5px", color: "var(--text-main)" }}>
-                      الملفات والمذكرات المرفقة ({(lesson.materials || []).length}):
-                    </strong>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        triggerAttachMaterialToLesson(lesson.id);
-                      }}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        color: "#059669",
-                        fontSize: "11.5px",
-                        fontWeight: 800,
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "4px",
-                      }}
-                    >
-                      <Plus size={13} /> + رفع مذكرة إضافية للدرس
-                    </button>
-                  </div>
-
-                  {lesson.materials && lesson.materials.length > 0 ? (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-                      {lesson.materials.map((mat) => (
-                        <div
-                          key={mat.id}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "6px",
-                            padding: "5px 10px",
-                            background: "var(--bg-surface, #ffffff)",
-                            borderRadius: "6px",
-                            fontSize: "11px",
-                            border: "1px solid var(--border-color)",
-                          }}
-                        >
-                          <FileText size={13} style={{ color: "#2563eb" }} />
-                          <span style={{ fontWeight: 700, color: "var(--text-main)" }}>{mat.title}</span>
-                          <span style={{ color: "var(--text-muted)", fontSize: "10px" }}>({mat.fileSize})</span>
-                          <button
-                            type="button"
-                            aria-label={`تنزيل ${mat.title}`}
-                            title="تنزيل المذكرة"
-                            onClick={() => void downloadLessonMaterial(mat.fileUrl, mat.title)}
-                            style={{ background: "transparent", border: "none", color: "#059669", cursor: "pointer", display: "inline-flex", padding: "2px" }}
-                          >
-                            <Download size={13} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>لم يتم إرفاق مذكرات إضافية بعد</span>
-                  )}
-                </div>
-              </div>
-            );
-          })
-        )}
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
 
