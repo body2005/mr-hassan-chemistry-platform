@@ -321,9 +321,12 @@ def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
         )
         or 0
     ) + 1
-    if attempt_number > quiz.attempts_allowed:
+    if attempt_number > quiz.attempts_allowed and not quiz.allow_practice_attempts:
         raise PermissionError("Attempt limit reached")
     expires_at = now + timedelta(seconds=quiz.duration_seconds) if quiz.duration_seconds else None
+    # Attempts beyond the official allowance are self-training: graded for the
+    # student but invisible to the teacher (never in listings or analytics).
+    is_practice = attempt_number > quiz.attempts_allowed
     attempt = QuizAttempt(
         institution_id=user.institution_id,
         quiz_id=quiz.id,
@@ -331,6 +334,7 @@ def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
         attempt_number=attempt_number,
         started_at=now,
         expires_at=expires_at,
+        is_practice=is_practice,
         total_points=db.scalar(
             select(func.sum(QuizQuestion.points)).where(QuizQuestion.quiz_id == quiz.id)
         )

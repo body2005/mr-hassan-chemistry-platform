@@ -210,6 +210,12 @@ class Quiz(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     randomize_questions: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     attempts_allowed: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # When true, students who consumed the official attempts may keep testing
+    # themselves: extra attempts are graded for them alone and never reach the
+    # teacher's gradebook or analytics.
+    allow_practice_attempts: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default="true"
+    )
     # Scope: the quiz belongs to a module (unit) and optionally to one lesson.
     # Students see it inside that lesson/unit and must have paid access to it.
     module_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -261,6 +267,9 @@ class QuizAttempt(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     score: Mapped[float | None] = mapped_column(Float)
     total_points: Mapped[float | None] = mapped_column(Float)
     submission_key: Mapped[str | None] = mapped_column(String(100), unique=True)
+    # Practice attempts (self-training beyond the official one) are graded for
+    # the student but never surface in teacher-facing listings or analytics.
+    is_practice: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
 
 
 class QuizAttemptAnswer(UUIDPrimaryKeyMixin, Base):
@@ -397,3 +406,21 @@ class Certificate(UUIDPrimaryKeyMixin, Base):
     score: Mapped[float | None] = mapped_column(Float)
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class LessonComment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "lesson_comments"
+
+    institution_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    lesson_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("lessons.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    student_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("lesson_comments.id", ondelete="CASCADE"), index=True
+    )
+    body: Mapped[str] = mapped_column(Text, nullable=False)

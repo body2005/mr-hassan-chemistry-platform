@@ -189,7 +189,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   const [serverQuizSubmitting, setServerQuizSubmitting] = useState(false);
   const [serverQuizResult, setServerQuizResult] = useState<{ score: number; total: number; attemptNumber: number } | null>(null);
   // Server-authoritative attempt: the clock starts when the page opens.
-  const [serverQuizAttempt, setServerQuizAttempt] = useState<{ id: string; attemptNumber: number; expiresAt: string | null } | null>(null);
+  const [serverQuizAttempt, setServerQuizAttempt] = useState<{ id: string; attemptNumber: number; expiresAt: string | null; isPractice: boolean } | null>(null);
   const [serverQuizDeadline, setServerQuizDeadline] = useState<number | null>(null);
   const [serverQuizRemaining, setServerQuizRemaining] = useState<number | null>(null);
   const serverQuizAutoSubmitted = useRef(false);
@@ -239,6 +239,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           id: data.attempt.id,
           attemptNumber: data.attempt.attempt_number,
           expiresAt: data.attempt.expires_at,
+          isPractice: Boolean((data.attempt as { is_practice?: boolean }).is_practice),
         });
         setServerQuizDeadline(data.attempt.expires_at ? new Date(data.attempt.expires_at).getTime() : null);
       }
@@ -1180,25 +1181,15 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 >
                   <Play size={14} /> بدء حل الاختبار
                 </button>
-              ) : qz.accessible ? (
-                <div
-                  style={{
-                    width: "100%",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: 6,
-                    padding: "10px 12px",
-                    borderRadius: "10px",
-                    background: "var(--bg-surface-secondary)",
-                    border: "1px dashed var(--border-color)",
-                    fontSize: "12.5px",
-                    fontWeight: 800,
-                    color: "var(--text-muted)",
-                  }}
+              ) : qz.accessible && qz.attemptsAllowed != null && (qz.attemptsUsed ?? 0) >= qz.attemptsAllowed ? (
+                <button
+                  className="btn-secondary"
+                  style={{ width: "100%", justifyContent: "center", gap: 6, borderColor: "#059669", color: "#059669" }}
+                  onClick={() => void openServerQuiz(qz)}
+                  title="محاولات تدريبية إضافية تُصحح لك فوراً لكن لا تصل للمعلم ولا تُحسب في الدرجات"
                 >
-                  <CheckCircle2 size={14} /> انتهت المحاولات المسموحة ({qz.attemptsUsed ?? 0} من {qz.attemptsAllowed})
-                </div>
+                  <BookOpen size={14} /> امتحن نفسك (تدريب — لا يُرسل للمعلم)
+                </button>
               ) : (
                 <button className="btn-primary" style={{ width: "100%", justifyContent: "center", gap: 6 }} onClick={() => { const lesson = (currentCourse?.lessons || []).find((l) => l.id === qz.lessonId); if (lesson) handleBuyLesson(lesson); }}>
                   <Lock size={14} /> اشترِ الدرس لفتح الكويز
@@ -1494,6 +1485,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 <span style={{ fontSize: "11px", fontWeight: 800, color: "#831843", background: "#fce7f3", padding: "3px 8px", borderRadius: "6px" }}>
                   اختبار إلكتروني{serverQuiz?.durationSeconds ? ` • ${Math.ceil(serverQuiz.durationSeconds / 60)} دقيقة` : ""}
                 </span>
+                {serverQuizAttempt?.isPractice && (
+                  <span style={{ display: "inline-block", marginInlineStart: "6px", fontSize: "11px", fontWeight: 800, color: "#92400e", background: "#fef3c7", padding: "3px 8px", borderRadius: "6px" }}>
+                    محاولة تدريبية — لن تصل للمعلم
+                  </span>
+                )}
                 <h2 style={{ margin: "6px 0 0", fontSize: "19px", color: "var(--text-main)" }}>{serverQuiz?.title || "جاري التحميل…"}</h2>
               </div>
               {serverQuizRemaining !== null && !serverQuizResult && (
@@ -1548,7 +1544,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   <Sparkles size={24} style={{ color: "#059669" }} />
                   <div>
                     <strong style={{ fontSize: "15px", color: "var(--text-main)", display: "block" }}>تم تسليم الاختبار وتصحيحه فورياً</strong>
-                    <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>المحاولة رقم {serverQuizResult.attemptNumber} — النتيجة مسجلة في كشف الدرجات.</span>
+                    <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                      {serverQuizAttempt?.isPractice
+                        ? `المحاولة رقم ${serverQuizResult.attemptNumber} — تدريبية: ظهرت لك فقط ولن تصل للمعلم أو كشف الدرجات.`
+                        : `المحاولة رقم ${serverQuizResult.attemptNumber} — النتيجة مسجلة في كشف الدرجات.`}
+                    </span>
                   </div>
                 </div>
                 <div style={{ fontSize: "22px", fontWeight: 900, color: "#059669" }}>

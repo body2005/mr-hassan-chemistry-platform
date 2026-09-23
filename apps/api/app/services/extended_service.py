@@ -409,6 +409,7 @@ def compute_student_mastery(db: Session, user: User, student_id: uuid.UUID) -> l
             )
             .where(
                 QuizAttempt.student_id == student_id,
+                QuizAttempt.is_practice.is_(False),
                 Question.learning_objective == objective.code,
             )
         ).all()

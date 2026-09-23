@@ -1494,6 +1494,7 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
                 select(func.count(QuizAttempt.id)).where(
                     QuizAttempt.quiz_id == q.id,
                     QuizAttempt.student_id == user.id,
+                    QuizAttempt.is_practice.is_(False),
                 )
             )
             if user.role == UserRole.STUDENT
@@ -1644,6 +1645,7 @@ def get_quiz_solve_view(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
                 "attempt_number": attempt.attempt_number,
                 "started_at": attempt.started_at.isoformat() if attempt.started_at else None,
                 "expires_at": expires_at_iso,
+                "is_practice": bool(attempt.is_practice),
             }
             if attempt is not None
             else None

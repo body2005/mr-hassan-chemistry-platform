@@ -494,6 +494,7 @@ class QuizAttemptResponse(BaseModel):
     status: AttemptStatus
     score: float | None
     total_points: float | None
+    is_practice: bool = False
 
 
 class AssignmentAttemptResponse(BaseModel):
