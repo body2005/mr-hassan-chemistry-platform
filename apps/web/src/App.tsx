@@ -593,6 +593,7 @@ function App() {
           {activeTab === "Payments" && currentUser.role === "student" && (
             <PaymentView
               courses={courses}
+              currentUser={currentUser}
               initialTarget={checkoutTarget}
               onEntitlementsChanged={refreshStudentAccess}
             />
