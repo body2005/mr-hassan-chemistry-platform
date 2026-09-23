@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
+  ArrowLeft,
+  ArrowRight,
   Award,
   Book,
   BookOpen,
@@ -8,6 +10,7 @@ import {
   Download,
   FileCheck,
   FileText,
+  Flag,
   Flame,
   HelpCircle,
   Lock,
@@ -23,6 +26,7 @@ import {
   Zap,
   Plus,
 } from "lucide-react";
+import { Header } from "../components/Header";
 import { Course, CourseAssessmentRef, CurrentUser, StudentProfile, VideoLesson } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
 import { EducationalBookItem, RevisionPackageItem } from "./GeneralHomeView";
@@ -186,6 +190,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   const [serverQuizLoading, setServerQuizLoading] = useState(false);
   const [serverQuizError, setServerQuizError] = useState<string | null>(null);
   const [serverQuizAnswers, setServerQuizAnswers] = useState<Record<string, string>>({});
+  // Mock-style solving: one question at a time + a question-map sidebar.
+  const [serverQuizQuestionIndex, setServerQuizQuestionIndex] = useState(0);
+  const [serverQuizFlagged, setServerQuizFlagged] = useState<Record<string, boolean>>({});
   const [serverQuizSubmitting, setServerQuizSubmitting] = useState(false);
   const [serverQuizResult, setServerQuizResult] = useState<{ score: number; total: number; attemptNumber: number } | null>(null);
   // Server-authoritative attempt: the clock starts when the page opens.
@@ -220,6 +227,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     setServerQuizDeadline(null);
     setServerQuizRemaining(null);
     serverQuizAutoSubmitted.current = false;
+    setServerQuizQuestionIndex(0);
+    setServerQuizFlagged({});
     setServerQuizLoading(true);
     try {
       const data = await apiRequest<{
@@ -1455,62 +1464,82 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       )}
 
       {/* =========================================================================
-          STANDALONE PAGE A: SERVER QUIZ SOLVING (full page, not a dialog)
+          STANDALONE PAGE A: SERVER QUIZ SOLVING — site topbar + one question
+          at a time with a question-map sidebar, flagging and submit.
          ========================================================================= */}
       {(serverQuiz || serverQuizLoading || serverQuizError) && (
         <div
           style={{
             position: "fixed",
             inset: 0,
-            backgroundColor: "var(--bg-app, #f8fafc)",
+            backgroundColor: "var(--bg-primary, #f8fafc)",
             zIndex: 100000,
             overflowY: "auto",
-            padding: "28px 20px 60px",
           }}
         >
+          {/* Our site's own topbar (same Header component used app-wide) */}
+          <div style={{ height: "68px", flexShrink: 0 }}>
+            <Header
+              onToggleMenu={() => undefined}
+              menuOpen={false}
+              notifications={[]}
+              onMarkNotificationRead={() => undefined}
+              theme={typeof document !== "undefined" && document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light"}
+              onToggleTheme={() => undefined}
+              lang={lang}
+              onToggleLang={() => undefined}
+              currentUser={currentUser}
+            />
+          </div>
+
+          {/* Sub-header: quiz title + progress + timer + exit */}
           <div
             style={{
               background: "var(--bg-surface, #ffffff)",
-              border: "1px solid var(--border-color)",
-              borderRadius: "20px",
-              maxWidth: "880px",
-              width: "100%",
-              margin: "0 auto",
-              padding: "26px",
-              boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)",
+              borderBottom: "1px solid var(--border-color)",
+              padding: "14px 28px",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: "14px",
+              flexWrap: "wrap",
+              position: "sticky",
+              top: 0,
+              zIndex: 20,
             }}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border-color)", paddingBottom: "14px", marginBottom: "18px", gap: "10px" }}>
-              <div>
-                <span style={{ fontSize: "11px", fontWeight: 800, color: "#831843", background: "#fce7f3", padding: "3px 8px", borderRadius: "6px" }}>
-                  اختبار إلكتروني{serverQuiz?.durationSeconds ? ` • ${Math.ceil(serverQuiz.durationSeconds / 60)} دقيقة` : ""}
+            <h2 style={{ margin: 0, fontSize: "17px", fontWeight: 900, color: "var(--text-main)" }}>
+              {serverQuiz?.title || (serverQuizLoading ? "جاري التحميل…" : "اختبار")}
+            </h2>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+              {serverQuizAttempt?.isPractice && (
+                <span style={{ fontSize: "11px", fontWeight: 800, color: "#92400e", background: "#fef3c7", padding: "4px 10px", borderRadius: "8px" }}>
+                  محاولة تدريبية — لن تصل للمعلم
                 </span>
-                {serverQuizAttempt?.isPractice && (
-                  <span style={{ display: "inline-block", marginInlineStart: "6px", fontSize: "11px", fontWeight: 800, color: "#92400e", background: "#fef3c7", padding: "3px 8px", borderRadius: "6px" }}>
-                    محاولة تدريبية — لن تصل للمعلم
-                  </span>
-                )}
-                <h2 style={{ margin: "6px 0 0", fontSize: "19px", color: "var(--text-main)" }}>{serverQuiz?.title || "جاري التحميل…"}</h2>
-              </div>
+              )}
+              {serverQuiz && !serverQuizResult && (
+                <span style={{ fontSize: "12.5px", fontWeight: 800, color: "var(--text-muted)", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                  <Timer size={14} /> السؤال {Math.min(serverQuizQuestionIndex + 1, serverQuiz.questions.length)} من {serverQuiz.questions.length}
+                </span>
+              )}
               {serverQuizRemaining !== null && !serverQuizResult && (
                 <div
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
                     gap: "7px",
-                    padding: "8px 16px",
+                    padding: "7px 14px",
                     borderRadius: "10px",
                     fontWeight: 900,
-                    fontSize: "16px",
+                    fontSize: "15px",
                     fontVariantNumeric: "tabular-nums",
                     direction: "ltr",
-                    flexShrink: 0,
                     background: serverQuizRemaining <= 60 ? "#fef2f2" : "var(--bg-surface-secondary)",
-                    color: serverQuizRemaining <= 60 ? "#b91c1c" : "var(--text-main)",
-                    border: serverQuizRemaining <= 60 ? "1.5px solid #fca5a5" : "1px solid var(--border-color)",
+                    color: serverQuizRemaining <= 60 ? "#b91c1c" : "#059669",
+                    border: serverQuizRemaining <= 60 ? "1.5px solid #fca5a5" : "1.5px solid #a7f3d0",
                   }}
                 >
-                  <Timer size={18} style={{ color: serverQuizRemaining <= 60 ? "#b91c1c" : "#059669" }} />
+                  <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: serverQuizRemaining <= 60 ? "#dc2626" : "#10b981" }} />
                   <span>
                     {Math.floor(serverQuizRemaining / 60)}:{String(serverQuizRemaining % 60).padStart(2, "0")}
                   </span>
@@ -1529,114 +1558,228 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 <span>خروج</span>
               </button>
             </div>
+          </div>
 
-            {serverQuizLoading && <div style={{ padding: "40px", textAlign: "center", color: "var(--text-muted)" }}>جاري تحميل أسئلة الاختبار…</div>}
-
-            {serverQuizError && (
-              <div style={{ padding: "16px", background: "#fee2e2", color: "#b91c1c", borderRadius: "10px", fontWeight: 800, fontSize: "13.5px" }}>
-                {serverQuizError}
-              </div>
-            )}
-
-            {serverQuizResult && (
-              <div style={{ padding: "18px", background: "#dcfce7", border: "1.5px solid #86efac", borderRadius: "12px", marginBottom: "18px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                  <Sparkles size={24} style={{ color: "#059669" }} />
-                  <div>
-                    <strong style={{ fontSize: "15px", color: "var(--text-main)", display: "block" }}>تم تسليم الاختبار وتصحيحه فورياً</strong>
-                    <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                      {serverQuizAttempt?.isPractice
-                        ? `المحاولة رقم ${serverQuizResult.attemptNumber} — تدريبية: ظهرت لك فقط ولن تصل للمعلم أو كشف الدرجات.`
-                        : `المحاولة رقم ${serverQuizResult.attemptNumber} — النتيجة مسجلة في كشف الدرجات.`}
-                    </span>
-                  </div>
-                </div>
-                <div style={{ fontSize: "22px", fontWeight: 900, color: "#059669" }}>
-                  {serverQuizResult.score} / {serverQuizResult.total} درجة
-                </div>
-              </div>
-            )}
-
-            {serverQuiz && !serverQuizResult && (
-              <>
-                <div style={{ display: "flex", flexDirection: "column", gap: "16px", marginBottom: "22px" }}>
-                  {serverQuiz.questions.map((q, qIdx) => {
-                    const opts = q.options || [];
-                    const isMcq = Array.isArray(opts) && opts.length > 0;
+          {/* Body: question-map sidebar + one-question card */}
+          <div
+            style={{
+              maxWidth: "1200px",
+              margin: "0 auto",
+              padding: "26px 20px 60px",
+              display: "flex",
+              gap: "24px",
+              alignItems: "flex-start",
+              flexDirection: "row-reverse",
+            }}
+          >
+            {/* Sidebar: question map + submit */}
+            <div style={{ width: "280px", flexShrink: 0, display: "flex", flexDirection: "column", gap: "16px", position: "sticky", top: "84px" }}>
+              <div style={{ background: "var(--bg-surface, #ffffff)", border: "1px solid var(--border-color)", borderRadius: "16px", padding: "18px" }}>
+                <h3 style={{ margin: "0 0 14px", fontSize: "14px", fontWeight: 900, color: "var(--text-main)" }}>خريطة أسئلة الاختبار</h3>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "8px", direction: "ltr" }}>
+                  {serverQuiz?.questions.map((q, qIdx) => {
+                    const answered = Boolean(serverQuizAnswers[q.id]);
+                    const flagged = serverQuizFlagged[q.id];
+                    const isCurrent = qIdx === serverQuizQuestionIndex;
                     return (
-                      <div key={q.id} style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "12px", padding: "16px" }}>
-                        <div style={{ display: "flex", alignItems: "flex-start", gap: "8px", marginBottom: "10px" }}>
-                          <span style={{ width: "24px", height: "24px", borderRadius: "50%", background: "#0f392b", color: "#ffffff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", fontWeight: 800, flexShrink: 0 }}>
-                            {qIdx + 1}
-                          </span>
-                          <div style={{ fontSize: "14px", color: "var(--text-main)", lineHeight: "1.6", flex: 1 }}>
-                            <FormulaRenderer text={q.prompt} />
-                          </div>
-                          <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 800, flexShrink: 0 }}>{q.points} درجة</span>
-                        </div>
-
-                        {isMcq ? (
-                          <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginInlineStart: "32px" }}>
-                            {opts.map((opt, optIdx) => {
-                              const chosen = serverQuizAnswers[q.id] === opt.text;
-                              return (
-                                <label
-                                  key={optIdx}
-                                  style={{
-                                    display: "flex", alignItems: "center", gap: "10px", padding: "8px 12px",
-                                    borderRadius: "8px",
-                                    border: chosen ? "1.5px solid #059669" : "1px solid var(--border-color)",
-                                    background: chosen ? "var(--bg-accent)" : "var(--bg-surface)",
-                                    cursor: "pointer", fontSize: "13px", color: "var(--text-main)",
-                                  }}
-                                >
-                                  <input
-                                    type="radio"
-                                    name={q.id}
-                                    checked={chosen}
-                                    onChange={() => setServerQuizAnswers({ ...serverQuizAnswers, [q.id]: opt.text })}
-                                  />
-                                  <div style={{ flex: 1 }}>
-                                    <FormulaRenderer inline text={opt.text} />
-                                  </div>
-                                </label>
-                              );
-                            })}
-                          </div>
-                        ) : (
-                          <textarea
-                            rows={4}
-                            value={serverQuizAnswers[q.id] || ""}
-                            onChange={(e) => setServerQuizAnswers({ ...serverQuizAnswers, [q.id]: e.target.value })}
-                            placeholder="اكتب إجابتك هنا…"
-                            style={{ width: "100%", padding: "10px 12px", borderRadius: "8px", border: "1px solid var(--border-color)", background: "var(--bg-surface)", color: "var(--text-main)", fontSize: "13px", fontFamily: "inherit", boxSizing: "border-box" }}
-                          />
+                      <button
+                        key={q.id}
+                        type="button"
+                        onClick={() => setServerQuizQuestionIndex(qIdx)}
+                        title={answered ? "مُجاب" : flagged ? "مُعلّم للمراجعة" : "لم يُجاب بعد"}
+                        style={{
+                          width: "40px",
+                          height: "40px",
+                          borderRadius: "50%",
+                          border: isCurrent ? "2px solid #059669" : "1px solid var(--border-color)",
+                          background: answered ? "#059669" : "var(--bg-surface)",
+                          color: answered ? "#ffffff" : "var(--text-main)",
+                          fontSize: "13px",
+                          fontWeight: 800,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          position: "relative",
+                          transition: "all 0.15s ease",
+                        }}
+                      >
+                        {qIdx + 1}
+                        {flagged && !answered && (
+                          <span style={{ position: "absolute", top: "-2px", insetInlineEnd: "-2px", width: "10px", height: "10px", borderRadius: "50%", background: "#f59e0b", border: "1.5px solid var(--bg-surface, #fff)" }} />
                         )}
-                      </div>
+                      </button>
                     );
                   })}
                 </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "7px", marginTop: "16px", paddingTop: "14px", borderTop: "1px solid var(--border-color)", fontSize: "11.5px", color: "var(--text-muted)", fontWeight: 700 }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "50%", background: "#059669" }} /> تم الإجابة</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "50%", border: "2px solid #059669", background: "var(--bg-surface)" }} /> الحالي</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "50%", border: "1px solid var(--border-color)", background: "var(--bg-surface)" }} /> لم يتم الإجابة</span>
+                </div>
+              </div>
 
-                <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", borderTop: "1px solid var(--border-color)", paddingTop: "16px" }}>
-                  <button type="button" className="btn-secondary" onClick={() => setServerQuiz(null)} disabled={serverQuizSubmitting}>
-                    خروج دون تسليم
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    onClick={() => void submitServerQuiz()}
-                    disabled={serverQuizSubmitting || serverQuizRemaining === 0 || Object.keys(serverQuizAnswers).length < serverQuiz.questions.length}
-                    style={{ gap: "6px" }}
-                  >
-                    <Zap size={16} />
-                    <span>{serverQuizRemaining === 0 ? "انتهى الوقت" : serverQuizSubmitting ? "جاري التصحيح…" : "إنهاء وتسليم الاختبار"}</span>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => void submitServerQuiz()}
+                disabled={serverQuizSubmitting || serverQuizRemaining === 0 || Object.keys(serverQuizAnswers).length < (serverQuiz?.questions.length || 0)}
+                style={{ width: "100%", justifyContent: "center", gap: "7px", padding: "13px" }}
+              >
+                <CheckCircle2 size={17} />
+                <span>{serverQuizRemaining === 0 ? "انتهى الوقت" : serverQuizSubmitting ? "جاري التصحيح…" : "تسليم الاختبار"}</span>
+              </button>
+              {serverQuiz && Object.keys(serverQuizAnswers).length < serverQuiz.questions.length && (
+                <p style={{ margin: 0, fontSize: "11.5px", color: "var(--text-muted)", textAlign: "center" }}>
+                  أجب على كل الأسئلة ({Object.keys(serverQuizAnswers).length} من {serverQuiz.questions.length}) لتفعيل التسليم
+                </p>
+              )}
+            </div>
+
+            {/* Main card: the current question only */}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              {serverQuizLoading && <div style={{ padding: "60px", textAlign: "center", color: "var(--text-muted)" }}>جاري تحميل أسئلة الاختبار…</div>}
+
+              {serverQuizError && (
+                <div style={{ padding: "16px", background: "#fee2e2", color: "#b91c1c", borderRadius: "10px", fontWeight: 800, fontSize: "13.5px" }}>
+                  {serverQuizError}
+                </div>
+              )}
+
+              {serverQuizResult && (
+                <div style={{ background: "var(--bg-surface, #fff)", border: "1.5px solid #86efac", borderRadius: "16px", padding: "26px", boxShadow: "var(--card-shadow)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px", marginBottom: "18px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                      <Sparkles size={28} style={{ color: "#059669" }} />
+                      <div>
+                        <strong style={{ fontSize: "16px", color: "var(--text-main)", display: "block" }}>تم تسليم الاختبار وتصحيحه فورياً</strong>
+                        <span style={{ fontSize: "12.5px", color: "var(--text-muted)" }}>
+                          {serverQuizAttempt?.isPractice
+                            ? `المحاولة رقم ${serverQuizResult.attemptNumber} — تدريبية: ظهرت لك فقط ولن تصل للمعلم أو كشف الدرجات.`
+                            : `المحاولة رقم ${serverQuizResult.attemptNumber} — النتيجة مسجلة في كشف الدرجات.`}
+                        </span>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: "26px", fontWeight: 900, color: "#059669" }}>
+                      {serverQuizResult.score} / {serverQuizResult.total} درجة
+                    </div>
+                  </div>
+                  <button type="button" className="btn-primary" style={{ width: "100%", justifyContent: "center" }} onClick={() => { setServerQuiz(null); setServerQuizError(null); }}>
+                    العودة إلى المقرر
                   </button>
                 </div>
-              </>
-            )}
+              )}
+
+              {serverQuiz && !serverQuizResult && serverQuiz.questions[serverQuizQuestionIndex] && (() => {
+                const q = serverQuiz.questions[serverQuizQuestionIndex];
+                const opts = q.options || [];
+                const isMcq = Array.isArray(opts) && opts.length > 0;
+                const flagged = Boolean(serverQuizFlagged[q.id]);
+                return (
+                  <div style={{ background: "var(--bg-surface, #ffffff)", border: "1px solid var(--border-color)", borderRadius: "16px", padding: "26px", boxShadow: "var(--card-shadow)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+                      <span style={{ fontSize: "12px", fontWeight: 900, color: "#059669", background: "var(--bg-accent)", padding: "4px 12px", borderRadius: "8px" }}>
+                        السؤال {serverQuizQuestionIndex + 1}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setServerQuizFlagged({ ...serverQuizFlagged, [q.id]: !flagged })}
+                        style={{
+                          display: "inline-flex", alignItems: "center", gap: "5px",
+                          background: flagged ? "#fef3c7" : "transparent",
+                          border: "none", cursor: "pointer", fontSize: "12px", fontWeight: 800,
+                          color: flagged ? "#92400e" : "var(--text-muted)", borderRadius: "8px", padding: "5px 10px",
+                        }}
+                        title="تعليم السؤال للمراجعة لاحقاً"
+                      >
+                        <Flag size={14} /> {flagged ? "مُعلّم للمراجعة" : "تعليم السؤال للمراجعة لاحقاً"}
+                      </button>
+                    </div>
+
+                    <div style={{ fontSize: "15.5px", color: "var(--text-main)", lineHeight: "1.8", fontWeight: 700, marginBottom: "20px" }}>
+                      <FormulaRenderer text={q.prompt} />
+                      <span style={{ marginInlineStart: "10px", fontSize: "11.5px", fontWeight: 800, color: "var(--text-muted)" }}>({q.points} درجة)</span>
+                    </div>
+
+                    {isMcq ? (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                        {opts.map((opt, optIdx) => {
+                          const chosen = serverQuizAnswers[q.id] === opt.text;
+                          return (
+                            <label
+                              key={optIdx}
+                              style={{
+                                display: "flex", alignItems: "center", gap: "12px", padding: "14px 16px",
+                                borderRadius: "12px",
+                                border: chosen ? "1.5px solid #059669" : "1px solid var(--border-color)",
+                                background: chosen ? "var(--bg-accent)" : "var(--bg-surface)",
+                                cursor: "pointer", fontSize: "14px", color: "var(--text-main)",
+                                transition: "all 0.15s ease",
+                              }}
+                            >
+                              <input
+                                type="radio"
+                                name={q.id}
+                                checked={chosen}
+                                onChange={() => setServerQuizAnswers({ ...serverQuizAnswers, [q.id]: opt.text })}
+                                style={{ accentColor: "#059669", width: "17px", height: "17px" }}
+                              />
+                              <div style={{ flex: 1 }}>
+                                <FormulaRenderer inline text={opt.text} />
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <textarea
+                        rows={5}
+                        value={serverQuizAnswers[q.id] || ""}
+                        onChange={(e) => setServerQuizAnswers({ ...serverQuizAnswers, [q.id]: e.target.value })}
+                        placeholder="اكتب إجابتك هنا…"
+                        style={{ width: "100%", padding: "12px 14px", borderRadius: "10px", border: "1px solid var(--border-color)", background: "var(--bg-surface)", color: "var(--text-main)", fontSize: "14px", fontFamily: "inherit", boxSizing: "border-box" }}
+                      />
+                    )}
+
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", marginTop: "24px", paddingTop: "18px", borderTop: "1px solid var(--border-color)" }}>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => setServerQuizQuestionIndex((i) => Math.max(0, i - 1))}
+                        disabled={serverQuizQuestionIndex === 0}
+                        style={{ gap: "6px" }}
+                      >
+                        <ArrowLeft size={15} /> السؤال السابق
+                      </button>
+                      {serverQuizQuestionIndex < serverQuiz.questions.length - 1 ? (
+                        <button
+                          type="button"
+                          className="btn-primary"
+                          onClick={() => setServerQuizQuestionIndex((i) => Math.min(serverQuiz!.questions.length - 1, i + 1))}
+                          style={{ gap: "6px" }}
+                        >
+                          السؤال التالي <ArrowRight size={15} />
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn-primary"
+                          onClick={() => void submitServerQuiz()}
+                          disabled={serverQuizSubmitting || serverQuizRemaining === 0 || Object.keys(serverQuizAnswers).length < serverQuiz.questions.length}
+                          style={{ gap: "6px" }}
+                        >
+                          <Zap size={15} /> {serverQuizRemaining === 0 ? "انتهى الوقت" : "تسليم الاختبار"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
           </div>
         </div>
       )}
+
 
       {/* =========================================================================
           STANDALONE PAGE B: ASSIGNMENT SOLVE (download PDF → solve → upload)
@@ -1646,7 +1789,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           style={{
             position: "fixed",
             inset: 0,
-            backgroundColor: "var(--bg-app, #f8fafc)",
+            backgroundColor: "var(--bg-primary, #f8fafc)",
             zIndex: 100000,
             overflowY: "auto",
             padding: "28px 20px 60px",
@@ -1863,7 +2006,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           style={{
             position: "fixed",
             inset: 0,
-            backgroundColor: "var(--bg-app, #f8fafc)",
+            backgroundColor: "var(--bg-primary, #f8fafc)",
             zIndex: 99999,
             overflowY: "auto",
             padding: "28px 20px 60px",
@@ -1996,7 +2139,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           style={{
             position: "fixed",
             inset: 0,
-            backgroundColor: "var(--bg-app, #f8fafc)",
+            backgroundColor: "var(--bg-primary, #f8fafc)",
             zIndex: 99999,
             overflowY: "auto",
             padding: "28px 20px 60px",
