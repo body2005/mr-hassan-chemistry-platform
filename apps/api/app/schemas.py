@@ -87,7 +87,7 @@ class RegisterRequest(BaseModel):
     governorate: str = Field(min_length=1, max_length=40)
     school_name: str = Field(min_length=2, max_length=200)
     gender: Gender
-    religion: Religion
+    religion: Religion | None = None
 
     @field_validator("display_name", "school_name", mode="before")
     @classmethod

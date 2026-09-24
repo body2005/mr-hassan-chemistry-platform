@@ -150,16 +150,17 @@ export const AssignmentModal: React.FC<AssignmentModalProps> = ({
 
           <button
             onClick={onClose}
+            className="modal-close-btn"
             style={{
-              background: "var(--bg-surface-secondary, #f1f5f9)",
-              border: "1px solid var(--border-color, #e2e8f0)",
+              background: "var(--modal-close-bg)",
+              border: "none",
               borderRadius: "8px",
               width: "32px",
               height: "32px",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              color: "var(--text-muted, #64748b)",
+              color: "#ffffff",
               cursor: "pointer",
             }}
             title="إغلاق"

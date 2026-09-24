@@ -10,6 +10,7 @@ import {
   AlignmentType,
   BorderStyle,
 } from "docx";
+import * as XLSX from "xlsx";
 
 export interface ExportDataPayload {
   title: string;
@@ -18,19 +19,6 @@ export interface ExportDataPayload {
   headers: string[];
   rows: (string | number)[][];
   summaryStats?: Array<{ label: string; value: string | number }>;
-}
-
-/**
- * Helper to escape special XML characters.
- */
-function sanitizeXml(str: string | number | undefined | null): string {
-  if (str === null || str === undefined) return "";
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
 }
 
 /**
@@ -76,19 +64,47 @@ export async function exportToDocx(payload: ExportDataPayload, filename = "lms_r
   ];
 
   if (payload.summaryStats && payload.summaryStats.length > 0) {
-    payload.summaryStats.forEach((s) => {
-      docChildren.push(
-        new Paragraph({
-          alignment: AlignmentType.RIGHT,
-          bidirectional: true,
-          spacing: { after: 60 },
-          children: [
-            new TextRun({ text: `${s.label} : `, bold: true, size: 22, color: "000000", rightToLeft: true }),
-            new TextRun({ text: `${s.value}`, bold: true, size: 22, color: "000000", rightToLeft: true }),
-          ],
-        })
-      );
+    const statsTable = new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      visuallyRightToLeft: true,
+      borders: {
+        top: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+        bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+        left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+        right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+        insideHorizontal: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+        insideVertical: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+      },
+      rows: payload.summaryStats.map(
+        (s) =>
+          new TableRow({
+            children: [
+              new TableCell({
+                width: { size: 100, type: WidthType.PERCENTAGE },
+                borders: {
+                  top: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+                  bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+                  left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+                  right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+                },
+                children: [
+                  new Paragraph({
+                    alignment: AlignmentType.RIGHT,
+                    bidirectional: true,
+                    spacing: { after: 60 },
+                    children: [
+                      new TextRun({ text: `${s.label} : `, bold: true, size: 22, color: "000000", rightToLeft: true }),
+                      new TextRun({ text: `${s.value}`, bold: true, size: 22, color: "000000", rightToLeft: true }),
+                    ],
+                  }),
+                ],
+              }),
+            ],
+          })
+      ),
     });
+
+    docChildren.push(statsTable);
     // Add spacing before table
     docChildren.push(
       new Paragraph({
@@ -181,197 +197,54 @@ export async function exportToDocx(payload: ExportDataPayload, filename = "lms_r
 }
 
 /**
- * Generates and downloads a genuine Microsoft Excel Workbook (.xls format)
- * with native 100% Right-To-Left display (DisplayRightToLeft), placing Column A
- * on the far right with "اسم الطالب" as the first column.
+ * Generates and downloads a genuine Microsoft Excel Workbook (.xlsx format)
+ * with native 100% Right-To-Left display (RTL), placing Column A
+ * on the far right with "اسم الطالب" as the first column and native Arabic typography.
  */
-export function exportToExcel(payload: ExportDataPayload, filename = "lms_data.xls") {
+export function exportToExcel(payload: ExportDataPayload, filename = "lms_data.xlsx") {
   const dateStr = payload.generatedDate || new Date().toLocaleDateString("ar-EG", {
     year: "numeric",
     month: "long",
     day: "numeric",
   });
 
-  const xmlRows: string[] = [];
+  const sheetData: (string | number)[][] = [
+    [payload.title],
+    [`تاريخ التقرير: ${dateStr}`],
+    [],
+  ];
 
-  // Title Row
-  xmlRows.push(`
-    <Row ss:Height="30">
-      <Cell ss:MergeAcross="${Math.max(0, payload.headers.length - 1)}" ss:StyleID="TitleStyle">
-        <Data ss:Type="String">${sanitizeXml(payload.title)}</Data>
-      </Cell>
-    </Row>
-  `);
-
-  // Date Row
-  xmlRows.push(`
-    <Row ss:Height="24">
-      <Cell ss:MergeAcross="${Math.max(0, payload.headers.length - 1)}" ss:StyleID="DateStyle">
-        <Data ss:Type="String">${sanitizeXml(`تاريخ التقرير: ${dateStr}`)}</Data>
-      </Cell>
-    </Row>
-  `);
-
-  // Summary stats rows (each on its own line, right-aligned)
   if (payload.summaryStats && payload.summaryStats.length > 0) {
     payload.summaryStats.forEach((s) => {
-      xmlRows.push(`
-        <Row ss:Height="22">
-          <Cell ss:MergeAcross="${Math.max(0, payload.headers.length - 1)}" ss:StyleID="SummaryRowStyle">
-            <Data ss:Type="String">${sanitizeXml(`${s.label} : ${s.value}`)}</Data>
-          </Cell>
-        </Row>
-      `);
+      sheetData.push([`${s.label} : ${s.value}`]);
     });
+    sheetData.push([]);
   }
 
-  // Empty separator row
-  xmlRows.push(`<Row ss:Height="12"/>`);
-
-  // Table Headers Row (starts from Column A on the right)
-  xmlRows.push(`
-    <Row ss:Height="26">
-      ${payload.headers
-        .map(
-          (h, i) => `
-        <Cell ss:StyleID="${i === 0 ? "HeaderNameStyle" : "HeaderStyle"}">
-          <Data ss:Type="String">${sanitizeXml(h)}</Data>
-        </Cell>
-      `
-        )
-        .join("")}
-    </Row>
-  `);
-
-  // Data Rows
-  payload.rows.forEach((row, rowIdx) => {
-    const isAlt = rowIdx % 2 === 1;
-    xmlRows.push(`
-      <Row ss:Height="22">
-        ${row
-          .map((val, cellIdx) => {
-            const isFirst = cellIdx === 0;
-            const styleId = isFirst
-              ? isAlt
-                ? "NameCellAlt"
-                : "NameCell"
-              : isAlt
-              ? "DataCellAlt"
-              : "DataCell";
-            const isNum = typeof val === "number";
-            return `
-          <Cell ss:StyleID="${styleId}">
-            <Data ss:Type="${isNum ? "Number" : "String"}">${sanitizeXml(val ?? "—")}</Data>
-          </Cell>
-        `;
-          })
-          .join("")}
-      </Row>
-    `);
+  sheetData.push(payload.headers);
+  payload.rows.forEach((row) => {
+    sheetData.push(row.map((cell) => (cell ?? "—")));
   });
 
-  const xmlContent = `<?xml version="1.0" encoding="UTF-8"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:o="urn:schemas-microsoft-com:office:office"
- xmlns:x="urn:schemas-microsoft-com:office:excel"
- xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:html="http://www.w3.org/TR/REC-html40">
- <Styles>
-  <Style ss:ID="Default" ss:Name="Normal">
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:ReadingOrder="RightToLeft"/>
-   <Font ss:FontName="Segoe UI" ss:Size="11" ss:Color="#0F172A"/>
-  </Style>
-  <Style ss:ID="TitleStyle">
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:ReadingOrder="RightToLeft"/>
-   <Font ss:FontName="Segoe UI" ss:Size="16" ss:Bold="1" ss:Color="#2563EB"/>
-  </Style>
-  <Style ss:ID="DateStyle">
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:ReadingOrder="RightToLeft"/>
-   <Font ss:FontName="Segoe UI" ss:Size="12" ss:Bold="1" ss:Color="#000000"/>
-  </Style>
-  <Style ss:ID="SummaryRowStyle">
-   <Alignment ss:Horizontal="Right" ss:Vertical="Center" ss:ReadingOrder="RightToLeft"/>
-   <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#000000"/>
-  </Style>
-  <Style ss:ID="HeaderStyle">
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:ReadingOrder="RightToLeft"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#0F392B"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#0F392B"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#0F392B"/>
-    <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#0F392B"/>
-   </Borders>
-   <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#FFFFFF"/>
-   <Interior ss:Color="#0F392B" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="HeaderNameStyle">
-   <Alignment ss:Horizontal="Right" ss:Vertical="Center" ss:ReadingOrder="RightToLeft"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#0F392B"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#0F392B"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#0F392B"/>
-    <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#0F392B"/>
-   </Borders>
-   <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#FFFFFF"/>
-   <Interior ss:Color="#0F392B" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="NameCell">
-   <Alignment ss:Horizontal="Right" ss:Vertical="Center" ss:ReadingOrder="RightToLeft"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
-    <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
-   </Borders>
-   <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#0F172A"/>
-  </Style>
-  <Style ss:ID="NameCellAlt">
-   <Alignment ss:Horizontal="Right" ss:Vertical="Center" ss:ReadingOrder="RightToLeft"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
-    <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
-   </Borders>
-   <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#0F172A"/>
-   <Interior ss:Color="#F8FAFC" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="DataCell">
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:ReadingOrder="RightToLeft"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
-    <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
-   </Borders>
-   <Font ss:FontName="Segoe UI" ss:Size="11" ss:Color="#1E293B"/>
-  </Style>
-  <Style ss:ID="DataCellAlt">
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:ReadingOrder="RightToLeft"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
-    <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
-   </Borders>
-   <Font ss:FontName="Segoe UI" ss:Size="11" ss:Color="#1E293B"/>
-   <Interior ss:Color="#F8FAFC" ss:Pattern="Solid"/>
-  </Style>
- </Styles>
- <Worksheet ss:Name="التقرير" ss:RightToLeft="1">
-  <Table ss:DefaultColumnWidth="130" ss:DefaultRowHeight="22">
-    ${xmlRows.join("")}
-  </Table>
-  <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">
-   <DisplayRightToLeft/>
-  </WorksheetOptions>
- </Worksheet>
-</Workbook>`;
+  const ws = XLSX.utils.aoa_to_sheet(sheetData);
+  ws["!views"] = [{ RTL: true }];
+  ws["!cols"] = payload.headers.map((h, i) => ({
+    wch: i === 0 ? 25 : Math.max(String(h).length + 6, 16),
+  }));
 
-  const blob = new Blob([xmlContent], { type: "application/vnd.ms-excel;charset=utf-8;" });
-  const actualFilename = filename.endsWith(".xls") ? filename : filename.replace(/\.csv$/, ".xls");
-  triggerDownload(blob, actualFilename.endsWith(".xls") ? actualFilename : `${actualFilename}.xls`);
+  const wb = XLSX.utils.book_new();
+  const cleanSheetName = (payload.title || "التقرير")
+    .replace(/[\\/?*[\]]/g, "")
+    .slice(0, 31)
+    .trim() || "التقرير";
+  XLSX.utils.book_append_sheet(wb, ws, cleanSheetName);
+
+  const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+  const blob = new Blob([wbout], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  const actualFilename = filename.replace(/\.xls[x]?$/, "") + ".xlsx";
+  triggerDownload(blob, actualFilename);
 }
 
 /**

@@ -242,19 +242,21 @@ export const LessonAccessModal: React.FC<LessonAccessModalProps> = ({
             <button
               type="button"
               onClick={onClose}
+              className="modal-close-btn"
               style={{
-                background: "transparent",
+                background: "var(--modal-close-bg)",
                 border: "none",
-                color: "var(--text-muted)",
+                color: "#ffffff",
                 cursor: "pointer",
-                padding: "6px",
+                width: "32px",
+                height: "32px",
                 borderRadius: "8px",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
               }}
             >
-              <X size={20} />
+              <X size={18} />
             </button>
           </div>
         </div>
@@ -536,9 +538,9 @@ export const LessonAccessModal: React.FC<LessonAccessModalProps> = ({
                           flex: 1,
                           padding: "12px 18px",
                           borderRadius: "12px",
-                          border: "1px solid #dc2626",
-                          background: "transparent",
-                          color: "#ef4444",
+                          border: "none",
+                          background: "var(--danger-action-bg)",
+                          color: "#ffffff",
                           fontSize: "14px",
                           fontWeight: 700,
                           cursor: isSubmitting ? "not-allowed" : "pointer",

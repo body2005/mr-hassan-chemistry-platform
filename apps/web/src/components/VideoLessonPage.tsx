@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   Play,
   Pause,
+  RotateCcw,
   Volume2,
   VolumeX,
   Maximize,
@@ -48,6 +49,49 @@ type CommentItem = {
   likes: number;
   isLiked?: boolean;
   replies?: CommentItem[];
+};
+
+interface StoredVideoProgress {
+  currentTime: number;
+  maxWatched: number;
+  duration?: number;
+  updatedAt: number;
+}
+
+const getVideoProgressStorageKey = (userId?: string | null, lessonId?: string) => {
+  return `lms_video_progress_${userId || "student"}_${lessonId || ""}`;
+};
+
+const getStoredVideoProgress = (userId?: string | null, lessonId?: string): StoredVideoProgress | null => {
+  if (!lessonId) return null;
+  try {
+    const raw = localStorage.getItem(getVideoProgressStorageKey(userId, lessonId));
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+};
+
+const saveVideoProgressToStorage = (
+  userId: string | null | undefined,
+  lessonId: string,
+  currentTime: number,
+  maxWatched: number,
+  duration: number
+) => {
+  if (!lessonId) return;
+  try {
+    const data: StoredVideoProgress = {
+      currentTime: Math.max(0, Math.round(currentTime * 10) / 10),
+      maxWatched: Math.max(0, Math.round(maxWatched * 10) / 10),
+      duration: Math.max(0, Math.round(duration * 10) / 10),
+      updatedAt: Date.now(),
+    };
+    localStorage.setItem(getVideoProgressStorageKey(userId, lessonId), JSON.stringify(data));
+  } catch {
+    // ignore
+  }
 };
 
 export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
@@ -121,16 +165,29 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   const [activeReplyId, setActiveReplyId] = useState<string | null>(null);
   const [isSubmittingComment, setIsSubmittingComment] = useState(false);
 
-  // Reset lesson state when lesson changes
+  // Reset or restore lesson state when lesson changes
   useEffect(() => {
     const done = isTeacher || completedLessonIds.includes(lesson.id);
     setIsLessonFinished(done);
-    const initialMax = done ? 999999 : 0;
-    maxWatchedRef.current = initialMax;
-    setMaxWatchedTime(initialMax);
-    setCurrentTime(0);
+
+    const saved = getStoredVideoProgress(currentUser?.id, lesson.id);
+
+    if (done) {
+      maxWatchedRef.current = 999999;
+      setMaxWatchedTime(999999);
+      setCurrentTime(saved?.currentTime || 0);
+    } else if (saved && saved.maxWatched > 0) {
+      maxWatchedRef.current = saved.maxWatched;
+      setMaxWatchedTime(saved.maxWatched);
+      const resumePos = saved.currentTime > 0 ? saved.currentTime : saved.maxWatched;
+      setCurrentTime(resumePos);
+    } else {
+      maxWatchedRef.current = 0;
+      setMaxWatchedTime(0);
+      setCurrentTime(0);
+    }
     setIsPlaying(false);
-  }, [lesson.id, completedLessonIds, isTeacher]);
+  }, [lesson.id, completedLessonIds, isTeacher, currentUser?.id]);
 
   // Protected playback token fetching
   useEffect(() => {
@@ -318,6 +375,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     }
 
     setCurrentTime(current);
+    saveVideoProgressToStorage(currentUser?.id, lesson.id, current, maxWatchedRef.current, dur);
   };
 
   const handleEnded = () => {
@@ -333,15 +391,39 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
       }
       toast("تهانينا! لقد أتممت مشاهدة الدرس بالكامل وتم تسجيل إنجازك بنجاح", "success");
     }
+    saveVideoProgressToStorage(currentUser?.id, lesson.id, duration, duration, duration);
   };
 
   const handleLoadedMetadata = () => {
     if (!videoElementRef.current) return;
     const dur = videoElementRef.current.duration;
     setDuration(dur);
+
+    const saved = getStoredVideoProgress(currentUser?.id, lesson.id);
+
     if (isTeacher || isLessonFinished) {
       maxWatchedRef.current = dur;
       setMaxWatchedTime(dur);
+      if (saved && saved.currentTime > 0 && Math.abs(saved.currentTime - dur) > 3) {
+        videoElementRef.current.currentTime = saved.currentTime;
+        setCurrentTime(saved.currentTime);
+      }
+    } else {
+      if (saved && saved.maxWatched > 0) {
+        const validatedMax = Math.min(dur, Math.max(maxWatchedRef.current, saved.maxWatched));
+        maxWatchedRef.current = validatedMax;
+        setMaxWatchedTime(validatedMax);
+
+        // Resume playback to where student stopped
+        const resumePos = Math.min(
+          dur,
+          saved.currentTime > 0 ? saved.currentTime : validatedMax
+        );
+        if (resumePos > 0) {
+          videoElementRef.current.currentTime = resumePos;
+          setCurrentTime(resumePos);
+        }
+      }
     }
   };
 
@@ -356,6 +438,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     if (videoElementRef.current) {
       videoElementRef.current.currentTime = targetTime;
     }
+    saveVideoProgressToStorage(currentUser?.id, lesson.id, targetTime, maxWatchedRef.current, duration);
   };
 
   // Skip handler (rewind is always allowed, forward skip blocked if !isLessonFinished)
@@ -366,7 +449,19 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
       toast("لا يمكنك تقديم الفيديو للأمام قبل إنهاء مشاهدته مرة على الأقل", "warning");
       return;
     }
-    videoElementRef.current.currentTime = Math.max(0, Math.min(targetTime, duration));
+    const clampedTime = Math.max(0, Math.min(targetTime, duration));
+    videoElementRef.current.currentTime = clampedTime;
+    setCurrentTime(clampedTime);
+    saveVideoProgressToStorage(currentUser?.id, lesson.id, clampedTime, maxWatchedRef.current, duration);
+  };
+
+  // Rewind video to start (00:00) while strictly preserving maxWatchedTime and progress percentage
+  const handleRestartFromBeginning = () => {
+    if (!videoElementRef.current) return;
+    videoElementRef.current.currentTime = 0;
+    setCurrentTime(0);
+    saveVideoProgressToStorage(currentUser?.id, lesson.id, 0, maxWatchedRef.current, duration);
+    toast("تم إرجاع الفيديو للبداية (00:00). نسبة تقدمك المسجلة محفوظة بالكامل ويمكنك تقديم الفيديو لأي جزء شاهدته سابقاً.", "info");
   };
 
   const handleVolumeChange = (newVolume: number) => {
@@ -880,7 +975,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                         height: "16px",
                         display: "flex",
                         alignItems: "center",
-                        cursor: !isLessonFinished && !isTeacher ? "not-allowed" : "pointer",
+                        cursor: "pointer",
                       }}
                     >
                       {/* Track background */}
@@ -894,9 +989,24 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                           overflow: "hidden",
                         }}
                       >
+                        {/* Unlocked / Watched Progress Bar (Translucent Emerald) */}
+                        <div
+                          style={{
+                            position: "absolute",
+                            left: 0,
+                            top: 0,
+                            height: "100%",
+                            width: `${duration > 0 ? Math.min(100, Math.max(0, (maxWatchedTime / duration) * 100)) : 0}%`,
+                            background: "rgba(16, 185, 129, 0.42)",
+                            borderRadius: "2px",
+                          }}
+                        />
                         {/* Played Progress (Green — site accent) */}
                         <div
                           style={{
+                            position: "absolute",
+                            left: 0,
+                            top: 0,
                             height: "100%",
                             width: `${duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0}%`,
                             background: "#10b981",
@@ -933,7 +1043,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                           width: "100%",
                           height: "100%",
                           opacity: 0,
-                          cursor: !isLessonFinished && !isTeacher ? "not-allowed" : "pointer",
+                          cursor: "pointer",
                           margin: 0,
                           zIndex: 10,
                         }}
@@ -949,8 +1059,8 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                         color: "#ffffff",
                       }}
                     >
-                      {/* Left Side: Play/Pause, Volume Capsule, Time */}
-                      <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                      {/* Left Side: Play/Pause, Rewind to start, Volume Capsule, Time */}
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                         {/* Play/Pause Button */}
                         <button
                           type="button"
@@ -972,6 +1082,26 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                           ) : (
                             <Play size={22} fill="#ffffff" color="#ffffff" />
                           )}
+                        </button>
+
+                        {/* Rewind to beginning button */}
+                        <button
+                          type="button"
+                          onClick={handleRestartFromBeginning}
+                          style={{
+                            background: "none",
+                            border: "none",
+                            color: "#ffffff",
+                            cursor: "pointer",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            padding: "4px",
+                            opacity: 0.9,
+                          }}
+                          title="إرجاع الفيديو للبداية (00:00) مع الاحتفاظ بنسبة تقدمك"
+                        >
+                          <RotateCcw size={18} color="#ffffff" />
                         </button>
 
                         {/* Volume Capsule (Pill) */}
@@ -1889,6 +2019,68 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                       transition: "width 0.3s ease",
                     }}
                   />
+                </div>
+
+                {/* Rewind to beginning and Resume quick controls */}
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    marginTop: "12px",
+                    gap: "8px",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={handleRestartFromBeginning}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "5px",
+                      background: "var(--bg-surface-secondary, #f1f5f9)",
+                      border: "1px solid var(--border-color, #e2e8f0)",
+                      borderRadius: "8px",
+                      padding: "5px 10px",
+                      fontSize: "11.5px",
+                      fontWeight: 700,
+                      color: "var(--text-main, #0f172a)",
+                      cursor: "pointer",
+                    }}
+                    title="مشاهدة الفيديو من البداية دون التأثير على نسبة تقدمك المسجلة"
+                  >
+                    <RotateCcw size={13} />
+                    <span>إعادة من الأول</span>
+                  </button>
+
+                  {maxWatchedTime > 5 && currentTime < maxWatchedTime - 5 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (videoElementRef.current) {
+                          videoElementRef.current.currentTime = maxWatchedTime;
+                          setCurrentTime(maxWatchedTime);
+                        }
+                      }}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "5px",
+                        background: "var(--bg-accent, #ecfdf5)",
+                        border: "1px solid var(--border-accent, #a7f3d0)",
+                        borderRadius: "8px",
+                        padding: "5px 10px",
+                        fontSize: "11.5px",
+                        fontWeight: 700,
+                        color: "#059669",
+                        cursor: "pointer",
+                      }}
+                      title="الرجوع إلى أقصى نقطة وصلتها لمواصلة المشاهدة"
+                    >
+                      <span>متابعة من حيث توقفت</span>
+                    </button>
+                  )}
                 </div>
 
                 {/* Overall Course Progress Note */}

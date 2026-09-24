@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { Course, CurrentUser, VideoLesson } from "../types/lms";
 import { VideoLessonPage } from "../components/VideoLessonPage";
-import { exportToCsv, exportToDocx, exportToExcel, exportToPrintPdf } from "../utils/exportEngine";
+import { exportToDocx, exportToExcel, exportToPrintPdf } from "../utils/exportEngine";
 import { courseService } from "../services/lmsService";
 import { uploadManager } from "../services/uploadManager";
 import { fetchApiBlob } from "../services/apiClient";
@@ -586,24 +586,13 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
 
               <button
                 onClick={() => {
-                  exportToExcel(getExportPayload(), `difficulty_report_${selectedYear}.xls`);
+                  exportToExcel(getExportPayload(), `difficulty_report_${selectedYear}.xlsx`);
                   setExportDropdownOpen(false);
                 }}
                 style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", borderBottom: "1px solid var(--border-color)", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text-main)" }}
               >
                 <FileSpreadsheet size={16} style={{ color: "#059669" }} />
-                <strong>تصدير Excel (.xls من اليمين للشمال)</strong>
-              </button>
-
-              <button
-                onClick={() => {
-                  exportToCsv(getExportPayload(), `difficulty_report_${selectedYear}.csv`);
-                  setExportDropdownOpen(false);
-                }}
-                style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", borderBottom: "1px solid var(--border-color)", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text-main)" }}
-              >
-                <FileSpreadsheet size={16} style={{ color: "#0d9488" }} />
-                <strong>تصدير CSV (جدول بيانات)</strong>
+                <strong>تصدير Excel (.xlsx من اليمين للشمال)</strong>
               </button>
 
               <button
@@ -1443,7 +1432,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                               type="button"
                               onClick={() => handleDeleteLesson(lesson.id, lesson.title)}
                               style={{
-                                background: "#dc2626",
+                                background: "var(--danger-action-bg)",
                                 color: "#ffffff",
                                 border: "none",
                                 borderRadius: "8px",

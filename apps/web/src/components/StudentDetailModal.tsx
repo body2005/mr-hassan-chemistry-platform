@@ -33,8 +33,23 @@ export const StudentDetailModal: React.FC<StudentDetailModalProps> = ({
             </span>
           </div>
 
-          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer" }}>
-            <X size={20} />
+          <button
+            onClick={onClose}
+            className="modal-close-btn"
+            style={{
+              background: "var(--modal-close-bg)",
+              border: "none",
+              color: "#ffffff",
+              cursor: "pointer",
+              borderRadius: "8px",
+              width: "32px",
+              height: "32px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <X size={18} />
           </button>
         </div>
 

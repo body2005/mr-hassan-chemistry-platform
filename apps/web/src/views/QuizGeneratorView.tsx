@@ -2213,13 +2213,18 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                 type="button"
                 onClick={() => !isPublishing && setShowPublishConfirmModal(false)}
                 disabled={isPublishing}
+                className="modal-close-btn"
                 style={{
-                  background: "transparent",
+                  background: "var(--modal-close-bg)",
                   border: "none",
                   color: "#ffffff",
                   cursor: isPublishing ? "not-allowed" : "pointer",
-                  padding: "4px",
-                  borderRadius: "6px",
+                  width: "32px",
+                  height: "32px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  borderRadius: "8px",
                 }}
               >
                 <X size={18} />

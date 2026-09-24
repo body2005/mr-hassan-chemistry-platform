@@ -20,7 +20,7 @@ export function PaymentManagementView({ courses, onCoursesChanged }: PaymentMana
   const toast = useToast();
   const confirm = useConfirm();
   const [orders, setOrders] = useState<PaymentOrder[]>([]);
-  const [filter, setFilter] = useState<PaymentStatus | "all">("under_review");
+  const [filter, setFilter] = useState<PaymentStatus | "all">("all");
   const [loading, setLoading] = useState(true);
   const [workingId, setWorkingId] = useState<string | null>(null);
   const [prices, setPrices] = useState<Record<string, string>>({});

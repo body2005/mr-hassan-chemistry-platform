@@ -683,7 +683,7 @@ export const authService = {
     governorate: string;
     schoolName: string;
     gender: "MALE" | "FEMALE";
-    religion: "MUSLIM" | "CHRISTIAN" | "OTHER" | "PREFER_NOT_TO_SAY";
+    religion?: "MUSLIM" | "CHRISTIAN" | "OTHER" | "PREFER_NOT_TO_SAY" | null;
   }): Promise<{ success: boolean; user?: CurrentUser; error?: string }> {
     const cleanEmail = (userData.email || "").trim().toLowerCase();
 
@@ -707,7 +707,7 @@ export const authService = {
           governorate: userData.governorate,
           school_name: userData.schoolName,
           gender: userData.gender,
-          religion: userData.religion,
+          religion: userData.religion || null,
         }),
       });
       const user = mapApiUser(result.user);

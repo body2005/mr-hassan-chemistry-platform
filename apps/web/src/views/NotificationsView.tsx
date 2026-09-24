@@ -1608,9 +1608,21 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
               </div>
               <button
                 onClick={() => setWizardState((prev) => ({ ...prev, isOpen: false }))}
-                style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: "4px" }}
+                className="wizard-close-btn"
+                style={{
+                  background: "var(--modal-close-bg)",
+                  border: "none",
+                  color: "#ffffff",
+                  cursor: "pointer",
+                  borderRadius: "8px",
+                  width: "32px",
+                  height: "32px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
               >
-                <X size={20} />
+                <X size={18} />
               </button>
             </div>
 
@@ -2187,7 +2199,19 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
               <button
                 type="button"
                 onClick={() => setIsBroadcastModalOpen(false)}
-                style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer" }}
+                className="modal-close-btn"
+                style={{
+                  background: "var(--modal-close-bg)",
+                  border: "none",
+                  color: "#ffffff",
+                  cursor: "pointer",
+                  borderRadius: "8px",
+                  width: "32px",
+                  height: "32px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
               >
                 <X size={18} />
               </button>

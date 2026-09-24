@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { AssignmentSubmission, CurrentUser } from "../types/lms";
 import { submissionService } from "../services/lmsService";
-import { exportToCsv, exportToDocx, exportToExcel, exportToPrintPdf } from "../utils/exportEngine";
+import { exportToDocx, exportToExcel, exportToPrintPdf } from "../utils/exportEngine";
 
 export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ currentUser }) => {
   const [submissions, setSubmissions] = useState<AssignmentSubmission[]>([]);
@@ -122,24 +122,13 @@ export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ curr
 
               <button
                 onClick={() => {
-                  exportToExcel(getExportPayload(), `my_report_card.xls`);
+                  exportToExcel(getExportPayload(), `my_report_card.xlsx`);
                   setExportDropdownOpen(false);
                 }}
                 style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", borderBottom: "1px solid #f1f5f9", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}
               >
                 <FileSpreadsheet size={16} style={{ color: "#059669" }} />
-                <strong>تصدير Excel (.xls من اليمين للشمال)</strong>
-              </button>
-
-              <button
-                onClick={() => {
-                  exportToCsv(getExportPayload(), `my_report_card.csv`);
-                  setExportDropdownOpen(false);
-                }}
-                style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", borderBottom: "1px solid #f1f5f9", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}
-              >
-                <FileSpreadsheet size={16} style={{ color: "#0d9488" }} />
-                <strong>تصدير CSV (جدول بيانات)</strong>
+                <strong>تصدير Excel (.xlsx من اليمين للشمال)</strong>
               </button>
 
               <button

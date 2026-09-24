@@ -31,12 +31,6 @@ function getGenderLabel(g?: string): string {
   return g;
 }
 
-function getReligionLabel(r?: string): string {
-  if (!r || r === "—") return "—";
-  if (r === "MUSLIM") return "مسلم";
-  if (r === "CHRISTIAN") return "مسيحي";
-  return r;
-}
 
 function getAcademicYearLabel(year?: string): string {
   if (year === "2nd_secondary") return "الصف الثاني الثانوي";
@@ -154,8 +148,9 @@ export const StudentDetailWizard: React.FC<StudentDetailWizardProps> = ({
           </div>
           <button
             onClick={onClose}
+            className="wizard-close-btn"
             style={{
-              background: "rgba(255,255,255,0.15)",
+              background: "var(--modal-close-bg)",
               border: "none",
               color: "#ffffff",
               cursor: "pointer",
@@ -265,14 +260,6 @@ export const StudentDetailWizard: React.FC<StudentDetailWizardProps> = ({
               <div style={fieldValueStyle}>{getGenderLabel("gender" in s ? (s as any).gender : undefined)}</div>
             </div>
 
-            {/* Religion */}
-            <div style={fieldCardStyle}>
-              <div style={fieldLabelStyle}>
-                <BookOpen size={13} /> الديانة
-              </div>
-              <div style={fieldValueStyle}>{getReligionLabel("religion" in s ? (s as any).religion : undefined)}</div>
-            </div>
-
             {/* Joined / Created At */}
             <div style={{ ...fieldCardStyle, gridColumn: "span 2" }}>
               <div style={fieldLabelStyle}>
@@ -302,6 +289,7 @@ export const StudentDetailWizard: React.FC<StudentDetailWizardProps> = ({
               <button
                 type="button"
                 onClick={() => onBlock(s.id, s.name, isBlocked)}
+                className={isBlocked ? undefined : "danger-action-btn"}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -309,7 +297,7 @@ export const StudentDetailWizard: React.FC<StudentDetailWizardProps> = ({
                   padding: "8px 14px",
                   borderRadius: "8px",
                   border: "none",
-                  background: isBlocked ? "#dcfce7" : "#dc2626",
+                  background: isBlocked ? "#dcfce7" : "var(--danger-action-bg)",
                   color: isBlocked ? "#166534" : "#ffffff",
                   fontSize: "12px",
                   fontWeight: 800,
@@ -325,6 +313,7 @@ export const StudentDetailWizard: React.FC<StudentDetailWizardProps> = ({
               <button
                 type="button"
                 onClick={() => onDelete(s.id, s.name)}
+                className="danger-action-btn"
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -332,7 +321,7 @@ export const StudentDetailWizard: React.FC<StudentDetailWizardProps> = ({
                   padding: "8px 14px",
                   borderRadius: "8px",
                   border: "none",
-                  background: "#dc2626",
+                  background: "var(--danger-action-bg)",
                   color: "#ffffff",
                   fontSize: "12px",
                   fontWeight: 800,

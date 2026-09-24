@@ -20,7 +20,7 @@ import { AssignmentModal } from "../components/AssignmentModal";
 import { ExamGradingModal } from "../components/ExamGradingModal";
 import { CustomColumnModal } from "../components/CustomColumnModal";
 import { StudentDetailWizard } from "../components/StudentDetailWizard";
-import { exportToCsv, exportToDocx, exportToExcel, exportToPrintPdf } from "../utils/exportEngine";
+import { exportToDocx, exportToExcel, exportToPrintPdf } from "../utils/exportEngine";
 import { useToast } from "../components/ToastProvider";
 
 function mapApiStudentToRecord(item: any): StudentRecord {
@@ -368,24 +368,13 @@ export const SubmissionsView: React.FC = () => {
 
                 <button
                   onClick={() => {
-                    exportToExcel(getExportPayload(), `${baseExportFileName}.xls`);
+                    exportToExcel(getExportPayload(), `${baseExportFileName}.xlsx`);
                     setExportDropdownOpen(false);
                   }}
                   style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", borderBottom: "1px solid var(--border-color)", color: "var(--text-main)", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}
                 >
                   <FileSpreadsheet size={16} style={{ color: "#059669" }} />
-                  <strong>تصدير Excel (.xls من اليمين للشمال)</strong>
-                </button>
-
-                <button
-                  onClick={() => {
-                    exportToCsv(getExportPayload(), `${baseExportFileName}.csv`);
-                    setExportDropdownOpen(false);
-                  }}
-                  style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", borderBottom: "1px solid var(--border-color)", color: "var(--text-main)", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}
-                >
-                  <FileSpreadsheet size={16} style={{ color: "#0d9488" }} />
-                  <strong>تصدير CSV (جدول بيانات)</strong>
+                  <strong>تصدير Excel (.xlsx من اليمين للشمال)</strong>
                 </button>
 
                 <button

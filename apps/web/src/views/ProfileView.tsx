@@ -34,7 +34,6 @@ export interface ManagedStudentItem {
   governorate?: string;
   schoolName?: string;
   gender?: "MALE" | "FEMALE" | string;
-  religion?: "MUSLIM" | "CHRISTIAN" | string;
   createdAt?: string;
   overallAttendanceRatio?: number;
   assignmentSubmissionRatio?: number;
@@ -101,7 +100,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           governorate: student.governorate || "",
           schoolName: student.school_name || "",
           gender: student.gender || "",
-          religion: student.religion || "",
           createdAt: student.created_at ? student.created_at.slice(0, 10) : "",
         };
       })))
@@ -200,7 +198,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             display: "inline-flex",
             alignItems: "center",
             gap: "8px",
-            background: "#dc2626",
+            background: "var(--danger-action-bg)",
             color: "#ffffff",
             border: "none",
             padding: "10px 18px",
@@ -327,12 +325,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 <span style={{ fontSize: "12px", color: "var(--text-muted)", display: "block" }}>{lang === "ar" ? "النوع" : "Gender"}</span>
                 <strong style={{ fontSize: "15px", color: "var(--text-main)", display: "block", marginTop: "2px" }}>
                   {student.gender === "MALE" ? "ذكر" : student.gender === "FEMALE" ? "أنثى" : student.gender || "—"}
-                </strong>
-              </div>
-              <div style={{ background: "var(--bg-surface-secondary)", padding: "16px", borderRadius: "12px", border: "1px solid var(--border-color)" }}>
-                <span style={{ fontSize: "12px", color: "var(--text-muted)", display: "block" }}>{lang === "ar" ? "الديانة" : "Religion"}</span>
-                <strong style={{ fontSize: "15px", color: "var(--text-main)", display: "block", marginTop: "2px" }}>
-                  {student.religion === "MUSLIM" ? "مسلم" : student.religion === "CHRISTIAN" ? "مسيحي" : student.religion || "—"}
                 </strong>
               </div>
             </div>
@@ -607,7 +599,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                               padding: "6px 12px",
                               borderRadius: "8px",
                               border: "none",
-                              background: isBlocked ? "#dcfce7" : "#dc2626",
+                              background: isBlocked ? "#dcfce7" : "var(--danger-action-bg)",
                               color: isBlocked ? "#166534" : "#ffffff",
                               fontSize: "12px",
                               fontWeight: 800,
@@ -631,7 +623,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                               padding: "6px 12px",
                               borderRadius: "8px",
                               border: "none",
-                              background: "#dc2626",
+                              background: "var(--danger-action-bg)",
                               color: "#ffffff",
                               fontSize: "12px",
                               fontWeight: 800,

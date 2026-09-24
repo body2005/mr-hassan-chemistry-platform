@@ -67,7 +67,7 @@ function Dialog({ state }: { state: ConfirmState }) {
 
           <div className="confirm-wizard-actions">
             <button
-              className="confirm-wizard-btn primary"
+              className={`confirm-wizard-btn primary ${state.tone === "danger" ? "tone-danger" : ""}`}
               onClick={confirm}
               autoFocus
             >

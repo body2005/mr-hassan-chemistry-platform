@@ -73,7 +73,6 @@ export const AuthView: React.FC<AuthViewProps> = ({
   const [regGovernorate, setRegGovernorate] = useState("");
   const [regSchoolName, setRegSchoolName] = useState("");
   const [regGender, setRegGender] = useState<"" | "MALE" | "FEMALE">("");
-  const [regReligion, setRegReligion] = useState<"" | "MUSLIM" | "CHRISTIAN">("");
 
   // Handle Strict Validated Sign In via authService
   async function handleSignIn(e: React.FormEvent) {
@@ -115,8 +114,8 @@ export const AuthView: React.FC<AuthViewProps> = ({
       return;
     }
 
-    if (!regYear || !regGovernorate || !regSchoolName.trim() || !regGender || !regReligion) {
-      setError(lang === "ar" ? "يرجى استكمال الصف والمحافظة والمدرسة والنوع والديانة." : "Please complete grade, governorate, school, gender, and religion.");
+    if (!regYear || !regGovernorate || !regSchoolName.trim() || !regGender) {
+      setError(lang === "ar" ? "يرجى استكمال الصف والمحافظة والمدرسة والنوع." : "Please complete grade, governorate, school, and gender.");
       return;
     }
 
@@ -131,7 +130,6 @@ export const AuthView: React.FC<AuthViewProps> = ({
       governorate: regGovernorate,
       schoolName: regSchoolName,
       gender: regGender,
-      religion: regReligion,
     });
 
     if (!res.success) {
@@ -789,15 +787,9 @@ export const AuthView: React.FC<AuthViewProps> = ({
                   </div>
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
-                  <div>
-                    <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>{lang === "ar" ? "النوع:" : "Gender:"}</label>
-                    <select required value={regGender} onChange={(e) => setRegGender(e.target.value as "" | "MALE" | "FEMALE")} style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", background: "var(--bg-surface-secondary)", color: "var(--text-main)" }}><option value="" disabled>{lang === "ar" ? "اختر النوع" : "Select gender"}</option><option value="MALE">{lang === "ar" ? "ذكر" : "Male"}</option><option value="FEMALE">{lang === "ar" ? "أنثى" : "Female"}</option></select>
-                  </div>
-                  <div>
-                    <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>{lang === "ar" ? "الديانة:" : "Religion:"}</label>
-                    <select required value={regReligion} onChange={(e) => setRegReligion(e.target.value as typeof regReligion)} style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", background: "var(--bg-surface-secondary)", color: "var(--text-main)" }}><option value="" disabled>{lang === "ar" ? "اختر الديانة" : "Select religion"}</option><option value="MUSLIM">{lang === "ar" ? "مسلم" : "Muslim"}</option><option value="CHRISTIAN">{lang === "ar" ? "مسيحي" : "Christian"}</option></select>
-                  </div>
+                <div>
+                  <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>{lang === "ar" ? "النوع:" : "Gender:"}</label>
+                  <select required value={regGender} onChange={(e) => setRegGender(e.target.value as "" | "MALE" | "FEMALE")} style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", background: "var(--bg-surface-secondary)", color: "var(--text-main)" }}><option value="" disabled>{lang === "ar" ? "اختر النوع" : "Select gender"}</option><option value="MALE">{lang === "ar" ? "ذكر" : "Male"}</option><option value="FEMALE">{lang === "ar" ? "أنثى" : "Female"}</option></select>
                 </div>
 
                 <button
