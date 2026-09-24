@@ -1,5 +1,6 @@
 import { apiRequest, fetchApiBlob, uploadWithProgress } from "./apiClient";
 
+/** "ai_subscription" remains a valid legacy value for historical orders. */
 export type PaymentProductType = "course" | "lesson" | "ai_subscription";
 export type PaymentMethod = "instapay" | "vodafone_cash" | "bank_transfer";
 export type PaymentStatus = "pending" | "under_review" | "paid" | "rejected" | "cancelled";
@@ -13,9 +14,6 @@ export interface PaymentMethodConfig {
 
 export interface PaymentConfig {
   currency: "EGP";
-  ai_monthly_price_egp: number;
-  ai_subscription_days: number;
-  ai_access_mode: "open" | "subscription_only" | "included_with_content" | "paid_content_or_subscription";
   methods: PaymentMethodConfig[];
 }
 
@@ -39,7 +37,7 @@ export interface PaymentOrder {
 
 export interface StudentEntitlement {
   id: string;
-  entitlement_type: "course" | "lesson" | "ai_global";
+  entitlement_type: "course" | "lesson";
   resource_id: string | null;
   starts_at: string;
   expires_at: string | null;
@@ -55,10 +53,6 @@ export const paymentService = {
   getConfig: () => apiRequest<PaymentConfig>("/payments/config", { cacheTtlMs: 300_000 }),
   getMyOrders: () => apiRequest<PaymentOrder[]>("/payments/me/orders", { cacheTtlMs: 15_000 }),
   getMyEntitlements: () => apiRequest<StudentEntitlement[]>("/payments/me/entitlements", { cacheTtlMs: 60_000 }),
-  getAIAccess: (lessonId?: string) => apiRequest<{ allowed: boolean; global_subscription: boolean; mode: string }>(
-    `/payments/me/ai-access${lessonId ? `?lesson_id=${encodeURIComponent(lessonId)}` : ""}`,
-    { cacheTtlMs: 60_000 },
-  ),
   createOrder: (payload: {
     product_type: PaymentProductType;
     product_id?: string;

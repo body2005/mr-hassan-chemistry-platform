@@ -2,7 +2,6 @@ from fastapi import APIRouter
 
 from app.api.routes import (
     access_requests,
-    ai_demo,
     analytics_report,
     auth,
     courses,
@@ -12,7 +11,7 @@ from app.api.routes import (
     payments,
     realtime,
     telemetry,
-    transcription,
+    quiz_extraction,
 )
 
 api_router = APIRouter()
@@ -24,15 +23,8 @@ api_router.include_router(telemetry.router, tags=["telemetry"])
 api_router.include_router(platform.router, tags=["platform"])
 api_router.include_router(payments.router, tags=["payments"])
 api_router.include_router(realtime.router, tags=["realtime"])
-api_router.include_router(ai_demo.router, tags=["ai"])
+api_router.include_router(quiz_extraction.router, tags=["assessments"])
 api_router.include_router(extended_routes.router, tags=["extended"])
 api_router.include_router(analytics_report.router, tags=["analytics"])
-api_router.include_router(transcription.router, tags=["transcription"])
-api_router.add_api_route(
-    "/bootstrap",
-    platform.get_bootstrap_data,
-    methods=["GET"],
-    response_model=platform.BootstrapResponse,
-    tags=["platform"],
-)
+api_router.include_router(platform.bootstrap_router, tags=["platform"])
 

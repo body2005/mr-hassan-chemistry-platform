@@ -56,8 +56,6 @@ def classify_rate_limit_category(method: str, path: str) -> str:
 
     if normalized_path.startswith(f"{api_prefix}/auth/"):
         return "auth"
-    if normalized_path.startswith(f"{api_prefix}/ai"):
-        return "ai"
     if (
         "/preview-page/" in normalized_path
         or normalized_path.endswith("/preview-file")

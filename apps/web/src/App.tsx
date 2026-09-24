@@ -11,6 +11,7 @@ import { useConfirm } from "./components/ConfirmWizard";
 import { PaymentTarget, StudentEntitlement, paymentService } from "./services/paymentService";
 import { realtimeService } from "./services/realtimeService";
 import { LessonAccessModal } from "./components/LessonAccessModal";
+import { FloatingProgressFab } from "./components/FloatingProgressFab";
 
 // Views
 import { LandingPageView } from "./views/LandingPageView";
@@ -22,7 +23,6 @@ const viewLoaders = {
   LessonManagement: () => import("./views/LessonManagementView"),
   QuizGen: () => import("./views/QuizGeneratorView"),
   Submissions: () => import("./views/SubmissionsView"),
-  StudentAnalytics: () => import("./views/StudentAnalyticsView"),
   Notifications: () => import("./views/NotificationsView"),
   Profile: () => import("./views/ProfileView"),
   Payments: () => import("./views/PaymentView"),
@@ -45,7 +45,6 @@ const MySubmissionsView = lazy(() => viewLoaders.MySubmissions().then((m) => ({ 
 const LessonManagementView = lazy(() => viewLoaders.LessonManagement().then((m) => ({ default: m.LessonManagementView })));
 const QuizGeneratorView = lazy(() => viewLoaders.QuizGen().then((m) => ({ default: m.QuizGeneratorView })));
 const SubmissionsView = lazy(() => viewLoaders.Submissions().then((m) => ({ default: m.SubmissionsView })));
-const StudentAnalyticsView = lazy(() => viewLoaders.StudentAnalytics().then((m) => ({ default: m.StudentAnalyticsView })));
 const NotificationsView = lazy(() => viewLoaders.Notifications().then((m) => ({ default: m.NotificationsView })));
 const ProfileView = lazy(() => viewLoaders.Profile().then((m) => ({ default: m.ProfileView })));
 const PaymentView = lazy(() => viewLoaders.Payments().then((m) => ({ default: m.PaymentView })));
@@ -60,7 +59,6 @@ const VALID_TABS = [
   "LessonManagement",
   "QuizGen",
   "Submissions",
-  "StudentAnalytics",
   "Notifications",
   "Profile",
   "Payments",
@@ -70,7 +68,7 @@ const VALID_TABS = [
 type AllTabs = (typeof VALID_TABS)[number];
 
 const STUDENT_TABS = new Set<AllTabs>(["MyCourses", "MySubmissions", "Notifications", "Payments", "Profile"]);
-const STAFF_TABS = new Set<AllTabs>(["LessonManagement", "QuizGen", "Submissions", "StudentAnalytics", "Notifications", "PaymentManagement", "Profile"]);
+const STAFF_TABS = new Set<AllTabs>(["LessonManagement", "QuizGen", "Submissions", "Notifications", "PaymentManagement", "Profile"]);
 
 function homeTab(user: CurrentUser): AllTabs {
   return user.role === "student" ? "MyCourses" : "LessonManagement";
@@ -83,6 +81,7 @@ function tabAllowed(tab: AllTabs, user: CurrentUser): boolean {
 function getTabFromHash(): AllTabs | null {
   const raw = window.location.hash.replace("#", "").trim().toLowerCase();
   if (!raw) return null;
+  if (raw === "studentanalytics") return "Submissions";
   const match = VALID_TABS.find((t) => t.toLowerCase() === raw);
   return match || null;
 }
@@ -198,6 +197,9 @@ function App() {
     if (typeof window !== "undefined" && window.location.hash.toLowerCase() === "#generalhome") {
       window.location.hash = "#mycourses";
     }
+    if (typeof window !== "undefined" && window.location.hash.toLowerCase() === "#studentanalytics") {
+      window.location.hash = "#submissions";
+    }
     const fromHash = getTabFromHash();
     if (fromHash && fromHash !== "Landing" && fromHash !== "Auth") {
       return fromHash;
@@ -207,6 +209,10 @@ function App() {
     if (savedTab === "GeneralHome" && typeof localStorage !== "undefined") {
       localStorage.setItem("lms_active_tab", "MyCourses");
       return "MyCourses";
+    }
+    if (savedTab === "StudentAnalytics" && typeof localStorage !== "undefined") {
+      localStorage.setItem("lms_active_tab", "Submissions");
+      return "Submissions";
     }
     if (savedTab && VALID_TABS.includes(savedTab as AllTabs)) {
       return savedTab as AllTabs;
@@ -306,6 +312,8 @@ function App() {
     }
   }, [currentUser?.id, currentUser?.role]);
 
+  // Stable callbacks so the SSE lifecycle effect below doesn't tear down and
+  // re-open the stream whenever these identities change.
   const refreshStudentAccess = useCallback(() => {
     if (currentUser?.role !== "student") return;
     void Promise.all([courseService.getEnrolledCourseIds(), paymentService.getMyEntitlements()])
@@ -314,9 +322,16 @@ function App() {
         setEntitlements(access);
       })
       .catch(() => undefined);
-  }, [currentUser]);
+  }, [currentUser?.id, currentUser?.role]);
 
-  // Real-time EventSource connection lifecycle
+  const refreshNotifications = useCallback(() => {
+    void notificationService.getNotifications().then(setNotifications).catch(() => undefined);
+  }, []);
+
+  // Real-time EventSource connection lifecycle — keyed ONLY on user identity.
+  // The previous version also depended on refreshStudentAccess, whose identity
+  // changed on every notifications/state update, tearing down and re-opening
+  // the SSE connection (the duplicate /realtime/stream entries in DevTools).
   useEffect(() => {
     if (!currentUser) {
       realtimeService.disconnect();
@@ -337,7 +352,7 @@ function App() {
       window.removeEventListener("lms_payment_updated", handleLessonUnlocked);
       realtimeService.disconnect();
     };
-  }, [currentUser, refreshStudentAccess]);
+  }, [currentUser?.id, currentUser?.role, refreshStudentAccess]);
 
   function handleToggleTheme() {
     setTheme((prev) => (prev === "light" ? "dark" : "light"));
@@ -645,8 +660,6 @@ function App() {
 
           {activeTab === "Submissions" && currentUser.role !== "student" && <SubmissionsView />}
 
-          {activeTab === "StudentAnalytics" && currentUser.role !== "student" && <StudentAnalyticsView />}
-
           {activeTab === "Payments" && currentUser.role === "student" && (
             <PaymentView
               courses={courses}
@@ -676,6 +689,15 @@ function App() {
         <GlobalUploadWidget currentUser={currentUser} menuOpen={menuOpen} />
       )}
 
+      {/* Global Student Course Progress FAB: draggable, bottom-left default, appears on all pages, hides when video enlarged */}
+      {currentUser?.role === "student" && (
+        <FloatingProgressFab
+          courses={courses}
+          currentUser={currentUser}
+          theme={theme}
+        />
+      )}
+
       {/* Lesson Access Approval Modal for Teachers and Students */}
       <LessonAccessModal
         requestId={selectedAccessRequestId}
@@ -686,7 +708,7 @@ function App() {
         }}
         onUpdated={() => {
           refreshStudentAccess();
-          void notificationService.getNotifications().then(setNotifications).catch(() => undefined);
+          refreshNotifications();
         }}
         isTeacher={currentUser?.role !== "student"}
       />

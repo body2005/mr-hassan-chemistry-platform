@@ -3,7 +3,6 @@ import { authAr } from "./auth";
 import { coursesAr } from "./courses";
 import { teacherAr } from "./teacher";
 import { paymentsAr } from "./payments";
-import { aiAr } from "./ai";
 
 export const ar = {
   common: commonAr,
@@ -11,7 +10,6 @@ export const ar = {
   courses: coursesAr,
   teacher: teacherAr,
   payments: paymentsAr,
-  ai: aiAr,
 };
 
 export type LocaleSchema = typeof ar;

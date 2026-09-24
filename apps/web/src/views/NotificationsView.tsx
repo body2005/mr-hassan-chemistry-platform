@@ -22,6 +22,7 @@ import { NavTab } from "../components/Sidebar";
 import { calendarService, notificationService } from "../services/lmsService";
 import { InvoiceModal } from "../components/InvoiceModal";
 import { LessonAccessModal } from "../components/LessonAccessModal";
+import { formatDateTimeSimple } from "../utils/dateUtils";
 
 interface NotificationsViewProps {
   notifications: NotificationItem[];
@@ -600,6 +601,8 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       });
 
       const isRecurringDay = gradeSchedule?.days.includes(dayName);
+      const activeEvent = dayEvents.find((e) => !e.isCancelled) || dayEvents[0];
+      const cellTime = activeEvent?.time || (isRecurringDay ? gradeSchedule?.time : null);
 
       const openWizard = (evt: CalendarScheduleEvent | undefined, targetDate: string) => {
         if (!isTeacher) return;
@@ -719,6 +722,21 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
               : "none",
           }}
         >
+          {cellTime && (
+            <span
+              style={{
+                fontSize: "9px",
+                fontWeight: 800,
+                color: textColor,
+                opacity: 0.95,
+                lineHeight: 1.1,
+                direction: "ltr",
+                marginBottom: "2px",
+              }}
+            >
+              {cellTime}
+            </span>
+          )}
           <span
             className="calendar-cell-day"
             style={{
@@ -1029,11 +1047,23 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                         </div>
                       </div>
 
-                      {/* Timestamps */}
-                      <div style={{ textAlign: "left", flexShrink: 0 }}>
-                        <span style={{ fontSize: "11px", color: "var(--text-muted, #94a3b8)", display: "block" }}>
-                          {n.createdAt}
-                        </span>
+                      {/* Timestamps formatted clearly like Image 4 (Time on line 1, Date on line 2) */}
+                      <div style={{ textAlign: "left", flexShrink: 0, lineHeight: 1.35 }}>
+                        {(() => {
+                          const formatted = formatDateTimeSimple(n.createdAt);
+                          return (
+                            <div style={{ textAlign: "left", direction: "ltr" }}>
+                              <span style={{ fontSize: "11.5px", fontWeight: 800, color: "var(--text-main)", display: "block" }}>
+                                {formatted.time}
+                              </span>
+                              {formatted.date && (
+                                <span style={{ fontSize: "10.5px", color: "var(--text-muted)", display: "block" }}>
+                                  {formatted.date}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
                         {n.dueDate && (
                           <span style={{ fontSize: "11px", fontWeight: 800, color: "#dc2626", display: "flex", alignItems: "center", gap: "3px", justifyContent: "flex-end", marginTop: "3px" }}>
                             <Clock size={11} />

@@ -16,7 +16,6 @@ import {
   HelpCircle,
   Lock,
   Play,
-  ShoppingBag,
   ShoppingCart,
   Search,
   Sparkles,
@@ -1036,7 +1035,6 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   const courseLessons = currentCourse?.lessons || [];
   const completedLessonsCount = courseLessons.filter((l) => completedLessonIds.includes(l.id)).length;
-  const progressPercent = courseLessons.length > 0 ? Math.round((completedLessonsCount / courseLessons.length) * 100) : 0;
 
   // Search query filter for current tab items
   const searchQueryNormalized = courseSearchQuery.trim().toLowerCase();
@@ -1092,7 +1090,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   return (
     <div className="page-container">
-      {/* Top Urgent Counter & Progress Banner */}
+      {/* Top Urgent Counter */}
       <div className="urgency-banner" style={{ marginBottom: "20px" }}>
         <div className="urgency-counter">
           <div className="urgency-badge">
@@ -1101,18 +1099,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           </div>
           <div>
             <strong style={{ display: "block", fontSize: "16px", color: "var(--urgency-text)" }}>
-              مقرر {currentCourse.subject} - {currentCourse.academicYearLabel}
+              مقرر {currentCourse.title}
             </strong>
-            <span style={{ fontSize: "13px", color: "var(--urgency-text)", opacity: 0.9 }}>
-              تابع شروحات الفيديوهات، أنجز الواجبات المطلوبة، وتدرب على الكويزات التفاعلية قبل الموعد النهائي!
-            </span>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          <div style={{ textAlign: "center", fontSize: "12px", color: "var(--urgency-text)", fontWeight: 700 }}>
-            <span>نسبة إنجاز المقرر</span>
-            <strong style={{ display: "block", fontSize: "20px" }}>{progressPercent}%</strong>
           </div>
         </div>
       </div>
@@ -1326,10 +1314,27 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           {courseLessons.length === 0 ? (
             <div style={{ background: "var(--bg-surface)", border: "1.5px dashed var(--border-color)", borderRadius: "18px", padding: "60px 20px", textAlign: "center" }}>
               <VideoOff size={40} style={{ color: "var(--text-muted)", margin: "0 auto 12px" }} />
-              <h3 style={{ margin: "0 0 6px", fontSize: "18px", fontWeight: 800, color: "var(--text-main)" }}>فارغ</h3>
-              <p style={{ margin: 0, color: "var(--text-muted)", fontSize: "13.5px" }}>
+              <h3 style={{ margin: "0 0 6px", fontSize: "18px", fontWeight: 800, color: "var(--text-main)" }}>غير متوفر الآن</h3>
+              <p style={{ margin: "0 0 16px", color: "var(--text-muted)", fontSize: "13.5px" }}>
                 لا توجد فيديوهات أو دروس مرفوعة في هذا المقرر حالياً.
               </p>
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "8px",
+                  padding: "10px 24px",
+                  borderRadius: "10px",
+                  background: "var(--bg-surface-secondary)",
+                  border: "1px solid var(--border-color)",
+                  color: "var(--text-muted)",
+                  fontWeight: 800,
+                  fontSize: "13.5px",
+                }}
+              >
+                غير متوفر الآن
+              </div>
             </div>
           ) : filteredLessons.length === 0 ? (
             <div style={{ background: "var(--bg-surface)", border: "1.5px dashed var(--border-color)", borderRadius: "18px", padding: "50px 20px", textAlign: "center" }}>
@@ -1537,14 +1542,23 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               <p style={{ margin: "0 0 18px", color: "var(--text-muted)", fontSize: "13.5px", maxWidth: "480px", marginInline: "auto" }}>
                 يمكنك متابعة شروحات المراجعات الدورية المنشورة من قبل المعلم أو تصفح ورش المراجعة ومعسكرات نصف العام والامتحانات من متجر المنصة.
               </p>
-              <button
-                className="btn-primary"
-                onClick={onNavigateToCatalog}
-                style={{ padding: "10px 20px", borderRadius: "10px", fontWeight: 800, fontSize: "13.5px", display: "inline-flex", alignItems: "center", gap: "8px" }}
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "8px",
+                  padding: "10px 24px",
+                  borderRadius: "10px",
+                  background: "var(--bg-surface-secondary)",
+                  border: "1px solid var(--border-color)",
+                  color: "var(--text-muted)",
+                  fontWeight: 800,
+                  fontSize: "13.5px",
+                }}
               >
-                <ShoppingBag size={16} />
-                <span>تصفح المراجعات والورش في المتجر</span>
-              </button>
+                غير متوفر الآن
+              </div>
             </div>
           ) : (
             <div>
@@ -2225,14 +2239,23 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               <p style={{ margin: "0 0 18px", color: "var(--text-muted)", fontSize: "13.5px", maxWidth: "480px", marginInline: "auto" }}>
                 يمكنك تصفح وشراء كتب الشرح المعتمدة، بنوك الأسئلة، ومذكرات ليلة الامتحان من متجر المنصة، كما تظهر هنا المذكرات والملفات المرفقة مع الفيديوهات المشتراة تلقائياً.
               </p>
-              <button
-                className="btn-primary"
-                onClick={onNavigateToCatalog}
-                style={{ padding: "10px 20px", borderRadius: "10px", fontWeight: 800, fontSize: "13.5px", display: "inline-flex", alignItems: "center", gap: "8px" }}
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "8px",
+                  padding: "10px 24px",
+                  borderRadius: "10px",
+                  background: "var(--bg-surface-secondary)",
+                  border: "1px solid var(--border-color)",
+                  color: "var(--text-muted)",
+                  fontWeight: 800,
+                  fontSize: "13.5px",
+                }}
               >
-                <ShoppingBag size={16} />
-                <span>تصفح وشراء الكتب من المتجر</span>
-              </button>
+                غير متوفر الآن
+              </div>
             </div>
           ) : filteredBooks.length === 0 ? (
             <div style={{ background: "var(--bg-surface)", border: "1.5px dashed var(--border-color)", borderRadius: "18px", padding: "50px 20px", textAlign: "center" }}>
@@ -2266,30 +2289,30 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   }}
                 >
                   {/* Header */}
-                  <div style={{ background: book.gradient, padding: "20px", color: "white" }}>
+                  <div style={{ background: book.gradient, padding: "20px", color: "#ffffff" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-                      <span style={{ background: "rgba(255,255,255,0.2)", padding: "3px 8px", borderRadius: "6px", fontSize: "11px", fontWeight: 700 }}>
+                      <span style={{ background: "rgba(255,255,255,0.2)", color: "#ffffff", padding: "3px 8px", borderRadius: "6px", fontSize: "11px", fontWeight: 700 }}>
                         {book.isLessonMaterial ? "مذكرة درس مرفقة" : "نسخة مملوكة ومفعلة"}
                       </span>
-                      <span style={{ fontSize: "12px", opacity: 0.9 }}>
+                      <span style={{ fontSize: "12px", opacity: 0.95, color: "#ffffff" }}>
                         {book.fileSize ? book.fileSize : `${book.pagesCount} صفحة`}
                       </span>
                     </div>
-                    <h3 style={{ margin: "4px 0", fontSize: "16px", fontWeight: 800, lineHeight: 1.3 }}>
+                    <h3 style={{ margin: "4px 0", fontSize: "16px", fontWeight: 800, lineHeight: 1.3, color: "#ffffff" }}>
                       {book.title}
                     </h3>
-                    <span style={{ fontSize: "11.5px", opacity: 0.85 }}>إعداد: {book.author}</span>
+                    <span style={{ fontSize: "11.5px", opacity: 0.9, color: "#ffffff" }}>إعداد: {book.author}</span>
                   </div>
 
                   {/* Content */}
                   <div style={{ padding: "18px", flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
                     <div>
-                      <p style={{ fontSize: "12.5px", color: "var(--text-muted)", lineHeight: 1.5, margin: "0 0 14px" }}>
+                      <p style={{ fontSize: "13px", color: "var(--text-main, #0f172a)", fontWeight: 700, lineHeight: 1.6, margin: "0 0 14px" }}>
                         {book.description}
                       </p>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginBottom: "16px" }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "16px" }}>
                         {book.sampleTopics?.map((top: string, idx: number) => (
-                          <span key={idx} style={{ fontSize: "10.5px", background: "var(--bg-accent)", color: "#065f46", padding: "2px 7px", borderRadius: "4px", fontWeight: 700 }}>
+                          <span key={idx} style={{ fontSize: "11px", background: "#047857", color: "#ffffff", padding: "3px 8px", borderRadius: "6px", fontWeight: 700 }}>
                             {top}
                           </span>
                         ))}
@@ -2314,6 +2337,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         fontSize: "13px",
                         gap: "6px",
                         background: "#047857",
+                        color: "#ffffff",
                       }}
                     >
                       <Download size={15} />

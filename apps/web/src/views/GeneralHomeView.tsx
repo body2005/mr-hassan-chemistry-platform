@@ -575,8 +575,8 @@ export const GeneralHomeView: React.FC<GeneralHomeViewProps> = ({
                               key={i}
                               style={{
                                 fontSize: "11px",
-                                background: "var(--bg-accent)",
-                                color: "#065f46",
+                                background: "#047857",
+                                color: "#ffffff",
                                 padding: "3px 8px",
                                 borderRadius: "6px",
                                 fontWeight: 700,

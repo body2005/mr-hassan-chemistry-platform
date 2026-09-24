@@ -16,7 +16,6 @@ from app.main import classify_rate_limit_category
         ("POST", "/api/v1/lessons/lesson-id/materials", "upload"),
         ("POST", "/api/v1/lessons/lesson-id/video", "upload"),
         ("POST", "/api/v1/orders/order-id/receipt", "upload"),
-        ("POST", "/api/v1/ai/chat", "ai"),
         ("POST", "/api/v1/quiz/extract-from-file", "quiz_extraction"),
         ("PATCH", "/api/v1/courses/course-id", "mutation"),
     ],

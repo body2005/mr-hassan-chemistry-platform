@@ -3,10 +3,10 @@ export const teacherAr = {
   navLessonManagementSub: "المحتوى وتوقعات الصعوبة",
   navQuizGen: "صانع الاختبارات والواجبات",
   navQuizGenSub: "توليد ونشر الاختبارات والواجبات الذكية",
-  navSubmissions: "تسليمات الواجبات والتصحيح",
-  navSubmissionsSub: "تصحيح المقالات والدرجات",
-  navStudentAnalytics: "متابعة الطلاب",
-  navStudentAnalyticsSub: "سنوات الدراسة ومخطط المشاهدة",
+  navSubmissions: "متابعة الطالب",
+  navSubmissionsSub: "نسب النجاح، الحضور، وتصحيح الواجبات",
+  navStudentAnalytics: "متابعة الطالب",
+  navStudentAnalyticsSub: "نسب النجاح، الحضور، وتصحيح الواجبات",
 
   // Lesson Management & Upload
   uploadLessonBadge: "إدارة المحتوى وتوقعات الصعوبة",
@@ -60,6 +60,6 @@ export const teacherAr = {
   lastActiveCol: "آخر ظهور",
   belowThresholdAlert: "تحت المعدل الأدنى",
   stableStatus: "منتظم ومستقر",
-  viewAiGradingBtn: "عرض إجابة وتصحيح الـ AI",
+  viewAiGradingBtn: "معاينة وتعديل درجة",
   notSubmittedYet: "لم يسلم بعد",
 };

@@ -904,15 +904,15 @@ export const AuthView: React.FC<AuthViewProps> = ({
 
             <p style={{ fontSize: "13px", opacity: 0.85, lineHeight: "1.6", margin: "0 0 24px" }}>
               {lang === "ar"
-                ? "شروحات فيديو تفاعلية، مذكرات حصرية، تصحيح ذكي للواجبات والمقالات، وتوقعات صعوبة دقيقة للمنهج."
-                : "Interactive video lessons, exclusive study guides, AI-assisted grading, and real-time difficulty forecasting."}
+                ? "شروحات فيديو تفاعلية، مذكرات حصرية، واختبارات وواجبات إلكترونية مع تصحيح مباشر من المعلم."
+                : "Interactive video lessons, exclusive study guides, and online quizzes & homework graded directly by your teacher."}
             </p>
 
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
               {[
                 lang === "ar" ? "فيديوهات شروحات متطورة ومذكرات PDF حصرية" : "Advanced video lectures & exclusive PDF notes",
                 lang === "ar" ? "تنبيهات مجدولة وإشعارات دقيقة لمواعيد صفك" : "Scheduled notifications strictly tied to your class",
-                lang === "ar" ? "مساعد ذكاء اصطناعي تفاعلي للإجابة وتفسير الدروس" : "Interactive AI tutor for instant 24/7 homework help",
+                lang === "ar" ? "متابعة مستمرة لدرجاتك ومستوى تقدمك في المنهج" : "Continuous tracking of your grades and progress",
               ].map((item, idx) => (
                 <div key={idx} style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "12.5px" }}>
                   <div

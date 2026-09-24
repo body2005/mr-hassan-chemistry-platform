@@ -57,17 +57,17 @@ class UserResponse(BaseModel):
     governorate: str | None = None
     school_name: str | None = None
     gender: Gender | None = None
+    student_phone: str | None = None
+    guardian_phone: str | None = None
+    national_id: str | None = None
+    religion: Religion | None = None
     is_active: bool
     created_at: datetime
 
 
 class PrivateUserResponse(UserResponse):
-    """Only returned to the authenticated account owner during auth flows."""
-
-    student_phone: str | None = None
-    guardian_phone: str | None = None
-    national_id: str | None = None
-    religion: Religion | None = None
+    """Returned to the authenticated account owner and administrators during auth flows."""
+    pass
 
 
 class RegisterRequest(BaseModel):

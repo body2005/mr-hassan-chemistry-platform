@@ -84,12 +84,6 @@ services:
         value: "1000"
       - key: MAX_BATCH_SIZE_MB
         value: "1000"
-      - key: STUDENT_AI_ACCESS_MODE
-        value: paid_content_or_subscription
-      - key: STUDENT_AI_MONTHLY_PRICE_EGP
-        value: "99"
-      - key: STUDENT_AI_SUBSCRIPTION_DAYS
-        value: "30"
       - key: PAYMENT_INSTAPAY_ACCOUNT
         sync: false
       - key: PAYMENT_VODAFONE_CASH_NUMBER

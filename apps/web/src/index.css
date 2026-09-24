@@ -1769,3 +1769,27 @@ input.quiz-radio-hidden {
   padding: 0 !important;
 }
 
+/* Floating Action Button (Course Progress) */
+.floating-progress-fab {
+  z-index: 9999;
+  transition: opacity 0.2s ease;
+}
+
+body[data-video-enlarged="true"] .floating-progress-fab,
+:fullscreen .floating-progress-fab,
+:-webkit-full-screen .floating-progress-fab {
+  display: none !important;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+

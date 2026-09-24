@@ -3,7 +3,6 @@ import { authEn } from "./auth";
 import { coursesEn } from "./courses";
 import { teacherEn } from "./teacher";
 import { paymentsEn } from "./payments";
-import { aiEn } from "./ai";
 
 export const en = {
   common: commonEn,
@@ -11,5 +10,4 @@ export const en = {
   courses: coursesEn,
   teacher: teacherEn,
   payments: paymentsEn,
-  ai: aiEn,
 };

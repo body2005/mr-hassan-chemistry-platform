@@ -97,7 +97,6 @@ class QuestionExtCreateRequest(BaseModel):
     topic: str | None = Field(default=None, max_length=200)
     explanation: str | None = Field(default=None, max_length=10_000)
     source: str = Field(default="manual", max_length=40)
-    ai_generated: bool = False
 
 
 class QuestionUpdateRequest(BaseModel):
@@ -125,7 +124,6 @@ class QuestionVersionResponse(BaseModel):
     difficulty: str | None
     topic: str | None
     source: str | None
-    ai_generated: bool
 
 
 class GradeResponse(BaseModel):
@@ -151,41 +149,6 @@ class GradeWriteRequest(BaseModel):
     score: float = Field(ge=0, le=100_000)
     max_score: float = Field(gt=0, le=100_000)
     feedback: str | None = Field(default=None, max_length=20_000)
-
-
-class AIJobCreateRequest(BaseModel):
-    task: str = Field(min_length=2, max_length=60)
-    payload: dict = Field(default_factory=dict)
-    idempotency_key: str | None = Field(default=None, min_length=8, max_length=100)
-
-
-class AIJobResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: uuid.UUID
-    task: str
-    status: str
-    payload_json: dict | list | None
-    result_json: dict | list | None
-    error_code: str | None
-    error_message: str | None
-    attempts: int
-    created_at: datetime
-    finished_at: datetime | None
-
-
-class AIRunResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: uuid.UUID
-    task: str
-    provider: str
-    model: str
-    prompt_version: str
-    status: str
-    latency_ms: int | None
-    input_tokens: int | None
-    output_tokens: int | None
-    estimated_cost: float | None
-    created_at: datetime
 
 
 class ReportJobCreateRequest(BaseModel):
@@ -266,7 +229,6 @@ def create_question_versioned(payload: QuestionExtCreateRequest, db: Db, user: M
             difficulty=payload.difficulty,
             topic=payload.topic,
             source=payload.source,
-            ai_generated=payload.ai_generated,
             explanation=payload.explanation,
         )
     except Exception as exc:

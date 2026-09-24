@@ -88,6 +88,31 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   const [isWide, setIsWide] = useState(false);
   const controlsTimeoutRef = useRef<number | null>(null);
 
+  // Sync fullscreen state & mark body for hiding floating action buttons
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener("fullscreenchange", handleFsChange);
+    document.addEventListener("webkitfullscreenchange", handleFsChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFsChange);
+      document.removeEventListener("webkitfullscreenchange", handleFsChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const isEnlarged = isFullscreen || isWide;
+    if (isEnlarged) {
+      document.body.setAttribute("data-video-enlarged", "true");
+    } else {
+      document.body.removeAttribute("data-video-enlarged");
+    }
+    return () => {
+      document.body.removeAttribute("data-video-enlarged");
+    };
+  }, [isFullscreen, isWide]);
+
   // Sort & Comments state (Real comments only, NO mock comments)
   const [sortBy, setSortBy] = useState<"newest" | "top">("newest");
   const [comments, setComments] = useState<CommentItem[]>([]);

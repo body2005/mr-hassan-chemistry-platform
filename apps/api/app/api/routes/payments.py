@@ -105,9 +105,6 @@ def payment_config(user: Student) -> dict[str, Any]:
     ]
     return {
         "currency": "EGP",
-        "ai_monthly_price_egp": settings.student_ai_monthly_price_egp,
-        "ai_subscription_days": settings.student_ai_subscription_days,
-        "ai_access_mode": settings.student_ai_access_mode,
         "methods": methods,
     }
 
@@ -117,7 +114,7 @@ def create_payment_order(payload: PaymentOrderCreate, user: Student, db: Db) -> 
     if payload.product_type == PaymentProductType.COURSE:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Whole-course checkout is disabled for students; choose an individual lesson or AI subscription.",
+            detail="Whole-course checkout is disabled for students; choose an individual lesson.",
         )
     if not _method_destination(payload.payment_method):
         raise HTTPException(status_code=409, detail="Selected payment method is not configured")
@@ -303,24 +300,6 @@ def my_entitlements(user: Student, db: Db) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
-
-
-@router.get("/me/ai-access")
-def my_ai_access(
-    user: Student,
-    db: Db,
-    lesson_id: uuid.UUID | None = Query(default=None),
-) -> dict[str, Any]:
-    subscribed = payment_service.has_global_ai_entitlement(db, user)
-    allowed = subscribed
-    if lesson_id:
-        allowed = payment_service.student_can_use_ai_for_lesson(db, user, lesson_id)
-    return {
-        "allowed": allowed,
-        "global_subscription": subscribed,
-        "lesson_id": str(lesson_id) if lesson_id else None,
-        "mode": get_settings().student_ai_access_mode,
-    }
 
 
 @router.get("/orders")

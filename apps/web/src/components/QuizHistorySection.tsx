@@ -10,7 +10,6 @@ import {
   Clock,
   CheckCircle2,
   AlertCircle,
-  Sparkles,
   PenTool,
   Plus,
   X,
@@ -599,11 +598,7 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
                           gap: "4px",
                         }}
                       >
-                        {quiz.creationMode === "ai" ? (
-                          <>
-                            <Sparkles size={11} /> ذكاء اصطناعي
-                          </>
-                        ) : quiz.creationMode === "extracted" ? (
+                        {quiz.creationMode === "extracted" || quiz.creationMode === "extract" ? (
                           <>
                             <FileText size={11} /> مستخرج من ملف
                           </>

@@ -20,9 +20,7 @@ python-dotenv>=1.0.1
 # Tesseract (pytesseract) is the default fallback.
 # paddleocr>=2.7.0
 
-# Audio/video processing and document extraction (P0)
-# openai-whisper>=20250625  # Heavy (pulls torch) - omitted for lightweight cloud deployment
-gTTS>=2.5.4
+# Document extraction (quiz extraction from uploaded files)
 pdfplumber>=0.11.10
 pymupdf>=1.25.0
 pypdfium2>=4.30.0

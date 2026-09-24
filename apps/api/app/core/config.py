@@ -48,12 +48,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("s3_bucket", "S3_BUCKET_NAME", "S3_BUCKET"),
     )
     s3_region: str = "auto"
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "llama3.1:8b"
     frontend_origins: str = "http://localhost:5173"
-    kaggle_asr_url: str | None = None
-    remote_callback_base_url: str | None = None
-    transcription_provider: str = "auto"
     # Set to true ONLY when API and frontend are on different domains
     # (e.g. api.onrender.com + vercel app). Requires HTTPS on both.
     cookie_cross_site: bool = False
@@ -64,12 +59,6 @@ class Settings(BaseSettings):
     multipart_overhead_mb: int = Field(default=10, ge=1, le=100)
     max_concurrent_ingestions: int = Field(default=1, ge=1, le=8)
     redis_required: bool = False
-    student_ai_access_mode: str = Field(
-        default="paid_content_or_subscription",
-        pattern=r"^(open|subscription_only|included_with_content|paid_content_or_subscription)$",
-    )
-    student_ai_monthly_price_egp: float = Field(default=99, ge=1, le=1_000_000)
-    student_ai_subscription_days: int = Field(default=30, ge=1, le=366)
     payment_instapay_account: str | None = None
     payment_vodafone_cash_number: str | None = None
     payment_bank_details: str | None = None
@@ -81,7 +70,6 @@ class Settings(BaseSettings):
     trusted_proxies: str = "127.0.0.1,::1"
     rate_limit_login: int = Field(default=15, ge=1, le=1000)
     rate_limit_read: int = Field(default=600, ge=1, le=10000)
-    rate_limit_ai: int = Field(default=60, ge=1, le=1000)
     rate_limit_upload: int = Field(default=60, ge=1, le=1000)
     rate_limit_quiz_extraction: int = Field(default=30, ge=1, le=1000)
     rate_limit_pdf_render: int = Field(default=240, ge=1, le=10000)

@@ -159,8 +159,6 @@ def _get_category_defaults(category: str) -> tuple[int, int]:
         return settings.rate_limit_login, window
     if "read" in cat_lower or "preview" in cat_lower:
         return settings.rate_limit_read, window
-    if "ai" in cat_lower:
-        return settings.rate_limit_ai, window
     if "upload" in cat_lower:
         return settings.rate_limit_upload, window
     if "quiz" in cat_lower or "exam" in cat_lower or "extract" in cat_lower:

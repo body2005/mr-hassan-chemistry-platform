@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
   BadgeCheck,
-  BadgePercent,
   CheckCircle2,
   Clock3,
   Copy,
@@ -107,9 +106,7 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
   const toast = useToast();
   const [config, setConfig] = useState<PaymentConfig | null>(null);
   const [orders, setOrders] = useState<PaymentOrder[]>([]);
-  const [productType, setProductType] = useState<PaymentProductType>(
-    initialTarget?.productType === "ai_subscription" ? "ai_subscription" : "lesson",
-  );
+  const productType: PaymentProductType = "lesson";
   const [productId, setProductId] = useState(
     initialTarget?.productType === "lesson" ? initialTarget.productId || "" : "",
   );
@@ -138,15 +135,12 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
 
   useEffect(() => {
     if (!initialTarget) return;
-    setProductType(initialTarget.productType === "ai_subscription" ? "ai_subscription" : "lesson");
     setProductId(initialTarget.productType === "lesson" ? initialTarget.productId || "" : "");
   }, [initialTarget]);
 
   const lessons = useMemo(() => courses.flatMap((course) => course.lessons.map((lesson) => ({ ...lesson, courseTitle: course.title }))), [courses]);
   const selectedLesson = lessons.find((lesson) => lesson.id === productId);
-  const amount = productType === "ai_subscription"
-    ? Number(config?.ai_monthly_price_egp || 0)
-    : Number(selectedLesson?.price || 0);
+  const amount = Number(selectedLesson?.price || 0);
 
   const enabledMethods = useMemo(() => (config?.methods || []).filter((m) => m.enabled), [config]);
   const selectedMethod: PaymentMethodConfig | undefined = config?.methods.find((item) => item.id === method);
@@ -170,7 +164,7 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
       toast({ message: "اختر طريقة دفع مفعلة", tone: "warning" });
       return;
     }
-    if (productType !== "ai_subscription" && !productId) {
+    if (!productId) {
       toast({ message: "اختر درسًا للدفع", tone: "warning" });
       return;
     }
@@ -183,7 +177,7 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
     try {
       const order = await paymentService.createOrder({
         product_type: productType,
-        product_id: productType === "ai_subscription" ? undefined : productId,
+        product_id: productId,
         payment_method: method,
         payer_reference: reference || undefined,
         student_note: note || undefined,
@@ -202,8 +196,6 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
     }
   }
 
-  const stepperDone = Boolean(selectedLesson || productType === "ai_subscription");
-
   return (
     <div style={{ padding: "24px 20px 60px", maxWidth: "1200px", margin: "0 auto" }}>
       {/* ── Breadcrumb ── */}
@@ -214,53 +206,6 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
         <span>/</span>
         <span style={{ color: "var(--text-main)", fontWeight: 800 }}>تأكيد الاشتراك والسداد</span>
       </nav>
-
-      {/* ── Stepper ── */}
-      <div style={{ ...card, padding: "22px 26px", marginBottom: "24px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
-        {[
-          {
-            icon: stepperDone ? <CheckCircle2 size={16} /> : <GraduationCap size={16} />,
-            title: "اختيار المقرر",
-            sub: stepperDone ? "تم التحديد بنجاح" : "اختر الدرس أولاً",
-            done: stepperDone,
-            active: false,
-          },
-          {
-            icon: <span style={{ fontWeight: 900, fontSize: "13px" }}>2</span>,
-            title: "بيانات الطالب والدفع",
-            sub: "الخطوة الحالية",
-            done: false,
-            active: true,
-          },
-          {
-            icon: <span style={{ fontWeight: 900, fontSize: "13px" }}>3</span>,
-            title: "بدء الدراسة الفورية",
-            sub: "تفعيل فوري بالحساب",
-            done: false,
-            active: false,
-          },
-        ].map((step, idx) => (
-          <div key={step.title} style={{ display: "contents" }}>
-            {idx > 0 && <div style={{ flex: 1, height: "2px", minWidth: "28px", background: step.done ? "#a7f3d0" : "var(--border-color)" }} />}
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <div style={{
-                width: "36px", height: "36px", borderRadius: "50%",
-                background: step.active ? "#059669" : step.done ? "var(--bg-accent)" : "var(--bg-surface-secondary)",
-                color: step.active ? "#ffffff" : step.done ? "#059669" : "var(--text-muted)",
-                border: !step.active && !step.done ? "1px solid var(--border-color)" : "none",
-                boxShadow: step.active ? "0 0 0 4px rgba(5, 150, 105, 0.15)" : "none",
-                display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
-              }}>
-                {step.icon}
-              </div>
-              <div style={{ display: "flex", flexDirection: "column" }}>
-                <span style={{ fontSize: "12px", fontWeight: 900, color: step.active ? "#059669" : "var(--text-main)" }}>{step.title}</span>
-                <span style={{ fontSize: "10.5px", color: step.active ? "#059669" : step.done ? "#059669" : "var(--text-muted)", fontWeight: 600 }}>{step.sub}</span>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 7fr) minmax(0, 5fr)", gap: "24px", alignItems: "start" }}>
         {/* ═══════════ RIGHT COLUMN: student data + payment ═══════════ */}
@@ -440,13 +385,6 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
               </div>
             </div>
           </section>
-
-          {/* Trust badges */}
-          <div style={{ ...card, padding: "16px 20px", display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-around", gap: "14px", fontSize: "12px", fontWeight: 700, color: "var(--text-main)" }}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: "7px" }}><Zap size={17} style={{ color: "#059669" }} /> تفعيل فوري بعد تأكيد المعلم</span>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: "7px" }}><ShieldCheck size={17} style={{ color: "#059669" }} /> مراجعة بشرية لكل إيصال</span>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: "7px" }}><InfinityIcon size={17} style={{ color: "#059669" }} /> وصول مستمر طوال فترة المقرر</span>
-          </div>
         </div>
 
         {/* ═══════════ LEFT COLUMN: order summary + guarantee + previous orders ═══════════ */}
@@ -522,10 +460,6 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
                 <span>سعر الدرس</span>
                 <span>{amount ? `${amount.toLocaleString("ar-EG")} ج.م` : "—"}</span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between", color: "#059669", fontWeight: 800 }}>
-                <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}><BadgePercent size={14} /> رسوم إضافية</span>
-                <span>0 ج.م</span>
-              </div>
               <div style={{ height: "1px", background: "var(--border-color)", margin: "2px 0" }} />
               <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
                 <span style={{ fontSize: "13px", fontWeight: 900, color: "var(--text-main)" }}>الإجمالي المطلوب</span>
@@ -599,6 +533,34 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
             )}
           </section>
         </div>
+      </div>
+
+      {/* Trust badges - Centered */}
+      <div
+        style={{
+          ...card,
+          padding: "16px 24px",
+          marginTop: "24px",
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: "36px",
+          fontSize: "12.5px",
+          fontWeight: 700,
+          color: "var(--text-main)",
+          textAlign: "center",
+        }}
+      >
+        <span style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
+          <Zap size={18} style={{ color: "#059669" }} /> تفعيل فوري بعد تأكيد المعلم
+        </span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
+          <ShieldCheck size={18} style={{ color: "#059669" }} /> مراجعة بشرية لكل إيصال
+        </span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
+          <InfinityIcon size={18} style={{ color: "#059669" }} /> وصول مستمر طوال فترة المقرر
+        </span>
       </div>
     </div>
   );

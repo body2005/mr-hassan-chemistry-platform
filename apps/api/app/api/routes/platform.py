@@ -11,7 +11,7 @@ from collections import defaultdict, deque
 UTC = timezone.utc
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status, UploadFile, File, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Request, status, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 import shutil
 from sqlalchemy import func, select
@@ -25,7 +25,6 @@ from app.core.events import event_broker
 from app.core.rate_limit import enforce_rate_limit
 from app.core.storage import generate_safe_object_key, get_storage_provider
 from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus, Lesson, MaterializationStatus
-from app.models.transcript import Transcript, TranscriptSegment, TranscriptionStatus
 from app.models.platform import (
     Assignment,
     AssignmentStatus,
@@ -179,6 +178,11 @@ def _video_denied(db: Session, user_id: uuid.UUID, family_id: uuid.UUID | None) 
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Alias router exposing the unified bootstrap payload under /api/v1/platform/bootstrap
+# (legacy path). The canonical frontend path is /api/v1/bootstrap; both are served
+# by the same handler so the deployed backend answers either one.
+bootstrap_router = APIRouter(prefix="/platform")
 Db = Annotated[Session, Depends(get_db)]
 Manager = Annotated[
     User,
@@ -365,7 +369,6 @@ async def upload_lesson_video(
     lesson_id: uuid.UUID,
     user: Manager,
     db: Db,
-    background_tasks: BackgroundTasks,
     request: Request,
     file: UploadFile = File(...),
 ) -> dict:
@@ -570,75 +573,19 @@ def stream_lesson_authenticated_range(
     )
 
 
-@router.get("/lessons/{lesson_id}/transcript")
-def get_lesson_transcript(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
-    lesson, _ = _require_lesson_access(db, user, lesson_id)
-    transcript = db.query(Transcript).filter(Transcript.lesson_id == lesson_id).first()
-    if not transcript:
-        return {
-            "lesson_id": str(lesson.id),
-            "status": "not_indexed" if lesson.materialization_status == MaterializationStatus.NOT_INDEXED else "processing",
-            "language": "ar",
-            "duration_seconds": 0.0,
-            "full_text": lesson.transcript_text or "",
-            "segments_count": 0,
-        }
-    return {
-        "lesson_id": str(lesson.id),
-        "transcript_id": str(transcript.id),
-        "status": transcript.status.value if hasattr(transcript.status, "value") else str(transcript.status),
-        "language": transcript.language,
-        "duration_seconds": transcript.duration_seconds,
-        "full_text": transcript.full_text,
-        "provider": transcript.provider,
-        "provider_model": transcript.provider_model,
-        "completed_at": transcript.completed_at.isoformat() if transcript.completed_at else None,
-    }
-
-
-@router.get("/lessons/{lesson_id}/transcript/segments")
-def get_lesson_transcript_segments(
-    lesson_id: uuid.UUID, user: CurrentUser, db: Db, q: str | None = None
-) -> dict:
-    lesson, _ = _require_lesson_access(db, user, lesson_id)
-
-    query = db.query(TranscriptSegment).filter(TranscriptSegment.lesson_id == lesson_id)
-    if q and q.strip():
-        search_term = f"%{q.strip()}%"
-        query = query.filter(TranscriptSegment.text.ilike(search_term))
-
-    segments = query.order_by(TranscriptSegment.sequence).all()
-    return {
-        "lesson_id": str(lesson.id),
-        "count": len(segments),
-        "segments": [
-            {
-                "id": str(s.id),
-                "sequence": s.sequence,
-                "start_time": s.start_time,
-                "end_time": s.end_time,
-                "time_formatted": f"{int(s.start_time)//60:02d}:{int(s.start_time)%60:02d}",
-                "text": s.text,
-            }
-            for s in segments
-        ],
-    }
-
-
 @router.post("/modules/{module_id}/lessons", response_model=dict, status_code=201)
 def create_lesson(
     module_id: uuid.UUID,
     payload: LessonCreateRequest,
     user: Manager,
     db: Db,
-    background_tasks: BackgroundTasks,
 ) -> dict:
     try:
         lesson = platform_service.add_lesson(db, user, module_id, payload)
     except (LookupError, PermissionError, ValueError) as exc:
         raise _bad_request(exc) from exc
 
-    # Video files are pure playback assets; AI indexing is permanently disabled for video lessons.
+    # Video files are pure playback assets; no transcription/indexing is performed.
     lesson.materialization_status = MaterializationStatus.NOT_INDEXED
     db.commit()
 
@@ -651,34 +598,6 @@ def create_lesson(
         "price_egp": float(lesson.price_egp or 0),
     }
 
-
-@router.post("/courses/{course_id}/reindex-all")
-def reindex_all_course_lessons(
-    course_id: uuid.UUID,
-    db: Db,
-    user: Manager,
-    background_tasks: BackgroundTasks,
-) -> dict:
-    try:
-        course = platform_service.course_for_user(db, user, course_id)
-        platform_service.ensure_course_manager(user, course)
-    except (LookupError, PermissionError) as exc:
-        raise _bad_request(exc) from exc
-
-    query = (
-        select(Lesson)
-        .join(CourseModule, Lesson.module_id == CourseModule.id)
-        .where(CourseModule.course_id == course_id)
-    )
-    lessons = db.scalars(query).all()
-
-    queued = 0
-    skipped = []
-
-    for l in lessons:
-        skipped.append({"lesson_id": str(l.id), "reason": "فهرسة الفيديو معطلة بالكامل"})
-
-    return {"queued_lessons": 0, "skipped": skipped}
 
 @router.delete("/modules/{module_id}/lessons/{lesson_id}", status_code=204)
 def delete_lesson(module_id: uuid.UUID, lesson_id: uuid.UUID, user: Manager, db: Db) -> None:
@@ -1053,13 +972,16 @@ def download_submission_file(
     if not storage.exists(submission.object_key):
         raise HTTPException(status_code=404, detail="File missing from storage")
 
-    filename = f"{str(submission.student_id)[:8]}-v{submission.version}.pdf"
+    import mimetypes
+    guessed_type = mimetypes.guess_type(submission.object_key)[0] or "application/pdf"
+    ext = submission.object_key.split(".")[-1] if "." in submission.object_key else "pdf"
+    filename = f"{str(submission.student_id)[:8]}-v{submission.version}.{ext}"
     stream = storage.open_stream(submission.object_key)
     return StreamingResponse(
         stream,
-        media_type="application/pdf",
+        media_type=guessed_type,
         headers={
-            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
             "Referrer-Policy": "no-referrer",
             "X-Content-Type-Options": "nosniff",
             "Cache-Control": "private, no-store",
@@ -1386,33 +1308,6 @@ def delete_user(user_id: uuid.UUID, actor: Manager, db: Db, request: Request) ->
         resource_id=str(target.id),
     )
     db.commit()
-
-
-from pydantic import BaseModel
-
-class ASRConfigPayload(BaseModel):
-    kaggle_asr_url: str = ""
-
-@router.get("/system/asr-config")
-def get_asr_config():
-    from app.core.config import get_settings
-    settings = get_settings()
-    url = os.getenv("KAGGLE_ASR_URL") or settings.kaggle_asr_url or os.getenv("REMOTE_ASR_URL") or ""
-    return {
-        "kaggle_asr_url": url,
-        "mode": "remote_kaggle" if url else "local_whisper",
-        "provider": "QwenCleo-ASR (Kaggle GPU)" if url else "Faster-Whisper Small (Local CPU)"
-    }
-
-@router.post("/system/asr-config")
-def update_asr_config(payload: ASRConfigPayload):
-    os.environ["KAGGLE_ASR_URL"] = payload.kaggle_asr_url.strip()
-    return {
-        "status": "success",
-        "kaggle_asr_url": os.environ["KAGGLE_ASR_URL"],
-        "mode": "remote_kaggle" if os.environ["KAGGLE_ASR_URL"] else "local_whisper",
-        "provider": "QwenCleo-ASR (Kaggle GPU)" if os.environ["KAGGLE_ASR_URL"] else "Faster-Whisper Small (Local CPU)"
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -1885,6 +1780,154 @@ def get_quiz_result_view(
     }
 
 
+@router.get("/students/{student_id}/quiz-solution")
+def get_student_quiz_solution(
+    student_id: uuid.UUID,
+    user: Manager,
+    db: Db,
+    quiz_id: uuid.UUID | None = None,
+) -> dict:
+    """Return the completed quiz questions and student's submitted answers for the teacher."""
+    from app.services.platform_service import _as_utc
+
+    target_student = db.scalar(
+        select(User).where(
+            User.id == student_id,
+            User.institution_id == user.institution_id,
+        )
+    )
+    if not target_student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    attempt_query = select(QuizAttempt).where(
+        QuizAttempt.student_id == student_id,
+        QuizAttempt.institution_id == user.institution_id,
+        QuizAttempt.status.in_([AttemptStatus.SUBMITTED, AttemptStatus.EXPIRED]),
+    )
+    if quiz_id is not None:
+        attempt_query = attempt_query.where(QuizAttempt.quiz_id == quiz_id)
+    attempt = db.scalar(attempt_query.order_by(QuizAttempt.submitted_at.desc()))
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="No completed quiz attempt found for this student")
+
+    quiz = db.get(Quiz, attempt.quiz_id)
+    if quiz is None:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    rows = db.execute(
+        select(QuizQuestion, Question)
+        .join(Question, Question.id == QuizQuestion.question_id)
+        .where(QuizQuestion.quiz_id == quiz.id, Question.is_active.is_(True))
+        .order_by(QuizQuestion.position)
+    ).all()
+
+    answer_rows = {
+        item.question_id: item
+        for item in db.scalars(
+            select(QuizAttemptAnswer).where(QuizAttemptAnswer.attempt_id == attempt.id)
+        ).all()
+    }
+
+    def _answer_text(raw: object) -> str:
+        if raw is None:
+            return ""
+        if isinstance(raw, str):
+            return raw
+        return json.dumps(raw, ensure_ascii=False)
+
+    def _normalize(value: object) -> str:
+        return _answer_text(value).strip()
+
+    items = []
+    correct_count = 0
+    wrong_count = 0
+    skipped_count = 0
+    possible = 0.0
+    earned = 0.0
+
+    for qq, question in rows:
+        given = answer_rows.get(question.id)
+        given_text = _answer_text(given.answer) if given else ""
+        correct_text = _answer_text(question.correct_answer)
+        points = float(qq.points)
+        awarded = float(given.awarded_points) if given else 0.0
+        possible += points
+        earned += awarded
+        answered = bool(given and given_text.strip())
+        if awarded >= points > 0:
+            state = "correct"
+            correct_count += 1
+        elif answered:
+            state = "wrong"
+            wrong_count += 1
+        else:
+            state = "skipped"
+            skipped_count += 1
+
+        options = question.options if isinstance(question.options, list) else []
+        opt_texts: list[str] = []
+        for opt in options:
+            if isinstance(opt, dict):
+                opt_texts.append(_normalize(opt.get("text", "")))
+            else:
+                opt_texts.append(_normalize(opt))
+
+        chosen_letter = None
+        for idx, t in enumerate(opt_texts):
+            if t and t == given_text.strip():
+                chosen_letter = chr(65 + idx)
+                break
+
+        correct_letter = None
+        for idx, t in enumerate(opt_texts):
+            if t and t == correct_text.strip():
+                correct_letter = chr(65 + idx)
+                break
+
+        items.append(
+            {
+                "id": str(question.id),
+                "question_type": question.question_type,
+                "prompt": question.prompt,
+                "learning_objective": question.learning_objective,
+                "points": points,
+                "awarded": awarded,
+                "state": state,
+                "answered": answered,
+                "student_answer": given_text,
+                "student_answer_letter": chosen_letter,
+                "correct_answer": correct_text,
+                "correct_answer_letter": correct_letter,
+                "options": opt_texts,
+            }
+        )
+
+    duration_seconds = None
+    if attempt.submitted_at and attempt.started_at:
+        duration_seconds = max(0, int((_as_utc(attempt.submitted_at) - _as_utc(attempt.started_at)).total_seconds()))
+
+    return {
+        "student_id": str(student_id),
+        "student_name": target_student.display_name,
+        "quiz": {"id": str(quiz.id), "title": quiz.title},
+        "attempt": {
+            "id": str(attempt.id),
+            "attempt_number": attempt.attempt_number,
+            "submitted_at": attempt.submitted_at.isoformat() if attempt.submitted_at else None,
+            "duration_seconds": duration_seconds,
+        },
+        "score": float(attempt.score or 0.0),
+        "total_points": float(attempt.total_points or possible),
+        "summary": {
+            "correct": correct_count,
+            "wrong": wrong_count,
+            "skipped": skipped_count,
+            "total": len(items),
+        },
+        "questions": items,
+    }
+
+
 @router.get("/quizzes/{quiz_id}/attempts-history")
 def get_quiz_attempts_history(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> list[dict]:
     """List all completed attempts for the current student on a quiz."""
@@ -2234,7 +2277,8 @@ def add_lesson_comment(
     }
 
 
-@router.get("/bootstrap", response_model=BootstrapResponse)
+@router.get("/bootstrap", response_model=BootstrapResponse, include_in_schema=False)
+@bootstrap_router.get("/bootstrap", response_model=BootstrapResponse, include_in_schema=False)
 def get_bootstrap_data(
     user: OptionalUser,
     db: Db,

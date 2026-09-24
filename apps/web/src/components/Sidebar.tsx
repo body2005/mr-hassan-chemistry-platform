@@ -5,7 +5,6 @@ import {
   BookOpen,
   FileQuestion,
   GraduationCap,
-  Layers,
   UploadCloud,
   Users,
   WalletCards,
@@ -20,7 +19,6 @@ export type NavTab =
   | "LessonManagement"
   | "QuizGen"
   | "Submissions"
-  | "StudentAnalytics"
   | "Notifications"
   | "Profile"
   | "Payments"
@@ -51,15 +49,14 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
 
   const studentNavItems: Array<{ id: NavTab; label: string; sub: string; icon: LucideIcon }> = [
     { id: "MyCourses", label: t.navMyCourses, sub: t.navMyCoursesSub, icon: BookOpen },
-    { id: "Payments", label: lang === "ar" ? "الدفع والاشتراكات" : "Payments", sub: lang === "ar" ? "تفعيل الدروس والمساعد الذكي" : "Lessons and AI access", icon: WalletCards },
+    { id: "Payments", label: lang === "ar" ? "الدفع والاشتراكات" : "Payments", sub: lang === "ar" ? "تفعيل الدروس والمحتوى التعليمي" : "Lessons and content access", icon: WalletCards },
     { id: "Notifications", label: lang === "ar" ? "الإشعارات والمواعيد" : "Notifications & Alerts", sub: lang === "ar" ? "جدول إشعارات صفك والدروس" : "Class alerts & deadlines", icon: Bell },
   ];
 
   const teacherNavItems: Array<{ id: NavTab; label: string; sub: string; icon: LucideIcon }> = [
     { id: "LessonManagement", label: t.navLessonManagement, sub: t.navLessonManagementSub, icon: UploadCloud },
     { id: "QuizGen", label: lang === "ar" ? "صانع وسجل الاختبارات" : "Quizzes & History", sub: lang === "ar" ? "توليد، نشر، وأرشيف الاختبارات" : "Create, publish & quiz history", icon: FileQuestion },
-    { id: "Submissions", label: t.navSubmissions, sub: t.navSubmissionsSub, icon: Layers },
-    { id: "StudentAnalytics", label: t.navStudentAnalytics, sub: t.navStudentAnalyticsSub, icon: Users },
+    { id: "Submissions", label: t.navSubmissions, sub: t.navSubmissionsSub, icon: Users },
     { id: "PaymentManagement", label: lang === "ar" ? "المدفوعات والتسعير" : "Payments & Pricing", sub: lang === "ar" ? "مراجعة التحويلات وتحديد الأسعار" : "Review payments and set prices", icon: WalletCards },
     { id: "Notifications", label: lang === "ar" ? "جدول مواعيد الإشعارات" : "Notification Schedules", sub: lang === "ar" ? "مواعيد الإرسال وجدول كل صف" : "Manage broadcast schedules", icon: Bell },
   ];

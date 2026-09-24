@@ -16,6 +16,10 @@ export interface StudentProfile {
   avatarUrl?: string;
   isBlocked?: boolean;
   joinedDate: string;
+  governorate?: string;
+  schoolName?: string;
+  gender?: "MALE" | "FEMALE" | string;
+  religion?: "MUSLIM" | "CHRISTIAN" | string;
 }
 
 export interface TeacherProfile {
@@ -182,6 +186,7 @@ export interface StudentRecord {
   id: string;
   name: string;
   nationalId: string;
+  guardianPhone?: string;
   email: string;
   academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary";
   academicYearLabel: string;
@@ -192,7 +197,15 @@ export interface StudentRecord {
   quizSuccessRate: number; // 0 - 100%
   homeworkSuccessRate: number; // 0 - 100%
   lastActiveDate: string;
+  studentPhone?: string;
+  governorate?: string;
+  schoolName?: string;
+  gender?: "MALE" | "FEMALE" | string;
+  religion?: "MUSLIM" | "CHRISTIAN" | string;
+  createdAt?: string;
   isBlocked?: boolean;
+  hasCompletedExam?: boolean;
+  examMissedDeadline?: boolean;
   watchHistory: StudentVideoWatchLog[];
   customFieldValues: Record<string, unknown>;
 }
@@ -202,6 +215,7 @@ export interface AssignmentSubmission {
   assignmentId?: string;
   studentId: string;
   studentName: string;
+  isLate?: boolean;
   academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary";
   academicYearLabel: string;
   assignmentTitle: string;
@@ -215,16 +229,8 @@ export interface AssignmentSubmission {
   version?: number;
   submittedAt: string;
   maxScore: number;
-  aiScore: number;
   finalScore: number;
   teacherFeedback?: string;
-  aiFeedbackSummary: string;
-  criteriaScores: Array<{
-    criterion: string;
-    score: number;
-    max: number;
-    notes: string;
-  }>;
   status: "graded" | "needs_review" | "approved";
 }
 

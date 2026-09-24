@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { Course, CurrentUser, VideoLesson } from "../types/lms";
 import { VideoLessonPage } from "../components/VideoLessonPage";
-import { exportToCsv, exportToDocx, exportToPrintPdf } from "../utils/exportEngine";
+import { exportToCsv, exportToDocx, exportToExcel, exportToPrintPdf } from "../utils/exportEngine";
 import { courseService } from "../services/lmsService";
 import { uploadManager } from "../services/uploadManager";
 import { fetchApiBlob } from "../services/apiClient";
@@ -184,24 +184,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       e.target.value = "";
     }
   }
-
-  // Transcript & AI Summary Modals State
-  const [transcriptModalLesson, setTranscriptModalLesson] = useState<VideoLesson | null>(null);
-  const [transcriptModalSegments] = useState<Array<{ id: string; sequence: number; start_time: number; end_time: number; time_formatted: string; text: string }>>([]);
-  const [transcriptModalSearch, setTranscriptModalSearch] = useState("");
-  const [visibleTranscriptModalCount, setVisibleTranscriptModalCount] = useState(60);
-  const [loadingTranscriptModal] = useState(false);
-
-
-  const filteredTranscriptModalSegments = React.useMemo(() => {
-    if (!transcriptModalSearch.trim()) return transcriptModalSegments;
-    const q = transcriptModalSearch.toLowerCase().trim();
-    return transcriptModalSegments.filter((s) => s.text.toLowerCase().includes(q));
-  }, [transcriptModalSegments, transcriptModalSearch]);
-
-  useEffect(() => {
-    setVisibleTranscriptModalCount(60);
-  }, [transcriptModalSearch]);
 
   // File Input Refs for Guaranteed Click Triggering
   const videoInputRef = useRef<HTMLInputElement>(null);
@@ -599,7 +581,18 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                 style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", borderBottom: "1px solid var(--border-color)", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text-main)" }}
               >
                 <FileText size={16} style={{ color: "#2563eb" }} />
-                <strong>تصدير Word (.docx حقيقي)</strong>
+                <strong>تصدير Word (.docx من اليمين للشمال)</strong>
+              </button>
+
+              <button
+                onClick={() => {
+                  exportToExcel(getExportPayload(), `difficulty_report_${selectedYear}.xls`);
+                  setExportDropdownOpen(false);
+                }}
+                style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", borderBottom: "1px solid var(--border-color)", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text-main)" }}
+              >
+                <FileSpreadsheet size={16} style={{ color: "#059669" }} />
+                <strong>تصدير Excel (.xls من اليمين للشمال)</strong>
               </button>
 
               <button
@@ -609,8 +602,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                 }}
                 style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", borderBottom: "1px solid var(--border-color)", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text-main)" }}
               >
-                <FileSpreadsheet size={16} style={{ color: "#059669" }} />
-                <strong>تصدير Excel / CSV</strong>
+                <FileSpreadsheet size={16} style={{ color: "#0d9488" }} />
+                <strong>تصدير CSV (جدول بيانات)</strong>
               </button>
 
               <button
@@ -621,7 +614,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                 style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text-main)" }}
               >
                 <Printer size={16} style={{ color: "#0f392b" }} />
-                <strong>تصدير / طباعة PDF</strong>
+                <strong>تصدير / طباعة PDF (من اليمين للشمال)</strong>
               </button>
             </div>
           )}
@@ -1212,7 +1205,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                 لا توجد دروس مرفوعة بعد — {activeYearLabel}
               </h4>
               <p style={{ margin: "0 auto 16px", maxWidth: "420px", color: "var(--text-muted)", fontSize: "13px", lineHeight: "1.5" }}>
-                تم تفريغ كافة الأمثلة السابقة بالكامل لتبدأ برفع فيديوهاتك ومذكراتك الحقيقية وتجربة توقعات الذكاء الاصطناعي من الصفر!
+                تم تنظيف كافة الأمثلة السابقة بالكامل لتبدأ برفع فيديوهاتك ومذكراتك الحقيقية من الصفر!
               </p>
               <span style={{ fontSize: "12px", color: "#059669", fontWeight: 700, background: "var(--bg-accent, #ecfdf5)", padding: "6px 14px", borderRadius: "20px", border: "1px solid #a7f3d0", display: "inline-block" }}>
                 املأ نموذج "رفع درس ومحتوى جديد" على اليمين للبدء
@@ -1512,141 +1505,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         </div>
       </div>
 
-      {/* TEACHER TRANSCRIPT & SEGMENTS SEARCH MODAL */}
-      {transcriptModalLesson && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            backgroundColor: "rgba(0, 0, 0, 0.75)",
-            backdropFilter: "blur(12px)",
-            WebkitBackdropFilter: "blur(12px)",
-            zIndex: 99999,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "20px",
-          }}
-        >
-          <div
-            style={{
-              background: "var(--bg-surface, #ffffff)",
-              border: "1px solid var(--border-color)",
-              borderRadius: "20px",
-              maxWidth: "760px",
-              width: "100%",
-              maxHeight: "88vh",
-              overflowY: "auto",
-              padding: "26px",
-              boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "18px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <FileText size={20} style={{ color: "#059669" }} />
-                <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 800, color: "var(--text-main)" }}>
-                  تفريغ الشرح النصي والفهرس الزمني: {transcriptModalLesson.title}
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setTranscriptModalLesson(null)}
-                style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", display: "flex" }}
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            <div style={{ position: "relative", marginBottom: "16px" }}>
-              <Search size={15} style={{ position: "absolute", right: "12px", top: "50%", transform: "translateY(-50%)", color: "var(--text-muted)" }} />
-              <input
-                type="text"
-                placeholder="ابحث في نص الشرح للوصول إلى أي كلمة أو مفهوم..."
-                value={transcriptModalSearch}
-                onChange={(e) => setTranscriptModalSearch(e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: "10px 38px 10px 14px",
-                  borderRadius: "10px",
-                  border: "1px solid var(--border-color)",
-                  background: "var(--bg-surface-secondary)",
-                  color: "var(--text-main)",
-                  fontSize: "13px",
-                }}
-              />
-            </div>
-
-            {loadingTranscriptModal ? (
-              <div style={{ textAlign: "center", padding: "30px", color: "var(--text-muted)" }}>
-                جاري تحميل تفريغ الشرح...
-              </div>
-            ) : filteredTranscriptModalSegments.length === 0 ? (
-              <div style={{ padding: "20px", textAlign: "center", background: "var(--bg-surface-secondary)", borderRadius: "10px", color: "var(--text-muted)", fontSize: "13px" }}>
-                {transcriptModalSearch.trim()
-                  ? `لا توجد نتائج مطابقة لبحثك: "${transcriptModalSearch}"`
-                  : (transcriptModalLesson.description ? transcriptModalLesson.description : "لا يتوفر تفريغ مسجل لهذا الدرس حتى الآن.")}
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "360px", overflowY: "auto", paddingInlineEnd: "4px" }}>
-                {filteredTranscriptModalSegments
-                  .slice(0, visibleTranscriptModalCount)
-                  .map((seg) => (
-                    <div
-                      key={seg.id || seg.sequence}
-                      style={{
-                        display: "flex",
-                        alignItems: "flex-start",
-                        gap: "10px",
-                        padding: "10px 14px",
-                        borderRadius: "10px",
-                        background: "var(--bg-surface-secondary)",
-                        border: "1px solid var(--border-color)",
-                      }}
-                    >
-                      <span
-                        style={{
-                          background: "#059669",
-                          color: "#ffffff",
-                          padding: "2px 8px",
-                          borderRadius: "6px",
-                          fontSize: "11px",
-                          fontWeight: 800,
-                          flexShrink: 0,
-                          marginTop: "2px",
-                        }}
-                      >
-                        {seg.time_formatted}
-                      </span>
-                      <span style={{ fontSize: "13px", color: "var(--text-main)", lineHeight: "1.5" }}>
-                        {seg.text}
-                      </span>
-                    </div>
-                  ))}
-
-                {filteredTranscriptModalSegments.length > visibleTranscriptModalCount && (
-                  <button
-                    type="button"
-                    onClick={() => setVisibleTranscriptModalCount((prev) => prev + 80)}
-                    style={{
-                      padding: "8px",
-                      borderRadius: "8px",
-                      border: "1px dashed #059669",
-                      background: "var(--bg-accent, #ecfdf5)",
-                      color: "#059669",
-                      fontSize: "12px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      marginTop: "4px",
-                    }}
-                  >
-                    عرض المزيد من المقاطع ({visibleTranscriptModalCount} من {filteredTranscriptModalSegments.length})
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
 
       <input
         type="file"

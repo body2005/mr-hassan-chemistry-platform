@@ -136,7 +136,6 @@ def create_question_versioned(
     difficulty: str | None,
     topic: str | None,
     source: str = "manual",
-    ai_generated: bool = False,
     explanation: str | None = None,
 ) -> QuestionVersion:
     _ensure_manager(user)
@@ -167,7 +166,6 @@ def create_question_versioned(
         difficulty=difficulty,
         topic=topic,
         source=source,
-        ai_generated=ai_generated,
     )
     db.add(version_row)
 
@@ -234,7 +232,6 @@ def update_question_versioned(
         difficulty=changes.get("difficulty", current.difficulty),
         topic=changes.get("topic", current.topic),
         source=current.source,
-        ai_generated=current.ai_generated,
     )
     db.add(version_row)
     db.commit()

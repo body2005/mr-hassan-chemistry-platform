@@ -9,9 +9,9 @@ from app.core.security import hash_password
 from app.main import app
 from app.models.course import Course, CourseModule, CourseStatus, Enrollment, Lesson, LessonKind
 from app.models.institution import Institution
-from app.models.payment import EntitlementType, PaymentOrder, PaymentStatus, StudentEntitlement
+from app.models.payment import PaymentOrder, PaymentStatus, StudentEntitlement
 from app.models.user import User, UserRole
-from app.services.payment_service import can_access_lesson_content, student_can_use_ai_for_lesson
+from app.services.payment_service import can_access_lesson_content
 
 
 def _seed_catalog(db, slug: str = "payments"):
@@ -148,7 +148,6 @@ def test_paid_course_requires_approved_order(db, monkeypatch) -> None:
     db.expire_all()
     refreshed_student = db.get(User, student.id)
     assert can_access_lesson_content(db, refreshed_student, lesson.id)
-    assert student_can_use_ai_for_lesson(db, refreshed_student, lesson.id)
 
 
 def test_student_cannot_review_payment_order(db, monkeypatch) -> None:
@@ -173,40 +172,18 @@ def test_student_cannot_review_payment_order(db, monkeypatch) -> None:
     ).status_code == 403
 
 
-def test_ai_subscription_unlocks_ai_but_not_unpurchased_paid_content(db, monkeypatch) -> None:
-    _, teacher, student, course, lesson = _seed_catalog(db, "ai-sub")
-    course.price_egp = 0
-    lesson.price_egp = 0
-    db.add(Enrollment(course_id=course.id, student_id=student.id))
-    db.commit()
+def test_ai_subscription_orders_are_rejected(db, monkeypatch) -> None:
+    """The AI subscription product is no longer sold; new orders must fail."""
+    _, _, student, _, _ = _seed_catalog(db, "ai-sub-removed")
     monkeypatch.setattr(get_settings(), "payment_instapay_account", "teacher@instapay")
-    monkeypatch.setattr(get_settings(), "student_ai_access_mode", "paid_content_or_subscription")
-    assert can_access_lesson_content(db, student, lesson.id)
-    assert not student_can_use_ai_for_lesson(db, student, lesson.id)
-
     student_client = TestClient(app)
-    _login(student_client, student, "ai-sub", "student-password")
-    order = student_client.post(
+    _login(student_client, student, "ai-sub-removed", "student-password")
+    response = student_client.post(
         "/api/v1/payments/orders",
         json={"product_type": "ai_subscription", "payment_method": "instapay"},
         headers=_csrf_headers(student_client),
-    ).json()
-    teacher_client = TestClient(app)
-    _login(teacher_client, teacher, "ai-sub", "teacher-password")
-    assert teacher_client.post(
-        f"/api/v1/payments/orders/{order['id']}/approve",
-        json={},
-        headers=_csrf_headers(teacher_client),
-    ).status_code == 200
-
-    db.expire_all()
-    refreshed_student = db.get(User, student.id)
-    assert student_can_use_ai_for_lesson(db, refreshed_student, lesson.id)
-    entitlement = db.query(StudentEntitlement).filter(
-        StudentEntitlement.student_id == student.id,
-        StudentEntitlement.entitlement_type == EntitlementType.AI_GLOBAL,
-    ).one()
-    assert entitlement.expires_at is not None
+    )
+    assert response.status_code == 422
 
 
 def test_teacher_cannot_approve_another_teachers_course_order(db, monkeypatch) -> None:

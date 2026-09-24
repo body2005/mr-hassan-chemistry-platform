@@ -37,6 +37,13 @@ REMOVED_AI_ENDPOINTS = [
     ("GET", "/api/v1/system/health"),
     ("POST", "/api/v1/system/cache/clear"),
     ("POST", "/api/v1/analytics/students/00000000-0000-0000-0000-000000000000/risk"),
+    ("POST", "/api/v1/quiz/draft"),
+    ("GET", "/api/v1/system/asr-config"),
+    ("POST", "/api/v1/system/asr-config"),
+    ("GET", "/api/v1/payments/me/ai-access"),
+    ("GET", "/api/v1/transcription/jobs/00000000-0000-0000-0000-000000000000"),
+    ("POST", "/api/v1/transcription/jobs/00000000-0000-0000-0000-000000000000/callback"),
+    ("GET", "/api/v1/transcription/download/some-token"),
 ]
 
 

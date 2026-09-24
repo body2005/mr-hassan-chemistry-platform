@@ -194,6 +194,10 @@ function mapApiUser(user: ApiUser): CurrentUser {
       academicYear: grade.value,
       academicYearLabel: grade.label,
       interestedSubjects: [],
+      governorate: user.governorate || "",
+      schoolName: user.school_name || "",
+      gender: user.gender || undefined,
+      religion: user.religion || undefined,
     };
   }
   return {
@@ -386,15 +390,12 @@ function mapApiSubmission(item: ApiSubmission): AssignmentSubmission {
     questionPrompt: item.assignment_prompt || "—",
     studentAnswer: item.answer_text,
     hasFile: !!item.object_key,
-    fileUrl: item.object_key ? `/submissions/${item.id}/file` : undefined,
+    fileUrl: item.object_key ? apiUrl(`/submissions/${item.id}/file`) : undefined,
     version: item.version,
     submittedAt: item.submitted_at,
     maxScore: item.max_score || 100,
-    aiScore: item.ai_score || 0,
     finalScore: item.final_score || 0,
     teacherFeedback: item.teacher_feedback || undefined,
-    aiFeedbackSummary: item.ai_feedback || "",
-    criteriaScores: [],
     status: item.status === "approved" ? "approved" : item.status === "graded" ? "graded" : "needs_review",
   };
 }
@@ -456,6 +457,30 @@ export interface BootstrapData {
 
 export const bootstrapService = {
   async getBootstrap(): Promise<BootstrapData> {
+    // Pages with no session footprint (e.g. the login screen on a fresh
+    // browser) must stay silent: no bootstrap request, no 401 churn. The
+    // HttpOnly session cookie cannot be introspected from JS, so the persisted
+    // session token (written on every successful login) is the "maybe logged
+    // in" signal. When it is absent AND the client already knows the session
+    // is invalid, resolve as anonymous without touching the network.
+    if (
+      typeof localStorage !== "undefined" &&
+      !localStorage.getItem("lms_session_token") &&
+      isSessionKnownInvalid()
+    ) {
+      markBrowserSessionActive(false);
+      setApiAuthScope("anonymous");
+      return {
+        authenticated: false,
+        user: null,
+        unread_notifications_count: 0,
+        notifications: [],
+        courses: [],
+        enrolledCourseIds: [],
+        entitlements: [],
+        settings: {},
+      };
+    }
     try {
       const res = await apiRequest<{
         authenticated: boolean;
@@ -466,7 +491,7 @@ export const bootstrapService = {
         enrolled_course_ids: string[];
         entitlements: any[];
         settings: Record<string, any>;
-      }>("/platform/bootstrap", { cacheTtlMs: 15_000 });
+      }>("/bootstrap", { cacheTtlMs: 15_000 });
 
       if (!res.authenticated || !res.user) {
         markBrowserSessionActive(false);
@@ -491,19 +516,20 @@ export const bootstrapService = {
         localStorage.setItem("lms_cached_user", JSON.stringify(user));
       }
 
-      // Prepopulate cache for /auth/me so any subsequent call hits cache in 0ms
-      setCachedData(apiUrl("/auth/me"), res.user, 30_000);
+      // Prepopulate cache for /auth/me so any subsequent call hits cache in 0ms.
+      // Keys must match the apiRequest cache format "METHOD:url" exactly.
+      setCachedData(`GET:${apiUrl("/auth/me")}`, res.user, 30_000);
 
       // Map notifications
       const notifs = Array.isArray(res.notifications)
         ? deduplicateNotifications(res.notifications.map(mapApiNotification))
         : [];
-      setCachedData(apiUrl("/notifications"), res.notifications || [], 10_000);
+      setCachedData(`GET:${apiUrl("/notifications")}`, res.notifications || [], 10_000);
 
-      // Map courses
+      // Map courses — key must match getCourses' real request URL (/courses?page=1&page_size=100)
       const mappedCourses = Array.isArray(res.courses) ? res.courses.map(mapApiCourse) : [];
       setCachedData(
-        apiUrl("/courses"),
+        `GET:${apiUrl("/courses?page=1&page_size=100")}`,
         { items: res.courses || [], pagination: { total: mappedCourses.length, page: 1, page_size: 100, pages: 1 } },
         30_000
       );
@@ -514,14 +540,14 @@ export const bootstrapService = {
       // Enrolled courses
       const enrolled = Array.isArray(res.enrolled_course_ids) ? res.enrolled_course_ids : [];
       setCachedData(
-        apiUrl("/courses/me/enrollments"),
+        `GET:${apiUrl("/courses/me/enrollments")}`,
         (res.enrolled_course_ids || []).map((cid) => ({ course_id: cid, status: "active" })),
         60_000
       );
 
       // Entitlements
       const entitlements = Array.isArray(res.entitlements) ? res.entitlements : [];
-      setCachedData(apiUrl("/payments/me/entitlements"), entitlements, 60_000);
+      setCachedData(`GET:${apiUrl("/payments/me/entitlements")}`, entitlements, 60_000);
 
       return {
         authenticated: true,
@@ -1111,36 +1137,6 @@ export const courseService = {
 
 
 
-  async getLessonTranscript(lessonId: string): Promise<{
-    lesson_id: string;
-    transcript_id?: string;
-    status: string;
-    language: string;
-    duration_seconds: number;
-    full_text: string;
-    provider?: string;
-    completed_at?: string;
-  }> {
-    return apiRequest(`/lessons/${lessonId}/transcript`);
-  },
-
-  async getLessonSegments(lessonId: string, q?: string): Promise<{
-    lesson_id: string;
-    count: number;
-    segments: Array<{
-      id: string;
-      sequence: number;
-      start_time: number;
-      end_time: number;
-      time_formatted: string;
-      text: string;
-    }>;
-  }> {
-    const queryStr = q ? `?q=${encodeURIComponent(q)}` : "";
-    return apiRequest(`/lessons/${lessonId}/transcript/segments${queryStr}`);
-  },
-
-
   async uploadLessonVideo(
     lessonId: string,
     file: File,
@@ -1209,7 +1205,20 @@ import { lessonAccessService } from "./paymentService";
 
 type ApiManagedUser = Pick<
   ApiUser,
-  "id" | "email" | "display_name" | "role" | "grade_level" | "student_phone" | "is_active" | "created_at"
+  | "id"
+  | "email"
+  | "display_name"
+  | "role"
+  | "grade_level"
+  | "student_phone"
+  | "guardian_phone"
+  | "national_id"
+  | "governorate"
+  | "school_name"
+  | "gender"
+  | "religion"
+  | "is_active"
+  | "created_at"
 >;
 
 export const userService = {
@@ -1232,15 +1241,3 @@ export const userService = {
 
 export const accessService = lessonAccessService;
 
-export const systemService = {
-  async getASRConfig(): Promise<{ kaggle_asr_url: string; mode: string; provider: string }> {
-    return apiRequest<{ kaggle_asr_url: string; mode: string; provider: string }>("/system/asr-config");
-  },
-
-  async updateASRConfig(kaggleAsrUrl: string): Promise<{ kaggle_asr_url: string; mode: string; provider: string }> {
-    return await apiRequest<{ kaggle_asr_url: string; mode: string; provider: string }>("/system/asr-config", {
-      method: "POST",
-      body: JSON.stringify({ kaggle_asr_url: kaggleAsrUrl }),
-    });
-  },
-};

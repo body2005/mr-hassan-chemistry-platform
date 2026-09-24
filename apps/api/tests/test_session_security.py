@@ -1,4 +1,8 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+try:
+    from datetime import UTC
+except ImportError:
+    UTC = timezone.utc
 from fastapi.testclient import TestClient
 
 from app.core.security import create_session_token, hash_token

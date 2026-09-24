@@ -11,19 +11,17 @@ import {
   FileQuestion,
   Loader2,
   Lock,
-  PenTool,
   Plus,
   RotateCcw,
   Save,
-  Sparkles,
   Trash2,
   UploadCloud,
   X,
 } from "lucide-react";
-import { CalendarScheduleEvent, Course, CurrentUser, NotificationItem, QuestionTypeConfig } from "../types/lms";
-import { aiClient } from "../services/aiClient";
+import { CalendarScheduleEvent, Course, CurrentUser, NotificationItem } from "../types/lms";
+import { quizExtractionService } from "../services/quizExtractionService";
 import { calendarService, notificationService, courseService } from "../services/lmsService";
-import { GeneratedQuestion, QuizDraftResponse } from "../types/ai";
+import { GeneratedQuestion, QuizDraftResponse } from "../types/quiz";
 import { useToast } from "../components/ToastProvider";
 import { FormulaRenderer } from "../components/FormulaRenderer";
 import { RichFormulaEditor } from "../components/RichFormulaEditor";
@@ -60,26 +58,9 @@ async function computeFileFingerprint(file: File): Promise<string> {
   }
 }
 
-const DEFAULT_TYPE_CONFIGS: QuestionTypeConfig[] = [
-  { id: "multiple_choice", label: "اختيار من متعدد", count: 2 },
-  { id: "essay", label: "سؤال مقالي", count: 1 },
-  { id: "true_false", label: "صح أو خطأ", count: 1, withCorrection: true },
-  { id: "fill_in_blank", label: "أكمل الفراغات", count: 1 },
-  { id: "short_answer", label: "إجابة قصيرة", count: 0 },
-  { id: "numerical", label: "سؤال رقمي", count: 0 },
-  { id: "image_question", label: "سؤال مرتبط بصورة", count: 0 },
-];
-
 // Start a manual assessment empty; the teacher adds the first real question.
 // This keeps sample/example content out of production screens.
 const DEFAULT_MANUAL_QUESTIONS: GeneratedQuestion[] = [];
-
-function formatLocalDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
 
 interface QuizGeneratorViewProps {
   courses: Course[];
@@ -105,11 +86,6 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Mode: AI generation vs Manual Creation (Zero AI Requirement)
-  const [creationMode, setCreationMode] = useState<"ai" | "manual">(() => initialDraft?.creationMode || "ai");
-  // AI Quiz Mode: mix (extract first then generate), extract (verbatim from doc), generate (novel synthesis)
-  const [quizMode, setQuizMode] = useState<"mix" | "extract" | "generate">(() => initialDraft?.quizMode || "mix");
-
   // Sub-tab: Creator vs History
   const [activeSubTab, setActiveSubTab] = useState<"create" | "history">("create");
   const [historyCount, setHistoryCount] = useState<number>(() => quizHistoryService.getHistory().length);
@@ -131,61 +107,36 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   const currentCourse = courses.find((c) => c.academicYear === selectedAcademicYear);
   const courseLessons = useMemo(() => currentCourse?.lessons || [], [currentCourse]);
 
-  // Selected Lesson IDs
+  // Selected Lesson IDs - Required, empty by default
   const [selectedLessonIds, setSelectedLessonIds] = useState<string[]>(() => {
     if (Array.isArray(initialDraft?.selectedLessonIds) && initialDraft.selectedLessonIds.length > 0) {
       return initialDraft.selectedLessonIds;
     }
-    const defaultCourse = courses.find((c) => c.academicYear === (initialDraft?.selectedAcademicYear || "1st_secondary"));
-    return defaultCourse?.lessons?.[0] ? [defaultCourse.lessons[0].id] : [];
+    return [];
   });
 
   const isFirstMountRef = useRef(true);
   useEffect(() => {
     if (isFirstMountRef.current) {
       isFirstMountRef.current = false;
-      if (initialDraft?.selectedLessonIds && initialDraft.selectedLessonIds.length > 0) {
-        return;
-      }
+      return;
     }
-    if (courseLessons.length > 0) {
-      setSelectedLessonIds([courseLessons[0].id]);
-    } else {
+    if (selectedLessonIds.length > 0 && !courseLessons.some((l) => selectedLessonIds.includes(l.id))) {
       setSelectedLessonIds([]);
     }
-  }, [courseLessons, initialDraft?.selectedLessonIds]);
+  }, [courseLessons, selectedLessonIds]);
 
   // Activity Type: Quiz vs Assignment
   const [assessmentType, setAssessmentType] = useState<"quiz" | "assignment">(() => initialDraft?.assessmentType || "quiz");
 
-  // Prompts start 100% EMPTY by default for teacher customization
-  const [teacherPrompt, setTeacherPrompt] = useState(() => initialDraft?.teacherPrompt ?? "");
-  const [gradingPrompt, setGradingPrompt] = useState(() => initialDraft?.gradingPrompt ?? "");
-
-  // Quiz / Assignment Timing & Schedule Configuration
-  const [quizDurationMinutes, setQuizDurationMinutes] = useState<number>(() => initialDraft?.quizDurationMinutes ?? 45);
-  const [publishStartDate, setPublishStartDate] = useState<string>(() => initialDraft?.publishStartDate || formatLocalDate(new Date()));
-  const [publishStartTime, setPublishStartTime] = useState<string>(() => initialDraft?.publishStartTime || "06:00 م");
-  const [closeDeadlineDate, setCloseDeadlineDate] = useState<string>(() => {
-    if (initialDraft?.closeDeadlineDate) return initialDraft.closeDeadlineDate;
-    const future = new Date();
-    future.setDate(future.getDate() + 3);
-    return formatLocalDate(future);
-  });
-  const [closeDeadlineTime, setCloseDeadlineTime] = useState<string>(() => initialDraft?.closeDeadlineTime || "11:59 م");
+  // Quiz / Assignment Timing & Schedule Configuration - Required, empty by default
+  const [quizDurationMinutes, setQuizDurationMinutes] = useState<number | "">(() => initialDraft?.quizDurationMinutes ?? "");
+  const [publishStartDate, setPublishStartDate] = useState<string>(() => initialDraft?.publishStartDate || "");
+  const [publishStartTime, setPublishStartTime] = useState<string>(() => initialDraft?.publishStartTime || "");
+  const [closeDeadlineDate, setCloseDeadlineDate] = useState<string>(() => initialDraft?.closeDeadlineDate || "");
+  const [closeDeadlineTime, setCloseDeadlineTime] = useState<string>(() => initialDraft?.closeDeadlineTime || "");
   const [showOnStudentCalendar, setShowOnStudentCalendar] = useState<boolean>(() => initialDraft?.showOnStudentCalendar ?? true);
   const [sendScheduledNotification, setSendScheduledNotification] = useState<boolean>(() => initialDraft?.sendScheduledNotification ?? true);
-
-  // Total questions count (AI mode)
-  const [totalQuestions, setTotalQuestions] = useState(() => initialDraft?.totalQuestions ?? 5);
-
-  // Question Types Config with Order & Counters (AI Mode)
-  const [typeConfigs, setTypeConfigs] = useState<QuestionTypeConfig[]>(() => {
-    if (Array.isArray(initialDraft?.typeConfigs) && initialDraft.typeConfigs.length > 0) {
-      return initialDraft.typeConfigs;
-    }
-    return DEFAULT_TYPE_CONFIGS;
-  });
 
   function normalizeQuestionType(t?: string): "multiple_choice" | "true_false" | "essay" | "fill_in_blank" {
     if (!t) return "multiple_choice";
@@ -276,20 +227,36 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     );
   }
 
-  // Manual Mode State (Zero AI)
-  const [manualTitle, setManualTitle] = useState(() => initialDraft?.manualTitle ?? "");
-  const [manualDescription, setManualDescription] = useState(() => initialDraft?.manualDescription ?? "");
-  const [manualQuestions, setManualQuestions] = useState<GeneratedQuestion[]>(() => {
+  // Unified Quiz / Assignment State (Extraction + Manual)
+  const [quizTitle, setQuizTitle] = useState(() => initialDraft?.title || initialDraft?.manualTitle || initialDraft?.draft?.title || "");
+  const [questions, setQuestions] = useState<GeneratedQuestion[]>(() => {
+    if (Array.isArray(initialDraft?.questions) && initialDraft.questions.length > 0) {
+      return initialDraft.questions;
+    }
+    if (Array.isArray(initialDraft?.draft?.questions) && initialDraft.draft.questions.length > 0) {
+      return initialDraft.draft.questions;
+    }
     if (Array.isArray(initialDraft?.manualQuestions) && initialDraft.manualQuestions.length > 0) {
       return initialDraft.manualQuestions;
     }
     return DEFAULT_MANUAL_QUESTIONS;
   });
 
-  const [loading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<QuizDraftResponse | null>(() => initialDraft?.draft || null);
   const [approved, setApproved] = useState(false);
+  const [attemptedSubmit, setAttemptedSubmit] = useState(false);
+  const [touchedFields, setTouchedFields] = useState<Record<string, boolean>>({});
+
+  const markTouched = (field: string) => {
+    setTouchedFields((prev) => ({ ...prev, [field]: true }));
+  };
+
+  const quizTitleHasError = (attemptedSubmit || touchedFields.quizTitle) && !quizTitle.trim();
+  const lessonHasError = (attemptedSubmit || touchedFields.lesson) && !selectedLessonIds[0];
+  const durationHasError = assessmentType === "quiz" && (attemptedSubmit || touchedFields.duration) && (!quizDurationMinutes || Number(quizDurationMinutes) <= 0);
+  const publishStartHasError = (attemptedSubmit || touchedFields.publishStart) && (!publishStartDate || !publishStartTime.trim());
+  const closeDeadlineHasError = (attemptedSubmit || touchedFields.closeDeadline) && (!closeDeadlineDate || !closeDeadlineTime.trim());
 
   // Notify teacher on mount if an un-uploaded draft was restored
   useEffect(() => {
@@ -310,16 +277,13 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       return;
     }
 
-    const hasManual = creationMode === "manual" && (manualQuestions.length > 0 || manualTitle.trim().length > 0);
-    const hasAi = creationMode === "ai" && draft && draft.questions && draft.questions.length > 0;
-
-    if (!hasManual && !hasAi) {
+    if (questions.length === 0 && quizTitle.trim().length === 0) {
       return;
     }
 
     const payload = {
-      creationMode,
-      quizMode,
+      title: quizTitle,
+      questions,
       selectedAcademicYear,
       selectedLessonIds,
       assessmentType,
@@ -330,13 +294,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       closeDeadlineTime,
       showOnStudentCalendar,
       sendScheduledNotification,
-      teacherPrompt,
-      gradingPrompt,
-      totalQuestions,
-      typeConfigs,
-      manualTitle,
-      manualDescription,
-      manualQuestions,
+      extractedFileName,
+      extractedFileFingerprint,
+      extractedAt,
       draft,
       savedAt: new Date().toISOString(),
     };
@@ -349,8 +309,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     }
   }, [
     approved,
-    creationMode,
-    quizMode,
+    quizTitle,
+    questions,
     selectedAcademicYear,
     selectedLessonIds,
     assessmentType,
@@ -361,13 +321,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     closeDeadlineTime,
     showOnStudentCalendar,
     sendScheduledNotification,
-    teacherPrompt,
-    gradingPrompt,
-    totalQuestions,
-    typeConfigs,
-    manualTitle,
-    manualDescription,
-    manualQuestions,
+    extractedFileName,
+    extractedFileFingerprint,
+    extractedAt,
     draft,
     quizDraftStorageKey,
   ]);
@@ -376,10 +332,17 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     if (window.confirm("هل أنت متأكد من رغبتك في مسح مسودة هذا الاختبار الحالية والبدء باختبار جديد من البداية؟")) {
       localStorage.removeItem(quizDraftStorageKey);
       setDraft(null);
-      setManualTitle("");
-      setManualDescription("");
-      setTeacherPrompt("");
-      setManualQuestions(DEFAULT_MANUAL_QUESTIONS);
+      setQuizTitle("");
+      setSelectedLessonIds([]);
+      setQuizDurationMinutes("");
+      setPublishStartDate("");
+      setPublishStartTime("");
+      setCloseDeadlineDate("");
+      setCloseDeadlineTime("");
+      setQuestions([]);
+      setExtractedFileName(null);
+      setExtractedFileFingerprint(null);
+      setExtractedAt(null);
       setApproved(false);
       setHasRestoredDraft(false);
       toast({
@@ -391,42 +354,6 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
 
   // Editing state for teacher modification (Part 11)
   const [editingQuestionId, setEditingQuestionId] = useState<number | null>(null);
-
-  // Calculate sum of question type counters
-  const totalAllocated = typeConfigs.reduce((sum, t) => sum + t.count, 0);
-
-
-
-  function updateTypeCount(id: string, delta: number) {
-    setTypeConfigs((prev) => {
-      const updated = prev.map((t) => {
-        if (t.id === id) {
-          const newCount = Math.max(0, t.count + delta);
-          return { ...t, count: newCount };
-        }
-        return t;
-      });
-      const newTotal = updated.reduce((s, t) => s + t.count, 0);
-      setTotalQuestions(newTotal > 0 ? newTotal : 1);
-      return updated;
-    });
-  }
-
-  function toggleWithCorrection(id: string) {
-    setTypeConfigs((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, withCorrection: !t.withCorrection } : t))
-    );
-  }
-
-  function moveTypeOrder(index: number, direction: "up" | "down") {
-    const targetIdx = direction === "up" ? index - 1 : index + 1;
-    if (targetIdx < 0 || targetIdx >= typeConfigs.length) return;
-
-    const newConfigs = [...typeConfigs];
-    const [moved] = newConfigs.splice(index, 1);
-    newConfigs.splice(targetIdx, 0, moved);
-    setTypeConfigs(newConfigs);
-  }
 
   // ================= EXTRACT QUIZ DIRECTLY FROM UPLOADED FILE =================
   async function handleExtractFromFile(file: File) {
@@ -441,7 +368,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     setExtractedAt(null);
     localStorage.removeItem(quizDraftStorageKey);
     try {
-      const resp = await aiClient.extractQuizFromFile(
+      const resp = await quizExtractionService.extractQuizFromFile(
         file,
         currentCourse?.id,
         selectedLessonIds.length > 0 ? selectedLessonIds[0] : undefined,
@@ -465,10 +392,13 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       }
 
       setDraft(resp);
+      setQuestions(resp.questions || []);
+      if (resp.title && !quizTitle.trim()) {
+        setQuizTitle(resp.title);
+      }
       setExtractedFileName(file.name);
       setExtractedFileFingerprint(fingerprint || null);
       setExtractedAt(new Date().toISOString());
-      setCreationMode("ai");
       setApproved(false);
 
       toast({
@@ -490,17 +420,18 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
 
   // ================= QUESTIONS EDITING & REORDERING =================
   function activeQuestionsList(): GeneratedQuestion[] {
-    return creationMode === "manual" ? manualQuestions : draft?.questions || [];
+    return questions;
   }
 
   function setActiveQuestionsList(updater: (prev: GeneratedQuestion[]) => GeneratedQuestion[]) {
-    if (creationMode === "manual") {
-      setManualQuestions((prev) => updater(prev));
-    } else if (draft) {
-      const updated = updater(draft.questions);
-      const newTotal = updated.reduce((s, q) => s + (q.points || 0), 0);
-      setDraft({ ...draft, questions: updated, total_points: newTotal });
-    }
+    setQuestions((prev) => {
+      const updated = updater(prev);
+      if (draft) {
+        const newTotal = updated.reduce((s, q) => s + (q.points || 0), 0);
+        setDraft({ ...draft, questions: updated, total_points: newTotal });
+      }
+      return updated;
+    });
   }
 
   function updateQuestionText(qId: number, newText: string) {
@@ -666,8 +597,44 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
 
   // ================= PUBLISH & SCHEDULE HANDLER (AI & MANUAL) =================
   function handleInitiatePublish() {
+    setAttemptedSubmit(true);
     const currentQuestions = activeQuestionsList();
     const isQuiz = assessmentType === "quiz";
+
+    if (!quizTitle.trim()) {
+      const msg = `يرجى إدخال اسم ${isQuiz ? "الاختبار" : "الواجب"} أولاً (يلزم ادخاله).`;
+      setError(msg);
+      toast({ message: msg, tone: "warning" });
+      return;
+    }
+
+    if (!selectedLessonIds[0]) {
+      const msg = `يرجى اختيار الدرس/الوحدة المرتبط ${isQuiz ? "بالاختبار" : "بالواجب"} (يلزم ادخاله).`;
+      setError(msg);
+      toast({ message: msg, tone: "warning" });
+      return;
+    }
+
+    if (isQuiz && (!quizDurationMinutes || Number(quizDurationMinutes) <= 0)) {
+      const msg = "يرجى تحديد مدة حل الاختبار للطالب بالدقائق (يلزم ادخاله).";
+      setError(msg);
+      toast({ message: msg, tone: "warning" });
+      return;
+    }
+
+    if (!publishStartDate || !publishStartTime.trim()) {
+      const msg = "يرجى تحديد موعد النشر وبدء الإتاحة (يلزم ادخاله).";
+      setError(msg);
+      toast({ message: msg, tone: "warning" });
+      return;
+    }
+
+    if (!closeDeadlineDate || !closeDeadlineTime.trim()) {
+      const msg = `يرجى تحديد موعد انتهاء الإتاحة وإغلاق ${isQuiz ? "الاختبار" : "الواجب"} (يلزم ادخاله).`;
+      setError(msg);
+      toast({ message: msg, tone: "warning" });
+      return;
+    }
 
     // Show error if there are no questions in the quiz
     if (currentQuestions.length === 0) {
@@ -688,6 +655,30 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     const currentQuestions = activeQuestionsList();
     const isQuiz = assessmentType === "quiz";
 
+    if (!quizTitle.trim()) {
+      setError(`يرجى إدخال اسم ${isQuiz ? "الاختبار" : "الواجب"} (يلزم ادخاله).`);
+      setShowPublishConfirmModal(false);
+      return;
+    }
+
+    if (!selectedLessonIds[0]) {
+      setError(`يلزم اختيار الدرس المرتبط ${isQuiz ? "بالاختبار" : "بالواجب"}.`);
+      setShowPublishConfirmModal(false);
+      return;
+    }
+
+    if (isQuiz && (!quizDurationMinutes || Number(quizDurationMinutes) <= 0)) {
+      setError("يلزم تحديد مدة حل الاختبار بالدقائق.");
+      setShowPublishConfirmModal(false);
+      return;
+    }
+
+    if (!publishStartDate || !publishStartTime.trim() || !closeDeadlineDate || !closeDeadlineTime.trim()) {
+      setError("يلزم تحديد جميع مواعيد البدء والانتهاء (التاريخ والوقت).");
+      setShowPublishConfirmModal(false);
+      return;
+    }
+
     if (currentQuestions.length === 0) {
       setError(`لا يمكن حفظ أو رفع ${isQuiz ? "الاختبار" : "الواجب"} وهو فارغ. يرجى إضافة سؤال واحد على الأقل أولاً.`);
       setShowPublishConfirmModal(false);
@@ -703,10 +694,13 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
           ? "الصف الثاني الثانوي"
           : "الصف الثالث الثانوي";
 
-      // The teacher's title is authoritative for both manual and AI/extracted
-      // assessments. If left blank, keep the generated/extracted title.
-      const titleToPublish = manualTitle.trim()
-        || (creationMode === "ai" ? draft?.title : "")
+      const isQuiz = assessmentType === "quiz";
+      const durationNum = isQuiz && typeof quizDurationMinutes === "number" ? quizDurationMinutes : undefined;
+
+      // The teacher's title is authoritative for both manual and extracted
+      // assessments. If left blank, keep the extracted title.
+      const titleToPublish = quizTitle.trim()
+        || draft?.title
         || `${isQuiz ? "اختبار" : "واجب"}: ${yearLabel}`;
 
       // 1. Mark in Calendar Schedule for Teacher & Students
@@ -718,7 +712,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
         time: publishStartTime,
         contentType: assessmentType,
         isPublishedToStudents: showOnStudentCalendar,
-        quizDurationMinutes: isQuiz ? quizDurationMinutes : undefined,
+        quizDurationMinutes: durationNum,
         publishStartDate,
         publishStartTime,
         closeDeadline: `${closeDeadlineDate} ${closeDeadlineTime}`,
@@ -740,7 +734,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
           createdAt: "الآن",
           read: false,
           actionTab: "MyCourses",
-          quizDurationMinutes: isQuiz ? quizDurationMinutes : undefined,
+          quizDurationMinutes: durationNum,
           quizCloseDeadline: `${closeDeadlineDate} ${closeDeadlineTime}`,
         };
 
@@ -763,7 +757,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
           course_id: currentCourse.id,
           lesson_id: scopeLessonId,
           title: titleToPublish,
-          duration_minutes: quizDurationMinutes,
+          duration_minutes: Number(quizDurationMinutes) || 45,
           starts_at: startIso,
           ends_at: endIso,
           questions: currentQuestions.map((q) => ({
@@ -790,14 +784,13 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
         assessmentType,
         academicYear: selectedAcademicYear,
         academicYearLabel: yearLabel,
-        creationMode,
-        quizMode: creationMode === "ai" ? quizMode : undefined,
+        creationMode: extractedFileName ? "extract" : "manual",
         publishStartDate,
         publishStartTime,
         closeDeadlineDate,
         closeDeadlineTime,
         closeDeadline: `${closeDeadlineDate} ${closeDeadlineTime}`,
-        quizDurationMinutes: isQuiz ? quizDurationMinutes : undefined,
+        quizDurationMinutes: durationNum,
         showOnStudentCalendar,
         totalPoints: totalPointsCount,
         questionsCount: currentQuestions.length,
@@ -824,12 +817,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   function handleLoadQuizIntoEditor(quizRecord: PublishedQuizRecord) {
     setAssessmentType(quizRecord.assessmentType);
     setSelectedAcademicYear(quizRecord.academicYear);
-    if (quizRecord.creationMode === "ai" && quizRecord.quizMode) {
-      setQuizMode(quizRecord.quizMode);
-    }
-    setCreationMode("manual");
-    setManualTitle(quizRecord.title);
-    setManualQuestions(quizRecord.questions);
+    setQuizTitle(quizRecord.title);
+    setQuestions(quizRecord.questions);
     if (quizRecord.publishStartDate) setPublishStartDate(quizRecord.publishStartDate);
     if (quizRecord.publishStartTime) setPublishStartTime(quizRecord.publishStartTime);
     if (quizRecord.closeDeadlineDate) setCloseDeadlineDate(quizRecord.closeDeadlineDate);
@@ -896,8 +885,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
               minWidth: "140px",
             }}
           >
-            <Sparkles size={15} />
-            <span>صانع وتوليد الاختبارات</span>
+            <FileQuestion size={15} />
+            <span>صانع الاختبارات</span>
           </button>
 
           <button
@@ -949,79 +938,23 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
         />
       ) : (
         <>
-          {/* Header & Mode Switcher */}
-          <div style={{ marginBottom: "20px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "14px" }}>
-        <div>
-          <span style={{ fontSize: "11px", fontWeight: 800, color: assessmentType === "quiz" ? "#0f766e" : "#0f392b", background: assessmentType === "quiz" ? "#ccfbf1" : "#ecfdf5", padding: "3px 8px", borderRadius: "6px" }}>
-            استوديو المعلم • {creationMode === "ai" ? "AI AUTOMATED AUTHORING" : "MANUAL CUSTOM AUTHORING"}
-          </span>
-          <h1 style={{ margin: "6px 0 2px", fontSize: "24px", color: "var(--text-main, #0f172a)" }}>
-            {assessmentType === "quiz" ? "صانع الاختبارات والتقييمات" : "صانع الواجبات والتكليفات المنزلية"}
-          </h1>
-          <p style={{ margin: 0, color: "var(--text-muted, #64748b)", fontSize: "13px" }}>
-            {creationMode === "ai"
-              ? "استعن بالذكاء الاصطناعي لصياغة أسئلة تقييمية مستنبطة من محتوى الدرس والمذكرات المرفوعة بدقة."
-              : "اكتب وصمم أسئلتك وخيارات الإجابة والدرجات يدوياً بالكامل دون الحاجة للذكاء الاصطناعي."}
-          </p>
-        </div>
-
-        {/* Mode Tabs: AI vs Manual */}
-        <div style={{ display: "flex", background: "var(--bg-surface-secondary, #f1f5f9)", padding: "4px", borderRadius: "12px", border: "1px solid var(--border-color, #e2e8f0)", flexWrap: "wrap", gap: "4px", width: "100%", maxWidth: "420px" }}>
-          <button
-            type="button"
-            onClick={() => { setCreationMode("ai"); setApproved(false); }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: "6px",
-              padding: "8px 12px",
-              borderRadius: "8px",
-              border: "none",
-              background: creationMode === "ai" ? "#0f392b" : "transparent",
-              color: creationMode === "ai" ? "#ffffff" : "var(--text-main)",
-              fontSize: "12px",
-              fontWeight: 800,
-              cursor: "pointer",
-              transition: "all 0.2s ease",
-              flex: 1,
-              minWidth: "130px",
-            }}
-          >
-            <Sparkles size={14} />
-            <span>توليد بالذكاء الاصطناعي</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => { setCreationMode("manual"); setApproved(false); }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: "6px",
-              padding: "8px 12px",
-              borderRadius: "8px",
-              border: "none",
-              background: creationMode === "manual" ? "#0f392b" : "transparent",
-              color: creationMode === "manual" ? "#ffffff" : "var(--text-main)",
-              fontSize: "12px",
-              fontWeight: 800,
-              cursor: "pointer",
-              transition: "all 0.2s ease",
-              flex: 1,
-              minWidth: "150px",
-            }}
-          >
-            <PenTool size={14} />
-            <span>إنشاء يدوي مباشر</span>
-          </button>
-        </div>
-      </div>
+          {/* Header */}
+          <div style={{ marginBottom: "20px" }}>
+            <span style={{ fontSize: "11px", fontWeight: 800, color: assessmentType === "quiz" ? "#0f766e" : "#0f392b", background: assessmentType === "quiz" ? "#ccfbf1" : "#ecfdf5", padding: "3px 8px", borderRadius: "6px" }}>
+              استوديو المعلم • {assessmentType === "quiz" ? "صانع الاختبارات والتقييمات" : "صانع الواجبات المنزلية"}
+            </span>
+            <h1 style={{ margin: "6px 0 2px", fontSize: "24px", color: "var(--text-main, #0f172a)" }}>
+              {assessmentType === "quiz" ? "صانع الاختبارات والتقييمات" : "صانع الواجبات والتكليفات المنزلية"}
+            </h1>
+            <p style={{ margin: 0, color: "var(--text-muted, #64748b)", fontSize: "13px" }}>
+              ارفع ورقة امتحان أو بنك أسئلة لاستخراجها وتعديلها فوراً، أو ابدأ بصياغة الأسئلة والخيارات يدوياً بالكامل.
+            </p>
+          </div>
 
       <div className="responsive-split-grid">
         {/* Left Column: Configuration Form */}
         <div style={{ background: "var(--bg-surface, #ffffff)", border: "1px solid var(--border-color, #e2e8f0)", borderRadius: "16px", padding: "20px" }}>
+
           {/* Assessment Mode Selector (Quiz vs Assignment) */}
           <div style={{ marginBottom: "18px" }}>
             <label style={{ display: "block", fontSize: "12px", fontWeight: 800, marginBottom: "6px", color: "var(--text-main)" }}>
@@ -1111,361 +1044,193 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
 
           </div>
 
-          {/* Assessment title is editable for manual, generated, and extracted work. */}
+          {/* Assessment title is editable */}
           <div style={{ marginBottom: "16px" }}>
             <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
               اسم {assessmentType === "quiz" ? "الاختبار" : "الواجب"}:
             </label>
             <input
               type="text"
-              value={manualTitle}
-              onChange={(e) => setManualTitle(e.target.value)}
-              placeholder={draft?.title || `مثال: ${assessmentType === "quiz" ? "اختبار الكيمياء — الروابط والمعادلات الكيميائية" : "واجب تدريبات الحساب الكيميائي والمول"}`}
-              style={{ width: "100%", padding: "8px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", fontSize: "13px", background: "var(--bg-surface)", color: "var(--text-main)", boxSizing: "border-box", marginBottom: creationMode === "manual" ? "10px" : 0 }}
+              required
+              value={quizTitle}
+              onChange={(e) => setQuizTitle(e.target.value)}
+              onBlur={() => markTouched("quizTitle")}
+              placeholder={`أدخل اسم ${assessmentType === "quiz" ? "الاختبار" : "الواجب"} هنا...`}
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                border: quizTitleHasError ? "1.5px solid #ef4444" : "1px solid var(--border-color-strong)",
+                boxShadow: quizTitleHasError ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
+                borderRadius: "8px",
+                fontSize: "13px",
+                background: "var(--bg-surface)",
+                color: "var(--text-main)",
+                boxSizing: "border-box",
+                marginBottom: quizTitleHasError ? "4px" : "16px",
+              }}
             />
-
-            {creationMode === "manual" && <>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
-                الوصف والتعليمات للطلاب:
-              </label>
-              <textarea
-                rows={2}
-                value={manualDescription}
-                onChange={(e) => setManualDescription(e.target.value)}
-                placeholder="اكتب تعليمات الحل أو ملاحظات هامة للطلاب قبل البدء..."
-                style={{ width: "100%", padding: "8px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", fontSize: "12px", lineHeight: "1.4", background: "var(--bg-surface)", color: "var(--text-main)", boxSizing: "border-box" }}
-              />
-            </>}
+            {quizTitleHasError && (
+              <div style={{ display: "flex", alignItems: "center", gap: "5px", marginBottom: "14px", color: "#ef4444", fontSize: "11.5px", fontWeight: 700 }}>
+                <AlertCircle size={13} style={{ flexShrink: 0 }} />
+                <span>يلزم ادخاله</span>
+              </div>
+            )}
           </div>
 
-          {/* AI MODE: Custom Empty Teacher Prompt */}
-          {creationMode === "ai" && (
-            <>
-              {/* Quiz Generation Mode (Mix vs Extract vs Generate) */}
-              <div style={{ marginBottom: "16px" }}>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "6px", color: "var(--text-main)" }}>
-                  طريقة اشتقاق الأسئلة:
-                </label>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "6px" }}>
-                  {[
-                    { id: "mix" as const, label: "مزيج متكامل", desc: "استخراج ثم توليد" },
-                    { id: "extract" as const, label: "استخراج فقط", desc: "أسئلة المذكرات" },
-                    { id: "generate" as const, label: "توليد فقط", desc: "ابتكار مفاهيمي" },
-                  ].map((m) => (
-                    <button
-                      key={m.id}
-                      type="button"
-                      onClick={() => setQuizMode(m.id)}
-                      style={{
-                        padding: "8px 4px",
-                        borderRadius: "8px",
-                        border: quizMode === m.id ? "2px solid #0f766e" : "1px solid var(--border-color)",
-                        background: quizMode === m.id ? "#0f766e" : "var(--bg-surface-secondary)",
-                        color: quizMode === m.id ? "#ffffff" : "var(--text-main)",
-                        cursor: "pointer",
-                        textAlign: "center",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: "2px",
-                        alignItems: "center",
-                      }}
-                    >
-                      <span style={{ fontSize: "12px", fontWeight: 800 }}>{m.label}</span>
-                      <span style={{ fontSize: "10px", opacity: 0.85 }}>{m.desc}</span>
-                    </button>
-                  ))}
-                </div>
+          {/* Dedicated file upload for question extraction */}
+          <div
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOver(false);
+              if (e.dataTransfer.files?.[0]) handleExtractFromFile(e.dataTransfer.files[0]);
+            }}
+            style={{
+              marginBottom: "16px",
+              padding: "14px",
+              background: dragOver ? "var(--bg-accent, #ecfdf5)" : "var(--bg-surface-secondary, #f8fafc)",
+              border: dragOver ? "2px dashed #0f766e" : "1.5px dashed var(--border-accent, #0f766e)",
+              borderRadius: "10px",
+              textAlign: "center",
+              transition: "all 0.2s ease",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+              <span style={{ fontSize: "11px", fontWeight: 800, color: "#0f766e", display: "flex", alignItems: "center", gap: "5px" }}>
+                <UploadCloud size={15} /> رفع ملف أسئلة للاستخراج الفوري
+              </span>
+              <span style={{ fontSize: "10px", background: "#ccfbf1", color: "#0f766e", padding: "2px 6px", borderRadius: "4px", fontWeight: 700 }}>
+                PDF / DOCX / TXT / صور
+              </span>
+            </div>
+
+            <input
+              type="file"
+              ref={fileInputRef}
+              accept=".pdf,.docx,.doc,.txt,.json,.png,.jpg,.jpeg"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleExtractFromFile(f);
+                e.target.value = "";
+              }}
+            />
+
+            {extractingFile ? (
+              <div style={{ padding: "12px 0", color: "#0f766e" }}>
+                <Loader2 size={24} className="animate-spin" style={{ margin: "0 auto 6px" }} />
+                <div style={{ fontSize: "12px", fontWeight: 700 }}>جاري استخراج الأسئلة من الملف...</div>
+                <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>تحليل الأسئلة والخيارات والرسومات التوضيحية</div>
               </div>
-
-              {/* Dedicated File Upload for Question Extraction */}
-              {(quizMode === "extract" || quizMode === "mix") && (
-                <div
-                  onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-                  onDragLeave={() => setDragOver(false)}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    setDragOver(false);
-                    if (e.dataTransfer.files?.[0]) handleExtractFromFile(e.dataTransfer.files[0]);
-                  }}
-                  style={{
-                    marginBottom: "16px",
-                    padding: "14px",
-                    background: dragOver ? "var(--bg-accent, #ecfdf5)" : "var(--bg-surface-secondary, #f8fafc)",
-                    border: dragOver ? "2px dashed #0f766e" : "1.5px dashed var(--border-accent, #0f766e)",
-                    borderRadius: "10px",
-                    textAlign: "center",
-                    transition: "all 0.2s ease",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
-                    <span style={{ fontSize: "11px", fontWeight: 800, color: "#0f766e", display: "flex", alignItems: "center", gap: "5px" }}>
-                      <UploadCloud size={15} /> رفع ملف أسئلة للاستخراج الفوري
-                    </span>
-                    <span style={{ fontSize: "10px", background: "#ccfbf1", color: "#0f766e", padding: "2px 6px", borderRadius: "4px", fontWeight: 700 }}>
-                      PDF / DOCX / TXT / صور
-                    </span>
-                  </div>
-
-                  <input
-                    type="file"
-                    ref={fileInputRef}
-                    accept=".pdf,.docx,.doc,.txt,.json,.png,.jpg,.jpeg"
-                    style={{ display: "none" }}
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) handleExtractFromFile(f);
-                      e.target.value = "";
+            ) : extractedFileName ? (
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "#ecfdf5", border: "1px solid #a7f3d0", padding: "8px 10px", borderRadius: "6px", marginBottom: "8px" }}>
+                  <CheckCircle2 size={16} color="#059669" />
+                  <span style={{ fontSize: "11.5px", color: "#065f46", fontWeight: 700, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {extractedFileName}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExtractedFileName(null);
+                      setExtractedFileFingerprint(null);
+                      setExtractedAt(null);
                     }}
-                  />
-
-                  {extractingFile ? (
-                    <div style={{ padding: "12px 0", color: "#0f766e" }}>
-                      <Loader2 size={24} className="animate-spin" style={{ margin: "0 auto 6px" }} />
-                      <div style={{ fontSize: "12px", fontWeight: 700 }}>جاري استخراج الأسئلة من الملف...</div>
-                      <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>تحليل الأسئلة والخيارات والرسومات التوضيحية</div>
-                    </div>
-                  ) : extractedFileName ? (
-                    <div>
-                      <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "#ecfdf5", border: "1px solid #a7f3d0", padding: "8px 10px", borderRadius: "6px", marginBottom: "8px" }}>
-                        <CheckCircle2 size={16} color="#059669" />
-                        <span style={{ fontSize: "11.5px", color: "#065f46", fontWeight: 700, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {extractedFileName}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setExtractedFileName(null);
-                            setExtractedFileFingerprint(null);
-                            setExtractedAt(null);
-                          }}
-                          style={{ background: "none", border: "none", cursor: "pointer", padding: "2px", color: "#991b1b" }}
-                          title="إلغاء الملف"
-                        >
-                          <X size={14} />
-                        </button>
-                      </div>
-                      {extractedFileFingerprint && (
-                        <div style={{ fontSize: "10px", color: "var(--text-muted)", marginBottom: "8px", lineHeight: 1.6 }}>
-                          <div>
-                            بصمة الملف: <span style={{ fontFamily: "monospace", direction: "ltr", unicodeBidi: "embed" }}>{extractedFileFingerprint.slice(0, 16)}…</span>
-                          </div>
-                          {extractedAt && <div>استُخرجت في: {new Date(extractedAt).toLocaleString("ar-EG")}</div>}
-                        </div>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="btn-secondary"
-                        style={{ width: "100%", padding: "7px", fontSize: "12px", fontWeight: 700, justifyContent: "center", gap: "6px" }}
-                      >
-                        <UploadCloud size={14} /> استخراج من ملف آخر
-                      </button>
-                    </div>
-                  ) : (
-                    <div>
-                      <p style={{ margin: "0 0 10px", fontSize: "11.5px", color: "var(--text-muted)", lineHeight: 1.4 }}>
-                        ارفع ورقة امتحان أو بنك أسئلة لاستخراج الأسئلة وتعبئتها فوراً في المسودة
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        style={{
-                          width: "100%",
-                          padding: "8px 12px",
-                          borderRadius: "6px",
-                          border: "1px solid #0f766e",
-                          background: "#0f766e",
-                          color: "#ffffff",
-                          fontSize: "12px",
-                          fontWeight: 700,
-                          cursor: "pointer",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          gap: "6px",
-                        }}
-                      >
-                        <UploadCloud size={15} /> اختر ملف الامتحان لاستخراجه
-                      </button>
-                    </div>
-                  )}
+                    style={{ background: "none", border: "none", cursor: "pointer", padding: "2px", color: "#991b1b" }}
+                    title="إلغاء الملف"
+                  >
+                    <X size={14} />
+                  </button>
                 </div>
-              )}
-
-              <div style={{ marginBottom: "16px" }}>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
-                  توجيهات إضافية اختيارية:
-                </label>
-                <textarea
-                  rows={2}
-                  value={teacherPrompt}
-                  onChange={(e) => setTeacherPrompt(e.target.value)}
-                  placeholder="اكتب أي موضوعات أو نقاط تركيز خاصة تود أن يركز عليها الذكاء الاصطناعي..."
-                  style={{ width: "100%", padding: "8px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", fontSize: "12px", lineHeight: "1.4", background: "var(--bg-surface)", color: "var(--text-main)", boxSizing: "border-box" }}
-                />
+                {extractedFileFingerprint && (
+                  <div style={{ fontSize: "10px", color: "var(--text-muted)", marginBottom: "8px", lineHeight: 1.6 }}>
+                    <div>
+                      بصمة الملف: <span style={{ fontFamily: "monospace", direction: "ltr", unicodeBidi: "embed" }}>{extractedFileFingerprint.slice(0, 16)}…</span>
+                    </div>
+                    {extractedAt && <div>استُخرجت في: {new Date(extractedAt).toLocaleString("ar-EG")}</div>}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="btn-secondary"
+                  style={{ width: "100%", padding: "7px", fontSize: "12px", fontWeight: 700, justifyContent: "center", gap: "6px" }}
+                >
+                  <UploadCloud size={14} /> استخراج من ملف آخر
+                </button>
               </div>
-
-              {/* Total Question Count in AI Mode */}
-              <div style={{ marginBottom: "16px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
-                  <label style={{ fontSize: "12px", fontWeight: 700, color: "var(--text-main)" }}>
-                    إجمالي عدد الأسئلة المطلوبة:
-                  </label>
-                  <strong style={{ fontSize: "14px", color: "#059669" }}>{totalQuestions} أسئلة</strong>
-                </div>
-                <input
-                  type="number"
-                  min={1}
-                  max={50}
-                  value={totalQuestions}
-                  onChange={(e) => setTotalQuestions(Math.max(1, parseInt(e.target.value) || 1))}
+            ) : (
+              <div>
+                <p style={{ margin: "0 0 10px", fontSize: "11.5px", color: "var(--text-muted)", lineHeight: 1.4 }}>
+                  ارفع ورقة امتحان أو بنك أسئلة لاستخراج الأسئلة وتعبئتها فوراً في المسودة
+                </p>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
                   style={{
                     width: "100%",
-                    padding: "8px 14px",
-                    border: "2px solid var(--border-accent, #059669)",
-                    borderRadius: "8px",
-                    fontSize: "15px",
-                    fontWeight: 800,
-                    color: "var(--text-main)",
-                    background: "var(--bg-surface-secondary, #f8fafc)",
-                    textAlign: "center",
-                    boxSizing: "border-box",
+                    padding: "8px 12px",
+                    borderRadius: "6px",
+                    border: "1px solid #0f766e",
+                    background: "#0f766e",
+                    color: "#ffffff",
+                    fontSize: "12px",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: "6px",
                   }}
-                />
+                >
+                  <UploadCloud size={15} /> اختر ملف الامتحان لاستخراجه
+                </button>
               </div>
-
-              {/* Question Types Config in AI Mode */}
-              <div style={{ marginBottom: "16px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-                  <label style={{ fontSize: "12px", fontWeight: 700, color: "var(--text-main)" }}>
-                    توزيع أنواع الأسئلة:
-                  </label>
-                  <span style={{ fontSize: "11px", fontWeight: 800, color: totalAllocated === totalQuestions ? "#059669" : "#d97706" }}>
-                    المجموع: {totalAllocated} / {totalQuestions}
-                  </span>
-                </div>
-
-                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                  {typeConfigs.map((type, idx) => (
-                    <div
-                      key={type.id}
-                      style={{
-                        background: "var(--bg-surface-secondary, #f8fafc)",
-                        border: "1px solid var(--border-color, #e2e8f0)",
-                        borderRadius: "8px",
-                        padding: "8px 10px",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: "6px",
-                      }}
-                    >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                          <div style={{ display: "flex", flexDirection: "column" }}>
-                            <button
-                              type="button"
-                              onClick={() => moveTypeOrder(idx, "up")}
-                              disabled={idx === 0}
-                              style={{ background: "none", border: "none", padding: 0, cursor: idx === 0 ? "not-allowed" : "pointer", opacity: idx === 0 ? 0.3 : 1 }}
-                            >
-                              <ArrowUp size={12} />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => moveTypeOrder(idx, "down")}
-                              disabled={idx === typeConfigs.length - 1}
-                              style={{ background: "none", border: "none", padding: 0, cursor: idx === typeConfigs.length - 1 ? "not-allowed" : "pointer", opacity: idx === typeConfigs.length - 1 ? 0.3 : 1 }}
-                            >
-                              <ArrowDown size={12} />
-                            </button>
-                          </div>
-                          <strong style={{ fontSize: "12px", color: "var(--text-main)" }}>
-                            {idx + 1}. {type.label}
-                          </strong>
-                        </div>
-
-                        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                          <button
-                            type="button"
-                            onClick={() => updateTypeCount(type.id, -1)}
-                            style={{ width: "24px", height: "24px", borderRadius: "6px", border: "1px solid var(--border-color-strong)", background: "var(--bg-surface)", cursor: "pointer", fontWeight: 800 }}
-                          >
-                            -
-                          </button>
-                          <strong style={{ width: "18px", textAlign: "center", fontSize: "12px", color: "#0f392b" }}>
-                            {type.count}
-                          </strong>
-                          <button
-                            type="button"
-                            onClick={() => updateTypeCount(type.id, 1)}
-                            style={{ width: "24px", height: "24px", borderRadius: "6px", border: "1px solid var(--border-color-strong)", background: "var(--bg-surface)", cursor: "pointer", fontWeight: 800 }}
-                          >
-                            +
-                          </button>
-                        </div>
-                      </div>
-
-                      {type.id === "true_false" && type.count > 0 && (
-                        <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "var(--text-muted)", marginTop: "2px", cursor: "pointer" }}>
-                          <input
-                            type="checkbox"
-                            checked={type.withCorrection}
-                            onChange={() => toggleWithCorrection(type.id)}
-                            style={{ accentColor: "#0f392b" }}
-                          />
-                          <span>تفعيل مع التصحيح (مطالبة الطالب بذكر تصحيح الخطأ)</span>
-                        </label>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* AI Grading Prompt (Empty by default) */}
-              <div style={{ marginBottom: "16px" }}>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
-                  معايير التصحيح الذاتي (اختياري):
-                </label>
-                <textarea
-                  rows={2}
-                  value={gradingPrompt}
-                  onChange={(e) => setGradingPrompt(e.target.value)}
-                  placeholder="اكتب معايير وتوجيهات التصحيح التي تريد أن يتبعها المصحح الذكي..."
-                  style={{ width: "100%", padding: "8px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", fontSize: "12px", lineHeight: "1.4", background: "var(--bg-surface)", color: "var(--text-main)", boxSizing: "border-box" }}
-                />
-              </div>
-            </>
-          )}
+            )}
+          </div>
 
           {/* Lesson scope (REQUIRED): the quiz/assignment attaches to one lesson
               so students find it inside that lesson and payment gates it. */}
-          <div style={{ marginBottom: "14px", background: "var(--bg-surface-secondary, #f8fafc)", border: "1.5px solid var(--border-color, #e2e8f0)", borderRadius: "10px", padding: "14px" }}>
+          <div style={{ marginBottom: "14px", background: "var(--bg-surface-secondary, #f8fafc)", border: lessonHasError ? "1.5px solid #ef4444" : "1.5px solid var(--border-color, #e2e8f0)", borderRadius: "10px", padding: "14px" }}>
             <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, marginBottom: "6px", color: "var(--text-main)" }}>
-              الدرس/الوحدة المرتبط {assessmentType === "quiz" ? "بالاختبار" : "بالواجب"} (يلزم اختيار درس):
+              الدرس/الوحدة المرتبط {assessmentType === "quiz" ? "بالاختبار" : "بالواجب"}:
             </label>
             {courseLessons.length === 0 ? (
               <div style={{ fontSize: "12px", color: "#b45309", fontWeight: 700 }}>
                 لا توجد دروس في هذا المقرر — أضف درساً أولاً ليُربط {assessmentType === "quiz" ? "الاختبار" : "الواجب"} به.
               </div>
             ) : (
-              <select
-                value={selectedLessonIds[0] || ""}
-                onChange={(e) => setSelectedLessonIds(e.target.value ? [e.target.value] : [])}
-                style={{
-                  width: "100%",
-                  padding: "9px 12px",
-                  border: "1px solid var(--border-color-strong)",
-                  borderRadius: "8px",
-                  fontSize: "13px",
-                  fontWeight: 700,
-                  background: "var(--bg-surface)",
-                  color: "var(--text-main)",
-                }}
-              >
-                {courseLessons.map((lesson) => (
-                  <option key={lesson.id} value={lesson.id}>{lesson.title}</option>
-                ))}
-              </select>
+              <>
+                <select
+                  required
+                  value={selectedLessonIds[0] || ""}
+                  onChange={(e) => setSelectedLessonIds(e.target.value ? [e.target.value] : [])}
+                  onBlur={() => markTouched("lesson")}
+                  style={{
+                    width: "100%",
+                    padding: "9px 12px",
+                    border: lessonHasError ? "1.5px solid #ef4444" : selectedLessonIds[0] ? "1px solid var(--border-color-strong)" : "1px solid var(--border-color)",
+                    boxShadow: lessonHasError ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
+                    borderRadius: "8px",
+                    fontSize: "13px",
+                    fontWeight: 700,
+                    background: "var(--bg-surface)",
+                    color: "var(--text-main)",
+                  }}
+                >
+                  <option value="">-- اضغط لاختيار الدرس/الوحدة المرتبط --</option>
+                  {courseLessons.map((lesson) => (
+                    <option key={lesson.id} value={lesson.id}>{lesson.title}</option>
+                  ))}
+                </select>
+                {lessonHasError && (
+                  <div style={{ display: "flex", alignItems: "center", gap: "5px", marginTop: "6px", color: "#ef4444", fontSize: "11.5px", fontWeight: 700 }}>
+                    <AlertCircle size={13} style={{ flexShrink: 0 }} />
+                    <span>يلزم ادخاله</span>
+                  </div>
+                )}
+              </>
             )}
           </div>
 
@@ -1485,20 +1250,29 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                   <label style={{ fontSize: "11.5px", fontWeight: 700, color: "var(--text-main)" }}>
                     مدة حل الاختبار للطالب:
                   </label>
-                  <strong style={{ fontSize: "13px", color: "#059669" }}>{quizDurationMinutes} دقيقة</strong>
+                  {quizDurationMinutes ? (
+                    <strong style={{ fontSize: "13px", color: "#059669" }}>{quizDurationMinutes} دقيقة</strong>
+                  ) : null}
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                   <input
                     type="number"
+                    required
                     min={5}
                     max={300}
                     step={5}
                     value={quizDurationMinutes}
-                    onChange={(e) => setQuizDurationMinutes(Math.max(5, parseInt(e.target.value) || 45))}
+                    placeholder="أدخل مدة الحل بالدقائق (مثال: 45)"
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setQuizDurationMinutes(val === "" ? "" : Math.max(1, parseInt(val) || 0));
+                    }}
+                    onBlur={() => markTouched("duration")}
                     style={{
                       width: "100%",
                       padding: "8px 12px",
-                      border: "1px solid var(--border-color-strong)",
+                      border: durationHasError ? "1.5px solid #ef4444" : "1px solid var(--border-color-strong)",
+                      boxShadow: durationHasError ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
                       borderRadius: "6px",
                       fontSize: "13px",
                       fontWeight: 800,
@@ -1508,6 +1282,12 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                   />
                   <span style={{ fontSize: "12px", color: "var(--text-muted)", flexShrink: 0 }}>دقيقة</span>
                 </div>
+                {durationHasError && (
+                  <div style={{ display: "flex", alignItems: "center", gap: "5px", marginTop: "5px", color: "#ef4444", fontSize: "11.5px", fontWeight: 700 }}>
+                    <AlertCircle size={13} style={{ flexShrink: 0 }} />
+                    <span>يلزم ادخاله</span>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1519,18 +1299,51 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "6px" }}>
                 <input
                   type="date"
+                  required
                   value={publishStartDate}
                   onChange={(e) => setPublishStartDate(e.target.value)}
-                  style={{ width: "100%", boxSizing: "border-box", minWidth: 0, padding: "7px 10px", border: "1px solid var(--border-color-strong)", borderRadius: "6px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)" }}
+                  onBlur={() => markTouched("publishStart")}
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    minWidth: 0,
+                    padding: "7px 10px",
+                    border: publishStartHasError && !publishStartDate ? "1.5px solid #ef4444" : "1px solid var(--border-color-strong)",
+                    boxShadow: publishStartHasError && !publishStartDate ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
+                    borderRadius: "6px",
+                    fontSize: "12px",
+                    background: "var(--bg-surface)",
+                    color: "var(--text-main)",
+                  }}
                 />
                 <input
                   type="text"
+                  required
                   value={publishStartTime}
                   onChange={(e) => setPublishStartTime(e.target.value)}
-                  placeholder="06:00 م"
-                  style={{ width: "100%", boxSizing: "border-box", minWidth: 0, padding: "7px 10px", border: "1px solid var(--border-color-strong)", borderRadius: "6px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)", textAlign: "center" }}
+                  onBlur={() => markTouched("publishStart")}
+                  placeholder="مثال: 06:00 م"
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    minWidth: 0,
+                    padding: "7px 10px",
+                    border: publishStartHasError && !publishStartTime.trim() ? "1.5px solid #ef4444" : "1px solid var(--border-color-strong)",
+                    boxShadow: publishStartHasError && !publishStartTime.trim() ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
+                    borderRadius: "6px",
+                    fontSize: "12px",
+                    background: "var(--bg-surface)",
+                    color: "var(--text-main)",
+                    textAlign: "center",
+                  }}
                 />
               </div>
+              {publishStartHasError && (
+                <div style={{ display: "flex", alignItems: "center", gap: "5px", marginTop: "5px", color: "#ef4444", fontSize: "11.5px", fontWeight: 700 }}>
+                  <AlertCircle size={13} style={{ flexShrink: 0 }} />
+                  <span>يلزم ادخاله</span>
+                </div>
+              )}
             </div>
 
             {/* Close Date & Time */}
@@ -1541,99 +1354,90 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "6px" }}>
                 <input
                   type="date"
+                  required
                   value={closeDeadlineDate}
                   onChange={(e) => setCloseDeadlineDate(e.target.value)}
-                  style={{ width: "100%", boxSizing: "border-box", minWidth: 0, padding: "7px 10px", border: "1px solid var(--border-color-strong)", borderRadius: "6px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)" }}
+                  onBlur={() => markTouched("closeDeadline")}
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    minWidth: 0,
+                    padding: "7px 10px",
+                    border: closeDeadlineHasError && !closeDeadlineDate ? "1.5px solid #ef4444" : "1px solid var(--border-color-strong)",
+                    boxShadow: closeDeadlineHasError && !closeDeadlineDate ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
+                    borderRadius: "6px",
+                    fontSize: "12px",
+                    background: "var(--bg-surface)",
+                    color: "var(--text-main)",
+                  }}
                 />
                 <input
                   type="text"
+                  required
                   value={closeDeadlineTime}
                   onChange={(e) => setCloseDeadlineTime(e.target.value)}
-                  placeholder="11:59 م"
-                  style={{ width: "100%", boxSizing: "border-box", minWidth: 0, padding: "7px 10px", border: "1px solid var(--border-color-strong)", borderRadius: "6px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)", textAlign: "center" }}
+                  onBlur={() => markTouched("closeDeadline")}
+                  placeholder="مثال: 11:59 م"
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    minWidth: 0,
+                    padding: "7px 10px",
+                    border: closeDeadlineHasError && !closeDeadlineTime.trim() ? "1.5px solid #ef4444" : "1px solid var(--border-color-strong)",
+                    boxShadow: closeDeadlineHasError && !closeDeadlineTime.trim() ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
+                    borderRadius: "6px",
+                    fontSize: "12px",
+                    background: "var(--bg-surface)",
+                    color: "var(--text-main)",
+                    textAlign: "center",
+                  }}
                 />
               </div>
+              {closeDeadlineHasError && (
+                <div style={{ display: "flex", alignItems: "center", gap: "5px", marginTop: "5px", color: "#ef4444", fontSize: "11.5px", fontWeight: 700 }}>
+                  <AlertCircle size={13} style={{ flexShrink: 0 }} />
+                  <span>يلزم ادخاله</span>
+                </div>
+              )}
             </div>
 
-            {/* Checkbox: Show on Student Calendar */}
+            {/* Unified Schedule Checkbox (Calendar + Instant Notification - Image 1 combined) */}
             <label
               style={{
                 display: "flex",
                 alignItems: "center",
-                gap: "8px",
-                padding: "8px 10px",
-                background: showOnStudentCalendar ? "var(--bg-accent, #ecfdf5)" : "var(--bg-surface)",
-                border: showOnStudentCalendar ? "1.5px solid #059669" : "1px solid var(--border-color)",
-                borderRadius: "6px",
+                justifyContent: "space-between",
+                padding: "10px 12px",
+                background: (showOnStudentCalendar && sendScheduledNotification) ? "rgba(5, 150, 105, 0.12)" : "var(--bg-surface)",
+                border: (showOnStudentCalendar && sendScheduledNotification) ? "1.5px solid #059669" : "1px solid var(--border-color)",
+                borderRadius: "8px",
                 cursor: "pointer",
-                marginBottom: "8px",
+                transition: "all 0.2s ease",
               }}
             >
+              <div style={{ fontSize: "12px" }}>
+                <strong style={{ color: "var(--text-main)", display: "block", marginBottom: "2px" }}>
+                  إظهار في تقويم وجدول الطلاب وإرسال إشعار فوري
+                </strong>
+                <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                  تثبيت الموعد في جدول الطلاب مع إرسال تنبيه مباشر لهم
+                </span>
+              </div>
               <input
                 type="checkbox"
-                checked={showOnStudentCalendar}
-                onChange={(e) => setShowOnStudentCalendar(e.target.checked)}
-                style={{ width: "16px", height: "16px", accentColor: "#059669", cursor: "pointer" }}
+                checked={showOnStudentCalendar && sendScheduledNotification}
+                onChange={(e) => {
+                  const val = e.target.checked;
+                  setShowOnStudentCalendar(val);
+                  setSendScheduledNotification(val);
+                }}
+                style={{ width: "18px", height: "18px", accentColor: "#059669", cursor: "pointer", flexShrink: 0 }}
               />
-              <div style={{ fontSize: "11.5px" }}>
-                <strong style={{ color: "var(--text-main)", display: "block" }}>
-                  إظهار في تقويم وجدول الطلاب
-                </strong>
-              </div>
-            </label>
-
-            {/* Checkbox: Send Notification */}
-            <label
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                padding: "8px 10px",
-                background: sendScheduledNotification ? "var(--bg-accent, #ecfdf5)" : "var(--bg-surface)",
-                border: sendScheduledNotification ? "1.5px solid #059669" : "1px solid var(--border-color)",
-                borderRadius: "6px",
-                cursor: "pointer",
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={sendScheduledNotification}
-                onChange={(e) => setSendScheduledNotification(e.target.checked)}
-                style={{ width: "16px", height: "16px", accentColor: "#059669", cursor: "pointer" }}
-              />
-              <div style={{ fontSize: "11.5px" }}>
-                <strong style={{ color: "var(--text-main)", display: "block" }}>
-                  إرسال إشعار فوري وتنبيه للطلاب
-                </strong>
-              </div>
             </label>
           </div>
-
-          {/* Action Trigger Button */}
-          {creationMode === "ai" ? (
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="btn-primary"
-              style={{ width: "100%", justifyContent: "center", padding: "12px", fontSize: "14px", fontWeight: 800, background: assessmentType === "quiz" ? "#0f766e" : "#0f392b" }}
-            >
-              <UploadCloud size={18} />
-              {assessmentType === "quiz" ? "ارفع ملف الأسئلة للاستخراج الآن" : "ارفع ملف الواجب للاستخراج الآن"}
-            </button>
-          ) : (
-            <button
-              onClick={addNewManualQuestion}
-              type="button"
-              className="btn-secondary"
-              style={{ width: "100%", justifyContent: "center", padding: "11px", fontSize: "13px", fontWeight: 800, gap: "6px" }}
-            >
-              <Plus size={16} />
-              <span>إضافة سؤال جديد للاختبار</span>
-            </button>
-          )}
         </div>
 
-        {/* Right Column: Questions Canvas (AI Review or Manual Builder) */}
+        {/* Right Column: Questions Canvas (Extraction Review or Manual Builder) */}
         <div style={{ background: "var(--bg-surface, #ffffff)", border: "1px solid var(--border-color, #e2e8f0)", borderRadius: "16px", padding: "24px" }}>
           {error && (
             <div style={{ padding: "14px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "10px", color: "#991b1b", fontSize: "13px", display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px" }}>
@@ -1641,72 +1445,78 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
             </div>
           )}
 
-
-
-          {/* AI Waiting State */}
-          {creationMode === "ai" && !draft && !loading && !extractingFile && (
-            <div style={{ textAlign: "center", padding: "60px 20px", color: "#94a3b8" }}>
+          {/* Extraction waiting state */}
+          {displayedQuestions.length === 0 && !extractingFile && (
+            <div style={{ textAlign: "center", padding: "50px 20px", color: "#94a3b8" }}>
               <FileQuestion size={48} style={{ color: "#cbd5e1", margin: "0 auto 16px" }} />
               <h3 style={{ margin: "0 0 8px", fontSize: "17px", color: "var(--text-main, #0f172a)" }}>
-                جاهز لإنشاء {assessmentType === "quiz" ? "الاختبار الإلكتروني" : "الواجب المنزلي"}
+                جاهز {assessmentType === "quiz" ? "لاستخراج أسئلة الاختبار الإلكتروني" : "لاستخراج أسئلة الواجب المنزلي"}
               </h3>
-              <p style={{ margin: "0 0 18px", fontSize: "13px", maxWidth: "420px", marginInline: "auto" }}>
-                {quizMode === "extract"
-                  ? "قم برفع ملف الامتحان أو بنك الأسئلة أدناه لاستخراج جميع الأسئلة والخيارات والرسومات وتعديلها فوراً."
-                  : `حدد إعدادات الأسئلة ومواعيد الإتاحة واضغط "اصنع ${assessmentType === "quiz" ? "الاختبار" : "الواجب"} بالذكاء الاصطناعي" أو ارفع ملف أسئلة للاستخراج الفوري.`}
+              <p style={{ margin: "0 0 18px", fontSize: "13px", maxWidth: "440px", marginInline: "auto" }}>
+                قم برفع ملف الامتحان أو بنك الأسئلة أدناه لاستخراج جميع الأسئلة والخيارات والرسومات وتعديلها فوراً، أو ابدأ بإضافة الأسئلة يدوياً.
               </p>
 
-              {(quizMode === "extract" || quizMode === "mix") && (
-                <div
-                  onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-                  onDragLeave={() => setDragOver(false)}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    setDragOver(false);
-                    if (e.dataTransfer.files?.[0]) handleExtractFromFile(e.dataTransfer.files[0]);
-                  }}
-                  onClick={() => fileInputRef.current?.click()}
-                  style={{
-                    maxWidth: "460px",
-                    margin: "0 auto",
-                    padding: "24px 18px",
-                    border: dragOver ? "2px dashed #0f766e" : "2px dashed #cbd5e1",
-                    borderRadius: "12px",
-                    background: dragOver ? "#f0fdfa" : "#f8fafc",
-                    cursor: "pointer",
-                    transition: "all 0.2s ease",
-                  }}
-                >
-                  <UploadCloud size={36} style={{ color: "#0f766e", margin: "0 auto 10px" }} />
-                  <strong style={{ display: "block", fontSize: "14px", color: "#0f172a", marginBottom: "4px" }}>
-                    اضغط لاختيار ملف أسئلة أو اسحبه هنا
-                  </strong>
-                  <span style={{ fontSize: "12px", color: "#64748b" }}>
-                    يدعم ملفات PDF، Word (.docx)، نصوص TXT، وصور الامتحانات
-                  </span>
-                </div>
-              )}
+              <div
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragOver(false);
+                  if (e.dataTransfer.files?.[0]) handleExtractFromFile(e.dataTransfer.files[0]);
+                }}
+                onClick={() => fileInputRef.current?.click()}
+                style={{
+                  maxWidth: "460px",
+                  margin: "0 auto",
+                  padding: "24px 18px",
+                  border: dragOver ? "2px dashed #0f766e" : "2px dashed #cbd5e1",
+                  borderRadius: "12px",
+                  background: dragOver ? "#f0fdfa" : "#f8fafc",
+                  cursor: "pointer",
+                  transition: "all 0.2s ease",
+                }}
+              >
+                <UploadCloud size={36} style={{ color: "#0f766e", margin: "0 auto 10px" }} />
+                <strong style={{ display: "block", fontSize: "14px", color: "#0f172a", marginBottom: "4px" }}>
+                  اضغط لاختيار ملف أسئلة أو اسحبه هنا
+                </strong>
+                <span style={{ fontSize: "12px", color: "#64748b" }}>
+                  يدعم ملفات PDF، Word (.docx)، نصوص TXT، وصور الامتحانات
+                </span>
+              </div>
+
+              <div style={{ marginTop: "24px", display: "flex", alignItems: "center", justifyContent: "center", gap: "12px" }}>
+                <div style={{ height: "1px", background: "var(--border-color, #e2e8f0)", flex: 1, maxWidth: "120px" }} />
+                <span style={{ fontSize: "12px", color: "var(--text-muted, #64748b)", fontWeight: 700 }}>أو بدون ملف</span>
+                <div style={{ height: "1px", background: "var(--border-color, #e2e8f0)", flex: 1, maxWidth: "120px" }} />
+              </div>
+
+              <button
+                type="button"
+                onClick={addNewManualQuestion}
+                className="btn-secondary"
+                style={{ margin: "16px auto 0", display: "inline-flex", alignItems: "center", gap: "6px", padding: "10px 22px", fontSize: "13px", fontWeight: 700 }}
+              >
+                <Plus size={16} />
+                <span>بدء إضافة أسئلة {assessmentType === "quiz" ? "الاختبار" : "الواجب"} يدوياً</span>
+              </button>
             </div>
           )}
 
-          {creationMode === "ai" && (loading || extractingFile) && (
+          {extractingFile && (
             <div style={{ textAlign: "center", padding: "90px 20px", color: "#0f766e" }}>
               <Loader2 size={44} className="animate-spin" style={{ margin: "0 auto 16px" }} />
               <h3 style={{ margin: "0 0 8px", fontSize: "18px" }}>
-                {extractingFile
-                  ? "جاري تحليل الملف واستخراج الأسئلة والخيارات..."
-                  : `جاري تحليل محتوى الدرس وصياغة أسئلة ${assessmentType === "quiz" ? "الاختبار" : "الواجب"}...`}
+                جاري تحليل الملف واستخراج الأسئلة والخيارات...
               </h3>
               <p style={{ margin: 0, fontSize: "13px", color: "var(--text-muted)" }}>
-                {extractingFile
-                  ? "استخراج الأسئلة المقالية والاختيار من متعدد والرسومات البيانية وتوليد نموذج الإجابة بدقة."
-                  : "مطابقة المفاهيم التعليمية المقررة وصياغة خيارات الإجابة والأسئلة المقالية وإرشادات الحل."}
+                استخراج الأسئلة المقالية والاختيار من متعدد والرسومات البيانية وتوليد نموذج الإجابة بدقة.
               </p>
             </div>
           )}
 
-          {/* Questions Canvas (Available in Manual Mode OR after AI Draft) */}
-          {(creationMode === "manual" || (creationMode === "ai" && draft && !loading)) && (
+          {/* Questions Canvas (Rendered when questions exist) */}
+          {displayedQuestions.length > 0 && (
             <div>
               {/* Canvas Action Bar */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "20px", paddingBottom: "16px", borderBottom: "1px solid var(--border-color)", flexWrap: "wrap", gap: "12px" }}>
@@ -1747,13 +1557,12 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                     )}
                   </div>
                   <h2 style={{ margin: "2px 0 0", fontSize: "18px", color: "var(--text-main)" }}>
-                    {creationMode === "manual" ? (manualTitle || `${assessmentType === "quiz" ? "اختبار" : "واجب"} جديد (إنشاء يدوي)`) : draft?.title}
+                    {quizTitle || draft?.title || `${assessmentType === "quiz" ? "اختبار" : "واجب"} جديد`}
                   </h2>
                 </div>
 
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-
-                  {hasRestoredDraft && !approved && (
+                  {displayedQuestions.length > 0 && hasRestoredDraft && !approved && (
                     <button
                       type="button"
                       onClick={handleResetNewQuiz}
@@ -1794,10 +1603,10 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                 </div>
               </div>
 
-              {creationMode === "ai" && draft && draft.is_complete === false && (
+              {draft && draft.is_complete === false && (
                 <div style={{ padding: "12px 16px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "10px", color: "#92400e", fontSize: "12.5px", display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px" }}>
                   <AlertCircle size={18} style={{ flexShrink: 0 }} />
-                  <span>تنبيه تربوي: محتوى الدرس والمذكرات المتاحة لم يكفِ لتوليد كامل العدد المطلوب من الأسئلة الجديدة، وتم إخراج كافة الأسئلة الموثوقة المتاحة بدقة.</span>
+                  <span>تنبيه: تعذر استخراج كامل العدد المتوقع من الأسئلة من الملف، وتم إدراج كافة الأسئلة الموثوقة المتاحة بدقة.</span>
                 </div>
               )}
 
@@ -2249,7 +2058,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                           {isEditing && (
                             <div style={{ marginTop: "10px", borderTop: "1px solid var(--border-color)", paddingTop: "8px" }}>
                               <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, color: "#059669", marginBottom: "4px" }}>
-                                الإجابة النموذجية أو عناصر الإجابة المقالية (للمعلم وتصحيح الذكاء الاصطناعي):
+                                الإجابة النموذجية أو عناصر الإجابة المقالية (للمراجعة والتصحيح اليدوي):
                               </label>
                               <textarea
                                 rows={2}
@@ -2450,9 +2259,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                 <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px solid var(--border-color, #e2e8f0)", paddingBottom: "8px" }}>
                   <span style={{ color: "var(--text-muted, #64748b)", fontWeight: 600 }}>العنوان:</span>
                   <span style={{ color: "var(--text-main, #0f172a)", fontWeight: 800 }}>
-                    {creationMode === "manual"
-                      ? (manualTitle.trim() || `${assessmentType === "quiz" ? "اختبار" : "واجب"} جديد`)
-                      : (draft?.title || `${assessmentType === "quiz" ? "اختبار" : "واجب"}`)}
+                    {quizTitle.trim() || draft?.title || `${assessmentType === "quiz" ? "اختبار" : "واجب"} جديد`}
                   </span>
                 </div>
 

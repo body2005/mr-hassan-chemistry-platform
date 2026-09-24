@@ -1,17 +1,15 @@
 # Educational LMS Platform
 
 منصة تعليمية (LMS) متكاملة Production-Ready تخدم الطلاب والمعلمين ومسؤولي المؤسسات
-وإدارة المنصة، مع طبقة ذكاء اصطناعي منفصلة (توليد اختبارات، تصحيح مقالي، مساعد
-تعليمي grounded، تحليلات مخاطر).
+وإدارة المنصة.
 
 ## Components
 
 | Path | Stack | Purpose |
 |---|---|---|
-| `apps/api` | FastAPI · SQLAlchemy · Alembic · Argon2id | Backend الأساسي: Auth، RBAC، Tenant isolation، Courses، Quizzes، Assignments، Grades، Notifications، Certificates، AI jobs، Reports، Analytics |
-| `apps/ai-service` | FastAPI · Ollama/Groq adapters · scikit-learn | طبقة الذكاء: quiz generation، essay grading بـrubrics، RAG tutor، risk ML |
+| `apps/api` | FastAPI · SQLAlchemy · Alembic · Argon2id | Backend الأساسي: Auth، RBAC، Tenant isolation، Courses، Quizzes، Assignments، Grades، Notifications، Certificates، Reports، Analytics |
 | `apps/web` | React 19 · TypeScript strict · Vite · Tailwind 4 | الواجهة: 18 views، RTL/LTR كامل، Dark mode، جلسات HttpOnly |
-| `workers` | Celery · Redis | مهام خلفية: AI، إشعارات مجدولة، تقارير، تحليلات |
+| `workers` | Celery · Redis | مهام خلفية: إشعارات مجدولة، تقارير، تحليلات |
 | `infra` | Docker Compose · Nginx | Postgres+pgvector، Redis، MinIO، API، Worker، Web + سكربتات backup/restore |
 | `docs` | Markdown | ARCHITECTURE · PRODUCTION_READINESS · API · SECURITY |
 
