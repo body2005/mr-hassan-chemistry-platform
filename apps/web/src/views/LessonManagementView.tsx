@@ -1,22 +1,14 @@
 import React, { useState, useRef, useEffect } from "react";
 import {
   Film,
-  Bot,
-  Brain,
-  Clock,
   Download,
-  Eye,
   FileSpreadsheet,
   FileText,
-  HelpCircle,
-  MessageSquare,
   Paperclip,
+  Play,
   Plus,
   Printer,
-  RotateCcw,
-  Sparkles,
   Trash2,
-  TrendingDown,
   Upload,
   Video,
   X,
@@ -24,11 +16,29 @@ import {
   Globe,
 } from "lucide-react";
 import { Course, CurrentUser, VideoLesson } from "../types/lms";
-import { exportToCsv, exportToDocx, exportToPrintPdf } from "../utils/exportEngine";
+import { VideoLessonPage } from "../components/VideoLessonPage";
+import { exportToCsv, exportToDocx, exportToExcel, exportToPrintPdf } from "../utils/exportEngine";
 import { courseService } from "../services/lmsService";
 import { uploadManager } from "../services/uploadManager";
 import { fetchApiBlob } from "../services/apiClient";
 import { useConfirm } from "../components/ConfirmWizard";
+import { useTranslation } from "../utils/i18nContext";
+
+/** Tracks the app-wide light/dark theme by watching the `data-theme`
+ * attribute on <html>, so inline styles can pick theme-aware colors. */
+function useDataTheme(): "light" | "dark" {
+  const [theme, setTheme] = useState<"light" | "dark">(() =>
+    document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light",
+  );
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light");
+    });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => observer.disconnect();
+  }, []);
+  return theme;
+}
 
 /** Lightweight in-app toast — replaces window.alert for transient notices. */
 function useWizardToast() {
@@ -56,23 +66,32 @@ interface LessonManagementViewProps {
   onCoursesChanged: (courses: Course[]) => void;
 }
 
+
 export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   currentUser,
   courses: availableCourses,
   onCoursesChanged,
 }) => {
+  const { lang } = useTranslation();
+  const isDark = useDataTheme() === "dark";
+  void lang;
 
   const [courses, setCourses] = useState<Course[]>(availableCourses);
   React.useEffect(() => setCourses(availableCourses), [availableCourses]);
   const confirm = useConfirm();
   const { toast, notify } = useWizardToast();
   const [selectedYear, setSelectedYear] = useState<"1st_secondary" | "2nd_secondary" | "3rd_secondary">("1st_secondary");
+  const selectedGradeLevel = selectedYear === "1st_secondary"
+    ? "SECONDARY_1"
+    : selectedYear === "2nd_secondary"
+    ? "SECONDARY_2"
+    : "SECONDARY_3";
   const [isDeleteMode, setIsDeleteMode] = useState(false);
+  const [activeLessonModal, setActiveLessonModal] = useState<VideoLesson | null>(null);
 
 
 
   // Minimum Views Threshold Configured by Teacher (Requirement: AI predicts after X students watch)
-  const [minViewsThreshold, setMinViewsThreshold] = useState<number>(20);
 
   // New Lesson Form State
   const [lessonTitle, setLessonTitle] = useState("");
@@ -88,6 +107,10 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [courseModules, setCourseModules] = useState<Array<{ id: string; title: string }>>([]);
+  const [selectedModuleId, setSelectedModuleId] = useState<string>("auto");
+  const [newModuleTitle, setNewModuleTitle] = useState("");
+  const [isRevision, setIsRevision] = useState(false);
 
   // Auto-sync courses when background uploads finish
   useEffect(() => {
@@ -111,6 +134,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     targetLessonIdForVideoRef.current = lessonId;
     individualVideoInputRef.current?.click();
   }
+  void triggerAttachVideoToLesson;
 
   async function handleIndividualVideoChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -146,6 +170,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       uploadManager.enqueueKnowledgeBatchUpload({
         files: Array.from(files),
         courseId: activeCourse.id,
+        gradeLevel: selectedGradeLevel,
         lessonId,
         lessonTitle,
         onSuccess: () => {
@@ -160,57 +185,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     }
   }
 
-  // Transcript & AI Summary Modals State
-  const [transcriptModalLesson, setTranscriptModalLesson] = useState<VideoLesson | null>(null);
-  const [transcriptModalSegments, setTranscriptModalSegments] = useState<Array<{ id: string; sequence: number; start_time: number; end_time: number; time_formatted: string; text: string }>>([]);
-  const [transcriptModalSearch, setTranscriptModalSearch] = useState("");
-  const [visibleTranscriptModalCount, setVisibleTranscriptModalCount] = useState(60);
-  const [loadingTranscriptModal, setLoadingTranscriptModal] = useState(false);
-
-  const [summaryModalLesson, setSummaryModalLesson] = useState<VideoLesson | null>(null);
-  const [summaryData, setSummaryData] = useState<{ title: string; full_overview: string; total_duration_sec: number; language: string; sections: Array<{ time_range: string; start_time: number; end_time: number; summary_snippet: string }> } | null>(null);
-  const [visibleSummaryCount, setVisibleSummaryCount] = useState(50);
-  const [loadingSummary, setLoadingSummary] = useState(false);
-
-  const filteredTranscriptModalSegments = React.useMemo(() => {
-    if (!transcriptModalSearch.trim()) return transcriptModalSegments;
-    const q = transcriptModalSearch.toLowerCase().trim();
-    return transcriptModalSegments.filter((s) => s.text.toLowerCase().includes(q));
-  }, [transcriptModalSegments, transcriptModalSearch]);
-
-  useEffect(() => {
-    setVisibleTranscriptModalCount(60);
-  }, [transcriptModalSearch]);
-
-  async function openTranscriptModal(lesson: VideoLesson) {
-    setTranscriptModalLesson(lesson);
-    setTranscriptModalSearch("");
-    setVisibleTranscriptModalCount(60);
-    setLoadingTranscriptModal(true);
-    try {
-      const res = await courseService.getLessonSegments(lesson.id);
-      setTranscriptModalSegments(res.segments || []);
-    } catch {
-      setTranscriptModalSegments([]);
-    } finally {
-      setLoadingTranscriptModal(false);
-    }
-  }
-
-  async function openSummaryModal(lesson: VideoLesson) {
-    setSummaryModalLesson(lesson);
-    setVisibleSummaryCount(50);
-    setLoadingSummary(true);
-    try {
-      const res = await courseService.getLessonAISummary(lesson.id);
-      setSummaryData(res);
-    } catch {
-      setSummaryData(null);
-    } finally {
-      setLoadingSummary(false);
-    }
-  }
-
   // File Input Refs for Guaranteed Click Triggering
   const videoInputRef = useRef<HTMLInputElement>(null);
   const materialsInputRef = useRef<HTMLInputElement>(null);
@@ -222,18 +196,26 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     return [...activeCourse.lessons].reverse();
   }, [activeCourse]);
 
-  // Video & Lesson Search / Filter State
-  const [videoSearchQuery, setVideoSearchQuery] = useState("");
-  const [videoFilterType, setVideoFilterType] = useState<"all" | "video_only" | "notes_only">("all");
+  // Load modules (units) for the active course
+  useEffect(() => {
+    if (!activeCourse?.id) {
+      setCourseModules([]);
+      return;
+    }
+    courseService
+      .getCourseContent(activeCourse.id)
+      .then((content) => {
+        const mods = (content.modules || []).map((m) => ({ id: m.id, title: m.title }));
+        setCourseModules(mods);
+        if (mods.length > 0 && (selectedModuleId === "auto" || !selectedModuleId)) {
+          setSelectedModuleId(mods[0].id);
+        }
+      })
+      .catch(() => undefined);
+  }, [activeCourse?.id, courses]);
 
-  const totalWithVideo = React.useMemo(
-    () => activeLessons.filter((l) => Boolean(l.videoUrl)).length,
-    [activeLessons]
-  );
-  const totalWithNotes = React.useMemo(
-    () => activeLessons.filter((l) => Boolean(l.materials && l.materials.length > 0)).length,
-    [activeLessons]
-  );
+  // Video & Lesson Search State
+  const [videoSearchQuery, setVideoSearchQuery] = useState("");
 
   const filteredLessons: VideoLesson[] = React.useMemo(() => {
     let result = activeLessons;
@@ -245,13 +227,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         return title.includes(q) || desc.includes(q);
       });
     }
-    if (videoFilterType === "video_only") {
-      result = result.filter((l) => Boolean(l.videoUrl));
-    } else if (videoFilterType === "notes_only") {
-      result = result.filter((l) => Boolean(l.materials && l.materials.length > 0));
-    }
     return result;
-  }, [activeLessons, videoSearchQuery, videoFilterType]);
+  }, [activeLessons, videoSearchQuery]);
 
   const activeYearLabel =
     selectedYear === "1st_secondary"
@@ -259,11 +236,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       : selectedYear === "2nd_secondary"
       ? "الصف الثاني الثانوي"
       : "الصف الثالث الثانوي";
-
-  function handleThresholdChange(val: number) {
-    const num = Math.max(1, Math.min(val, 200));
-    setMinViewsThreshold(num);
-  }
 
   // Handle Video File Selection
   function handleVideoChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -418,18 +390,32 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       if (!course) throw new Error("تعذر إنشاء المقرر");
       const content = await courseService.getCourseContent(course.id);
       let module = content.modules[0];
+      if (selectedModuleId === "new" && newModuleTitle.trim()) {
+        module = await courseService.addModule(course.id, {
+          title: newModuleTitle.trim(),
+          position: (content.modules?.length || 0) + 1,
+        });
+      } else if (selectedModuleId && selectedModuleId !== "auto") {
+        const found = content.modules.find((m) => m.id === selectedModuleId);
+        if (found) module = found;
+      }
       if (!module) {
         module = await courseService.addModule(course.id, { title: "الوحدة الأولى", position: 1 });
       }
+
       const savedTitle = lessonTitle.trim();
-      const directCloudUrl = videoSourceType === "url" && videoExternalUrl.trim() ? videoExternalUrl.trim() : undefined;
+      const externalUrl = videoSourceType === "url" && videoExternalUrl.trim() ? videoExternalUrl.trim() : undefined;
+      const lessonContentWithMeta = isRevision
+        ? `${lessonDescription.trim()}\n<!--is_revision:true-->`
+        : lessonDescription.trim();
+
       const addedLesson = await courseService.addLesson(module.id, {
         title: savedTitle,
         kind: "video",
         position: module.lessons.length + 1,
-        content: lessonDescription.trim() || undefined,
+        content: lessonContentWithMeta || (isRevision ? "<!--is_revision:true-->" : undefined),
+        external_video_url: externalUrl,
         video_duration_seconds: lessonDuration * 60,
-        video_asset_key: directCloudUrl,
       });
 
       if (videoSourceType === "file" && selectedVideoFile) {
@@ -447,6 +433,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
           files: noteFiles,
           courseId: course.id,
           lessonId: addedLesson.id,
+          gradeLevel: selectedGradeLevel,
           lessonTitle: savedTitle,
           onSuccess: () => {
             courseService.getCourses().then((refreshed) => {
@@ -463,8 +450,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         notify(`تم إنشاء درس "${savedTitle}" بنجاح! جاري رفع الفيديو الآن في الخلفية إلى السحابة... يمكنك التنقل ومتابعة عملك بحرية.`);
       } else if (noteFiles.length > 0) {
         notify(`تم إنشاء درس "${savedTitle}" بنجاح! جاري رفع المذكرات الآن في الخلفية إلى السحابة... يمكنك التنقل ومتابعة عملك بحرية.`);
-      } else if (directCloudUrl) {
-        notify(`تم حفظ درس "${savedTitle}" بنجاح مع رابط الفيديو السحابي المباشر!`);
       } else {
         notify(`تم حفظ درس "${savedTitle}" بنجاح!`);
       }
@@ -487,6 +472,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     setVideoExternalUrl("");
     setAttachedFiles([]);
     setLessonPrice(0);
+    setIsRevision(false);
+    setNewModuleTitle("");
     setUploadSuccess(true);
     setTimeout(() => setUploadSuccess(false), 5000);
   }
@@ -496,36 +483,42 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     const headers = [
       "عنوان الدرس",
       "المدة",
-      "المشاهدات",
-      "نسبة المتابعة %",
-      "توقع التعثر %",
-      "نسبة عدم الفهم %",
-      "المقطع الأكثر إعادة",
-      "أبرز نقاط التردد والخلط",
+      "عدد الملفات المرفقة",
+      "حالة تجهيز التفريغ",
     ];
 
     const rows = activeLessons.map((l) => [
       l.title,
-      l.durationFormatted,
-      `${l.aiSignals?.viewsCount || 0} طالب`,
-      `${l.aiSignals?.completionRate || 0}%`,
-      `${l.expectedStruggleRate}%`,
-      `${l.predictedMisconceptionRate}%`,
-      l.aiSignals?.mostRewatchedSegment ? `${l.aiSignals.mostRewatchedSegment.timeRange} (${l.aiSignals.mostRewatchedSegment.conceptLabel})` : "—",
-      l.flaggedHardConcepts.join(" ، ") || "—",
+      l.durationFormatted || "—",
+      String((l.materials || []).length),
+      l.materialization_status === "INDEXED" ? "جاهز" : "غير معالج",
     ]);
 
     return {
-      title: `تقرير تحليل وتوقعات صعوبة الدروس بالذكاء الاصطناعي - ${activeYearLabel}`,
-      subtitle: `عدد الدروس: ${activeLessons.length} • الحد الأدنى للمشاهدات: ${minViewsThreshold} طالب`,
+      title: `تقرير الدروس والمذكرات - ${activeYearLabel}`,
+      subtitle: `عدد الدروس: ${activeLessons.length}`,
       headers,
       rows,
       summaryStats: [
         { label: "المادة الدراسية", value: activeCourse?.title || "المقرر الدراسي" },
         { label: "إجمالي الدروس", value: activeLessons.length },
-        { label: "معيار تفعيل الذكاء الاصطناعي", value: `${minViewsThreshold} مشاهدة` },
       ],
     };
+  }
+
+  if (activeLessonModal && activeCourse) {
+    return (
+      <VideoLessonPage
+        lesson={activeLessonModal}
+        course={activeCourse}
+        currentUser={currentUser}
+        completedLessonIds={[]}
+        onToggleCompleteLesson={() => {}}
+        onSelectLesson={(ls) => setActiveLessonModal(ls)}
+        onClose={() => setActiveLessonModal(null)}
+        onDownloadMaterial={downloadLessonMaterial}
+      />
+    );
   }
 
   return (
@@ -550,12 +543,9 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "24px", flexWrap: "wrap", gap: "16px" }}>
         <div>
-          <h1 style={{ margin: "0 0 4px", fontSize: "24px", color: "var(--text-main, #0f172a)" }}>
-            إدارة الدروس وتوقعات صعوبة المنهج التفاعلية
+          <h1 style={{ margin: 0, fontSize: "24px", color: "var(--text-main, #0f172a)" }}>
+            إدارة الدروس
           </h1>
-          <p style={{ margin: 0, color: "var(--text-muted, #64748b)", fontSize: "13px" }}>
-            ارفع فيديوهات الشروحات والمذكرات، وتعرف على توقعات الذكاء الاصطناعي المستخرجة من تفاعل الطلاب (المقاطع الأكثر إعادة، الكومنتات، درجات الواجب، والكويزات).
-          </p>
         </div>
 
         {/* Universal Export */}
@@ -565,7 +555,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
             onClick={() => setExportDropdownOpen(!exportDropdownOpen)}
             style={{ fontSize: "12px", gap: "6px" }}
           >
-            <Download size={15} /> تصدير التقرير (Generate Report)
+            <Download size={15} /> تصدير التقرير
           </button>
 
           {exportDropdownOpen && (
@@ -591,7 +581,18 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                 style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", borderBottom: "1px solid var(--border-color)", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text-main)" }}
               >
                 <FileText size={16} style={{ color: "#2563eb" }} />
-                <strong>تصدير Word (.docx حقيقي)</strong>
+                <strong>تصدير Word (.docx من اليمين للشمال)</strong>
+              </button>
+
+              <button
+                onClick={() => {
+                  exportToExcel(getExportPayload(), `difficulty_report_${selectedYear}.xls`);
+                  setExportDropdownOpen(false);
+                }}
+                style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", borderBottom: "1px solid var(--border-color)", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text-main)" }}
+              >
+                <FileSpreadsheet size={16} style={{ color: "#059669" }} />
+                <strong>تصدير Excel (.xls من اليمين للشمال)</strong>
               </button>
 
               <button
@@ -601,8 +602,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                 }}
                 style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", borderBottom: "1px solid var(--border-color)", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text-main)" }}
               >
-                <FileSpreadsheet size={16} style={{ color: "#059669" }} />
-                <strong>تصدير Excel / CSV</strong>
+                <FileSpreadsheet size={16} style={{ color: "#0d9488" }} />
+                <strong>تصدير CSV (جدول بيانات)</strong>
               </button>
 
               <button
@@ -613,7 +614,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                 style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text-main)" }}
               >
                 <Printer size={16} style={{ color: "#0f392b" }} />
-                <strong>تصدير / طباعة PDF</strong>
+                <strong>تصدير / طباعة PDF (من اليمين للشمال)</strong>
               </button>
             </div>
           )}
@@ -649,45 +650,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
           ))}
         </div>
 
-        {/* AI Threshold Configuration Pill (Teacher Control) */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-            background: "var(--bg-surface, #ffffff)",
-            border: "1px solid var(--border-color, #e2e8f0)",
-            padding: "6px 14px",
-            borderRadius: "10px",
-          }}
-        >
-          <Bot size={18} style={{ color: "#059669" }} />
-          <span style={{ fontSize: "12px", color: "var(--text-main)", fontWeight: 700 }}>
-            الحد الأدنى لمشاهدات الطلاب لتفعيل تحليل الـ AI:
-          </span>
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <input
-              type="number"
-              min={1}
-              max={200}
-              value={minViewsThreshold}
-              onChange={(e) => handleThresholdChange(parseInt(e.target.value) || 20)}
-              style={{
-                width: "54px",
-                padding: "3px 6px",
-                textAlign: "center",
-                fontWeight: 800,
-                fontSize: "13px",
-                borderRadius: "6px",
-                border: "1.5px solid #059669",
-                background: "var(--bg-accent, #ecfdf5)",
-                color: "var(--text-main)",
-                outline: "none",
-              }}
-            />
-            <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>طالب</span>
-          </div>
-        </div>
       </div>
 
       {/* Main 2-Column Layout: Lesson Upload Form + Per-Lesson Detailed Archive */}
@@ -705,6 +667,95 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
           )}
 
           <form onSubmit={handleUploadLesson} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+            {/* Unit / Module Selection */}
+            <div>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
+                الوحدة الدراسية التابع لها الفيديو:
+              </label>
+              <select
+                value={selectedModuleId}
+                onChange={(e) => setSelectedModuleId(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "9px 12px",
+                  border: "1px solid var(--border-color-strong, #cbd5e1)",
+                  borderRadius: "8px",
+                  fontSize: "12px",
+                  background: "var(--bg-surface)",
+                  color: "var(--text-main)",
+                  boxSizing: "border-box",
+                  outline: "none",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                {courseModules.map((m, idx) => (
+                  <option key={m.id} value={m.id}>
+                    {m.title || `الوحدة ${idx + 1}`}
+                  </option>
+                ))}
+                <option value="new">+ إضافة وحدة دراسية جديدة للمقرر...</option>
+              </select>
+
+              {selectedModuleId === "new" && (
+                <div style={{ marginTop: "8px" }}>
+                  <input
+                    type="text"
+                    required
+                    value={newModuleTitle}
+                    onChange={(e) => setNewModuleTitle(e.target.value)}
+                    placeholder="اكتب اسم الوحدة الجديدة (مثال: الوحدة الثالثة: الكيمياء العضوية)..."
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      border: "1.5px solid #059669",
+                      borderRadius: "8px",
+                      fontSize: "12px",
+                      background: "var(--bg-surface)",
+                      color: "var(--text-main)",
+                      boxSizing: "border-box",
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Revision Video Toggle */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: "10px",
+                padding: "10px 14px",
+                background: isRevision ? "rgba(16, 185, 129, 0.12)" : "var(--bg-surface-secondary)",
+                borderRadius: "10px",
+                border: isRevision ? "1.5px solid #059669" : "1px solid var(--border-color)",
+                transition: "all 0.15s ease",
+              }}
+            >
+              <input
+                id="isRevisionCheckbox"
+                type="checkbox"
+                checked={isRevision}
+                onChange={(e) => setIsRevision(e.target.checked)}
+                style={{
+                  width: "18px",
+                  height: "18px",
+                  marginTop: "2px",
+                  cursor: "pointer",
+                  accentColor: "#059669",
+                }}
+              />
+              <label htmlFor="isRevisionCheckbox" style={{ cursor: "pointer", userSelect: "none" }}>
+                <strong style={{ display: "block", fontSize: "13px", color: isRevision ? "#059669" : "var(--text-main)", marginBottom: "2px" }}>
+                  فيديو مراجعة / ورشة عمل
+                </strong>
+                <span style={{ fontSize: "11.5px", color: "var(--text-muted)", lineHeight: 1.4 }}>
+                  عند تفعيل هذا الخيار، سيتم تصنيف الفيديو كمراجعة ووضعه تلقائياً في تبويب «المراجعات» لدى الطلاب.
+                </span>
+              </label>
+            </div>
+
             <div>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>عنوان الدرس:</label>
               <input
@@ -798,7 +849,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                     type="url"
                     value={videoExternalUrl}
                     onChange={(e) => setVideoExternalUrl(e.target.value)}
-                    placeholder="ضع رابط الفيديو هنا (YouTube / Google Drive / MP4 سحابي مباشر)..."
+                    placeholder="ضع رابط الفيديو هنا (يوتيوب أو جوجل درايف أو رابط مباشر)..."
                     style={{
                       width: "100%",
                       padding: "10px 12px",
@@ -829,7 +880,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                       <div style={{ padding: "8px 12px", background: "#0f392b", color: "#ffffff", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11.5px" }}>
                         <span style={{ fontWeight: 700, display: "flex", alignItems: "center", gap: "6px" }}>
                           <Film size={14} style={{ color: "#34d399" }} />
-                          معاينة وتشغيل الفيديو قبل الرفع ({selectedVideo?.name})
+                          معاينة وتشغيل الفيديو قبل الرفع — {selectedVideo?.name}
                         </span>
                         <button
                           type="button"
@@ -891,7 +942,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
             {/* Lesson Materials / PDFs Upload Box */}
             <div>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
-                المذكرات والملفات المرفقة (PDF / Word):
+                المذكرات والملفات المرفقة:
               </label>
 
               <input
@@ -984,7 +1035,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
             <h3 style={{ margin: 0, fontSize: "17px", fontWeight: 800, color: "var(--text-main, #0f172a)" }}>
-              الدروس المرفوعة وتوقعات صعوبة كل درس ({activeLessons.length} دروس)
+              الدروس المرفوعة ({activeLessons.length} دروس)
             </h3>
 
             {activeLessons.length > 0 && (
@@ -994,9 +1045,13 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                   type="button"
                   onClick={() => setIsDeleteMode((prev) => !prev)}
                   style={{
-                    background: isDeleteMode ? "#b91c1c" : "#fee2e2",
-                    color: isDeleteMode ? "#ffffff" : "#b91c1c",
-                    border: isDeleteMode ? "1.5px solid #991b1b" : "1px solid #fca5a5",
+                    background: isDeleteMode ? "#b91c1c" : isDark ? "rgb(63 22 22)" : "rgb(246 246 246)",
+                    color: isDeleteMode ? "#ffffff" : "rgb(185, 28, 28)",
+                    border: isDeleteMode
+                      ? "1.5px solid #991b1b"
+                      : isDark
+                        ? "1px solid rgb(90 28 28)"
+                        : "1px solid rgb(215 204 204)",
                     borderRadius: "8px",
                     padding: "6px 14px",
                     fontSize: "12px",
@@ -1016,7 +1071,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                   ) : (
                     <>
                       <Trash2 size={14} />
-                      <span>تحديد للحذف (Select to Delete)</span>
+                      <span>تحديد للحذف</span>
                     </>
                   )}
                 </button>
@@ -1097,72 +1152,10 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                   )}
                 </div>
 
-                {/* Filter Pills: All / Videos Only / Notes Only */}
-                <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                  <button
-                    type="button"
-                    onClick={() => setVideoFilterType("all")}
-                    style={{
-                      padding: "6px 12px",
-                      borderRadius: "20px",
-                      fontSize: "12px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      border: "none",
-                      background: videoFilterType === "all" ? "#0f392b" : "var(--bg-surface-secondary, #f1f5f9)",
-                      color: videoFilterType === "all" ? "#ffffff" : "var(--text-muted, #64748b)",
-                      transition: "all 0.15s ease",
-                    }}
-                  >
-                    الكل ({activeLessons.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setVideoFilterType("video_only")}
-                    style={{
-                      padding: "6px 12px",
-                      borderRadius: "20px",
-                      fontSize: "12px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      border: "none",
-                      background: videoFilterType === "video_only" ? "#059669" : "var(--bg-surface-secondary, #f1f5f9)",
-                      color: videoFilterType === "video_only" ? "#ffffff" : "var(--text-muted, #64748b)",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "4px",
-                      transition: "all 0.15s ease",
-                    }}
-                  >
-                    <span>فيديوهات فقط 🎥</span>
-                    <span>({totalWithVideo})</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setVideoFilterType("notes_only")}
-                    style={{
-                      padding: "6px 12px",
-                      borderRadius: "20px",
-                      fontSize: "12px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      border: "none",
-                      background: videoFilterType === "notes_only" ? "#0284c7" : "var(--bg-surface-secondary, #f1f5f9)",
-                      color: videoFilterType === "notes_only" ? "#ffffff" : "var(--text-muted, #64748b)",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "4px",
-                      transition: "all 0.15s ease",
-                    }}
-                  >
-                    <span>مذكرات فقط 📄</span>
-                    <span>({totalWithNotes})</span>
-                  </button>
-                </div>
               </div>
 
               {/* Search Active Indicator / Summary */}
-              {(videoSearchQuery.trim() || videoFilterType !== "all") && (
+              {videoSearchQuery.trim() && (
                 <div
                   style={{
                     display: "flex",
@@ -1180,10 +1173,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                   </span>
                   <button
                     type="button"
-                    onClick={() => {
-                      setVideoSearchQuery("");
-                      setVideoFilterType("all");
-                    }}
+                    onClick={() => setVideoSearchQuery("")}
                     style={{
                       background: "none",
                       border: "none",
@@ -1212,10 +1202,10 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
             >
               <Video size={44} style={{ color: "#059669", opacity: 0.6, margin: "0 auto 12px" }} />
               <h4 style={{ margin: "0 0 6px", fontSize: "17px", fontWeight: 800, color: "var(--text-main)" }}>
-                لا توجد دروس مرفوعة بعد ({activeYearLabel})
+                لا توجد دروس مرفوعة بعد — {activeYearLabel}
               </h4>
               <p style={{ margin: "0 auto 16px", maxWidth: "420px", color: "var(--text-muted)", fontSize: "13px", lineHeight: "1.5" }}>
-                تم تفريغ كافة الأمثلة السابقة بالكامل لتبدأ برفع فيديوهاتك ومذكراتك الحقيقية وتجربة توقعات الذكاء الاصطناعي من الصفر!
+                تم تنظيف كافة الأمثلة السابقة بالكامل لتبدأ برفع فيديوهاتك ومذكراتك الحقيقية من الصفر!
               </p>
               <span style={{ fontSize: "12px", color: "#059669", fontWeight: 700, background: "var(--bg-accent, #ecfdf5)", padding: "6px 14px", borderRadius: "20px", border: "1px solid #a7f3d0", display: "inline-block" }}>
                 املأ نموذج "رفع درس ومحتوى جديد" على اليمين للبدء
@@ -1240,10 +1230,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
               </p>
               <button
                 type="button"
-                onClick={() => {
-                  setVideoSearchQuery("");
-                  setVideoFilterType("all");
-                }}
+                onClick={() => setVideoSearchQuery("")}
                 style={{
                   background: "var(--bg-surface-secondary, #f1f5f9)",
                   color: "#059669",
@@ -1259,772 +1246,265 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
               </button>
             </div>
           ) : (
-            filteredLessons.map((lesson, idx) => {
-            const viewsCount = lesson.aiSignals?.viewsCount || 0;
-            const hasRealTelemetry = viewsCount > 0 && Boolean(lesson.aiSignals);
-            const isAnalyzed = hasRealTelemetry && viewsCount >= minViewsThreshold;
-            const completionRate = lesson.aiSignals?.completionRate || 0;
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 310px), 1fr))", gap: "20px" }}>
+              {filteredLessons.map((lesson, idx) => {
+                const hasLessonVideo = Boolean(lesson.videoUrl || lesson.requiresProtectedPlayback);
 
-            return (
-              <div
-                key={lesson.id}
-                style={{
-                  background: "var(--bg-surface, #ffffff)",
-                  border: isDeleteMode
-                    ? "1.5px solid #ef4444"
-                    : (isAnalyzed ? "1px solid var(--border-color, #e2e8f0)" : "1.5px dashed #cbd5e1"),
-                  borderRadius: "16px",
-                  padding: "22px",
-                  boxShadow: isDeleteMode ? "0 2px 10px rgba(239, 68, 68, 0.12)" : "0 1px 4px rgba(0,0,0,0.03)",
-                  position: "relative",
-                  transition: "all 0.2s ease",
-                }}
-              >
-                {/* Strictly Per-Lesson Video Player Section */}
-                {(() => {
-                  const lessonVideoUrl = lesson.videoUrl;
-
-                  return (
+                return (
+                  <div
+                    key={lesson.id}
+                    style={{
+                      background: "var(--bg-surface, #ffffff)",
+                      border: isDeleteMode ? "1.5px solid #ef4444" : "1px solid var(--border-color, #e2e8f0)",
+                      borderRadius: "14px",
+                      overflow: "hidden",
+                      boxShadow: isDeleteMode ? "0 2px 10px rgba(239, 68, 68, 0.12)" : "0 1px 4px rgba(0,0,0,0.04)",
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "space-between",
+                      transition: "transform 0.15s ease, box-shadow 0.15s ease",
+                    }}
+                  >
+                    {/* Lesson Card Media Header (Dark Emerald — Matches Image 1) */}
                     <div
+                      onClick={() => setActiveLessonModal(lesson)}
                       style={{
-                        background: "var(--bg-surface-secondary, #f8fafc)",
-                        border: "1px solid var(--border-color, #e2e8f0)",
-                        borderRadius: "14px",
-                        padding: "14px",
-                        marginBottom: "16px",
+                        height: "150px",
+                        background: "#0f392b",
+                        padding: "16px",
+                        display: "flex",
+                        flexDirection: "column",
+                        justifyContent: "space-between",
+                        cursor: "pointer",
+                        position: "relative",
                       }}
+                      title="انقر لمشاهدة الفيديو والرد على استفسارات وتعليقات الطلاب"
                     >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: lessonVideoUrl ? "12px" : "0", flexWrap: "wrap", gap: "10px" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                          <Film size={18} style={{ color: "#059669" }} />
-                          <strong style={{ fontSize: "13px", color: "var(--text-main)" }}>
-                            فيديو الشرح: {lesson.title}
-                          </strong>
-                          {lessonVideoUrl ? (
-                            <span style={{ fontSize: "11px", color: "#059669", fontWeight: 700, background: "#ecfdf5", padding: "2px 8px", borderRadius: "6px" }}>
-                              جاهز للتشغيل
-                            </span>
-                          ) : (
-                            <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                              (مرفق مذكرات / ملفات)
-                            </span>
-                          )}
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() => triggerAttachVideoToLesson(lesson.id)}
+                      {/* Top Badges */}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span
                           style={{
-                            background: "var(--bg-surface, #ffffff)",
-                            color: "#059669",
-                            border: "1px solid #059669",
-                            borderRadius: "8px",
-                            padding: "5px 12px",
-                            fontSize: "11.5px",
-                            fontWeight: 700,
-                            cursor: "pointer",
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: "5px",
+                            fontSize: "11px",
+                            fontWeight: 800,
+                            background: "rgba(255,255,255,0.2)",
+                            color: "#ffffff",
+                            padding: "3px 8px",
+                            borderRadius: "6px",
+                            backdropFilter: "blur(4px)",
                           }}
                         >
-                          <Upload size={13} />
-                          <span>{lessonVideoUrl ? "تغيير فيديو هذا الدرس" : "رفع فيديو لهذا الدرس"}</span>
-                        </button>
-                      </div>
-
-                      {/* Video Player — Appears ONLY when this specific lesson has a video */}
-                      {lessonVideoUrl && (
-                        <div style={{ borderRadius: "10px", overflow: "hidden", border: "1.5px solid #0f392b", background: "#000" }}>
-                          {(() => {
-                            const ytMatch = lessonVideoUrl.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
-                            if (ytMatch && ytMatch[1]) {
-                              return (
-                                <iframe
-                                  src={`https://www.youtube-nocookie.com/embed/${ytMatch[1]}`}
-                                  title={lesson.title}
-                                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                                  allowFullScreen
-                                  style={{ width: "100%", height: "360px", border: "none", display: "block" }}
-                                />
-                              );
-                            }
-                            if (lessonVideoUrl.includes("drive.google.com")) {
-                              const driveEmbed = lessonVideoUrl.replace(/\/view(\?.*)?$/, "/preview");
-                              return (
-                                <iframe
-                                  src={driveEmbed}
-                                  title={lesson.title}
-                                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                                  allowFullScreen
-                                  style={{ width: "100%", height: "360px", border: "none", display: "block" }}
-                                />
-                              );
-                            }
-                            return (
-                              <video
-                                key={lessonVideoUrl}
-                                src={lessonVideoUrl}
-                                controls
-                                controlsList="nodownload nofullscreen noremoteplayback"
-                                disablePictureInPicture
-                                disableRemotePlayback
-                                onContextMenu={(e) => e.preventDefault()}
-                                playsInline
-                                preload="metadata"
-                                style={{ width: "100%", maxHeight: "360px", display: "block", background: "#000", userSelect: "none" }}
-                              />
-                            );
-                          })()}
-                          <div style={{ padding: "8px 12px", background: "#0f392b", color: "#ecfdf5", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px" }}>
-                            <span>{lesson.title}</span>
-                            <span style={{ color: "#34d399", fontWeight: 700 }}>تشغيل فائق الدقة وسلس للمشاهدة والشرح</span>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
-
-                {/* Lesson Top Header: Title, Duration, Views Badge */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "14px", flexWrap: "wrap", gap: "10px" }}>
-                  <div>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
-                      <span style={{ fontSize: "11px", fontWeight: 800, color: "var(--text-main)", background: "var(--bg-accent, #ecfdf5)", padding: "2px 8px", borderRadius: "6px" }}>
-                        الدرس {idx + 1}
-                      </span>
-                      <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>
-                        {lesson.durationFormatted}
-                      </span>
-                      <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>
-                        • {viewsCount} مشاهدة طالب
-                      </span>
-                    </div>
-
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", margin: "0 0 4px", flexWrap: "wrap" }}>
-                      <h4 style={{ margin: 0, fontSize: "16px", fontWeight: 800, color: "var(--text-main)" }}>
-                        {lesson.title}
-                      </h4>
-                    </div>
-                    <p style={{ margin: 0, fontSize: "12px", color: "var(--text-muted)", lineHeight: "1.4" }}>
-                      {lesson.description}
-                    </p>
-                  </div>
-
-                  {/* Actions & AI Status Badge */}
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                    <button
-                      type="button"
-                      onClick={() => openTranscriptModal(lesson)}
-                      style={{
-                        background: "var(--bg-surface, #ffffff)",
-                        color: "#059669",
-                        border: "1px solid #059669",
-                        borderRadius: "8px",
-                        padding: "5px 12px",
-                        fontSize: "11.5px",
-                        fontWeight: 700,
-                        cursor: "pointer",
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "5px",
-                      }}
-                      title="عرض تفريغ الشرح والبحث الزمني"
-                    >
-                      <FileText size={13} />
-                      <span>تفريغ الشرح والبحث</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => openSummaryModal(lesson)}
-                      style={{
-                        background: "var(--bg-surface, #ffffff)",
-                        color: "#0f766e",
-                        border: "1px solid #0f766e",
-                        borderRadius: "8px",
-                        padding: "5px 12px",
-                        fontSize: "11.5px",
-                        fontWeight: 700,
-                        cursor: "pointer",
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "5px",
-                      }}
-                      title="عرض ملخص الذكاء الاصطناعي للمفاهيم الأساسية"
-                    >
-                      <Bot size={13} />
-                      <span>ملخص AI</span>
-                    </button>
-
-                    {isDeleteMode && (
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteLesson(lesson.id, lesson.title)}
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "6px",
-                          padding: "6px 14px",
-                          borderRadius: "8px",
-                          background: "#dc2626",
-                          color: "#ffffff",
-                          border: "none",
-                          fontSize: "12px",
-                          fontWeight: 800,
-                          cursor: "pointer",
-                          boxShadow: "0 2px 6px rgba(220, 38, 38, 0.3)",
-                        }}
-                        title="حذف هذا الفيديو"
-                      >
-                        <Trash2 size={14} />
-                        <span>حذف الفيديو</span>
-                      </button>
-                    )}
-
-                    {isAnalyzed ? (
-                    <span
-                      style={{
-                        fontSize: "11px",
-                        fontWeight: 800,
-                        padding: "4px 10px",
-                        borderRadius: "8px",
-                        background: lesson.expectedStruggleRate > 40 ? "var(--bg-accent-warm)" : "var(--bg-accent)",
-                        color: lesson.expectedStruggleRate > 40 ? "#ef4444" : "#059669",
-                        border: lesson.expectedStruggleRate > 40 ? "1px solid #fca5a5" : "1px solid #a7f3d0",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "5px",
-                      }}
-                    >
-                      <Sparkles size={13} />
-                      <span>{lesson.expectedStruggleRate > 40 ? "درس عالي الصعوبة" : "صعوبة معتدلة"}</span>
-                    </span>
-                  ) : (
-                    <span
-                      style={{
-                        fontSize: "11px",
-                        fontWeight: 700,
-                        padding: "4px 10px",
-                        borderRadius: "8px",
-                        background: "var(--bg-accent-warm)",
-                        color: "#b45309",
-                        border: "1px solid #fde68a",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "5px",
-                      }}
-                    >
-                      <Clock size={13} />
-                      <span>في انتظار اكتمال المشاهدات ({viewsCount} / {minViewsThreshold})</span>
-                    </span>
-                  )}
-                  </div>
-                </div>
-
-                {/* Real Analytics Status: ONLY shown when real student telemetry exists */}
-                {viewsCount === 0 ? (
-                  <div
-                    style={{
-                      background: "var(--bg-surface-secondary, #f8fafc)",
-                      border: "1px dashed var(--border-color, #cbd5e1)",
-                      borderRadius: "12px",
-                      padding: "14px 16px",
-                      marginBottom: "14px",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "10px",
-                    }}
-                  >
-                    <Clock size={18} style={{ color: "#059669", flexShrink: 0 }} />
-                    <div>
-                      <strong style={{ display: "block", fontSize: "12px", color: "var(--text-main)" }}>
-                        في انتظار بدء مشاهدات وتفاعل الطلاب (0 مشاهدات حالياً)
-                      </strong>
-                      <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                        تم رفع وحفظ الدرس بنجاح. ستظهر نسب المتابعة الحقيقية وتحليلات الذكاء الاصطناعي فور بدء الطلاب بمشاهدة الفيديو وحل الواجبات.
-                      </span>
-                    </div>
-                  </div>
-                ) : isAnalyzed ? (
-                  <>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px", marginBottom: "16px" }}>
-                      <div style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "10px", padding: "12px 14px" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#059669", marginBottom: "2px" }}>
-                          <Eye size={15} />
-                          <span style={{ fontSize: "11px", fontWeight: 800 }}>نسبة متابعة الدرس:</span>
-                        </div>
-                        <strong style={{ display: "block", fontSize: "20px", color: "var(--text-main)" }}>
-                          {completionRate}%
-                        </strong>
-                        <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>متوسط إتمام المشاهدة</span>
-                      </div>
-
-                      <div style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "10px", padding: "12px 14px" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#d97706", marginBottom: "2px" }}>
-                          <TrendingDown size={15} />
-                          <span style={{ fontSize: "11px", fontWeight: 800 }}>توقع التعثر وصعوبة الدرس:</span>
-                        </div>
-                        <strong style={{ display: "block", fontSize: "20px", color: "var(--text-main)" }}>
-                          {lesson.expectedStruggleRate}%
-                        </strong>
-                        <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>نسبة الطلاب المتوقع تعثرهم</span>
-                      </div>
-
-                      <div style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "10px", padding: "12px 14px" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#d97706", marginBottom: "2px" }}>
-                          <Brain size={15} />
-                          <span style={{ fontSize: "11px", fontWeight: 800 }}>نسبة عدم الفهم المرصودة:</span>
-                        </div>
-                        <strong style={{ display: "block", fontSize: "20px", color: "var(--text-main)" }}>
-                          {lesson.predictedMisconceptionRate}%
-                        </strong>
-                        <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>خلط المفاهيم</span>
-                      </div>
-                    </div>
-
-                    {lesson.aiSignals && (
-                      <div
-                        style={{
-                          background: "var(--bg-surface-secondary)",
-                          border: "1px solid var(--border-color)",
-                          borderRadius: "12px",
-                          padding: "14px",
-                          marginBottom: "14px",
-                        }}
-                      >
-                        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "10px" }}>
-                          <Bot size={15} style={{ color: "#059669" }} />
-                          <strong style={{ fontSize: "12px", color: "var(--text-main)" }}>
-                            مصادر تحليل الذكاء الاصطناعي لهذا الدرس (AI Telemetry Signals):
-                          </strong>
-                        </div>
-
-                        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "10px" }}>
-                          {lesson.aiSignals.mostRewatchedSegment && (
-                            <div style={{ background: "var(--bg-surface)", padding: "10px", borderRadius: "8px", border: "1px solid var(--border-color)" }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#2563eb", marginBottom: "3px" }}>
-                                <RotateCcw size={13} />
-                                <strong style={{ fontSize: "11px" }}>١. أكثر مقطع تمت إعادته (Heatmap):</strong>
-                              </div>
-                              <span style={{ display: "block", fontSize: "11.5px", color: "var(--text-main)", fontWeight: 700 }}>
-                                {lesson.aiSignals.mostRewatchedSegment.timeRange}
-                                <small style={{ color: "#2563eb", marginInlineStart: "6px" }}>
-                                  ({lesson.aiSignals.mostRewatchedSegment.replayCount} إعادة تكرار)
-                                </small>
-                              </span>
-                              <small style={{ display: "block", fontSize: "10.5px", color: "var(--text-muted)", marginTop: "2px" }}>
-                                {lesson.aiSignals.mostRewatchedSegment.conceptLabel}
-                              </small>
-                            </div>
-                          )}
-
-                          {lesson.aiSignals.commentsSentiment && (
-                            <div style={{ background: "var(--bg-surface)", padding: "10px", borderRadius: "8px", border: "1px solid var(--border-color)" }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#d97706", marginBottom: "3px" }}>
-                                <MessageSquare size={13} />
-                                <strong style={{ fontSize: "11px" }}>٢. تحليل تعليقات وأسئلة الطلاب:</strong>
-                              </div>
-                              <span style={{ display: "block", fontSize: "11.5px", color: "var(--text-main)", fontWeight: 700 }}>
-                                رصد {lesson.aiSignals.commentsSentiment.confusionQuestionsCount} سؤال عدم فهم
-                              </span>
-                              <small style={{ display: "block", fontSize: "10.5px", color: "#d97706", marginTop: "2px" }}>
-                                {lesson.aiSignals.commentsSentiment.sampleQuestion}
-                              </small>
-                            </div>
-                          )}
-
-                          {lesson.aiSignals.assignmentPerformance && (
-                            <div style={{ background: "var(--bg-surface)", padding: "10px", borderRadius: "8px", border: "1px solid var(--border-color)" }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#059669", marginBottom: "3px" }}>
-                                <FileText size={13} />
-                                <strong style={{ fontSize: "11px" }}>٣. متوسط درجات واجب الدرس:</strong>
-                              </div>
-                              <span style={{ display: "block", fontSize: "11.5px", color: "var(--text-main)", fontWeight: 700 }}>
-                                {lesson.aiSignals.assignmentPerformance.averageScore}%
-                              </span>
-                            </div>
-                          )}
-
-                          {lesson.aiSignals.quizPerformance && (
-                            <div style={{ background: "var(--bg-surface)", padding: "10px", borderRadius: "8px", border: "1px solid var(--border-color)" }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#059669", marginBottom: "3px" }}>
-                                <HelpCircle size={13} />
-                                <strong style={{ fontSize: "11px" }}>٤. نتائج ونسب خطأ الكويز:</strong>
-                              </div>
-                              <span style={{ display: "block", fontSize: "11.5px", color: "var(--text-main)", fontWeight: 700 }}>
-                                {lesson.aiSignals.quizPerformance.averageScore}% نسبة الدقة
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <div
-                    style={{
-                      background: "var(--bg-surface-secondary, #f8fafc)",
-                      border: "1px solid var(--border-color, #e2e8f0)",
-                      borderRadius: "12px",
-                      padding: "14px 16px",
-                      marginBottom: "14px",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      flexWrap: "wrap",
-                      gap: "12px",
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                      <Clock size={18} style={{ color: "#d97706", flexShrink: 0 }} />
-                      <div>
-                        <strong style={{ display: "block", fontSize: "12px", color: "var(--text-main)" }}>
-                          في انتظار اكتمال الحد الأدنى للمشاهدات ({viewsCount} من أصل {minViewsThreshold} طالب)
-                        </strong>
-                        <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                          سيتم تفعيل تقارير الذكاء الاصطناعي وتوقعات الصعوبة بمجرد وصول عدد المشاهدين للحد المطلوب.
+                          الدرس {idx + 1}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            fontWeight: 800,
+                            background: "rgba(0,0,0,0.4)",
+                            color: "#ffffff",
+                            padding: "3px 8px",
+                            borderRadius: "6px",
+                          }}
+                        >
+                          {lesson.durationFormatted || "21 دقيقة"}
                         </span>
                       </div>
-                    </div>
-                  </div>
-                )}
 
-                {/* Attached Materials Section & Add Material Button */}
-                <div style={{ background: "var(--bg-surface-secondary, #f8fafc)", padding: "10px 14px", borderRadius: "10px", border: "1px solid var(--border-color)" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: (lesson.materials && lesson.materials.length > 0) ? "8px" : "0" }}>
-                    <strong style={{ fontSize: "11.5px", color: "var(--text-main)" }}>
-                      الملفات والمذكرات المرفقة ({(lesson.materials || []).length}):
-                    </strong>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        triggerAttachMaterialToLesson(lesson.id);
-                      }}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        color: "#059669",
-                        fontSize: "11.5px",
-                        fontWeight: 800,
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "4px",
-                      }}
-                    >
-                      <Plus size={13} /> + رفع مذكرة إضافية للدرس
-                    </button>
-                  </div>
-
-                  {lesson.materials && lesson.materials.length > 0 ? (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-                      {lesson.materials.map((mat) => (
+                      {/* Center Play Button Circle */}
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
                         <div
-                          key={mat.id}
                           style={{
+                            width: "48px",
+                            height: "48px",
+                            borderRadius: "50%",
+                            background: "rgba(255,255,255,0.9)",
+                            color: "#0f392b",
                             display: "flex",
                             alignItems: "center",
-                            gap: "6px",
-                            padding: "5px 10px",
-                            background: "var(--bg-surface, #ffffff)",
-                            borderRadius: "6px",
-                            fontSize: "11px",
-                            border: "1px solid var(--border-color)",
+                            justifyContent: "center",
+                            boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
                           }}
                         >
-                          <FileText size={13} style={{ color: "#2563eb" }} />
-                          <span style={{ fontWeight: 700, color: "var(--text-main)" }}>{mat.title}</span>
-                          <span style={{ color: "var(--text-muted)", fontSize: "10px" }}>({mat.fileSize})</span>
+                          <Play size={22} fill="#0f392b" style={{ marginInlineStart: "2px" }} />
+                        </div>
+                      </div>
+
+                      {/* Bottom Status Row */}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontSize: "11px", color: "#a7f3d0", fontWeight: 700 }}>
+                          فيديو شرح تفاعلي
+                        </span>
+                        {hasLessonVideo ? (
+                          <span
+                            style={{
+                              fontSize: "11px",
+                              fontWeight: 800,
+                              color: "#10b981",
+                              background: "rgba(0,0,0,0.5)",
+                              padding: "2px 8px",
+                              borderRadius: "4px",
+                            }}
+                          >
+                            جاهز للتشغيل
+                          </span>
+                        ) : (
+                          <span
+                            style={{
+                              fontSize: "11px",
+                              fontWeight: 700,
+                              color: "#fbbf24",
+                              background: "rgba(0,0,0,0.5)",
+                              padding: "2px 8px",
+                              borderRadius: "4px",
+                            }}
+                          >
+                            مرفق ملفات
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Lesson Card Body (Matches Image 1) */}
+                    <div style={{ padding: "18px", flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                      <div>
+                        <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)", lineHeight: "1.4" }}>
+                          {lesson.title}
+                        </h3>
+                        <p style={{ margin: "0 0 12px", fontSize: "12.5px", color: "var(--text-muted)", lineHeight: "1.5" }}>
+                          {lesson.description || "شرح مبسط وتطبيقات عملية على مخرجات التعلم مع مذكرات وتلخيصات PDF."}
+                        </p>
+                      </div>
+
+                      <div>
+                        {/* Footer Action Bar (Matches Image 1) */}
+                        <div
+                          style={{
+                            borderTop: "1px solid var(--border-color, #e2e8f0)",
+                            paddingTop: "12px",
+                            marginTop: "12px",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            gap: "8px",
+                          }}
+                        >
+                          <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 600 }}>
+                            ملفات ومذكرات: {(lesson.materials || []).length || 1}
+                          </span>
+
                           <button
                             type="button"
-                            aria-label={`تنزيل ${mat.title}`}
-                            title="تنزيل المذكرة"
-                            onClick={() => void downloadLessonMaterial(mat.fileUrl, mat.title)}
-                            style={{ background: "transparent", border: "none", color: "#059669", cursor: "pointer", display: "inline-flex", padding: "2px" }}
+                            onClick={() => setActiveLessonModal(lesson)}
+                            className="btn-primary"
+                            style={{ fontSize: "12px", padding: "7px 14px", display: "inline-flex", alignItems: "center", gap: "6px" }}
                           >
-                            <Download size={13} />
+                            <Play size={13} fill="currentColor" />
+                            <span>مشاهدة الدرس</span>
                           </button>
                         </div>
-                      ))}
+
+                        {/* Teacher Management Toolbar */}
+                        <div
+                          style={{
+                            marginTop: "10px",
+                            paddingTop: "10px",
+                            borderTop: "1px dashed var(--border-color, #e2e8f0)",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            flexWrap: "wrap",
+                            gap: "6px",
+                          }}
+                        >
+                          <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                            <button
+                              type="button"
+                              onClick={() => triggerAttachMaterialToLesson(lesson.id)}
+                              style={{
+                                background: "var(--bg-surface-secondary, #f1f5f9)",
+                                color: "#059669",
+                                border: "1px solid var(--border-color, #e2e8f0)",
+                                borderRadius: "8px",
+                                padding: "4px 9px",
+                                fontSize: "11px",
+                                fontWeight: 700,
+                                cursor: "pointer",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px",
+                              }}
+                            >
+                              <Plus size={12} />
+                              <span> مذكرة</span>
+                            </button>
+                          </div>
+
+                          {isDeleteMode && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteLesson(lesson.id, lesson.title)}
+                              style={{
+                                background: "#dc2626",
+                                color: "#ffffff",
+                                border: "none",
+                                borderRadius: "8px",
+                                padding: "4px 10px",
+                                fontSize: "11px",
+                                fontWeight: 800,
+                                cursor: "pointer",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px",
+                              }}
+                            >
+                              <Trash2 size={12} />
+                              <span>حذف</span>
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Attached Material Chips if any */}
+                        {lesson.materials && lesson.materials.length > 0 && (
+                          <div style={{ marginTop: "8px", display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                            {lesson.materials.map((mat) => (
+                              <div
+                                key={mat.id}
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "5px",
+                                  padding: "3px 8px",
+                                  background: "var(--bg-surface-secondary, #f8fafc)",
+                                  borderRadius: "6px",
+                                  fontSize: "10.5px",
+                                  border: "1px solid var(--border-color, #e2e8f0)",
+                                }}
+                              >
+                                <FileText size={11} style={{ color: "#2563eb" }} />
+                                <span style={{ fontWeight: 600, maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {mat.title}
+                                </span>
+                                <button
+                                  type="button"
+                                  title="تنزيل المذكرة"
+                                  onClick={() => void downloadLessonMaterial(mat.fileUrl, mat.title)}
+                                  style={{ background: "none", border: "none", color: "#059669", cursor: "pointer", padding: "0 2px" }}
+                                >
+                                  <Download size={11} />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  ) : (
-                    <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>لم يتم إرفاق مذكرات إضافية بعد</span>
-                  )}
-                </div>
-              </div>
-            );
-          })
-        )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
 
-      {/* TEACHER TRANSCRIPT & SEGMENTS SEARCH MODAL */}
-      {transcriptModalLesson && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            backgroundColor: "rgba(0, 0, 0, 0.75)",
-            backdropFilter: "blur(12px)",
-            WebkitBackdropFilter: "blur(12px)",
-            zIndex: 99999,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "20px",
-          }}
-        >
-          <div
-            style={{
-              background: "var(--bg-surface, #ffffff)",
-              border: "1px solid var(--border-color)",
-              borderRadius: "20px",
-              maxWidth: "760px",
-              width: "100%",
-              maxHeight: "88vh",
-              overflowY: "auto",
-              padding: "26px",
-              boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "18px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <FileText size={20} style={{ color: "#059669" }} />
-                <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 800, color: "var(--text-main)" }}>
-                  تفريغ الشرح النصي والفهرس الزمني: {transcriptModalLesson.title}
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setTranscriptModalLesson(null)}
-                style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", display: "flex" }}
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            <div style={{ position: "relative", marginBottom: "16px" }}>
-              <Search size={15} style={{ position: "absolute", right: "12px", top: "50%", transform: "translateY(-50%)", color: "var(--text-muted)" }} />
-              <input
-                type="text"
-                placeholder="ابحث في نص الشرح للوصول إلى أي كلمة أو مفهوم..."
-                value={transcriptModalSearch}
-                onChange={(e) => setTranscriptModalSearch(e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: "10px 38px 10px 14px",
-                  borderRadius: "10px",
-                  border: "1px solid var(--border-color)",
-                  background: "var(--bg-surface-secondary)",
-                  color: "var(--text-main)",
-                  fontSize: "13px",
-                }}
-              />
-            </div>
-
-            {loadingTranscriptModal ? (
-              <div style={{ textAlign: "center", padding: "30px", color: "var(--text-muted)" }}>
-                جاري تحميل تفريغ الشرح...
-              </div>
-            ) : filteredTranscriptModalSegments.length === 0 ? (
-              <div style={{ padding: "20px", textAlign: "center", background: "var(--bg-surface-secondary)", borderRadius: "10px", color: "var(--text-muted)", fontSize: "13px" }}>
-                {transcriptModalSearch.trim()
-                  ? `لا توجد نتائج مطابقة لبحثك: "${transcriptModalSearch}"`
-                  : (transcriptModalLesson.description ? transcriptModalLesson.description : "لا يتوفر تفريغ مسجل لهذا الدرس حتى الآن.")}
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "360px", overflowY: "auto", paddingInlineEnd: "4px" }}>
-                {filteredTranscriptModalSegments
-                  .slice(0, visibleTranscriptModalCount)
-                  .map((seg) => (
-                    <div
-                      key={seg.id || seg.sequence}
-                      style={{
-                        display: "flex",
-                        alignItems: "flex-start",
-                        gap: "10px",
-                        padding: "10px 14px",
-                        borderRadius: "10px",
-                        background: "var(--bg-surface-secondary)",
-                        border: "1px solid var(--border-color)",
-                      }}
-                    >
-                      <span
-                        style={{
-                          background: "#059669",
-                          color: "#ffffff",
-                          padding: "2px 8px",
-                          borderRadius: "6px",
-                          fontSize: "11px",
-                          fontWeight: 800,
-                          flexShrink: 0,
-                          marginTop: "2px",
-                        }}
-                      >
-                        {seg.time_formatted}
-                      </span>
-                      <span style={{ fontSize: "13px", color: "var(--text-main)", lineHeight: "1.5" }}>
-                        {seg.text}
-                      </span>
-                    </div>
-                  ))}
-
-                {filteredTranscriptModalSegments.length > visibleTranscriptModalCount && (
-                  <button
-                    type="button"
-                    onClick={() => setVisibleTranscriptModalCount((prev) => prev + 80)}
-                    style={{
-                      padding: "8px",
-                      borderRadius: "8px",
-                      border: "1px dashed #059669",
-                      background: "var(--bg-accent, #ecfdf5)",
-                      color: "#059669",
-                      fontSize: "12px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      marginTop: "4px",
-                    }}
-                  >
-                    عرض المزيد من المقاطع ({visibleTranscriptModalCount} معروض من إجمالي {filteredTranscriptModalSegments.length})
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* TEACHER AI SUMMARY MODAL */}
-      {summaryModalLesson && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            backgroundColor: "rgba(0, 0, 0, 0.75)",
-            backdropFilter: "blur(12px)",
-            WebkitBackdropFilter: "blur(12px)",
-            zIndex: 99999,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "20px",
-          }}
-        >
-          <div
-            style={{
-              background: "var(--bg-surface, #ffffff)",
-              border: "1px solid var(--border-color)",
-              borderRadius: "20px",
-              maxWidth: "760px",
-              width: "100%",
-              maxHeight: "88vh",
-              overflowY: "auto",
-              padding: "26px",
-              boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "18px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <Bot size={20} style={{ color: "#0f766e" }} />
-                <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 800, color: "var(--text-main)" }}>
-                  ملخص الذكاء الاصطناعي للدرس: {summaryModalLesson.title}
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSummaryModalLesson(null)}
-                style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", display: "flex" }}
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            {loadingSummary ? (
-              <div style={{ textAlign: "center", padding: "30px", color: "var(--text-muted)" }}>
-                جاري توليد ملخص الدرس والمفاهيم الجوهرية...
-              </div>
-            ) : !summaryData ? (
-              <div style={{ padding: "20px", textAlign: "center", background: "var(--bg-surface-secondary)", borderRadius: "10px", color: "var(--text-muted)" }}>
-                تعذر توليد الملخص لعدم توفر نص كافي مفهرس.
-              </div>
-            ) : (
-              <div>
-                <div style={{ background: "var(--bg-accent, #ecfdf5)", border: "1px solid #a7f3d0", borderRadius: "12px", padding: "16px", marginBottom: "18px" }}>
-                  <h4 style={{ margin: "0 0 8px", fontSize: "14px", fontWeight: 800, color: "#065f46" }}>
-                    نظرة شاملة على الدرس ({summaryData.language === "ar" ? "اللغة العربية" : summaryData.language}):
-                  </h4>
-                  <p style={{ margin: 0, fontSize: "13px", color: "var(--text-main)", lineHeight: "1.6" }}>
-                    {summaryData.full_overview}
-                  </p>
-                </div>
-
-                {summaryData.sections && summaryData.sections.length > 0 && (
-                  <div>
-                    <h4 style={{ margin: "0 0 10px", fontSize: "13.5px", fontWeight: 800, color: "var(--text-main)" }}>
-                      المحاور والمقاطع الزمنية المفهرسة:
-                    </h4>
-                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                      {summaryData.sections.slice(0, visibleSummaryCount).map((sec, idx) => (
-                        <div
-                          key={idx}
-                          style={{
-                            display: "flex",
-                            alignItems: "flex-start",
-                            gap: "10px",
-                            padding: "10px 14px",
-                            borderRadius: "10px",
-                            background: "var(--bg-surface-secondary)",
-                            border: "1px solid var(--border-color)",
-                          }}
-                        >
-                          <span
-                            style={{
-                              background: "#0f766e",
-                              color: "#ffffff",
-                              padding: "2px 8px",
-                              borderRadius: "6px",
-                              fontSize: "11px",
-                              fontWeight: 800,
-                              flexShrink: 0,
-                              marginTop: "2px",
-                            }}
-                          >
-                            {sec.time_range}
-                          </span>
-                          <span style={{ fontSize: "12.5px", color: "var(--text-main)", lineHeight: "1.5" }}>
-                            {sec.summary_snippet}
-                          </span>
-                        </div>
-                      ))}
-
-                      {summaryData.sections.length > visibleSummaryCount && (
-                        <button
-                          type="button"
-                          onClick={() => setVisibleSummaryCount((prev) => prev + 50)}
-                          style={{
-                            padding: "8px",
-                            borderRadius: "8px",
-                            border: "1px dashed #0f766e",
-                            background: "var(--bg-accent, #ecfdf5)",
-                            color: "#0f766e",
-                            fontSize: "12px",
-                            fontWeight: 700,
-                            cursor: "pointer",
-                            marginTop: "4px",
-                          }}
-                        >
-                          عرض المزيد من المحاور المفهرسة ({visibleSummaryCount} معروض من إجمالي {summaryData.sections.length})
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
 
       <input
         type="file"

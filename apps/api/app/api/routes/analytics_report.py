@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -21,7 +21,7 @@ Db = Annotated[Session, Depends(get_db)]
 
 
 class AnalyticsSummary(BaseModel):
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     course_id: str | None = None
     students_count: int
     lessons_count: int
@@ -43,7 +43,7 @@ async def get_analytics_summary(
     request: Request,
     db: Db,
 ) -> AnalyticsSummary:
-    enforce_rate_limit(request, bucket="analytics", limit=10, window_seconds=60)
+    enforce_rate_limit(request, bucket="default", limit=10, window_seconds=60)
     students_count = db.execute(select(func.count(User.id)).select_from(User).where(User.institution_id == user.institution_id, User.role == UserRole.STUDENT)).scalar_one() or 0
 
     lessons_count = db.execute(
@@ -56,7 +56,14 @@ async def get_analytics_summary(
     quizzes_count = db.execute(select(func.count(Quiz.id)).select_from(Quiz).where(Quiz.institution_id == user.institution_id)).scalar_one() or 0
     assignments_count = db.execute(select(func.count(Assignment.id)).select_from(Assignment).where(Assignment.institution_id == user.institution_id)).scalar_one() or 0
 
-    attempts = db.execute(select(QuizAttempt).where(QuizAttempt.institution_id == user.institution_id)).scalars().all()
+    # Practice (self-training) attempts are the student's private business:
+    # teacher analytics only ever see official attempts.
+    attempts = db.execute(
+        select(QuizAttempt).where(
+            QuizAttempt.institution_id == user.institution_id,
+            QuizAttempt.is_practice.is_(False),
+        )
+    ).scalars().all()
     if attempts:
         quiz_avg_score = round(sum(a.score or 0 for a in attempts) / len(attempts), 2)
         quiz_completion_rate = round(len(attempts) / max(students_count, 1), 2)

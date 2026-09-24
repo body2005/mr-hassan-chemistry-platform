@@ -3,10 +3,10 @@ export const teacherAr = {
   navLessonManagementSub: "المحتوى وتوقعات الصعوبة",
   navQuizGen: "صانع الاختبارات والواجبات",
   navQuizGenSub: "توليد ونشر الاختبارات والواجبات الذكية",
-  navSubmissions: "تسليمات الواجبات والتصحيح",
-  navSubmissionsSub: "تصحيح المقالات والدرجات",
-  navStudentAnalytics: "متابعة الطلاب",
-  navStudentAnalyticsSub: "سنوات الدراسة ومخطط المشاهدة",
+  navSubmissions: "متابعة الطالب",
+  navSubmissionsSub: "نسب النجاح، الحضور، وتصحيح الواجبات",
+  navStudentAnalytics: "متابعة الطالب",
+  navStudentAnalyticsSub: "نسب النجاح، الحضور، وتصحيح الواجبات",
 
   // Lesson Management & Upload
   uploadLessonBadge: "إدارة المحتوى وتوقعات الصعوبة",
@@ -21,8 +21,8 @@ export const teacherAr = {
   lessonDescLabel: "وصف وملخص الدرس:",
   lessonDescPlaceholder: "شرح وافٍ لقوانين وتطبيقات الدرس...",
   lessonDurationLabel: "مدة الفيديو (بالدقائق):",
-  videoFileLabel: "ملف الفيديو (MP4 / WebM):",
-  bookletFileLabel: "مذكرة الدرس المرفقة (PDF):",
+  videoFileLabel: "ملف الفيديو:",
+  bookletFileLabel: "مذكرة الدرس المرفقة:",
   uploadSubmitBtn: "رفع وحفظ الدرس في المنصة",
   currentUploadedLessons: "الدروس المرفوعة الحالية",
   flaggedConceptsTitle: "مفاهيم مرصودة تحتاج تركيز إضافي من المعلم:",
@@ -60,6 +60,6 @@ export const teacherAr = {
   lastActiveCol: "آخر ظهور",
   belowThresholdAlert: "تحت المعدل الأدنى",
   stableStatus: "منتظم ومستقر",
-  viewAiGradingBtn: "عرض إجابة وتصحيح الـ AI",
+  viewAiGradingBtn: "معاينة وتعديل درجة",
   notSubmittedYet: "لم يسلم بعد",
 };

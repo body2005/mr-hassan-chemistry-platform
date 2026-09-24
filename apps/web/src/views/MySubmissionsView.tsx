@@ -6,12 +6,11 @@ import {
   FileSpreadsheet,
   FileText,
   Printer,
-  Sparkles,
   Loader2,
 } from "lucide-react";
 import { AssignmentSubmission, CurrentUser } from "../types/lms";
 import { submissionService } from "../services/lmsService";
-import { exportToCsv, exportToDocx, exportToPrintPdf } from "../utils/exportEngine";
+import { exportToCsv, exportToDocx, exportToExcel, exportToPrintPdf } from "../utils/exportEngine";
 
 export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ currentUser }) => {
   const [submissions, setSubmissions] = useState<AssignmentSubmission[]>([]);
@@ -50,12 +49,11 @@ export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ curr
   }, []);
 
   function getExportPayload() {
-    const headers = ["عنوان الواجب", "الدرس", "تاريخ التسليم", "درجة الـ AI", "الدرجة النهائية", "ملاحظات المعلم"];
+    const headers = ["عنوان الواجب", "الدرس", "تاريخ التسليم", "الدرجة النهائية", "ملاحظات المعلم"];
     const rows = submissions.map((s) => [
       s.assignmentTitle,
       s.lessonTitle,
       s.submittedAt,
-      `${s.aiScore} / ${s.maxScore}`,
       `${s.finalScore} / ${s.maxScore}`,
       s.teacherFeedback || "—",
     ]);
@@ -82,7 +80,7 @@ export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ curr
             واجباتي واختباراتي المصححة
           </h1>
           <p style={{ margin: 0, color: "#64748b", fontSize: "13px" }}>
-            استعرض درجات الواجبات التي قمت بتسليمها وملاحظات المعلم وتقييم الذكاء الاصطناعي لكل إجابة.
+            استعرض درجات الواجبات التي قمت بتسليمها وملاحظات المعلم لكل إجابة.
           </p>
         </div>
 
@@ -93,7 +91,7 @@ export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ curr
             onClick={() => setExportDropdownOpen(!exportDropdownOpen)}
             style={{ fontSize: "12px", gap: "6px" }}
           >
-            <Download size={15} /> تصدير التقرير (Generate Report)
+            <Download size={15} /> تصدير التقرير
           </button>
 
           {exportDropdownOpen && (
@@ -119,7 +117,18 @@ export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ curr
                 style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", borderBottom: "1px solid #f1f5f9", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}
               >
                 <FileText size={16} style={{ color: "#2563eb" }} />
-                <strong>تصدير Word (.docx حقيقي)</strong>
+                <strong>تصدير Word (.docx من اليمين للشمال)</strong>
+              </button>
+
+              <button
+                onClick={() => {
+                  exportToExcel(getExportPayload(), `my_report_card.xls`);
+                  setExportDropdownOpen(false);
+                }}
+                style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", borderBottom: "1px solid #f1f5f9", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}
+              >
+                <FileSpreadsheet size={16} style={{ color: "#059669" }} />
+                <strong>تصدير Excel (.xls من اليمين للشمال)</strong>
               </button>
 
               <button
@@ -129,8 +138,8 @@ export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ curr
                 }}
                 style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", borderBottom: "1px solid #f1f5f9", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}
               >
-                <FileSpreadsheet size={16} style={{ color: "#059669" }} />
-                <strong>تصدير Excel / CSV</strong>
+                <FileSpreadsheet size={16} style={{ color: "#0d9488" }} />
+                <strong>تصدير CSV (جدول بيانات)</strong>
               </button>
 
               <button
@@ -141,7 +150,7 @@ export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ curr
                 style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}
               >
                 <Printer size={16} style={{ color: "#0f392b" }} />
-                <strong>تصدير / طباعة PDF</strong>
+                <strong>تصدير / طباعة PDF (من اليمين للشمال)</strong>
               </button>
             </div>
           )}
@@ -200,17 +209,8 @@ export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ curr
               <p style={{ margin: 0, color: "#1e293b", fontStyle: "italic" }}>"{sub.studentAnswer}"</p>
             </div>
 
-            {/* AI Rubric Feedback & Teacher Note */}
+            {/* Teacher Note */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: "12px" }}>
-              <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", padding: "12px", borderRadius: "8px", fontSize: "12px" }}>
-                <strong style={{ display: "flex", alignItems: "center", gap: "4px", color: "#166534", marginBottom: "4px" }}>
-                  <Sparkles size={14} /> ملاحظات المصحح الذكي (AI):
-                </strong>
-                <p style={{ margin: 0, color: "#1e3a8a", lineHeight: "1.4" }}>
-                  {sub.aiFeedbackSummary}
-                </p>
-              </div>
-
               <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", padding: "12px", borderRadius: "8px", fontSize: "12px" }}>
                 <strong style={{ display: "flex", alignItems: "center", gap: "4px", color: "#1e40af", marginBottom: "4px" }}>
                   <Award size={14} /> تعليق المعلم:

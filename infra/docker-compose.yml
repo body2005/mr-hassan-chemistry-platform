@@ -83,7 +83,7 @@ services:
       context: ../apps/api
       dockerfile: ../../infra/Dockerfile.api
     container_name: lms_worker
-    command: celery -A app.tasks.celery_app.celery_app worker --loglevel=info --concurrency=2 -Q ai,notifications,reports,analytics
+    command: celery -A app.tasks.celery_app.celery_app worker --loglevel=info --concurrency=2 -Q notifications,reports,analytics
     environment:
       APP_ENV: production
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}

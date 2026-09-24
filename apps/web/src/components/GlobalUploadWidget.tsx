@@ -100,17 +100,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
   const [isExpanded, setIsExpanded] = useState(false);
 
   // Strictly enforce role: Upload widget is exclusively for teachers
-  let role = currentUser?.role;
-  if (!role && typeof localStorage !== "undefined") {
-    try {
-      const cached = localStorage.getItem("lms_cached_user");
-      if (cached) {
-        role = JSON.parse(cached).role;
-      }
-    } catch {
-      role = undefined;
-    }
-  }
+  const role = currentUser?.role;
 
   useEffect(() => {
     const unsubscribe = uploadManager.subscribe((newTasks) => {
@@ -364,11 +354,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                           }}
                           title={task.title}
                         >
-                          {task.title.startsWith("فهرسة:")
-                            ? task.title
-                            : task.type === "knowledge_source"
-                            ? `فهرسة: ${task.fileName || task.title}`
-                            : task.title}
+                          {task.title}
                         </div>
                         <div style={{ fontSize: "10px", color: "var(--text-muted, #64748b)" }}>
                           {task.formattedSize}
@@ -393,7 +379,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                             alignItems: "center",
                             justifyContent: "center",
                           }}
-                          title="إيقاف الفهرسة (مع حفظ الملف بالسيرفر)"
+                          title="إلغاء الرفع"
                         >
                           <X size={15} />
                         </button>

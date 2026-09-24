@@ -70,7 +70,7 @@ export const coursesEn = {
   // Video Player & Materials Tabs
   askAITab: "Ask AI About Lesson",
   materialsTab: "Attached Booklets & Files",
-  askAIPlaceholder: "Ask the AI tutor about any point in this lesson...",
+  askAIPlaceholder: "",
   videoStreamLoading: "Preparing secure video stream...",
   videoProtectionNotice: "Protected stream authorized for student account only",
   submittingHomework: "Submit Assignment",

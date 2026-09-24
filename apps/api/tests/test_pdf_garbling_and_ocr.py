@@ -130,3 +130,56 @@ def test_parse_pdf_document_with_images_handles_bbox(monkeypatch):
     assert doc.all_images[0].bbox == [10.0, 20.0, 130.0, 140.0]
     assert doc.all_images[0].ocr_text == "نص داخل الصورة"
 
+
+def test_parse_pdf_document_passes_local_path_to_image_extractor(monkeypatch, tmp_path):
+    """Image extraction must work for staged files, not only uploaded bytes."""
+    from unittest.mock import MagicMock
+    import pdfplumber
+
+    staged_pdf = tmp_path / "staged.pdf"
+    staged_pdf.write_bytes(b"%PDF-1.4 mock pdf content")
+    mock_page = MagicMock()
+    mock_page.extract_text.return_value = "نص صالح للاختبار"
+    mock_page.extract_tables.return_value = []
+    mock_page.images = [{"width": 100, "height": 100}]
+    mock_pdf = MagicMock()
+    mock_pdf.pages = [mock_page]
+    mock_pdf.__enter__.return_value = mock_pdf
+    monkeypatch.setattr(pdfplumber, "open", lambda *args, **kwargs: mock_pdf)
+
+    received: dict[str, object] = {}
+
+    def fake_extract(file_bytes, page_number, *, file_path=None):
+        received.update(file_bytes=file_bytes, page_number=page_number, file_path=file_path)
+        return []
+
+    monkeypatch.setattr("app.services.document_parsers.extract_pdf_page_images", fake_extract)
+    parse_pdf_document(file_path=str(staged_pdf), filename="staged.pdf")
+
+    assert received == {
+        "file_bytes": None,
+        "page_number": 1,
+        "file_path": str(staged_pdf),
+    }
+
+
+def test_pymupdf_page_raster_rendering_available(tmp_path):
+    """PyMuPDF can rasterize a PDF page to a real JPEG (extraction OCR path)."""
+    try:
+        import pymupdf as fitz
+    except ImportError:
+        import fitz
+
+    pdf_path = tmp_path / "page.pdf"
+    document = fitz.open()
+    document.new_page().insert_text((72, 72), "PDF page render")
+    document.save(str(pdf_path))
+    document.close()
+
+    with fitz.open(str(pdf_path)) as doc:
+        pix = doc[0].get_pixmap(dpi=120)
+        rendered = pix.tobytes("jpeg")
+
+    assert rendered is not None
+    assert rendered.startswith(bytes([0xFF, 0xD8]))
+

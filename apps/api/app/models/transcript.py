@@ -58,12 +58,6 @@ class Transcript(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         cascade="all, delete-orphan",
         order_by="TranscriptSegment.sequence",
     )
-    chunks = relationship(
-        "KnowledgeChunk",
-        back_populates="transcript",
-        cascade="all, delete-orphan",
-        order_by="KnowledgeChunk.sequence",
-    )
 
 
 class TranscriptSegment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -89,34 +83,6 @@ class TranscriptSegment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     transcript = relationship("Transcript", back_populates="segments")
 
-
-class KnowledgeChunk(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """Semantic knowledge chunk used for scoped RAG, student Q&A, and quiz generation."""
-
-    __tablename__ = "knowledge_chunks"
-    __table_args__ = (
-        UniqueConstraint("transcript_id", "sequence", name="uq_knowledge_chunks_seq"),
-        Index("ix_knowledge_chunks_lesson", "lesson_id"),
-        Index("ix_knowledge_chunks_course", "course_id"),
-    )
-
-    transcript_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("transcripts.id", ondelete="CASCADE"), index=True, nullable=False
-    )
-    lesson_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("lessons.id", ondelete="CASCADE"), index=True, nullable=False
-    )
-    course_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("courses.id", ondelete="CASCADE"), index=True, nullable=False
-    )
-    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
-    start_time: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
-    end_time: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
-    text: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding_json: Mapped[list | None] = mapped_column(JSON)
-    metadata_json: Mapped[dict | None] = mapped_column(JSON)
-
-    transcript = relationship("Transcript", back_populates="chunks")
 
 
 class TranscriptionJobStatus(str, Enum):

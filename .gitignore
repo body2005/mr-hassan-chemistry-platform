@@ -69,3 +69,5 @@ scratch/
 *.csv
 *.sql
 locust_users.json
+.baseline-check/
+.freebuff/

@@ -2,27 +2,27 @@ import { PageLoadingScreen } from "./components/PageLoadingScreen";
 import { lazy, Suspense, useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Sidebar, NavTab } from "./components/Sidebar";
 import { Header } from "./components/Header";
-import { FloatingAITutor } from "./components/FloatingAITutor";
 import { GlobalUploadWidget } from "./components/GlobalUploadWidget";
 import { Course, CurrentUser, NotificationItem } from "./types/lms";
 import { useTranslation } from "./utils/i18n";
 
-import { ApiClientError, authService, courseService, notificationService } from "./services/lmsService";
+import { ApiClientError, authService, bootstrapService, courseService, notificationService } from "./services/lmsService";
 import { useConfirm } from "./components/ConfirmWizard";
 import { PaymentTarget, StudentEntitlement, paymentService } from "./services/paymentService";
+import { realtimeService } from "./services/realtimeService";
+import { LessonAccessModal } from "./components/LessonAccessModal";
+import { FloatingProgressFab } from "./components/FloatingProgressFab";
 
 // Views
 import { LandingPageView } from "./views/LandingPageView";
-// View chunk loaders for background prefetching & instant navigation
+// View chunk loaders stay lazy. A chunk is only preloaded after the user
+// expresses intent on the corresponding navigation item.
 const viewLoaders = {
-  GeneralHome: () => import("./views/GeneralHomeView"),
   MyCourses: () => import("./views/MyCoursesView"),
   MySubmissions: () => import("./views/MySubmissionsView"),
   LessonManagement: () => import("./views/LessonManagementView"),
-  AIKnowledgeCenter: () => import("./views/AIKnowledgeCenterView"),
   QuizGen: () => import("./views/QuizGeneratorView"),
   Submissions: () => import("./views/SubmissionsView"),
-  StudentAnalytics: () => import("./views/StudentAnalyticsView"),
   Notifications: () => import("./views/NotificationsView"),
   Profile: () => import("./views/ProfileView"),
   Payments: () => import("./views/PaymentView"),
@@ -40,14 +40,11 @@ function preloadView(tabName: keyof typeof viewLoaders) {
   }
 }
 
-const GeneralHomeView = lazy(() => viewLoaders.GeneralHome().then((m) => ({ default: m.GeneralHomeView })));
 const MyCoursesView = lazy(() => viewLoaders.MyCourses().then((m) => ({ default: m.MyCoursesView })));
 const MySubmissionsView = lazy(() => viewLoaders.MySubmissions().then((m) => ({ default: m.MySubmissionsView })));
 const LessonManagementView = lazy(() => viewLoaders.LessonManagement().then((m) => ({ default: m.LessonManagementView })));
-const AIKnowledgeCenterView = lazy(() => viewLoaders.AIKnowledgeCenter().then((m) => ({ default: m.AIKnowledgeCenterView })));
 const QuizGeneratorView = lazy(() => viewLoaders.QuizGen().then((m) => ({ default: m.QuizGeneratorView })));
 const SubmissionsView = lazy(() => viewLoaders.Submissions().then((m) => ({ default: m.SubmissionsView })));
-const StudentAnalyticsView = lazy(() => viewLoaders.StudentAnalytics().then((m) => ({ default: m.StudentAnalyticsView })));
 const NotificationsView = lazy(() => viewLoaders.Notifications().then((m) => ({ default: m.NotificationsView })));
 const ProfileView = lazy(() => viewLoaders.Profile().then((m) => ({ default: m.ProfileView })));
 const PaymentView = lazy(() => viewLoaders.Payments().then((m) => ({ default: m.PaymentView })));
@@ -57,14 +54,11 @@ import { AuthView } from "./views/AuthView";
 const VALID_TABS = [
   "Landing",
   "Auth",
-  "GeneralHome",
   "MyCourses",
   "MySubmissions",
   "LessonManagement",
-  "AIKnowledgeCenter",
   "QuizGen",
   "Submissions",
-  "StudentAnalytics",
   "Notifications",
   "Profile",
   "Payments",
@@ -73,11 +67,11 @@ const VALID_TABS = [
 
 type AllTabs = (typeof VALID_TABS)[number];
 
-const STUDENT_TABS = new Set<AllTabs>(["GeneralHome", "MyCourses", "MySubmissions", "Notifications", "Payments", "Profile"]);
-const STAFF_TABS = new Set<AllTabs>(["LessonManagement", "AIKnowledgeCenter", "QuizGen", "Submissions", "StudentAnalytics", "Notifications", "PaymentManagement", "Profile"]);
+const STUDENT_TABS = new Set<AllTabs>(["MyCourses", "MySubmissions", "Notifications", "Payments", "Profile"]);
+const STAFF_TABS = new Set<AllTabs>(["LessonManagement", "QuizGen", "Submissions", "Notifications", "PaymentManagement", "Profile"]);
 
 function homeTab(user: CurrentUser): AllTabs {
-  return user.role === "student" ? "GeneralHome" : "LessonManagement";
+  return user.role === "student" ? "MyCourses" : "LessonManagement";
 }
 
 function tabAllowed(tab: AllTabs, user: CurrentUser): boolean {
@@ -87,6 +81,7 @@ function tabAllowed(tab: AllTabs, user: CurrentUser): boolean {
 function getTabFromHash(): AllTabs | null {
   const raw = window.location.hash.replace("#", "").trim().toLowerCase();
   if (!raw) return null;
+  if (raw === "studentanalytics") return "Submissions";
   const match = VALID_TABS.find((t) => t.toLowerCase() === raw);
   return match || null;
 }
@@ -95,23 +90,12 @@ export type AuthStatus = "loading" | "authenticated" | "unauthenticated" | "temp
 
 function App() {
   const confirm = useConfirm();
-  // Cached identity is used for optimistic rendering and offline resilience.
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(() => {
-    try {
-      const cached = typeof localStorage !== "undefined" ? localStorage.getItem("lms_cached_user") : null;
-      return cached ? (JSON.parse(cached) as CurrentUser) : null;
-    } catch {
-      return null;
-    }
-  });
-  const [authStatus, setAuthStatus] = useState<AuthStatus>(() => {
-    const hasToken = typeof localStorage !== "undefined" && Boolean(localStorage.getItem("lms_session_token") || localStorage.getItem("lms_cached_user"));
-    return hasToken ? "loading" : "unauthenticated";
-  });
+  const cachedUser = useMemo(() => authService.getCachedUser(), []);
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(() => cachedUser);
+  const [authStatus, setAuthStatus] = useState<AuthStatus>(() => (cachedUser ? "authenticated" : "loading"));
   const [retryAttempt, setRetryAttempt] = useState(0);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [isInitialRefresh, setIsInitialRefresh] = useState(true);
-  const [authLoading, setAuthLoading] = useState(true);
+  const [authLoading, setAuthLoading] = useState(() => !cachedUser);
   const authSyncId = useRef(0);
 
   const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -119,23 +103,16 @@ function App() {
     return (saved as "light" | "dark") || "light";
   });
 
-    // Manage Refresh / Initial Page Load splash duration
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setIsInitialRefresh(false);
-    }, 600);
-    return () => clearTimeout(timer);
-  }, []);
-
   const { lang, toggleLang: handleToggleLang } = useTranslation();
 
-  const [courses, setCourses] = useState<Course[]>([]);
+  const [courses, setCourses] = useState<Course[]>(() => courseService.getCachedCourses());
   const [enrolledCourseIds, setEnrolledCourseIds] = useState<string[]>([]);
   const [entitlements, setEntitlements] = useState<StudentEntitlement[]>([]);
   const [checkoutTarget, setCheckoutTarget] = useState<PaymentTarget | null>(null);
-  const [aiAccessAllowed, setAiAccessAllowed] = useState(false);
 
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [selectedAccessRequestId, setSelectedAccessRequestId] = useState<string | null>(null);
+  const [isAccessModalOpen, setIsAccessModalOpen] = useState(false);
 
   // Real-time synchronization for courses, notifications, and auth sessions via DAL
   useEffect(() => {
@@ -148,37 +125,34 @@ function App() {
       }
     }
 
-    async function handleUserSync() {
+    async function handleBootstrapSync() {
       const requestId = ++authSyncId.current;
       try {
-        const user = await authService.getCurrentUser();
+        const bootstrap = await bootstrapService.getBootstrap();
         if (requestId !== authSyncId.current) return;
-        setCurrentUser(user);
-        if (user) {
+        if (bootstrap.authenticated && bootstrap.user) {
+          setCurrentUser(bootstrap.user);
           setAuthStatus("authenticated");
           setRetryAttempt(0);
-          await handleNotificationsSync();
+          if (bootstrap.notifications.length > 0) {
+            setNotifications(bootstrap.notifications);
+          }
+          if (bootstrap.courses.length > 0) {
+            setCourses(bootstrap.courses);
+          }
+          if (bootstrap.user.role === "student") {
+            setEnrolledCourseIds(bootstrap.enrolledCourseIds);
+            setEntitlements(bootstrap.entitlements);
+          }
         } else {
+          setCurrentUser(null);
           setAuthStatus("unauthenticated");
           setRetryAttempt(0);
         }
       } catch (error) {
         if (requestId !== authSyncId.current) return;
-        console.error("Session verification error", error);
-        let cachedUser: CurrentUser | null = null;
-        try {
-          const cached = typeof localStorage !== "undefined" ? localStorage.getItem("lms_cached_user") : null;
-          if (cached) cachedUser = JSON.parse(cached) as CurrentUser;
-        } catch {
-          cachedUser = null;
-        }
-
-        if (cachedUser) {
-          setCurrentUser(cachedUser);
-          setAuthStatus("temporarily_unavailable");
-        } else {
-          setAuthStatus("temporarily_unavailable");
-        }
+        console.error("Bootstrap sync error", error);
+        setAuthStatus("temporarily_unavailable");
       } finally {
         if (requestId === authSyncId.current) setAuthLoading(false);
       }
@@ -195,14 +169,14 @@ function App() {
 
     // Local in-window custom event listeners
     window.addEventListener("lms_notifications_updated", handleNotificationsSync);
-    window.addEventListener("lms_user_updated", handleUserSync);
+    window.addEventListener("lms_user_updated", handleBootstrapSync);
     window.addEventListener("lms_courses_updated", handleCoursesSync);
 
-    void handleUserSync();
+    void handleBootstrapSync();
 
     return () => {
       window.removeEventListener("lms_notifications_updated", handleNotificationsSync);
-      window.removeEventListener("lms_user_updated", handleUserSync);
+      window.removeEventListener("lms_user_updated", handleBootstrapSync);
       window.removeEventListener("lms_courses_updated", handleCoursesSync);
     };
   }, []);
@@ -220,25 +194,26 @@ function App() {
 
   // Track active navigation tab with Google Chrome native History & Hash support
   const [activeTab, setActiveTab] = useState<AllTabs>(() => {
+    if (typeof window !== "undefined" && window.location.hash.toLowerCase() === "#generalhome") {
+      window.location.hash = "#mycourses";
+    }
+    if (typeof window !== "undefined" && window.location.hash.toLowerCase() === "#studentanalytics") {
+      window.location.hash = "#submissions";
+    }
     const fromHash = getTabFromHash();
-    if (fromHash && fromHash !== "Landing" && fromHash !== "Auth") return fromHash;
-
-    let user: CurrentUser | null = null;
-    try {
-      const cached = typeof localStorage !== "undefined" ? localStorage.getItem("lms_cached_user") : null;
-      user = cached ? (JSON.parse(cached) as CurrentUser) : null;
-    } catch {
-      user = null;
+    if (fromHash && fromHash !== "Landing" && fromHash !== "Auth") {
+      return fromHash;
     }
 
     const savedTab = typeof localStorage !== "undefined" ? localStorage.getItem("lms_active_tab") : null;
-    if (user) {
-      if (savedTab && VALID_TABS.includes(savedTab as AllTabs) && savedTab !== "Landing" && savedTab !== "Auth") {
-        return savedTab as AllTabs;
-      }
-      return user.role === "student" ? "GeneralHome" : "LessonManagement";
+    if (savedTab === "GeneralHome" && typeof localStorage !== "undefined") {
+      localStorage.setItem("lms_active_tab", "MyCourses");
+      return "MyCourses";
     }
-
+    if (savedTab === "StudentAnalytics" && typeof localStorage !== "undefined") {
+      localStorage.setItem("lms_active_tab", "Submissions");
+      return "Submissions";
+    }
     if (savedTab && VALID_TABS.includes(savedTab as AllTabs)) {
       return savedTab as AllTabs;
     }
@@ -250,10 +225,11 @@ function App() {
   const [menuOpen, setMenuOpen] = useState(false);
 
   // Navigate to Tab and push to Google Chrome history stack
-  const navigateToTab = useCallback((requestedTab: AllTabs) => {
-    const targetTab = currentUser && requestedTab !== "Landing" && requestedTab !== "Auth" && !tabAllowed(requestedTab, currentUser)
+  const navigateToTab = useCallback((requestedTab: AllTabs | NavTab | string) => {
+    const rawTab = (requestedTab === "GeneralHome" ? "MyCourses" : requestedTab) as AllTabs;
+    const targetTab = currentUser && rawTab !== "Landing" && rawTab !== "Auth" && !tabAllowed(rawTab, currentUser)
       ? homeTab(currentUser)
-      : requestedTab;
+      : rawTab;
     setActiveTab(targetTab);
     localStorage.setItem("lms_active_tab", targetTab);
     const targetHash = `#${targetTab.toLowerCase()}`;
@@ -269,58 +245,6 @@ function App() {
       navigateToTab(homeTab(currentUser));
     }
   }, [currentUser, activeTab, navigateToTab]);
-
-  // Intelligent Background Prefetch: Preload all other views while the user is on any page
-  useEffect(() => {
-    if (!currentUser) return;
-
-    const isStaff = currentUser.role !== "student";
-    const priorityList: Array<keyof typeof viewLoaders> = isStaff
-      ? ["LessonManagement", "QuizGen", "StudentAnalytics", "AIKnowledgeCenter", "Submissions", "PaymentManagement", "Notifications", "Profile"]
-      : ["GeneralHome", "MyCourses", "MySubmissions", "Payments", "Notifications", "Profile"];
-
-    // Filter out current view since it is already rendered
-    const viewsToPrefetch = priorityList.filter((tab) => tab !== activeTab);
-
-    let currentIndex = 0;
-    let isCancelled = false;
-
-    const prefetchNext = () => {
-      if (isCancelled || currentIndex >= viewsToPrefetch.length) return;
-
-      const tab = viewsToPrefetch[currentIndex];
-      currentIndex++;
-
-      const loader = viewLoaders[tab];
-      if (loader) {
-        loader()
-          .catch(() => undefined)
-          .finally(() => {
-            if (!isCancelled) {
-              if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-                window.requestIdleCallback(prefetchNext, { timeout: 1200 });
-              } else {
-                setTimeout(prefetchNext, 120);
-              }
-            }
-          });
-      }
-    };
-
-    // Start background prefetch shortly after page mount (700ms)
-    const timer = setTimeout(() => {
-      if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-        window.requestIdleCallback(prefetchNext, { timeout: 1500 });
-      } else {
-        setTimeout(prefetchNext, 150);
-      }
-    }, 700);
-
-    return () => {
-      isCancelled = true;
-      clearTimeout(timer);
-    };
-  }, [currentUser, activeTab]);
 
   // Listen to Google Chrome Native Back & Forward Buttons (hashchange + popstate)
   useEffect(() => {
@@ -364,21 +288,32 @@ function App() {
 
   // Load business data from the backend after the server session is known.
   useEffect(() => {
-    void courseService.getCourses().then(setCourses).catch(() => setCourses([]));
     if (!currentUser) {
+      setCourses([]);
       setEnrolledCourseIds([]);
       setEntitlements([]);
       return;
     }
+
+    void courseService.getCourses().then(setCourses).catch(() => setCourses([]));
     if (currentUser.role === "student") {
-      void courseService.getEnrolledCourseIds().then(setEnrolledCourseIds).catch(() => setEnrolledCourseIds([]));
-      void paymentService.getMyEntitlements().then(setEntitlements).catch(() => setEntitlements([]));
+      void Promise.all([courseService.getEnrolledCourseIds(), paymentService.getMyEntitlements()])
+        .then(([enrollments, access]) => {
+          setEnrolledCourseIds(enrollments);
+          setEntitlements(access);
+        })
+        .catch(() => {
+          setEnrolledCourseIds([]);
+          setEntitlements([]);
+        });
     } else {
       setEnrolledCourseIds([]);
       setEntitlements([]);
     }
-  }, [currentUser]);
+  }, [currentUser?.id, currentUser?.role]);
 
+  // Stable callbacks so the SSE lifecycle effect below doesn't tear down and
+  // re-open the stream whenever these identities change.
   const refreshStudentAccess = useCallback(() => {
     if (currentUser?.role !== "student") return;
     void Promise.all([courseService.getEnrolledCourseIds(), paymentService.getMyEntitlements()])
@@ -387,7 +322,37 @@ function App() {
         setEntitlements(access);
       })
       .catch(() => undefined);
-  }, [currentUser]);
+  }, [currentUser?.id, currentUser?.role]);
+
+  const refreshNotifications = useCallback(() => {
+    void notificationService.getNotifications().then(setNotifications).catch(() => undefined);
+  }, []);
+
+  // Real-time EventSource connection lifecycle — keyed ONLY on user identity.
+  // The previous version also depended on refreshStudentAccess, whose identity
+  // changed on every notifications/state update, tearing down and re-opening
+  // the SSE connection (the duplicate /realtime/stream entries in DevTools).
+  useEffect(() => {
+    if (!currentUser) {
+      realtimeService.disconnect();
+      return;
+    }
+
+    realtimeService.connect();
+
+    const handleLessonUnlocked = () => {
+      refreshStudentAccess();
+    };
+
+    window.addEventListener("lms_lesson_unlocked", handleLessonUnlocked);
+    window.addEventListener("lms_payment_updated", handleLessonUnlocked);
+
+    return () => {
+      window.removeEventListener("lms_lesson_unlocked", handleLessonUnlocked);
+      window.removeEventListener("lms_payment_updated", handleLessonUnlocked);
+      realtimeService.disconnect();
+    };
+  }, [currentUser?.id, currentUser?.role, refreshStudentAccess]);
 
   function handleToggleTheme() {
     setTheme((prev) => (prev === "light" ? "dark" : "light"));
@@ -413,6 +378,7 @@ function App() {
       });
     }
   }
+  void handleEnrollCourse;
 
   function handleMarkNotificationRead(id: string) {
     void notificationService.markAsRead(id).then(setNotifications).catch(() => undefined);
@@ -424,6 +390,21 @@ function App() {
 
   function handleSelectNotification(notif: NotificationItem) {
     handleMarkNotificationRead(notif.id);
+    if (
+      notif.type === "lesson_access" ||
+      (notif.actionUrl && (notif.actionUrl.includes("/access-requests/") || notif.actionUrl.includes("/lessons/access-requests/")))
+    ) {
+      const match = notif.actionUrl?.match(/\/access-requests\/([0-9a-fA-F-]+)/);
+      if (match && match[1]) {
+        setSelectedAccessRequestId(match[1]);
+        setIsAccessModalOpen(true);
+        return;
+      }
+    }
+    if (notif.type === "payment" || notif.paymentOrderId || (notif.actionUrl && notif.actionUrl.includes("/payments/orders/"))) {
+      navigateToTab("PaymentManagement");
+      return;
+    }
     if (notif.actionTab) {
       navigateToTab(notif.actionTab as NavTab);
     } else if (notif.type === "assignment") {
@@ -437,6 +418,7 @@ function App() {
 
   async function handleLogout() {
     try {
+      realtimeService.disconnect();
       await authService.logout();
     } catch {
       // Clear the local UI even if the session endpoint is temporarily unavailable.
@@ -445,8 +427,6 @@ function App() {
       setCurrentUser(null);
       setAuthStatus("unauthenticated");
       setAuthLoading(false);
-      localStorage.removeItem("lms_session_token");
-      localStorage.removeItem("lms_cached_user");
       navigateToTab("Landing");
     }
   }
@@ -461,32 +441,8 @@ function App() {
   });
 
   const activeEntitlements = useMemo(() => entitlements.filter((item) => item.active), [entitlements]);
-  const globalAIEntitlement = activeEntitlements.some((item) => item.entitlement_type === "ai_global");
-  const activeCourse = enrolledCoursesList[0];
-  const activeLesson = activeCourse?.lessons.find((lesson) => {
-    if (Number(activeCourse.price || 0) > 0) return activeEntitlements.some((item) => item.entitlement_type === "course" && item.resource_id === activeCourse.id);
-    return Number(lesson.price || 0) === 0 || activeEntitlements.some((item) => item.entitlement_type === "lesson" && item.resource_id === lesson.id);
-  });
 
-  useEffect(() => {
-    if (!currentUser) {
-      setAiAccessAllowed(false);
-      return;
-    }
-    if (currentUser.role !== "student") {
-      setAiAccessAllowed(true);
-      return;
-    }
-    if (!activeLesson) {
-      setAiAccessAllowed(globalAIEntitlement);
-      return;
-    }
-    void paymentService.getAIAccess(activeLesson.id)
-      .then((result) => setAiAccessAllowed(result.allowed))
-      .catch(() => setAiAccessAllowed(false));
-  }, [currentUser, activeLesson, globalAIEntitlement]);
-
-  if (isInitialRefresh || (authLoading && !currentUser && authStatus === "loading") || isLoggingIn) {
+  if ((authLoading && !currentUser && authStatus === "loading") || isLoggingIn) {
     return <PageLoadingScreen brandTitle="منصة الكيمياء التعليمية — مستر حسن شعبان" />;
   }
 
@@ -502,7 +458,7 @@ function App() {
             setCurrentUser(user);
             setAuthStatus("authenticated");
             setRetryAttempt(0);
-            const targetTab = user.role === "student" ? "GeneralHome" : "LessonManagement";
+            const targetTab = user.role === "student" ? "MyCourses" : "LessonManagement";
             navigateToTab(targetTab);
             setTimeout(() => {
               setIsLoggingIn(false);
@@ -645,32 +601,31 @@ function App() {
           onToggleTheme={handleToggleTheme}
           lang={lang}
           onToggleLang={handleToggleLang}
-          onNavigateHome={() => navigateToTab(currentUser?.role === "teacher" ? "LessonManagement" : "GeneralHome")}
+          onNavigateHome={() => navigateToTab(currentUser?.role === "teacher" ? "LessonManagement" : "MyCourses")}
           currentUser={currentUser}
         />
 
         <Suspense fallback={<div className="page-container" style={{ minHeight: "60vh" }} />}>
           {/* Dynamic Route Views */}
           {/* Student Views */}
-          {activeTab === "GeneralHome" && currentUser.role === "student" && (
-          <GeneralHomeView
-            courses={courses}
-            enrolledCourseIds={enrolledCourseIds}
-            onEnrollCourse={handleEnrollCourse}
-            onNavigateToMyCourses={() => navigateToTab("MyCourses")}
-            currentUser={currentUser}
-            lang={lang}
-          />
-          )}
-
           {activeTab === "MyCourses" && currentUser.role === "student" && (
           <MyCoursesView
             enrolledCourses={enrolledCoursesList}
-            onNavigateToCatalog={() => navigateToTab("GeneralHome")}
+            onNavigateToCatalog={() => navigateToTab("Payments")}
             lang={lang}
             currentUser={currentUser}
             purchasedLessonIds={activeEntitlements.filter((item) => item.entitlement_type === "lesson").map((item) => item.resource_id || "")}
             onCheckout={(target) => { setCheckoutTarget(target); navigateToTab("Payments"); }}
+            onToggleMenu={() => setMenuOpen(!menuOpen)}
+            menuOpen={menuOpen}
+            notifications={notifications}
+            onMarkNotificationRead={handleMarkNotificationRead}
+            onSelectNotification={handleSelectNotification}
+            onNavigateToNotifications={() => navigateToTab("Notifications")}
+            theme={theme}
+            onToggleTheme={handleToggleTheme}
+            onToggleLang={handleToggleLang}
+            onNavigateHome={() => navigateToTab("MyCourses")}
           />
           )}
 
@@ -699,19 +654,16 @@ function App() {
           />
           )}
 
-          {activeTab === "AIKnowledgeCenter" && currentUser.role !== "student" && (
-            <AIKnowledgeCenterView lang={lang} />
+          {activeTab === "QuizGen" && currentUser.role !== "student" && (
+            <QuizGeneratorView courses={courses} currentUser={currentUser} />
           )}
 
-          {activeTab === "QuizGen" && currentUser.role !== "student" && <QuizGeneratorView courses={courses} />}
-
           {activeTab === "Submissions" && currentUser.role !== "student" && <SubmissionsView />}
-
-          {activeTab === "StudentAnalytics" && currentUser.role !== "student" && <StudentAnalyticsView />}
 
           {activeTab === "Payments" && currentUser.role === "student" && (
             <PaymentView
               courses={courses}
+              currentUser={currentUser}
               initialTarget={checkoutTarget}
               onEntitlementsChanged={refreshStudentAccess}
             />
@@ -732,24 +684,34 @@ function App() {
         </Suspense>
       </main>
 
-      {/* Floating AI Assistant FAB at Bottom-Left in Emerald */}
-      <FloatingAITutor
-        currentCourseId={currentUser.role === "student" ? activeCourse?.id : courses[0]?.id}
-        currentLessonId={currentUser.role === "student" ? activeLesson?.id : undefined}
-        currentCourseTitle={(currentUser.role === "student" ? activeCourse?.title : courses[0]?.title) || (lang === "ar" ? "الكيمياء" : "Chemistry")}
-        currentUser={currentUser}
-        lang={lang}
-        accessAllowed={aiAccessAllowed}
-        onRequestAccess={() => {
-          setCheckoutTarget({ productType: "ai_subscription" });
-          navigateToTab("Payments");
-        }}
-      />
-
       {/* Global Background Upload Manager Widget - strictly for teachers only */}
       {currentUser?.role !== "student" && (
         <GlobalUploadWidget currentUser={currentUser} menuOpen={menuOpen} />
       )}
+
+      {/* Global Student Course Progress FAB: draggable, bottom-left default, appears on all pages, hides when video enlarged */}
+      {currentUser?.role === "student" && (
+        <FloatingProgressFab
+          courses={courses}
+          currentUser={currentUser}
+          theme={theme}
+        />
+      )}
+
+      {/* Lesson Access Approval Modal for Teachers and Students */}
+      <LessonAccessModal
+        requestId={selectedAccessRequestId}
+        isOpen={isAccessModalOpen}
+        onClose={() => {
+          setIsAccessModalOpen(false);
+          setSelectedAccessRequestId(null);
+        }}
+        onUpdated={() => {
+          refreshStudentAccess();
+          refreshNotifications();
+        }}
+        isTeacher={currentUser?.role !== "student"}
+      />
     </div>
   );
 }

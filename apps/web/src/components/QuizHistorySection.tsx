@@ -10,7 +10,6 @@ import {
   Clock,
   CheckCircle2,
   AlertCircle,
-  Sparkles,
   PenTool,
   Plus,
   X,
@@ -437,8 +436,8 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
             }}
           >
             <option value="all">كل الأنواع (اختبارات وواجبات)</option>
-            <option value="quiz">اختبار إلكتروني (Quiz)</option>
-            <option value="assignment">واجب منزلي (Assignment)</option>
+            <option value="quiz">اختبار إلكتروني</option>
+            <option value="assignment">واجب منزلي</option>
           </select>
 
           {/* Status Filter */}
@@ -570,7 +569,7 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
                           border: isQuiz ? "1px solid #99f6e4" : "1px solid #a7f3d0",
                         }}
                       >
-                        {isQuiz ? "اختبار إلكتروني (Quiz)" : "واجب منزلي (Assignment)"}
+                        {isQuiz ? "اختبار إلكتروني" : "واجب منزلي"}
                       </span>
 
                       <span
@@ -599,11 +598,7 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
                           gap: "4px",
                         }}
                       >
-                        {quiz.creationMode === "ai" ? (
-                          <>
-                            <Sparkles size={11} /> ذكاء اصطناعي
-                          </>
-                        ) : quiz.creationMode === "extracted" ? (
+                        {quiz.creationMode === "extracted" || quiz.creationMode === "extract" ? (
                           <>
                             <FileText size={11} /> مستخرج من ملف
                           </>

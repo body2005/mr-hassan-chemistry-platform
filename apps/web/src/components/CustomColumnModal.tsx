@@ -129,7 +129,7 @@ export const CustomColumnModal: React.FC<CustomColumnModalProps> = ({
         <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
           <div>
             <label style={{ display: "block", fontSize: "12px", fontWeight: 800, marginBottom: "6px", color: "var(--text-main, #0f172a)" }}>
-              اسم العمود المخصص (Custom Column Label):
+              اسم العمود المخصص:
             </label>
             <input
               type="text"

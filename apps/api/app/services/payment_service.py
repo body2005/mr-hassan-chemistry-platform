@@ -65,10 +65,6 @@ def has_lesson_entitlement(db: Session, student: User, lesson_id: uuid.UUID) -> 
     return get_active_entitlement(db, student, EntitlementType.LESSON, lesson_id) is not None
 
 
-def has_global_ai_entitlement(db: Session, student: User) -> bool:
-    return get_active_entitlement(db, student, EntitlementType.AI_GLOBAL, None) is not None
-
-
 def _lesson_and_course(db: Session, lesson_id: uuid.UUID) -> tuple[Lesson | None, Course | None]:
     row = db.execute(
         select(Lesson, Course)
@@ -127,27 +123,6 @@ def can_access_lesson_content(db: Session, user: User, lesson_id: uuid.UUID) -> 
     return float(course.price_egp or 0) == 0 and float(lesson.price_egp or 0) == 0
 
 
-def student_can_use_ai_for_lesson(db: Session, student: User, lesson_id: uuid.UUID) -> bool:
-    if not can_access_lesson_content(db, student, lesson_id):
-        return False
-    settings = get_settings()
-    mode = settings.student_ai_access_mode
-    if mode == "open":
-        return True
-    if mode == "subscription_only":
-        return has_global_ai_entitlement(db, student)
-    if mode == "included_with_content":
-        return True
-    lesson, course = _lesson_and_course(db, lesson_id)
-    if not lesson or not course:
-        return False
-    return (
-        has_global_ai_entitlement(db, student)
-        or has_course_entitlement(db, student, course.id)
-        or has_lesson_entitlement(db, student, lesson.id)
-    )
-
-
 def resolve_product(
     db: Session,
     student: User,
@@ -155,9 +130,9 @@ def resolve_product(
     product_id: uuid.UUID | None,
 ) -> tuple[str, float]:
     if product_type == PaymentProductType.AI_SUBSCRIPTION:
-        if product_id is not None:
-            raise HTTPException(status_code=422, detail="AI subscription does not accept product_id")
-        return "اشتراك المساعد الذكي لمدة 30 يومًا", float(get_settings().student_ai_monthly_price_egp)
+        # Legacy product kept only so historical pending orders can still be
+        # reviewed; the AI subscription itself is no longer offered for sale.
+        raise HTTPException(status_code=422, detail="AI subscriptions are no longer offered")
 
     if product_id is None:
         raise HTTPException(status_code=422, detail="product_id is required")
@@ -193,6 +168,23 @@ def create_order(
     product_name, amount = resolve_product(db, student, product_type, product_id)
     if amount <= 0:
         raise HTTPException(status_code=409, detail="This item is free and does not require payment")
+    if product_id is not None:
+        if product_type == PaymentProductType.LESSON and has_lesson_entitlement(db, student, product_id):
+            raise HTTPException(status_code=409, detail="لقد قمت بشراء هذا الدرس وتفعيله مسبقاً، ولا يمكنك شراؤه مرة أخرى.")
+        if product_type == PaymentProductType.COURSE and has_course_entitlement(db, student, product_id):
+            raise HTTPException(status_code=409, detail="لقد قمت بشراء هذا المقرر وتفعيله مسبقاً، ولا يمكنك شراؤه مرة أخرى.")
+
+        paid_order = db.scalar(
+            select(PaymentOrder).where(
+                PaymentOrder.student_id == student.id,
+                PaymentOrder.product_type == product_type,
+                PaymentOrder.product_id == product_id,
+                PaymentOrder.status == PaymentStatus.PAID,
+            )
+        )
+        if paid_order:
+            raise HTTPException(status_code=409, detail="لقد قمت بشراء هذا المحتوى وتفعيله مسبقاً، ولا يمكنك شراؤه مرة أخرى.")
+
     existing = db.scalar(
         select(PaymentOrder)
         .where(
@@ -204,6 +196,8 @@ def create_order(
         .order_by(PaymentOrder.created_at.desc())
     )
     if existing:
+        if existing.status == PaymentStatus.UNDER_REVIEW:
+            raise HTTPException(status_code=409, detail="لديك طلب دفع قيد المراجعة بالفعل لهذا الدرس، يرجى انتظار اعتماد المعلم.")
         return existing
     order = PaymentOrder(
         institution_id=student.institution_id,
@@ -259,14 +253,11 @@ def approve_order(db: Session, reviewer: User, order: PaymentOrder, note: str | 
         resource_id = order.product_id
         expires_at = None
     else:
+        # Legacy AI_SUBSCRIPTION order: keep the historical entitlement type so
+        # old records stay valid, but nothing consumes it anymore.
         entitlement_type = EntitlementType.AI_GLOBAL
         resource_id = None
-        current = get_active_entitlement(db, order.student, EntitlementType.AI_GLOBAL, None)
-        current_expiry = current.expires_at if current else None
-        if current_expiry and current_expiry.tzinfo is None:
-            current_expiry = current_expiry.replace(tzinfo=UTC)
-        start_from = max(now, current_expiry) if current_expiry else now
-        expires_at = start_from + timedelta(days=get_settings().student_ai_subscription_days)
+        expires_at = None
 
     entitlement = get_active_entitlement(db, order.student, entitlement_type, resource_id)
     if entitlement:

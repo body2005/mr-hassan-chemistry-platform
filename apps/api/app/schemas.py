@@ -9,11 +9,11 @@ except ImportError:
     class StrEnum(str, Enum):
         pass
 
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
-from app.models.course import CourseStatus, EnrollmentStatus, LessonKind, IndexingStatus
+from app.models.course import CourseStatus, EnrollmentStatus, LessonKind, MaterializationStatus
 from app.models.platform import (
     AssignmentStatus,
     AttemptStatus,
@@ -21,7 +21,27 @@ from app.models.platform import (
     QuizStatus,
     SubmissionStatus,
 )
-from app.models.user import UserRole
+from app.models.user import Gender, GradeLevel, Religion, UserRole
+
+GOVERNORATE_CODES = frozenset({
+    "ALEXANDRIA", "ASWAN", "ASIUT", "BEHEIRA", "BENI_SUEF", "CAIRO", "DAKAHLIA",
+    "DAMIETTA", "FAYOUM", "GHARBIA", "GIZA", "ISMAILIA", "KAFR_EL_SHEIKH", "LUXOR",
+    "MATROUH", "MINYA", "MONUFIA", "NEW_VALLEY", "NORTH_SINAI", "PORT_SAID",
+    "QALYUBIA", "QENA", "RED_SEA", "SHARQIA", "SOHAG", "SOUTH_SINAI", "SUEZ",
+})
+
+
+def _normalize_digits(value: str) -> str:
+    return value.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+
+
+def _normalize_phone(value: str | None) -> str | None:
+    if value is None or not value.strip():
+        return None
+    normalized = _normalize_digits(value).replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+    if not normalized.isdigit() or len(normalized) > 20:
+        raise ValueError("Phone number must contain at most 20 digits")
+    return normalized
 
 
 class UserResponse(BaseModel):
@@ -33,11 +53,26 @@ class UserResponse(BaseModel):
     email: EmailStr
     display_name: str
     role: UserRole
+    grade_level: GradeLevel | None = None
+    governorate: str | None = None
+    school_name: str | None = None
+    gender: Gender | None = None
+    student_phone: str | None = None
+    guardian_phone: str | None = None
+    national_id: str | None = None
+    religion: Religion | None = None
     is_active: bool
     created_at: datetime
 
 
+class PrivateUserResponse(UserResponse):
+    """Returned to the authenticated account owner and administrators during auth flows."""
+    pass
+
+
 class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     display_name: str = Field(min_length=2, max_length=160)
     email: EmailStr
     password: str = Field(min_length=10, max_length=128)
@@ -45,6 +80,48 @@ class RegisterRequest(BaseModel):
     institution_slug: str = Field(
         default="demo", min_length=2, max_length=80, pattern=r"^[a-z0-9-]+$"
     )
+    grade_level: GradeLevel
+    student_phone: str | None = None
+    guardian_phone: str | None = None
+    national_id: str | None = None
+    governorate: str = Field(min_length=1, max_length=40)
+    school_name: str = Field(min_length=2, max_length=200)
+    gender: Gender
+    religion: Religion
+
+    @field_validator("display_name", "school_name", mode="before")
+    @classmethod
+    def trim_required_text(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("Value must be text")
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Value is required")
+        return normalized
+
+    @field_validator("student_phone", "guardian_phone", mode="before")
+    @classmethod
+    def validate_phone(cls, value: object) -> str | None:
+        return _normalize_phone(value if isinstance(value, str) else None)
+
+    @field_validator("national_id", mode="before")
+    @classmethod
+    def validate_national_id(cls, value: object) -> str | None:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if not isinstance(value, str):
+            raise ValueError("National ID must be text")
+        normalized = _normalize_digits(value.strip())
+        if not normalized.isdigit() or len(normalized) != 14:
+            raise ValueError("National ID must contain exactly 14 digits")
+        return normalized
+
+    @field_validator("governorate")
+    @classmethod
+    def validate_governorate(cls, value: str) -> str:
+        if value not in GOVERNORATE_CODES:
+            raise ValueError("Governorate is not supported")
+        return value
 
     @field_validator("password")
     @classmethod
@@ -63,8 +140,9 @@ class LoginRequest(BaseModel):
 
 
 class AuthResponse(BaseModel):
-    user: UserResponse
+    user: PrivateUserResponse
     expires_in: int
+    expires_at: datetime
     token: str | None = None
 
 
@@ -104,9 +182,25 @@ class LessonCreateRequest(BaseModel):
     kind: LessonKind
     position: int = Field(ge=1, le=10_000)
     content: str | None = Field(default=None, max_length=100_000)
-    video_asset_key: str | None = Field(default=None, max_length=512)
+    # Deliberately no video_asset_key: native videos are attached only via the
+    # authorization-checked upload endpoint, never through lesson creation.
+    # Public embed URLs (YouTube/Drive) entered by the teacher are accepted
+    # through this dedicated, scheme-validated field instead.
+    external_video_url: str | None = Field(default=None, max_length=2048)
     video_duration_seconds: int | None = Field(default=None, ge=1, le=24 * 60 * 60)
     price_egp: float = Field(default=0, ge=0, le=1_000_000)
+
+    @field_validator("external_video_url")
+    @classmethod
+    def _validate_external_video_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        if not trimmed:
+            return None
+        if not (trimmed.startswith("https://") or trimmed.startswith("http://")):
+            raise ValueError("external_video_url must be an http(s) URL")
+        return trimmed
 
 
 class LessonMaterialSummary(BaseModel):
@@ -129,12 +223,13 @@ class LessonResponse(BaseModel):
     kind: LessonKind
     position: int
     content: str | None
-    video_asset_key: str | None
+    # The raw storage key is never serialized: it is a private-path secret and
+    # clients only need the boolean plus the token-gated stream URL.
+    has_video: bool = False
+    video_url: str | None = None
     video_duration_seconds: int | None
-    indexing_status: IndexingStatus = IndexingStatus.NOT_INDEXED
-    indexing_error: str | None = None
-    indexed_chunks_count: int = 0
-    rag_synced: bool = False
+    materialization_status: MaterializationStatus = MaterializationStatus.NOT_INDEXED
+    materialization_error: str | None = None
     price_egp: float = 0
     materials: list[LessonMaterialSummary] = []
 
@@ -343,6 +438,9 @@ class QuizCreateRequest(BaseModel):
     randomize_questions: bool = False
     attempts_allowed: int = Field(default=1, ge=1, le=10)
     question_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
+    # Attach the quiz to a unit and optionally to the exact lesson it covers.
+    module_id: uuid.UUID | None = None
+    lesson_id: uuid.UUID | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -371,6 +469,8 @@ class QuizResponse(BaseModel):
     starts_at: datetime | None
     ends_at: datetime | None
     published_at: datetime | None
+    module_id: uuid.UUID | None = None
+    lesson_id: uuid.UUID | None = None
     randomize_questions: bool
     attempts_allowed: int
     created_at: datetime
@@ -395,6 +495,7 @@ class QuizAttemptResponse(BaseModel):
     status: AttemptStatus
     score: float | None
     total_points: float | None
+    is_practice: bool = False
 
 
 class AssignmentAttemptResponse(BaseModel):
@@ -426,6 +527,9 @@ class AssignmentCreateRequest(BaseModel):
     assignment_title: str | None = Field(default=None, max_length=200)
     prompt: str = Field(min_length=2, max_length=20_000)
     due_at: datetime | None = None
+    # Attach the assignment to a unit and optionally to one lesson.
+    module_id: uuid.UUID | None = None
+    lesson_id: uuid.UUID | None = None
     max_score: float = Field(default=100.0, gt=0, le=100_000)
 
     @model_validator(mode="before")
@@ -454,6 +558,8 @@ class AssignmentResponse(BaseModel):
     max_score: float
     status: AssignmentStatus
     created_at: datetime
+    module_id: uuid.UUID | None = None
+    lesson_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
     def populate_assignment_title(self) -> "AssignmentResponse":
@@ -510,32 +616,6 @@ class CertificateResponse(BaseModel):
     revoked_at: datetime | None
 
 
-class AIInvocationResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    task: str
-    provider: str
-    model: str
-    prompt_version: str
-    status: str
-    latency_ms: int | None
-    input_tokens: int | None
-    output_tokens: int | None
-    estimated_cost: float | None
-    error_code: str | None
-    output_json: dict | list | None
-    created_at: datetime
-
-
-class AIInvocationRequest(BaseModel):
-    task: str = Field(min_length=2, max_length=60)
-    prompt: str = Field(min_length=1, max_length=100_000)
-    provider: str = Field(default="ollama", min_length=2, max_length=60)
-    model: str | None = Field(default=None, max_length=120)
-    prompt_version: str = Field(default="v1", min_length=1, max_length=40)
-
-
 class AuditLogResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -548,3 +628,39 @@ class AuditLogResponse(BaseModel):
     after_json: dict | None
     request_id: str | None
     occurred_at: datetime
+
+
+class LessonAccessRequestCreate(BaseModel):
+    student_note: str | None = Field(default=None, max_length=2000)
+
+
+class LessonAccessReviewRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class LessonAccessRequestResponse(BaseModel):
+    id: uuid.UUID
+    student_id: uuid.UUID
+    student_name: str
+    student_phone: str | None = None
+    lesson_id: uuid.UUID
+    lesson_title: str
+    course_id: uuid.UUID
+    course_title: str
+    status: str
+    student_note: str | None = None
+    reviewer_note: str | None = None
+    created_at: datetime
+    reviewed_at: datetime | None = None
+
+
+class BootstrapResponse(BaseModel):
+    authenticated: bool
+    user: PrivateUserResponse | None = None
+    unread_notifications_count: int = 0
+    notifications: list[NotificationResponse] = Field(default_factory=list)
+    courses: list[CourseResponse] = Field(default_factory=list)
+    enrolled_course_ids: list[str] = Field(default_factory=list)
+    entitlements: list[dict[str, Any]] = Field(default_factory=list)
+    settings: dict[str, Any] = Field(default_factory=dict)
+

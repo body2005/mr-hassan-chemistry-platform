@@ -39,7 +39,6 @@ jobs:
           DATABASE_URL: sqlite:///./ci_test.db
           SECRET_KEY: ci-super-secret-key-32-chars-long-minimum!
           ENVIRONMENT: testing
-          AI_ENABLED: "true"
           ALLOWED_ORIGINS: "http://localhost:5173,https://mr-hassan-chemistry-platform.vercel.app,https://mr-hassan-chemistry.vercel.app"
         run: |
           python -m pytest -v

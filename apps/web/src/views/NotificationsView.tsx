@@ -15,10 +15,14 @@ import {
   X,
   XCircle,
   CheckCircle2,
+  CreditCard,
 } from "lucide-react";
 import { CurrentUser, NotificationItem, NotificationSchedule, StudentProfile } from "../types/lms";
 import { NavTab } from "../components/Sidebar";
 import { calendarService, notificationService } from "../services/lmsService";
+import { InvoiceModal } from "../components/InvoiceModal";
+import { LessonAccessModal } from "../components/LessonAccessModal";
+import { formatDateTimeSimple } from "../utils/dateUtils";
 
 interface NotificationsViewProps {
   notifications: NotificationItem[];
@@ -43,6 +47,7 @@ export interface CalendarScheduleEvent {
   publishStartDate?: string;
   publishStartTime?: string;
   closeDeadline?: string;
+  customMessage?: string;
 }
 
 const DEFAULT_SCHEDULES: NotificationSchedule[] = [
@@ -161,6 +166,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
 
   const [selectedGrade, setSelectedGrade] = useState<"1st_secondary" | "2nd_secondary" | "3rd_secondary">(initialGrade);
   const [calendarCurrentDate, setCalendarCurrentDate] = useState<Date>(() => new Date());
+  const [selectedDayDate, setSelectedDayDate] = useState<string>(() => formatIsoDate(new Date()));
   const [isMonthPickerOpen, setIsMonthPickerOpen] = useState(false);
   const [pickerYear, setPickerYear] = useState<number>(() => new Date().getFullYear());
 
@@ -168,8 +174,32 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
     setPickerYear(calendarCurrentDate.getFullYear());
   }, [calendarCurrentDate]);
 
-  const [schedules, setSchedules] = useState<NotificationSchedule[]>(DEFAULT_SCHEDULES);
-  const [calendarEvents, setCalendarEvents] = useState<CalendarScheduleEvent[]>(DEFAULT_CALENDAR_EVENTS);
+  const [schedules, setSchedules] = useState<NotificationSchedule[]>(() => {
+    try {
+      const stored = localStorage.getItem("lms_notification_schedules_v1");
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return cleanLegacyMockSchedules(parsed).map((s) => {
+            const { hour, period } = parseScheduleTime(s.time);
+            return { ...s, time: `${hour} ${period}` };
+          });
+        }
+      }
+    } catch {}
+    return DEFAULT_SCHEDULES;
+  });
+
+  const [calendarEvents, setCalendarEvents] = useState<CalendarScheduleEvent[]>(() => {
+    try {
+      const stored = localStorage.getItem("lms_calendar_events_cache");
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return DEFAULT_CALENDAR_EVENTS;
+  });
 
   const [activeNotifications, setActiveNotifications] = useState<NotificationItem[]>(() => deduplicateNotifications(notifications));
 
@@ -197,14 +227,14 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
     }
   };
 
-  // Sync selectedGrade and reload whenever the current logged-in user changes (e.g. role switch)
+  // Sync selectedGrade when role or student year changes
   useEffect(() => {
     if (!isTeacher) {
       setSelectedGrade(studentYear);
     }
-    void reloadFromServer();
-  }, [currentUser, isTeacher, studentYear]);
+  }, [isTeacher, studentYear]);
 
+  // Initial load and event-driven synchronization
   useEffect(() => {
     void reloadFromServer();
 
@@ -216,7 +246,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       window.removeEventListener("lms_schedule_updated", handleSync);
       window.removeEventListener("lms_notifications_updated", handleSync);
     };
-  }, []);
+  }, [currentUser?.id]);
 
   // In-page Wizard State (معالج إضافة الموعد)
   const [wizardState, setWizardState] = useState<{
@@ -235,6 +265,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
     scheduledNotifDate: string;
     scheduledNotifHour: string;
     scheduledNotifPeriod: "ص" | "م";
+    customMessage: string;
   }>({
     isOpen: false,
     step: 1,
@@ -251,9 +282,14 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
     scheduledNotifDate: "",
     scheduledNotifHour: "06:00",
     scheduledNotifPeriod: "م",
+    customMessage: "",
   });
 
-  const [activeFilter, setActiveFilter] = useState<"all" | "assignment" | "quiz" | "system">("all");
+  const [activeFilter, setActiveFilter] = useState<"all" | "assignment" | "quiz" | "system" | "payment">("all");
+  const [selectedInvoiceOrderId, setSelectedInvoiceOrderId] = useState<string | null>(null);
+  const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState(false);
+  const [selectedAccessRequestId, setSelectedAccessRequestId] = useState<string | null>(null);
+  const [isAccessModalOpen, setIsAccessModalOpen] = useState(false);
   const [scheduleSavedMsg, setScheduleSavedMsg] = useState(false);
   const [teacherTargetAudience, setTeacherTargetAudience] = useState<"all" | "1st_secondary" | "2nd_secondary" | "3rd_secondary">("all");
   const [isBroadcastModalOpen, setIsBroadcastModalOpen] = useState(false);
@@ -262,7 +298,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   const [broadcastMessage, setBroadcastMessage] = useState("");
   const [broadcastType, setBroadcastType] = useState<"system" | "assignment" | "quiz" | "warning">("system");
   const [broadcastDueDate, setBroadcastDueDate] = useState("");
-  const [broadcastActionTab, setBroadcastActionTab] = useState<string>("GeneralHome");
+  const [broadcastActionTab, setBroadcastActionTab] = useState<string>("MyCourses");
 
   async function handleSendBroadcast(e: React.FormEvent) {
     e.preventDefault();
@@ -328,14 +364,42 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       isRecurringWeekly: wizardState.isRecurringWeekly,
       isPublishedToStudents: wizardState.isPublishedToStudents,
       quizDurationMinutes: wizardState.contentType === "quiz" ? wizardState.quizDurationMinutes : undefined,
+      customMessage: wizardState.contentType === "general" ? (wizardState.customMessage.trim() || undefined) : undefined,
       isCancelled: false,
       publishStartDate: wizardState.isScheduledNotif ? wizardState.scheduledNotifDate : undefined,
       publishStartTime: wizardState.isScheduledNotif ? `${wizardState.scheduledNotifHour} ${wizardState.scheduledNotifPeriod}` : undefined,
     };
 
-    // Delegate to calendarService
-    const updatedEvents = await calendarService.saveCalendarEvent(newEvent);
-    setCalendarEvents(updatedEvents);
+    // 1. INSTANT OPTIMISTIC UI UPDATE (ZERO LAG)
+    setWizardState((prev) => ({ ...prev, isOpen: false }));
+    setSelectedDayDate(wizardState.selectedDate);
+    setScheduleSavedMsg(true);
+    setTimeout(() => setScheduleSavedMsg(false), 3000);
+
+    setCalendarEvents((prev) => {
+      const normDate = (newEvent.date || "").split("T")[0];
+      const idx = prev.findIndex((e) => (e.date || "").split("T")[0] === normDate && e.academicYear === selectedGrade);
+      const updated = idx >= 0 ? [...prev.slice(0, idx), newEvent, ...prev.slice(idx + 1)] : [...prev, newEvent];
+      try {
+        localStorage.setItem("lms_calendar_events_cache", JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    if (wizardState.isRecurringWeekly) {
+      const dayName = getArabicDayName(new Date(wizardState.selectedDate));
+      setSchedules((prev) => {
+        const updated = prev.map((s) => {
+          if (s.academicYear === selectedGrade) {
+            const days = s.days.includes(dayName) ? s.days : [...s.days, dayName];
+            return { ...s, days, time: fullTimeStr };
+          }
+          return s;
+        });
+        void calendarService.saveNotificationSchedules(updated);
+        return updated;
+      });
+    }
 
     // Build the notification createdAt — either scheduled ISO date or "الآن"
     let notifCreatedAt = "الآن";
@@ -350,13 +414,21 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       notifCreatedAt = `${schedDate}T${String(hour24).padStart(2, "0")}:00:00`;
     }
 
-    // If teacher set event to visible for students, delegate to notificationService
+    let autoNotif: NotificationItem | undefined = undefined;
     if (wizardState.isPublishedToStudents) {
-      const autoNotif: NotificationItem = {
+      const defaultNotifMessage = wizardState.contentType === "quiz"
+        ? `تم تثبيت موعد (${newEvent.dayName}) في تقويم ${getGradeLabel(selectedGrade)} يوم ${getArabicDayName(new Date(wizardState.selectedDate))} الموافق ${wizardState.selectedDate} الساعة ${fullTimeStr} (مدة الاختبار: ${wizardState.quizDurationMinutes} دقيقة).`
+        : `تم تثبيت موعد (${newEvent.dayName}) في تقويم ${getGradeLabel(selectedGrade)} يوم ${getArabicDayName(new Date(wizardState.selectedDate))} الموافق ${wizardState.selectedDate} الساعة ${fullTimeStr}.`;
+
+      const notifMessage = (wizardState.contentType === "general" && wizardState.customMessage.trim())
+        ? wizardState.customMessage.trim()
+        : defaultNotifMessage;
+
+      autoNotif = {
         id: `notif_sched_${newEvent.id}`,
-        title: `${wizardState.contentType === "quiz" ? "موعد اختبار بالجدول" : "موعد جديد بالجدول"}: ${newEvent.dayName}`,
-        message: `تم تثبيت موعد (${newEvent.dayName}) في تقويم ${getGradeLabel(selectedGrade)} يوم ${getArabicDayName(new Date(wizardState.selectedDate))} الموافق ${wizardState.selectedDate} الساعة ${fullTimeStr}${wizardState.contentType === "quiz" ? ` (مدة الاختبار: ${wizardState.quizDurationMinutes} دقيقة)` : ""}.`,
-        type: wizardState.contentType === "quiz" ? "quiz" : wizardState.contentType === "assignment" ? "assignment" : "system",
+        title: `${wizardState.contentType === "quiz" ? "موعد اختبار بالجدول" : wizardState.contentType === "general" ? "تنبيه عام بالجدول" : "موعد جديد بالجدول"}: ${newEvent.dayName}`,
+        message: notifMessage,
+        type: wizardState.contentType === "quiz" ? "quiz" : wizardState.contentType === "assignment" ? "assignment" : wizardState.contentType === "general" ? "warning" : "system",
         targetYear: selectedGrade,
         createdAt: notifCreatedAt,
         read: false,
@@ -364,32 +436,30 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
         quizDurationMinutes: wizardState.contentType === "quiz" ? wizardState.quizDurationMinutes : undefined,
       };
 
-      const updatedNotifs = await notificationService.saveNotification(autoNotif);
-      setActiveNotifications(updatedNotifs);
+      setActiveNotifications((prev) => deduplicateNotifications([autoNotif!, ...prev]));
       if (onAddNotification) {
         onAddNotification(autoNotif);
       }
     }
 
-    // If weekly recurrence was checked, update schedules
-    if (wizardState.isRecurringWeekly) {
-      const dayName = getArabicDayName(new Date(wizardState.selectedDate));
-      setSchedules((prev) => {
-        const updated = prev.map((s) => {
-          if (s.academicYear === selectedGrade) {
-            const days = s.days.includes(dayName) ? s.days : [...s.days, dayName];
-            return { ...s, days, time: fullTimeStr };
-          }
-          return s;
-        });
-        calendarService.saveNotificationSchedules(updated);
-        return updated;
-      });
-    }
-
-    setWizardState((prev) => ({ ...prev, isOpen: false }));
-    setScheduleSavedMsg(true);
-    setTimeout(() => setScheduleSavedMsg(false), 3500);
+    // 2. PARALLEL BACKGROUND SERVER SYNC
+    void (async () => {
+      try {
+        const [serverEvents, serverNotifs] = await Promise.all([
+          calendarService.saveCalendarEvent(newEvent),
+          wizardState.isPublishedToStudents && autoNotif ? notificationService.saveNotification(autoNotif) : Promise.resolve(undefined),
+        ]);
+        if (Array.isArray(serverEvents) && serverEvents.length > 0) {
+          setCalendarEvents(serverEvents);
+        }
+        if (Array.isArray(serverNotifs) && serverNotifs.length > 0) {
+          setActiveNotifications((prev) => deduplicateNotifications([...serverNotifs, ...prev]));
+        }
+        window.dispatchEvent(new Event("lms_schedule_updated"));
+      } catch (err) {
+        console.error("Background sync failed:", err);
+      }
+    })();
   }
 
   async function handleCancelSchedule(dateStr: string) {
@@ -402,10 +472,25 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
     const dayName = getArabicDayName(new Date(dateStr));
     const eventTitle = targetEvent?.dayName || `${dayName} - موعد مجدول`;
 
-    const updatedEvents = await calendarService.cancelCalendarEvent(dateStr, selectedGrade);
-    setCalendarEvents(updatedEvents);
+    // 1. INSTANT OPTIMISTIC UI
+    setWizardState((prev) => ({ ...prev, isOpen: false }));
+    setSelectedDayDate(dateStr);
+    setScheduleSavedMsg(true);
+    setTimeout(() => setScheduleSavedMsg(false), 3000);
 
-    // Send Cancellation Warning Notification to Students via notificationService
+    setCalendarEvents((prev) => {
+      const updated = prev.map((e) => {
+        if ((e.date || "").split("T")[0] === normTargetDate && (e.academicYear === selectedGrade || e.academicYear === "all")) {
+          return { ...e, isCancelled: true };
+        }
+        return e;
+      });
+      try {
+        localStorage.setItem("lms_calendar_events_cache", JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
     const cancelNotif: NotificationItem = {
       id: `notif_cancel_${Date.now()}`,
       title: "تنبيه: تم إلغاء موعد مجدول",
@@ -417,19 +502,52 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       actionTab: "Notifications",
     };
 
-    const updatedNotifs = await notificationService.saveNotification(cancelNotif);
-    setActiveNotifications(updatedNotifs);
+    setActiveNotifications((prev) => deduplicateNotifications([cancelNotif, ...prev]));
     if (onAddNotification) {
       onAddNotification(cancelNotif);
     }
 
-    setWizardState((prev) => ({ ...prev, isOpen: false }));
-    setScheduleSavedMsg(true);
-    setTimeout(() => setScheduleSavedMsg(false), 3000);
+    // 2. PARALLEL BACKGROUND SERVER SYNC
+    void (async () => {
+      try {
+        const [updatedEvents, updatedNotifs] = await Promise.all([
+          calendarService.cancelCalendarEvent(dateStr, selectedGrade),
+          notificationService.saveNotification(cancelNotif),
+        ]);
+        if (Array.isArray(updatedEvents)) setCalendarEvents(updatedEvents);
+        if (Array.isArray(updatedNotifs) && updatedNotifs.length > 0) {
+          setActiveNotifications((prev) => deduplicateNotifications([...updatedNotifs, ...prev]));
+        }
+        window.dispatchEvent(new Event("lms_schedule_updated"));
+      } catch (err) {
+        console.error("Cancel schedule background sync failed:", err);
+      }
+    })();
   }
 
   function handleActionClick(n: NotificationItem) {
     onMarkNotificationRead(n.id);
+    if (
+      n.type === "lesson_access" ||
+      (n.actionUrl && (n.actionUrl.includes("/access-requests/") || n.actionUrl.includes("/lessons/access-requests/")))
+    ) {
+      const reqId = n.actionUrl?.match(/\/access-requests\/([0-9a-fA-F-]+)/)?.[1];
+      if (reqId) {
+        setSelectedAccessRequestId(reqId);
+        setIsAccessModalOpen(true);
+        return;
+      }
+    }
+    if (n.type === "payment" || n.paymentOrderId || (n.actionUrl && n.actionUrl.includes("/payments/orders/"))) {
+      const orderId = n.paymentOrderId || n.actionUrl?.match(/\/payments\/orders\/([0-9a-fA-F-]+)/)?.[1];
+      if (orderId) {
+        setSelectedInvoiceOrderId(orderId);
+        setIsInvoiceModalOpen(true);
+        return;
+      }
+      onNavigateToTab("PaymentManagement");
+      return;
+    }
     if (n.actionTab) {
       onNavigateToTab(n.actionTab as NavTab);
     } else if (n.type === "assignment") {
@@ -471,7 +589,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       const cellDate = new Date(year, month, dayNum);
       const dateStr = formatIsoDate(cellDate);
       const dayName = getArabicDayName(cellDate);
-      const isSelected = wizardState.isOpen && wizardState.selectedDate === dateStr;
+      const isSelected = selectedDayDate === dateStr || (wizardState.isOpen && wizardState.selectedDate === dateStr);
 
       const dayEvents = calendarEvents.filter((e) => {
         const eventDateNorm = (e.date || "").split("T")[0].trim();
@@ -483,10 +601,13 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       });
 
       const isRecurringDay = gradeSchedule?.days.includes(dayName);
+      const activeEvent = dayEvents.find((e) => !e.isCancelled) || dayEvents[0];
+      const cellTime = activeEvent?.time || (isRecurringDay ? gradeSchedule?.time : null);
 
       const openWizard = (evt: CalendarScheduleEvent | undefined, targetDate: string) => {
         if (!isTeacher) return;
         const targetDayName = getArabicDayName(new Date(targetDate));
+        setSelectedDayDate(targetDate);
         setWizardState({
           isOpen: true,
           step: 1,
@@ -499,6 +620,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
           isRecurringWeekly: evt?.isRecurringWeekly ?? isRecurringDay ?? true,
           isPublishedToStudents: evt?.isPublishedToStudents ?? true,
           quizDurationMinutes: evt?.quizDurationMinutes ?? 45,
+          customMessage: evt?.customMessage || "",
           isScheduledNotif: !!(evt?.publishStartDate),
           scheduledNotifDate: evt?.publishStartDate || targetDate,
           scheduledNotifHour: evt?.publishStartTime ? parseScheduleTime(evt.publishStartTime).hour : "06:00",
@@ -506,46 +628,142 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
         });
       };
 
+      const hasQuiz = dayEvents.some((e) => e.contentType === "quiz" && !e.isCancelled);
+      const hasAssignment = dayEvents.some((e) => e.contentType === "assignment" && !e.isCancelled);
+      const hasLesson = dayEvents.some((e) => e.contentType === "lesson" && !e.isCancelled);
+      const hasGeneral = dayEvents.some((e) => e.contentType === "general" && !e.isCancelled);
+
+      // User requirement: Quiz = Red, Assignment = Yellow, Video = Green, General Alert = Blue
+      let cellBg = "var(--bg-surface)";
+      let cellBorder = "1px solid var(--border-color)";
+      let textColor = "var(--text-main)";
+      let eventTypeLabel = "";
+      let eventColorDot = "";
+
+      if (hasQuiz) {
+        cellBg = "rgba(239, 68, 68, 0.16)";
+        cellBorder = "2px solid #ef4444";
+        textColor = "#dc2626";
+        eventTypeLabel = "اختبار";
+        eventColorDot = "#ef4444";
+      } else if (hasAssignment) {
+        cellBg = "rgba(245, 158, 11, 0.18)";
+        cellBorder = "2px solid #f59e0b";
+        textColor = "#d97706";
+        eventTypeLabel = "واجب";
+        eventColorDot = "#f59e0b";
+      } else if (hasLesson) {
+        cellBg = "rgba(16, 185, 129, 0.18)";
+        cellBorder = "2px solid #10b981";
+        textColor = "#059669";
+        eventTypeLabel = "فيديو";
+        eventColorDot = "#10b981";
+      } else if (hasGeneral) {
+        cellBg = "rgba(59, 130, 246, 0.16)";
+        cellBorder = "2px solid #3b82f6";
+        textColor = "#2563eb";
+        eventTypeLabel = "تنبيه عام";
+        eventColorDot = "#3b82f6";
+      }
+
+      if (isSelected) {
+        if (hasQuiz) {
+          cellBg = "rgba(239, 68, 68, 0.32)";
+          cellBorder = "2.5px solid #b91c1c";
+        } else if (hasAssignment) {
+          cellBg = "rgba(245, 158, 11, 0.32)";
+          cellBorder = "2.5px solid #b45309";
+        } else if (hasLesson) {
+          cellBg = "rgba(16, 185, 129, 0.32)";
+          cellBorder = "2.5px solid #047857";
+        } else if (hasGeneral) {
+          cellBg = "rgba(59, 130, 246, 0.32)";
+          cellBorder = "2.5px solid #1d4ed8";
+        } else {
+          cellBg = "#0f392b";
+          cellBorder = "2px solid #059669";
+          textColor = "#ffffff";
+        }
+      }
+
       cells.push(
         <div
           key={dateStr}
           className="calendar-cell"
           onClick={() => {
-            if (!isTeacher) return;
-            openWizard(dayEvents.length === 1 ? dayEvents[0] : undefined, dateStr);
+            setSelectedDayDate(dateStr);
+            if (isTeacher) {
+              openWizard(dayEvents.length === 1 ? dayEvents[0] : undefined, dateStr);
+            }
           }}
           style={{
-            minHeight: "48px",
-            background: isSelected
-              ? "var(--bg-accent)"
-              : "var(--bg-surface)",
-            border: isSelected
-              ? "2px solid #059669"
-              : "1px solid var(--border-color)",
+            minHeight: "50px",
+            background: cellBg,
+            border: cellBorder,
             borderRadius: "10px",
-            padding: "8px 6px",
+            padding: "5px 4px",
             display: "flex",
+            flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            cursor: isTeacher ? "pointer" : "default",
+            gap: "2px",
+            cursor: "pointer",
             transition: "all 0.15s ease",
-            boxShadow: isSelected ? "0 2px 8px rgba(5, 150, 105, 0.2)" : "none",
+            boxShadow: isSelected
+              ? "0 4px 12px rgba(0, 0, 0, 0.18)"
+              : hasQuiz
+              ? "0 2px 8px rgba(239, 68, 68, 0.2)"
+              : hasAssignment
+              ? "0 2px 8px rgba(245, 158, 11, 0.2)"
+              : hasLesson
+              ? "0 2px 8px rgba(16, 185, 129, 0.2)"
+              : hasGeneral
+              ? "0 2px 8px rgba(59, 130, 246, 0.2)"
+              : "none",
           }}
         >
-          {/* Day Number Only - No markers or badges */}
+          {cellTime && (
+            <span
+              style={{
+                fontSize: "9px",
+                fontWeight: 800,
+                color: textColor,
+                opacity: 0.95,
+                lineHeight: 1.1,
+                direction: "ltr",
+                marginBottom: "2px",
+              }}
+            >
+              {cellTime}
+            </span>
+          )}
           <span
             className="calendar-cell-day"
             style={{
-              fontSize: "13.5px",
+              fontSize: "14px",
               fontWeight: 800,
-              color: isSelected ? "#059669" : "var(--text-main)",
-              background: isSelected ? "var(--bg-accent)" : "transparent",
-              padding: isSelected ? "2px 8px" : "0",
-              borderRadius: "4px",
+              color: textColor,
             }}
           >
             {dayNum}
           </span>
+          {eventTypeLabel && (
+            <span
+              style={{
+                fontSize: "9.5px",
+                fontWeight: 800,
+                color: textColor,
+                background: "var(--bg-surface)",
+                padding: "1px 5px",
+                borderRadius: "4px",
+                border: `1px solid ${eventColorDot}`,
+                lineHeight: 1.2,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {eventTypeLabel}
+            </span>
+          )}
         </div>
       );
     }
@@ -725,12 +943,13 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
               </div>
 
               {/* Filter Pills */}
-              <div style={{ display: "flex", gap: "6px" }}>
+              <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
                 {([
                   { id: "all", label: "الكل" },
                   { id: "assignment", label: "الواجبات" },
                   { id: "quiz", label: "الاختبارات" },
                   { id: "system", label: "الدروس" },
+                  ...(isTeacher ? [{ id: "payment" as const, label: "المدفوعات" }] : []),
                 ] as const).map((f) => (
                   <button
                     key={f.id}
@@ -784,8 +1003,22 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                             width: "36px",
                             height: "36px",
                             borderRadius: "8px",
-                            background: n.type === "assignment" ? "#fef3c7" : n.type === "quiz" ? "#ccfbf1" : "#dcfce7",
-                            color: n.type === "assignment" ? "#b45309" : n.type === "quiz" ? "#0f766e" : "#15803d",
+                            background:
+                              n.type === "payment"
+                                ? "#e0e7ff"
+                                : n.type === "assignment"
+                                ? "#fef3c7"
+                                : n.type === "quiz"
+                                ? "#ccfbf1"
+                                : "#dcfce7",
+                            color:
+                              n.type === "payment"
+                                ? "#4338ca"
+                                : n.type === "assignment"
+                                ? "#b45309"
+                                : n.type === "quiz"
+                                ? "#0f766e"
+                                : "#15803d",
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "center",
@@ -793,7 +1026,15 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                             marginTop: "2px",
                           }}
                         >
-                          {n.type === "assignment" ? <FileText size={18} /> : n.type === "quiz" ? <FileQuestion size={18} /> : <Video size={18} />}
+                          {n.type === "payment" ? (
+                            <CreditCard size={18} />
+                          ) : n.type === "assignment" ? (
+                            <FileText size={18} />
+                          ) : n.type === "quiz" ? (
+                            <FileQuestion size={18} />
+                          ) : (
+                            <Video size={18} />
+                          )}
                         </div>
 
                         <div>
@@ -806,11 +1047,23 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                         </div>
                       </div>
 
-                      {/* Timestamps */}
-                      <div style={{ textAlign: "left", flexShrink: 0 }}>
-                        <span style={{ fontSize: "11px", color: "var(--text-muted, #94a3b8)", display: "block" }}>
-                          {n.createdAt}
-                        </span>
+                      {/* Timestamps formatted clearly like Image 4 (Time on line 1, Date on line 2) */}
+                      <div style={{ textAlign: "left", flexShrink: 0, lineHeight: 1.35 }}>
+                        {(() => {
+                          const formatted = formatDateTimeSimple(n.createdAt);
+                          return (
+                            <div style={{ textAlign: "left", direction: "ltr" }}>
+                              <span style={{ fontSize: "11.5px", fontWeight: 800, color: "var(--text-main)", display: "block" }}>
+                                {formatted.time}
+                              </span>
+                              {formatted.date && (
+                                <span style={{ fontSize: "10.5px", color: "var(--text-muted)", display: "block" }}>
+                                  {formatted.date}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
                         {n.dueDate && (
                           <span style={{ fontSize: "11px", fontWeight: 800, color: "#dc2626", display: "flex", alignItems: "center", gap: "3px", justifyContent: "flex-end", marginTop: "3px" }}>
                             <Clock size={11} />
@@ -842,7 +1095,9 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                         onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
                       >
                         <span>
-                          {n.type === "assignment"
+                          {n.type === "payment"
+                            ? "معاينة الفاتورة وإيصال الدفع"
+                            : n.type === "assignment"
                             ? isTeacher ? "مراجعة تسليمات الواجب" : "حل وتسليم الواجب"
                             : n.type === "quiz"
                             ? isTeacher ? "عرض وتعديل الاختبار" : "دخول الاختبار"
@@ -886,6 +1141,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                 onClick={() => {
                   const todayStr = formatIsoDate(calendarCurrentDate);
                   const dayName = getArabicDayName(calendarCurrentDate);
+                  setSelectedDayDate(todayStr);
                   setWizardState({
                     isOpen: true,
                     step: 1,
@@ -901,6 +1157,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                     scheduledNotifDate: todayStr,
                     scheduledNotifHour: "06:00",
                     scheduledNotifPeriod: "م",
+                    customMessage: "",
                   });
                 }}
                 style={{
@@ -1239,6 +1496,42 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
               </span>
             </div>
 
+            {/* Calendar Color Legend */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "14px",
+                padding: "8px 12px",
+                background: "var(--bg-surface-secondary)",
+                borderRadius: "10px",
+                border: "1px solid var(--border-color)",
+                marginBottom: "12px",
+                flexWrap: "wrap",
+                fontSize: "12px",
+                fontWeight: 700,
+              }}
+            >
+              <span style={{ color: "var(--text-muted)", fontSize: "11px" }}>دليل ألوان التقويم:</span>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: "#ef4444", display: "inline-block" }} />
+                <span style={{ color: "#ef4444" }}>اختبار (أحمر)</span>
+              </div>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: "#f59e0b", display: "inline-block" }} />
+                <span style={{ color: "#d97706" }}>واجب (أصفر)</span>
+              </div>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: "#10b981", display: "inline-block" }} />
+                <span style={{ color: "#059669" }}>فيديو (أخضر)</span>
+              </div>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: "#3b82f6", display: "inline-block" }} />
+                <span style={{ color: "#2563eb" }}>تنبيه عام (أزرق)</span>
+              </div>
+            </div>
+
             {/* Weekdays Grid Header */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "4px", marginBottom: "8px", textAlign: "center" }}>
               {WEEK_DAYS.map((d) => (
@@ -1396,11 +1689,42 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                       cursor: "pointer",
                     }}
                   >
-                    <option value="lesson">رفع وشرح درس جديد</option>
-                    <option value="assignment">موعد تسليم واجب منزلي</option>
-                    <option value="quiz">اختبار تقييمي دوري</option>
-                    <option value="general">تنبيه عام وتذكير للمجموعة</option>
+                    <option value="quiz">اختبار تقييمي دوري (لون أحمر 🔴)</option>
+                    <option value="assignment">موعد تسليم واجب منزلي (لون أصفر 🟡)</option>
+                    <option value="lesson">رفع وشرح درس جديد / فيديو (لون أخضر 🟢)</option>
+                    <option value="general">تنبيه عام وتذكير للمجموعة (لون أزرق 🔵)</option>
                   </select>
+                  {wizardState.contentType === "general" && (
+                    <div style={{ marginTop: "12px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+                        <label style={{ fontSize: "11.5px", fontWeight: 700, color: "var(--text-main)" }}>
+                          رسالة خاصة في الإشعار عن هذا اليوم:
+                        </label>
+                        <span style={{ fontSize: "11px", color: "#2563eb", fontWeight: 700 }}>
+                          ستظهر في إشعار الطلاب
+                        </span>
+                      </div>
+                      <textarea
+                        value={wizardState.customMessage}
+                        onChange={(e) => setWizardState((prev) => ({ ...prev, customMessage: e.target.value }))}
+                        placeholder="اكتب هنا نص التنبيه الخاص أو التعليمات الموجهة للطلاب في هذا اليوم..."
+                        rows={3}
+                        style={{
+                          width: "100%",
+                          padding: "8px 12px",
+                          border: "1.5px solid #3b82f6",
+                          borderRadius: "8px",
+                          fontSize: "12.5px",
+                          lineHeight: "1.5",
+                          background: "rgba(59, 130, 246, 0.04)",
+                          color: "var(--text-main)",
+                          boxSizing: "border-box",
+                          outline: "none",
+                          resize: "vertical",
+                        }}
+                      />
+                    </div>
+                  )}
                   {wizardState.contentType === "quiz" && (
                     <div style={{ marginTop: "12px" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
@@ -1707,7 +2031,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                   />
                   <div>
                     <strong style={{ fontSize: "12px", color: "var(--text-main)", display: "block" }}>
-                      تكرار أسبوعي (كل {getArabicDayName(new Date(wizardState.selectedDate))})
+                      تكرار أسبوعي كل {getArabicDayName(new Date(wizardState.selectedDate))}
                     </strong>
                     <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
                       تثبيت هذا الموعد بشكل دائم لطلاب {getGradeLabel(selectedGrade)}
@@ -1764,6 +2088,14 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                       {wizardState.isPublishedToStudents ? "معروض في جدول الطلاب" : "مخفي عن الطلاب (خاص بالمعلم)"}
                     </strong>
                   </div>
+                  {wizardState.contentType === "general" && wizardState.customMessage.trim() && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "4px", borderTop: "1px dashed var(--border-color)", paddingTop: "6px" }}>
+                      <span style={{ fontSize: "12px", color: "#2563eb", fontWeight: 700 }}>نص الإشعار الخاص:</span>
+                      <p style={{ margin: 0, fontSize: "12px", color: "var(--text-main)", background: "rgba(59, 130, 246, 0.08)", padding: "6px 10px", borderRadius: "6px", lineHeight: "1.5" }}>
+                        {wizardState.customMessage.trim()}
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "10px", flexWrap: "wrap", gap: "8px" }}>
@@ -1991,10 +2323,10 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                       fontSize: "12px",
                     }}
                   >
-                    <option value="GeneralHome">الصفحة الرئيسية / المقررات</option>
-                    <option value="MyCourses">مقرراتي / الدروس</option>
+                    <option value="MyCourses">مقرراتي ودروسي</option>
                     <option value="MySubmissions">واجباتي وتسليماتي</option>
                     <option value="Notifications">مركز الإشعارات</option>
+                    <option value="Payments">الدفع والاشتراكات</option>
                   </select>
                 </div>
               </div>
@@ -2041,6 +2373,33 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Invoice Details Modal */}
+      <InvoiceModal
+        orderId={selectedInvoiceOrderId}
+        isOpen={isInvoiceModalOpen}
+        onClose={() => {
+          setIsInvoiceModalOpen(false);
+          setSelectedInvoiceOrderId(null);
+        }}
+        onOrderUpdated={() => {
+          void reloadFromServer();
+        }}
+      />
+
+      {/* Lesson Access Request Details Modal */}
+      <LessonAccessModal
+        requestId={selectedAccessRequestId}
+        isOpen={isAccessModalOpen}
+        onClose={() => {
+          setIsAccessModalOpen(false);
+          setSelectedAccessRequestId(null);
+        }}
+        onUpdated={() => {
+          void reloadFromServer();
+        }}
+        isTeacher={isTeacher}
+      />
     </div>
   );
 };

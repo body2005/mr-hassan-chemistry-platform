@@ -14,10 +14,13 @@ httpx>=0.27.2
 pytest>=8.3.2
 pillow>=11.0.0
 sympy>=1.13.0
+python-dotenv>=1.0.1
 
-# Audio/video processing and document extraction (P0)
-# openai-whisper>=20250625  # Heavy (pulls torch) - omitted for lightweight cloud deployment
-gTTS>=2.5.4
+# Optional heavy OCR engine (Arabic). Only used when PADDLE_OCR_ENABLED=1;
+# Tesseract (pytesseract) is the default fallback.
+# paddleocr>=2.7.0
+
+# Document extraction (quiz extraction from uploaded files)
 pdfplumber>=0.11.10
 pymupdf>=1.25.0
 pypdfium2>=4.30.0
@@ -26,3 +29,8 @@ python-docx>=1.2.0
 python-pptx>=1.0.2
 boto3>=1.34.0
 psutil>=6.0.0
+
+# Arabic printable assignment sheets (PDF generation)
+reportlab>=4.2.0
+arabic-reshaper>=3.0.0
+python-bidi>=0.6.6

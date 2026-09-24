@@ -5,8 +5,6 @@ import {
   BookOpen,
   FileQuestion,
   GraduationCap,
-  LayoutDashboard,
-  Layers,
   UploadCloud,
   Users,
   WalletCards,
@@ -16,14 +14,11 @@ import { CurrentUser } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
 
 export type NavTab =
-  | "GeneralHome"
   | "MyCourses"
   | "MySubmissions"
   | "LessonManagement"
-  | "AIKnowledgeCenter"
   | "QuizGen"
   | "Submissions"
-  | "StudentAnalytics"
   | "Notifications"
   | "Profile"
   | "Payments"
@@ -53,18 +48,15 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
   const t = translations[lang];
 
   const studentNavItems: Array<{ id: NavTab; label: string; sub: string; icon: LucideIcon }> = [
-    { id: "GeneralHome", label: t.navHome, sub: t.navHomeSub, icon: LayoutDashboard },
     { id: "MyCourses", label: t.navMyCourses, sub: t.navMyCoursesSub, icon: BookOpen },
-    { id: "Payments", label: lang === "ar" ? "الدفع والاشتراكات" : "Payments", sub: lang === "ar" ? "تفعيل الدروس والمساعد الذكي" : "Lessons and AI access", icon: WalletCards },
+    { id: "Payments", label: lang === "ar" ? "الدفع والاشتراكات" : "Payments", sub: lang === "ar" ? "تفعيل الدروس والمحتوى التعليمي" : "Lessons and content access", icon: WalletCards },
     { id: "Notifications", label: lang === "ar" ? "الإشعارات والمواعيد" : "Notifications & Alerts", sub: lang === "ar" ? "جدول إشعارات صفك والدروس" : "Class alerts & deadlines", icon: Bell },
   ];
 
   const teacherNavItems: Array<{ id: NavTab; label: string; sub: string; icon: LucideIcon }> = [
     { id: "LessonManagement", label: t.navLessonManagement, sub: t.navLessonManagementSub, icon: UploadCloud },
-    { id: "AIKnowledgeCenter", label: lang === "ar" ? "مركز المعرفة الذكي" : "AI Knowledge Center", sub: lang === "ar" ? "مصادر وتغذية المنهج الذكي" : "Manage AI teaching sources", icon: BookOpen },
     { id: "QuizGen", label: lang === "ar" ? "صانع وسجل الاختبارات" : "Quizzes & History", sub: lang === "ar" ? "توليد، نشر، وأرشيف الاختبارات" : "Create, publish & quiz history", icon: FileQuestion },
-    { id: "Submissions", label: t.navSubmissions, sub: t.navSubmissionsSub, icon: Layers },
-    { id: "StudentAnalytics", label: t.navStudentAnalytics, sub: t.navStudentAnalyticsSub, icon: Users },
+    { id: "Submissions", label: t.navSubmissions, sub: t.navSubmissionsSub, icon: Users },
     { id: "PaymentManagement", label: lang === "ar" ? "المدفوعات والتسعير" : "Payments & Pricing", sub: lang === "ar" ? "مراجعة التحويلات وتحديد الأسعار" : "Review payments and set prices", icon: WalletCards },
     { id: "Notifications", label: lang === "ar" ? "جدول مواعيد الإشعارات" : "Notification Schedules", sub: lang === "ar" ? "مواعيد الإرسال وجدول كل صف" : "Manage broadcast schedules", icon: Bell },
   ];
@@ -144,7 +136,8 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
           {/* Brand Logo & Title */}
           <div
             onClick={() => {
-              onSelectTab(isStudent ? "GeneralHome" : "LessonManagement");
+              window.dispatchEvent(new CustomEvent("lms:close-overlays"));
+              onSelectTab(isStudent ? "MyCourses" : "LessonManagement");
               onCloseMenu();
             }}
             role="button"
@@ -178,11 +171,13 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
               type="button"
               className={`nav-item ${activeTab === id ? "active" : ""}`}
               onClick={() => {
+                window.dispatchEvent(new CustomEvent("lms:close-overlays"));
                 onSelectTab(id);
                 onCloseMenu();
               }}
               onMouseEnter={() => onHoverTab?.(id)}
               onFocus={() => onHoverTab?.(id)}
+              onTouchStart={() => onHoverTab?.(id)}
             >
               <Icon size={18} className="nav-icon" />
               <div style={{ textAlign: "inherit", lineHeight: "1.2" }}>
@@ -203,6 +198,8 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
               onCloseMenu();
             }}
             onMouseEnter={() => onHoverTab?.("Profile")}
+            onFocus={() => onHoverTab?.("Profile")}
+            onTouchStart={() => onHoverTab?.("Profile")}
           >
             <div
               className="avatar-badge"
