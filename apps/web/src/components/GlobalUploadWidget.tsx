@@ -126,7 +126,8 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  if (role !== "teacher") {
+  // Strictly enforce role and active uploads: hide widget if no active upload
+  if (role !== "teacher" || activeTasks.length === 0) {
     return null;
   }
 

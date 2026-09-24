@@ -689,7 +689,7 @@ function App() {
         <GlobalUploadWidget currentUser={currentUser} menuOpen={menuOpen} />
       )}
 
-      {/* Global Student Course Progress FAB: draggable, bottom-left default, appears on all pages, hides when video enlarged */}
+      {/* Global Student Course Progress FAB: draggable, bottom-right default, appears on all pages, hides when video enlarged */}
       {currentUser?.role === "student" && (
         <FloatingProgressFab
           courses={courses}

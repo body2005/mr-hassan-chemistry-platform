@@ -5,7 +5,6 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronDown,
-  Clock,
   ExternalLink,
   FileQuestion,
   FileText,
@@ -416,13 +415,8 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
 
     let autoNotif: NotificationItem | undefined = undefined;
     if (wizardState.isPublishedToStudents) {
-      const defaultNotifMessage = wizardState.contentType === "quiz"
-        ? `تم تثبيت موعد (${newEvent.dayName}) في تقويم ${getGradeLabel(selectedGrade)} يوم ${getArabicDayName(new Date(wizardState.selectedDate))} الموافق ${wizardState.selectedDate} الساعة ${fullTimeStr} (مدة الاختبار: ${wizardState.quizDurationMinutes} دقيقة).`
-        : `تم تثبيت موعد (${newEvent.dayName}) في تقويم ${getGradeLabel(selectedGrade)} يوم ${getArabicDayName(new Date(wizardState.selectedDate))} الموافق ${wizardState.selectedDate} الساعة ${fullTimeStr}.`;
-
-      const notifMessage = (wizardState.contentType === "general" && wizardState.customMessage.trim())
-        ? wizardState.customMessage.trim()
-        : defaultNotifMessage;
+      // If teacher wrote a custom message, use it; otherwise title only (no day/time in body)
+      const notifMessage = wizardState.customMessage?.trim() || "";
 
       autoNotif = {
         id: `notif_sched_${newEvent.id}`,
@@ -493,8 +487,8 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
 
     const cancelNotif: NotificationItem = {
       id: `notif_cancel_${Date.now()}`,
-      title: "تنبيه: تم إلغاء موعد مجدول",
-      message: `تنبيه لطلاب ${getGradeLabel(selectedGrade)}: تم إلغاء موعد (${eventTitle}) المقرر ليوم ${dayName} الموافق ${dateStr} من قِبل المعلم.`,
+      title: `تنبيه: تم إلغاء موعد (${eventTitle})`,
+      message: "",
       type: "warning",
       targetYear: selectedGrade,
       createdAt: "الآن",
@@ -1041,13 +1035,26 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                           <strong style={{ display: "block", fontSize: "13.5px", color: "var(--text-main, #0f172a)", marginBottom: "3px" }}>
                             {n.title}
                           </strong>
-                          <p style={{ margin: 0, fontSize: "12px", color: "var(--text-muted, #64748b)", lineHeight: "1.5" }}>
-                            {n.message}
-                          </p>
+                          {(() => {
+                            // If message is empty or auto-generated boilerplate with dates/times, show title only
+                            const msg = n.message?.trim() || "";
+                            const isAutoBoilerplate =
+                              msg.startsWith("تم تثبيت موعد") ||
+                              msg.startsWith("تم إلغاء موعد") ||
+                              msg.startsWith("تنبيه لطلاب") ||
+                              msg.startsWith("تم نشر اختبار") ||
+                              msg.startsWith("تم نشر واجب منزلي");
+                            if (!msg || isAutoBoilerplate) return null;
+                            return (
+                              <p style={{ margin: 0, fontSize: "12px", color: "var(--text-muted, #64748b)", lineHeight: "1.5" }}>
+                                {msg}
+                              </p>
+                            );
+                          })()}
                         </div>
                       </div>
 
-                      {/* Timestamps formatted clearly like Image 4 (Time on line 1, Date on line 2) */}
+                      {/* Timestamps: Time on line 1, Day name above Date (and NO raw ISO badge) */}
                       <div style={{ textAlign: "left", flexShrink: 0, lineHeight: 1.35 }}>
                         {(() => {
                           const formatted = formatDateTimeSimple(n.createdAt);
@@ -1056,6 +1063,11 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                               <span style={{ fontSize: "11.5px", fontWeight: 800, color: "var(--text-main)", display: "block" }}>
                                 {formatted.time}
                               </span>
+                              {formatted.dayName && (
+                                <span style={{ fontSize: "11px", fontWeight: 800, color: "var(--text-main)", display: "block" }}>
+                                  {formatted.dayName}
+                                </span>
+                              )}
                               {formatted.date && (
                                 <span style={{ fontSize: "10.5px", color: "var(--text-muted)", display: "block" }}>
                                   {formatted.date}
@@ -1064,12 +1076,6 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                             </div>
                           );
                         })()}
-                        {n.dueDate && (
-                          <span style={{ fontSize: "11px", fontWeight: 800, color: "#dc2626", display: "flex", alignItems: "center", gap: "3px", justifyContent: "flex-end", marginTop: "3px" }}>
-                            <Clock size={11} />
-                            <span>{n.dueDate}</span>
-                          </span>
-                        )}
                       </div>
                     </div>
 

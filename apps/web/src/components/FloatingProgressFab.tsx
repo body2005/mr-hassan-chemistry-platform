@@ -188,9 +188,9 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
 
   // Determine popup placement based on coordinates
   const openDownward = coords !== null && coords.y < 230;
-  const alignRight = coords !== null && coords.x > (typeof window !== "undefined" ? window.innerWidth - 270 : 600);
+  const alignRight = coords !== null ? coords.x > (typeof window !== "undefined" ? window.innerWidth - 270 : 600) : true;
 
-  // Position style: default bottom-left
+  // Position style: default bottom-right (الكرة عند الطالب على اليمين افتراضياً)
   const positionStyle: React.CSSProperties = coords
     ? {
         position: "fixed",
@@ -200,7 +200,7 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
       }
     : {
         position: "fixed",
-        left: "24px",
+        right: "24px",
         bottom: "24px",
         zIndex: 9999,
       };

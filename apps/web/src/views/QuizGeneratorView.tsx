@@ -725,12 +725,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
         const newNotif: NotificationItem = {
           id: `notif_${assessmentType}_${Date.now()}`,
           title: `${isQuiz ? "اختبار جديد" : "واجب منزلي جديد"}: ${titleToPublish}`,
-          message: isQuiz
-            ? `تم نشر اختبار (${titleToPublish}) لطلاب ${yearLabel}. مدة الحل: ${quizDurationMinutes} دقيقة. يبدأ: ${publishStartDate} الساعة ${publishStartTime}، ومتاح الدخول والحل حتى: ${closeDeadlineDate} الساعة ${closeDeadlineTime}.`
-            : `تم نشر واجب منزلي (${titleToPublish}) لطلاب ${yearLabel}. يبدأ من: ${publishStartDate} الساعة ${publishStartTime}، وآخر موعد لتسليم الحل هو: ${closeDeadlineDate} الساعة ${closeDeadlineTime}.`,
+          message: "",
           type: assessmentType,
           targetYear: selectedAcademicYear,
-          dueDate: `${closeDeadlineDate} ${closeDeadlineTime}`,
           createdAt: "الآن",
           read: false,
           actionTab: "MyCourses",
