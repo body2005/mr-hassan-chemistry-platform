@@ -199,12 +199,6 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             </div>
           </div>
         )}
-
-        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "20px" }}>
-          <button className="btn-secondary" onClick={onClose}>
-            إغلاق
-          </button>
-        </div>
       </div>
     </div>
   );

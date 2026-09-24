@@ -565,34 +565,6 @@ export const LessonAccessModal: React.FC<LessonAccessModalProps> = ({
             </>
           ) : null}
         </div>
-
-        {/* Footer */}
-        <div
-          style={{
-            padding: "14px 24px",
-            borderTop: "1px solid var(--border-color)",
-            display: "flex",
-            justifyContent: "flex-end",
-            background: "var(--bg-surface-secondary)",
-          }}
-        >
-          <button
-            type="button"
-            onClick={onClose}
-            style={{
-              padding: "8px 18px",
-              borderRadius: "10px",
-              border: "1px solid var(--border-color)",
-              background: "var(--bg-surface)",
-              color: "var(--text-main)",
-              fontSize: "13px",
-              fontWeight: 600,
-              cursor: "pointer",
-            }}
-          >
-            إغلاق
-          </button>
-        </div>
       </div>
     </div>
   );

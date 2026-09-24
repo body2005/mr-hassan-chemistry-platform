@@ -153,12 +153,6 @@ export const StudentDetailModal: React.FC<StudentDetailModalProps> = ({
             </div>
           )}
         </div>
-
-        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "20px" }}>
-          <button className="btn-secondary" onClick={onClose}>
-            إغلاق
-          </button>
-        </div>
       </div>
     </div>
   );

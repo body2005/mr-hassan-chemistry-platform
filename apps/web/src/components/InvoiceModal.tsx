@@ -583,28 +583,19 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
         </div>
 
         {/* Footer Actions */}
-        <div
-          style={{
-            padding: "16px 24px",
-            borderTop: "1px solid var(--border-color)",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            background: "var(--bg-surface-secondary)",
-            flexWrap: "wrap",
-            gap: "10px",
-          }}
-        >
-          <button
-            type="button"
-            onClick={onClose}
-            className="btn-secondary"
-            style={{ padding: "8px 18px", fontSize: "13px" }}
+        {order && order.status !== "paid" && (
+          <div
+            style={{
+              padding: "16px 24px",
+              borderTop: "1px solid var(--border-color)",
+              display: "flex",
+              justifyContent: "flex-end",
+              alignItems: "center",
+              background: "var(--bg-surface-secondary)",
+              flexWrap: "wrap",
+              gap: "10px",
+            }}
           >
-            إغلاق
-          </button>
-
-          {order && order.status !== "paid" && (
             <div style={{ display: "flex", gap: "10px" }}>
               {order.status !== "rejected" && (
                 <button
@@ -653,8 +644,8 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
                 <span>تفعيل وقبول الدفع</span>
               </button>
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );

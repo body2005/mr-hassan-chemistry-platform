@@ -286,18 +286,18 @@ export const StudentDetailWizard: React.FC<StudentDetailWizardProps> = ({
         </div>
 
         {/* Footer — action buttons */}
-        <div
-          style={{
-            padding: "16px 24px",
-            borderTop: "1px solid var(--border-color)",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            flexWrap: "wrap",
-            gap: "10px",
-          }}
-        >
-          <div style={{ display: "flex", gap: "8px" }}>
+        {(onBlock || onDelete) && (
+          <div
+            style={{
+              padding: "16px 24px",
+              borderTop: "1px solid var(--border-color)",
+              display: "flex",
+              justifyContent: "flex-end",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: "8px",
+            }}
+          >
             {onBlock && (
               <button
                 type="button"
@@ -345,15 +345,7 @@ export const StudentDetailWizard: React.FC<StudentDetailWizardProps> = ({
               </button>
             )}
           </div>
-
-          <button
-            className="btn-secondary"
-            onClick={onClose}
-            style={{ padding: "8px 18px", fontSize: "12px" }}
-          >
-            إغلاق
-          </button>
-        </div>
+        )}
       </div>
     </div>
   );

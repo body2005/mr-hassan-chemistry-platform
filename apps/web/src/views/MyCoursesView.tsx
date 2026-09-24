@@ -3819,13 +3819,6 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 <Download size={16} />
                 <span>تحميل النسخة الكاملة على الجهاز</span>
               </button>
-              <button
-                onClick={() => closeOverlay("activeBookModal", () => setActiveBookModal(null))}
-                className="btn-outline"
-                style={{ padding: "12px 20px", borderRadius: "10px", fontWeight: 800, fontSize: "13.5px" }}
-              >
-                إغلاق
-              </button>
             </div>
           </div>
         </div>
@@ -3939,16 +3932,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             </div>
 
             {/* Actions */}
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", borderTop: "1px solid var(--border-color)", paddingTop: "16px" }}>
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => closeOverlay("activeAssignmentModal", () => setActiveAssignmentModal(null))}
-              >
-                إغلاق
-              </button>
-
-              {!submittedAssignmentIds[activeAssignmentModal.id] && (
+            {!submittedAssignmentIds[activeAssignmentModal.id] && (
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", borderTop: "1px solid var(--border-color)", paddingTop: "16px" }}>
                 <button
                   type="button"
                   className="btn-primary"
@@ -3959,8 +3944,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   <FileCheck size={16} />
                   <span>تسليم الواجب الآن</span>
                 </button>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         </div>
       )}
