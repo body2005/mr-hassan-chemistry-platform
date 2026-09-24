@@ -107,6 +107,10 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [courseModules, setCourseModules] = useState<Array<{ id: string; title: string }>>([]);
+  const [selectedModuleId, setSelectedModuleId] = useState<string>("auto");
+  const [newModuleTitle, setNewModuleTitle] = useState("");
+  const [isRevision, setIsRevision] = useState(false);
 
   // Auto-sync courses when background uploads finish
   useEffect(() => {
@@ -209,6 +213,24 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     if (!activeCourse?.lessons) return [];
     return [...activeCourse.lessons].reverse();
   }, [activeCourse]);
+
+  // Load modules (units) for the active course
+  useEffect(() => {
+    if (!activeCourse?.id) {
+      setCourseModules([]);
+      return;
+    }
+    courseService
+      .getCourseContent(activeCourse.id)
+      .then((content) => {
+        const mods = (content.modules || []).map((m) => ({ id: m.id, title: m.title }));
+        setCourseModules(mods);
+        if (mods.length > 0 && (selectedModuleId === "auto" || !selectedModuleId)) {
+          setSelectedModuleId(mods[0].id);
+        }
+      })
+      .catch(() => undefined);
+  }, [activeCourse?.id, courses]);
 
   // Video & Lesson Search State
   const [videoSearchQuery, setVideoSearchQuery] = useState("");
@@ -386,16 +408,30 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       if (!course) throw new Error("تعذر إنشاء المقرر");
       const content = await courseService.getCourseContent(course.id);
       let module = content.modules[0];
+      if (selectedModuleId === "new" && newModuleTitle.trim()) {
+        module = await courseService.addModule(course.id, {
+          title: newModuleTitle.trim(),
+          position: (content.modules?.length || 0) + 1,
+        });
+      } else if (selectedModuleId && selectedModuleId !== "auto") {
+        const found = content.modules.find((m) => m.id === selectedModuleId);
+        if (found) module = found;
+      }
       if (!module) {
         module = await courseService.addModule(course.id, { title: "الوحدة الأولى", position: 1 });
       }
+
       const savedTitle = lessonTitle.trim();
       const externalUrl = videoSourceType === "url" && videoExternalUrl.trim() ? videoExternalUrl.trim() : undefined;
+      const lessonContentWithMeta = isRevision
+        ? `${lessonDescription.trim()}\n<!--is_revision:true-->`
+        : lessonDescription.trim();
+
       const addedLesson = await courseService.addLesson(module.id, {
         title: savedTitle,
         kind: "video",
         position: module.lessons.length + 1,
-        content: lessonDescription.trim() || undefined,
+        content: lessonContentWithMeta || (isRevision ? "<!--is_revision:true-->" : undefined),
         external_video_url: externalUrl,
         video_duration_seconds: lessonDuration * 60,
       });
@@ -454,6 +490,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     setVideoExternalUrl("");
     setAttachedFiles([]);
     setLessonPrice(0);
+    setIsRevision(false);
+    setNewModuleTitle("");
     setUploadSuccess(true);
     setTimeout(() => setUploadSuccess(false), 5000);
   }
@@ -636,6 +674,95 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
           )}
 
           <form onSubmit={handleUploadLesson} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+            {/* Unit / Module Selection */}
+            <div>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
+                الوحدة الدراسية التابع لها الفيديو:
+              </label>
+              <select
+                value={selectedModuleId}
+                onChange={(e) => setSelectedModuleId(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "9px 12px",
+                  border: "1px solid var(--border-color-strong, #cbd5e1)",
+                  borderRadius: "8px",
+                  fontSize: "12px",
+                  background: "var(--bg-surface)",
+                  color: "var(--text-main)",
+                  boxSizing: "border-box",
+                  outline: "none",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                {courseModules.map((m, idx) => (
+                  <option key={m.id} value={m.id}>
+                    {m.title || `الوحدة ${idx + 1}`}
+                  </option>
+                ))}
+                <option value="new">+ إضافة وحدة دراسية جديدة للمقرر...</option>
+              </select>
+
+              {selectedModuleId === "new" && (
+                <div style={{ marginTop: "8px" }}>
+                  <input
+                    type="text"
+                    required
+                    value={newModuleTitle}
+                    onChange={(e) => setNewModuleTitle(e.target.value)}
+                    placeholder="اكتب اسم الوحدة الجديدة (مثال: الوحدة الثالثة: الكيمياء العضوية)..."
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      border: "1.5px solid #059669",
+                      borderRadius: "8px",
+                      fontSize: "12px",
+                      background: "var(--bg-surface)",
+                      color: "var(--text-main)",
+                      boxSizing: "border-box",
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Revision Video Toggle */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: "10px",
+                padding: "10px 14px",
+                background: isRevision ? "rgba(16, 185, 129, 0.12)" : "var(--bg-surface-secondary)",
+                borderRadius: "10px",
+                border: isRevision ? "1.5px solid #059669" : "1px solid var(--border-color)",
+                transition: "all 0.15s ease",
+              }}
+            >
+              <input
+                id="isRevisionCheckbox"
+                type="checkbox"
+                checked={isRevision}
+                onChange={(e) => setIsRevision(e.target.checked)}
+                style={{
+                  width: "18px",
+                  height: "18px",
+                  marginTop: "2px",
+                  cursor: "pointer",
+                  accentColor: "#059669",
+                }}
+              />
+              <label htmlFor="isRevisionCheckbox" style={{ cursor: "pointer", userSelect: "none" }}>
+                <strong style={{ display: "block", fontSize: "13px", color: isRevision ? "#059669" : "var(--text-main)", marginBottom: "2px" }}>
+                  فيديو مراجعة / ورشة عمل
+                </strong>
+                <span style={{ fontSize: "11.5px", color: "var(--text-muted)", lineHeight: 1.4 }}>
+                  عند تفعيل هذا الخيار، سيتم تصنيف الفيديو كمراجعة ووضعه تلقائياً في تبويب «المراجعات» لدى الطلاب.
+                </span>
+              </label>
+            </div>
+
             <div>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>عنوان الدرس:</label>
               <input

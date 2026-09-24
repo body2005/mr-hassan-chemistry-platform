@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   ArrowLeft,
   ArrowRight,
+  AlertTriangle,
   Award,
   Book,
   BookOpen,
@@ -17,25 +18,72 @@ import {
   Play,
   ShoppingBag,
   ShoppingCart,
+  Search,
   Sparkles,
   Timer,
   Upload,
   Video,
+  XCircle,
   VideoOff,
   X,
   Zap,
   Plus,
+  Eye,
+  History,
+  Menu,
+  GraduationCap,
+  Sun,
+  Moon,
 } from "lucide-react";
-import { Header } from "../components/Header";
-import { Course, CourseAssessmentRef, CurrentUser, StudentProfile, VideoLesson } from "../types/lms";
+import { Course, CourseAssessmentRef, CurrentUser, NotificationItem, StudentProfile, VideoLesson } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
 import { EducationalBookItem, RevisionPackageItem } from "./GeneralHomeView";
 import { courseService } from "../services/lmsService";
 import { apiRequest, fetchApiBlob, uploadWithProgress } from "../services/apiClient";
 import { useToast } from "../components/ToastProvider";
 import { FormulaRenderer } from "../components/FormulaRenderer";
-import { PaymentTarget } from "../services/paymentService";
+import { PaymentTarget, lessonAccessService } from "../services/paymentService";
 import { VideoLessonPage } from "../components/VideoLessonPage";
+
+export interface DisplayBookItem extends EducationalBookItem {
+  fileUrl?: string;
+  fileSize?: string;
+  lessonTitle?: string;
+  lessonId?: string;
+  isLessonMaterial?: boolean;
+}
+
+export type QuizResultPage = {
+  quiz: { id: string; title: string };
+  attempt: { id: string; attempt_number: number; is_practice: boolean; submitted_at: string | null; duration_seconds: number | null };
+  attempts_history?: Array<{
+    id: string;
+    attempt_number: number;
+    is_practice: boolean;
+    score: number;
+    total_points: number;
+    submitted_at: string | null;
+    duration_seconds?: number | null;
+  }>;
+  score: number;
+  total_points: number;
+  summary: { correct: number; wrong: number; skipped: number; total: number };
+  questions: Array<{
+    id: string;
+    question_type: string;
+    prompt: string;
+    learning_objective: string | null;
+    points: number;
+    awarded: number;
+    state: "correct" | "wrong" | "skipped";
+    answered: boolean;
+    student_answer: string;
+    student_answer_letter: number | null;
+    correct_answer: string;
+    correct_answer_letter: number | null;
+    options: string[];
+  }>;
+};
 
 export interface CourseAssignment {
   id: string;
@@ -81,6 +129,16 @@ interface MyCoursesViewProps {
   currentUser?: CurrentUser;
   purchasedLessonIds?: string[];
   onCheckout: (target: PaymentTarget) => void;
+  onToggleMenu?: () => void;
+  menuOpen?: boolean;
+  notifications?: NotificationItem[];
+  onMarkNotificationRead?: (id: string) => void;
+  onSelectNotification?: (notif: NotificationItem) => void;
+  onNavigateToNotifications?: () => void;
+  theme?: "light" | "dark";
+  onToggleTheme?: () => void;
+  onToggleLang?: () => void;
+  onNavigateHome?: () => void;
 }
 
 export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
@@ -90,9 +148,23 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   currentUser,
   purchasedLessonIds = [],
   onCheckout,
+  onToggleMenu,
+  menuOpen = false,
+  notifications = [],
+  onMarkNotificationRead,
+  onSelectNotification,
+  onNavigateToNotifications,
+  theme,
+  onToggleTheme,
+  onToggleLang,
+  onNavigateHome,
 }) => {
   const t = translations[lang];
   const toast = useToast();
+  void notifications;
+  void onMarkNotificationRead;
+  void onSelectNotification;
+  void onNavigateToNotifications;
 
   // Strictly filter by student's registered academic year
   const isStudent = currentUser?.role === "student";
@@ -113,17 +185,84 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   // Sub-tabs: Lessons, Revisions, Assignments, Quizzes, Books
   const [activeContentTab, setActiveContentTab] = useState<"lessons" | "revisions" | "assignments" | "quizzes" | "books">("lessons");
 
+  // Search query within current course tabs
+  const [courseSearchQuery, setCourseSearchQuery] = useState("");
+
   // Track purchased book IDs
   const [purchasedBookIds] = useState<string[]>([]);
 
   // Track purchased revision IDs
   const [purchasedRevisionIds] = useState<string[]>([]);
 
+  const [localPurchasedIds, setLocalPurchasedIds] = useState<Set<string>>(
+    () => new Set(purchasedLessonIds)
+  );
+  const [pendingRequestLessonIds, setPendingRequestLessonIds] = useState<Set<string>>(new Set());
+  const [requestingLessonId, setRequestingLessonId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLocalPurchasedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of purchasedLessonIds) {
+        next.add(id);
+      }
+      return next;
+    });
+  }, [purchasedLessonIds]);
+
+  // Load existing pending requests for this student and listen for live unlock
+  useEffect(() => {
+    if (!isStudent) return;
+    void lessonAccessService
+      .getMyRequests()
+      .then((reqs) => {
+        const pending = reqs.filter((r) => r.status === "pending").map((r) => r.lesson_id);
+        setPendingRequestLessonIds(new Set(pending));
+      })
+      .catch(() => undefined);
+
+    const handleUnlocked = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      const unlockedId = detail?.lesson_id || detail?.resource_id;
+      if (unlockedId) {
+        setLocalPurchasedIds((prev) => new Set([...prev, unlockedId]));
+        setPendingRequestLessonIds((prev) => {
+          const next = new Set(prev);
+          next.delete(unlockedId);
+          return next;
+        });
+        toast({ message: "تمت إتاحة الدرس بنجاح من المعلم!", tone: "success" });
+      }
+    };
+
+    window.addEventListener("lms_lesson_unlocked", handleUnlocked);
+    return () => window.removeEventListener("lms_lesson_unlocked", handleUnlocked);
+  }, [isStudent, toast]);
+
+  async function handleRequestAccess(lesson: VideoLesson) {
+    setRequestingLessonId(lesson.id);
+    try {
+      await lessonAccessService.requestAccess(lesson.id);
+      setPendingRequestLessonIds((prev) => new Set([...prev, lesson.id]));
+      toast({
+        message: "تم إرسال طلب إتاحة الدرس للمعلم بنجاح. سيتم تفعيل الدرس تلقائياً فور موافقة المعلم.",
+        tone: "success",
+      });
+    } catch (err) {
+      toast({
+        message: err instanceof Error ? err.message : "تعذر إرسال طلب الإتاحة",
+        tone: "danger",
+      });
+    } finally {
+      setRequestingLessonId(null);
+    }
+  }
+
   function handleBuyLesson(lesson: VideoLesson) {
     onCheckout({ productType: "lesson", productId: lesson.id });
   }
 
-  const [activeBookModal, setActiveBookModal] = useState<EducationalBookItem | null>(null);
+  const [activeBookModal, setActiveBookModal] = useState<DisplayBookItem | null>(null);
 
   // Track completed lesson IDs
   const [completedLessonIds, setCompletedLessonIds] = useState<string[]>([]);
@@ -194,7 +333,25 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   const [serverQuizQuestionIndex, setServerQuizQuestionIndex] = useState(0);
   const [serverQuizFlagged, setServerQuizFlagged] = useState<Record<string, boolean>>({});
   const [serverQuizSubmitting, setServerQuizSubmitting] = useState(false);
-  const [serverQuizResult, setServerQuizResult] = useState<{ score: number; total: number; attemptNumber: number } | null>(null);
+  const [serverQuizResult, setServerQuizResult] = useState<{ attemptId?: string; score: number; total: number; attemptNumber: number } | null>(null);
+  const [showQuizSubmitConfirm, setShowQuizSubmitConfirm] = useState(false);
+  // Full graded result (standalone result page)
+  const [quizResultPage, setQuizResultPage] = useState<QuizResultPage | null>(null);
+  const [quizResultLoading, setQuizResultLoading] = useState(false);
+  const [quizResultError, setQuizResultError] = useState<string | null>(null);
+  const [quizResultFilter, setQuizResultFilter] = useState<"all" | "correct" | "wrong">("all");
+  // Quiz attempt history modal state (opened from course page quiz card)
+  const [activeQuizHistoryModal, setActiveQuizHistoryModal] = useState<CourseAssessmentRef | null>(null);
+  const [quizHistoryAttempts, setQuizHistoryAttempts] = useState<Array<{
+    id: string;
+    attempt_number: number;
+    is_practice: boolean;
+    score: number;
+    total_points: number;
+    submitted_at: string | null;
+    duration_seconds?: number | null;
+  }> | null>(null);
+  const [quizHistoryLoading, setQuizHistoryLoading] = useState(false);
   // Server-authoritative attempt: the clock starts when the page opens.
   const [serverQuizAttempt, setServerQuizAttempt] = useState<{ id: string; attemptNumber: number; expiresAt: string | null; isPractice: boolean } | null>(null);
   const [serverQuizDeadline, setServerQuizDeadline] = useState<number | null>(null);
@@ -218,7 +375,225 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   const [assignmentUploading, setAssignmentUploading] = useState(false);
   const [assignmentUploadDone, setAssignmentUploadDone] = useState<{ version: number; submittedAt: string } | null>(null);
 
-  /** Open the standalone quiz-solving page with the real server quiz. */
+  // ── Browser Back Button & History Stack for Overlays / Modals ──
+  const overlayHistoryStack = useRef<string[]>([]);
+
+  const closeOverlay = useCallback((overlayKey: string, directClose: () => void) => {
+    if (overlayHistoryStack.current.includes(overlayKey)) {
+      window.history.back();
+    } else {
+      directClose();
+    }
+  }, []);
+
+  const handleConfirmSubmitQuiz = () => {
+    if (overlayHistoryStack.current[overlayHistoryStack.current.length - 1] === "quizSubmitConfirm") {
+      window.history.back();
+    } else {
+      setShowQuizSubmitConfirm(false);
+    }
+    void submitServerQuiz();
+  };
+
+  const handleHeaderNavigateHome = () => {
+    overlayHistoryStack.current = [];
+    setShowQuizSubmitConfirm(false);
+    setServerQuiz(null);
+    setServerQuizError(null);
+    setQuizResultPage(null);
+    setQuizResultError(null);
+    setServerAssignment(null);
+    setServerAssignmentError(null);
+    setActiveLessonModal(null);
+    setActiveBookModal(null);
+    setActiveQuizHistoryModal(null);
+    setActiveQuizModal(null);
+    setActiveAssignmentModal(null);
+    onNavigateHome?.();
+  };
+
+  useEffect(() => {
+    const handleCloseOverlays = () => {
+      overlayHistoryStack.current = [];
+      setShowQuizSubmitConfirm(false);
+      setServerQuiz(null);
+      setServerQuizError(null);
+      setQuizResultPage(null);
+      setQuizResultError(null);
+      setServerAssignment(null);
+      setServerAssignmentError(null);
+      setActiveLessonModal(null);
+      setActiveBookModal(null);
+      setActiveQuizHistoryModal(null);
+      setActiveQuizModal(null);
+      setActiveAssignmentModal(null);
+    };
+    window.addEventListener("lms:close-overlays", handleCloseOverlays);
+    return () => window.removeEventListener("lms:close-overlays", handleCloseOverlays);
+  }, []);
+
+  // Sync overlays with browser history for Google Chrome Back button support
+  useEffect(() => {
+    if (serverQuiz) {
+      if (!overlayHistoryStack.current.includes("serverQuiz")) {
+        overlayHistoryStack.current.push("serverQuiz");
+        window.history.pushState({ lmsOverlay: "serverQuiz" }, "");
+      }
+    }
+  }, [Boolean(serverQuiz)]);
+
+  useEffect(() => {
+    if (showQuizSubmitConfirm) {
+      if (!overlayHistoryStack.current.includes("quizSubmitConfirm")) {
+        overlayHistoryStack.current.push("quizSubmitConfirm");
+        window.history.pushState({ lmsOverlay: "quizSubmitConfirm" }, "");
+      }
+    }
+  }, [showQuizSubmitConfirm]);
+
+  useEffect(() => {
+    if (quizResultPage) {
+      if (!overlayHistoryStack.current.includes("quizResultPage")) {
+        overlayHistoryStack.current.push("quizResultPage");
+        window.history.pushState({ lmsOverlay: "quizResultPage" }, "");
+      }
+    }
+  }, [Boolean(quizResultPage)]);
+
+  useEffect(() => {
+    if (serverAssignment) {
+      if (!overlayHistoryStack.current.includes("serverAssignment")) {
+        overlayHistoryStack.current.push("serverAssignment");
+        window.history.pushState({ lmsOverlay: "serverAssignment" }, "");
+      }
+    }
+  }, [Boolean(serverAssignment)]);
+
+  useEffect(() => {
+    if (activeLessonModal) {
+      if (!overlayHistoryStack.current.includes("activeLessonModal")) {
+        overlayHistoryStack.current.push("activeLessonModal");
+        window.history.pushState({ lmsOverlay: "activeLessonModal" }, "");
+      }
+    }
+  }, [Boolean(activeLessonModal)]);
+
+  useEffect(() => {
+    if (activeBookModal) {
+      if (!overlayHistoryStack.current.includes("activeBookModal")) {
+        overlayHistoryStack.current.push("activeBookModal");
+        window.history.pushState({ lmsOverlay: "activeBookModal" }, "");
+      }
+    }
+  }, [Boolean(activeBookModal)]);
+
+  useEffect(() => {
+    if (activeQuizHistoryModal) {
+      if (!overlayHistoryStack.current.includes("activeQuizHistoryModal")) {
+        overlayHistoryStack.current.push("activeQuizHistoryModal");
+        window.history.pushState({ lmsOverlay: "activeQuizHistoryModal" }, "");
+      }
+    }
+  }, [Boolean(activeQuizHistoryModal)]);
+
+  useEffect(() => {
+    if (activeQuizModal) {
+      if (!overlayHistoryStack.current.includes("activeQuizModal")) {
+        overlayHistoryStack.current.push("activeQuizModal");
+        window.history.pushState({ lmsOverlay: "activeQuizModal" }, "");
+      }
+    }
+  }, [Boolean(activeQuizModal)]);
+
+  useEffect(() => {
+    if (activeAssignmentModal) {
+      if (!overlayHistoryStack.current.includes("activeAssignmentModal")) {
+        overlayHistoryStack.current.push("activeAssignmentModal");
+        window.history.pushState({ lmsOverlay: "activeAssignmentModal" }, "");
+      }
+    }
+  }, [Boolean(activeAssignmentModal)]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const top = overlayHistoryStack.current.pop();
+      if (!top) return;
+
+      if (top === "quizSubmitConfirm") {
+        setShowQuizSubmitConfirm(false);
+      } else if (top === "serverQuiz") {
+        setShowQuizSubmitConfirm(false);
+        setServerQuiz(null);
+        setServerQuizError(null);
+        setServerQuizAttempt(null);
+        setServerQuizRemaining(null);
+        setServerQuizResult(null);
+      } else if (top === "quizResultPage") {
+        setQuizResultPage(null);
+        setQuizResultError(null);
+      } else if (top === "serverAssignment") {
+        setServerAssignment(null);
+        setServerAssignmentError(null);
+        setAssignmentFile(null);
+      } else if (top === "activeLessonModal") {
+        setActiveLessonModal(null);
+      } else if (top === "activeBookModal") {
+        setActiveBookModal(null);
+      } else if (top === "activeQuizHistoryModal") {
+        setActiveQuizHistoryModal(null);
+      } else if (top === "activeQuizModal") {
+        setActiveQuizModal(null);
+      } else if (top === "activeAssignmentModal") {
+        setActiveAssignmentModal(null);
+      }
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, []);
+
+  /** Open the standalone graded-result page for the given attempt (or latest attempt if omitted). */
+  async function openQuizResultPage(quizId: string, attemptId?: string) {
+    setQuizResultPage(null);
+    setQuizResultError(null);
+    setQuizResultFilter("all");
+    setQuizResultLoading(true);
+    try {
+      const url = attemptId ? `/quizzes/${quizId}/result?attempt_id=${attemptId}` : `/quizzes/${quizId}/result`;
+      const data = await apiRequest<QuizResultPage>(url);
+      setQuizResultPage(data);
+    } catch (err) {
+      setQuizResultError(err instanceof Error ? err.message : "لا توجد نتيجة متاحة بعد");
+    } finally {
+      setQuizResultLoading(false);
+    }
+  }
+
+  /** Fetch and open the attempt history modal for a quiz. */
+  async function openQuizHistoryModal(qz: CourseAssessmentRef) {
+    setActiveQuizHistoryModal(qz);
+    setQuizHistoryAttempts(null);
+    setQuizHistoryLoading(true);
+    try {
+      const list = await apiRequest<Array<{
+        id: string;
+        attempt_number: number;
+        is_practice: boolean;
+        score: number;
+        total_points: number;
+        submitted_at: string | null;
+        duration_seconds?: number | null;
+      }>>(`/quizzes/${qz.id}/attempts-history`);
+      setQuizHistoryAttempts(list);
+    } catch {
+      setQuizHistoryAttempts([]);
+    } finally {
+      setQuizHistoryLoading(false);
+    }
+  }
+
   async function openServerQuiz(assessment: CourseAssessmentRef) {
     setServerQuiz(null);
     setServerQuizError(null);
@@ -305,10 +680,12 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         }),
       }).then((submitted) => {
         setServerQuizResult({
+          attemptId: (submitted as { id?: string }).id || attemptId,
           score: submitted.score ?? 0,
           total: submitted.total_points ?? serverQuiz.totalPoints,
           attemptNumber: submitted.attempt_number,
         });
+        setShowQuizSubmitConfirm(false);
       });
     } catch (err) {
       const expired = serverQuizRemaining !== null && serverQuizRemaining <= 0;
@@ -424,6 +801,70 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   const allRevisions: RevisionPackageItem[] = [];
   const allBooks: EducationalBookItem[] = [];
+
+  // Lesson materials / PDFs automatically exposed as books/booklets
+  // "و خلي الكتاب او المذكره حتي لو اترفعوا مع فديو يبانوا في كتبي و مذكراتي المشتراه"
+  const seenMaterialIds = new Set<string>();
+  const lessonBooks: DisplayBookItem[] = validEnrolledCourses.flatMap((course) =>
+    (course.lessons || []).flatMap((lesson) =>
+      (lesson.materials || []).reduce<DisplayBookItem[]>((acc, mat) => {
+        const matId = mat.id || `mat_${lesson.id}_${mat.title}`;
+        if (seenMaterialIds.has(matId)) return acc;
+        seenMaterialIds.add(matId);
+
+        const isPdf = mat.fileType === "pdf" || mat.title.toLowerCase().endsWith(".pdf");
+        const cleanTitle = mat.title.replace(/\.[^/.]+$/, "");
+        acc.push({
+          id: matId,
+          title: cleanTitle || mat.title,
+          academicYear: course.academicYear || "1st_secondary",
+          author: course.teacherName || "مستر حسن شعبان",
+          authorTitle: course.teacherTitle || "معلم خبير الكيمياء",
+          pagesCount: mat.fileSize ? Math.max(1, Math.round(parseInt(mat.fileSize) / 35)) : 20,
+          fileSize: mat.fileSize || "",
+          fileUrl: mat.fileUrl,
+          price: "0",
+          description: `مذكرة وكتاب تعليمي مرفق مع شرح: ${lesson.title}`,
+          gradient: "linear-gradient(135deg, #065f46 0%, #047857 100%)",
+          sampleTopics: [lesson.title, isPdf ? "ملف PDF" : "مستند تعليمي", course.title].filter(Boolean),
+          lessonTitle: lesson.title,
+          lessonId: lesson.id,
+          isLessonMaterial: true,
+        });
+        return acc;
+      }, [])
+    )
+  );
+
+  const allPurchasedBooks: DisplayBookItem[] = [
+    ...allBooks.filter((b) => purchasedBookIds.includes(b.id)).map((b) => ({ ...b, isLessonMaterial: false })),
+    ...lessonBooks,
+  ];
+
+  // Revision Video Lessons uploaded by teacher with isRevision flag or "مراجعة" in title/unit
+  const revisionVideoLessons = React.useMemo(() => {
+    const list: Array<{ lesson: VideoLesson; course: Course }> = [];
+    validEnrolledCourses.forEach((course) => {
+      (course.lessons || []).forEach((l) => {
+        if (l.isRevision || l.title.includes("مراجعة") || l.unitTitle?.includes("مراجعة")) {
+          list.push({ lesson: l, course });
+        }
+      });
+    });
+    return list;
+  }, [validEnrolledCourses]);
+
+  const filteredRevisionVideoLessons = React.useMemo(() => {
+    if (!courseSearchQuery.trim()) return revisionVideoLessons;
+    const q = courseSearchQuery.trim().toLowerCase();
+    return revisionVideoLessons.filter(
+      (item) =>
+        item.lesson.title.toLowerCase().includes(q) ||
+        (item.lesson.description && item.lesson.description.toLowerCase().includes(q)) ||
+        (item.lesson.unitTitle && item.lesson.unitTitle.toLowerCase().includes(q)) ||
+        item.course.title.toLowerCase().includes(q)
+    );
+  }, [revisionVideoLessons, courseSearchQuery]);
 
   // Assignments Data for Current Course (derived dynamically from course or platform store)
   const courseContent = currentCourse as (Course & {
@@ -587,7 +1028,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         completedLessonIds={completedLessonIds}
         onToggleCompleteLesson={toggleCompleteLesson}
         onSelectLesson={(ls) => setActiveLessonModal(ls)}
-        onClose={() => setActiveLessonModal(null)}
+        onClose={() => closeOverlay("activeLessonModal", () => setActiveLessonModal(null))}
         onDownloadMaterial={downloadLessonMaterial}
       />
     );
@@ -596,6 +1037,58 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   const courseLessons = currentCourse?.lessons || [];
   const completedLessonsCount = courseLessons.filter((l) => completedLessonIds.includes(l.id)).length;
   const progressPercent = courseLessons.length > 0 ? Math.round((completedLessonsCount / courseLessons.length) * 100) : 0;
+
+  // Search query filter for current tab items
+  const searchQueryNormalized = courseSearchQuery.trim().toLowerCase();
+
+  const filteredLessons = courseLessons.filter((l) => {
+    if (!searchQueryNormalized) return true;
+    return (
+      l.title.toLowerCase().includes(searchQueryNormalized) ||
+      (l.description && l.description.toLowerCase().includes(searchQueryNormalized))
+    );
+  });
+
+  const filteredRevisions = allRevisions.filter((r) => {
+    if (!searchQueryNormalized) return true;
+    return (
+      r.title.toLowerCase().includes(searchQueryNormalized) ||
+      (r.description && r.description.toLowerCase().includes(searchQueryNormalized))
+    );
+  });
+
+  const filteredAssignments = courseAssignments.filter((a) => {
+    if (!searchQueryNormalized) return true;
+    return (
+      a.title.toLowerCase().includes(searchQueryNormalized) ||
+      (a.description && a.description.toLowerCase().includes(searchQueryNormalized))
+    );
+  });
+
+  const filteredServerAssignments = serverAssignments.filter((a) => {
+    if (!searchQueryNormalized) return true;
+    return a.title.toLowerCase().includes(searchQueryNormalized);
+  });
+
+  const filteredQuizzes = courseQuizzes.filter((item) => {
+    if (!searchQueryNormalized) return true;
+    return item.title.toLowerCase().includes(searchQueryNormalized);
+  });
+
+  const filteredServerQuizzes = serverQuizzes.filter((item) => {
+    if (!searchQueryNormalized) return true;
+    return item.title.toLowerCase().includes(searchQueryNormalized);
+  });
+
+  const filteredBooks = allPurchasedBooks.filter((b) => {
+    if (!searchQueryNormalized) return true;
+    return (
+      b.title.toLowerCase().includes(searchQueryNormalized) ||
+      (b.description && b.description.toLowerCase().includes(searchQueryNormalized)) ||
+      (b.author && b.author.toLowerCase().includes(searchQueryNormalized)) ||
+      (b.lessonTitle && b.lessonTitle.toLowerCase().includes(searchQueryNormalized))
+    );
+  });
 
   return (
     <div className="page-container">
@@ -642,112 +1135,186 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           </div>
         </div>
 
-        {/* Content Tabs (الدروس • الواجبات • الكويزات) */}
-        <div style={{ display: "flex", gap: "10px", marginTop: "24px", borderTop: "1px solid var(--border-color)", paddingTop: "18px", flexWrap: "wrap" }}>
-          <button
-            onClick={() => setActiveContentTab("lessons")}
-            style={{
-              padding: "10px 20px",
-              borderRadius: "10px",
-              border: activeContentTab === "lessons" ? "2px solid #059669" : "1px solid var(--border-color)",
-              background: activeContentTab === "lessons" ? "#0f392b" : "var(--bg-surface-secondary)",
-              color: activeContentTab === "lessons" ? "#ffffff" : "var(--text-muted)",
-              fontSize: "13.5px",
-              fontWeight: 800,
-              cursor: "pointer",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "8px",
-              transition: "all 0.15s ease",
-            }}
-          >
-            <Video size={16} />
-            <span>الدروس وشروحات الفيديو</span>
-          </button>
+        {/* Content Tabs & Dedicated Search Bar (Matching Image 2 layout) */}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "16px",
+            marginTop: "24px",
+            borderTop: "1px solid var(--border-color)",
+            paddingTop: "18px",
+            flexWrap: "wrap",
+          }}
+        >
+          {/* Sub-Tabs (Right side in RTL) */}
+          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
+            <button
+              onClick={() => setActiveContentTab("lessons")}
+              style={{
+                padding: "10px 20px",
+                borderRadius: "10px",
+                border: activeContentTab === "lessons" ? "2px solid #059669" : "1px solid var(--border-color)",
+                background: activeContentTab === "lessons" ? "#0f392b" : "var(--bg-surface-secondary)",
+                color: activeContentTab === "lessons" ? "#ffffff" : "var(--text-muted)",
+                fontSize: "13.5px",
+                fontWeight: 800,
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "8px",
+                transition: "all 0.15s ease",
+              }}
+            >
+              <Video size={16} />
+              <span>الدروس وشروحات الفيديو</span>
+            </button>
 
-          <button
-            onClick={() => setActiveContentTab("revisions")}
-            style={{
-              padding: "10px 20px",
-              borderRadius: "10px",
-              border: activeContentTab === "revisions" ? "2px solid #059669" : "1px solid var(--border-color)",
-              background: activeContentTab === "revisions" ? "#0f392b" : "var(--bg-surface-secondary)",
-              color: activeContentTab === "revisions" ? "#ffffff" : "var(--text-muted)",
-              fontSize: "13.5px",
-              fontWeight: 800,
-              cursor: "pointer",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "8px",
-              transition: "all 0.15s ease",
-            }}
-          >
-            <Zap size={16} />
-            <span>المراجعات والورش المفعلة</span>
-          </button>
+            <button
+              onClick={() => setActiveContentTab("revisions")}
+              style={{
+                padding: "10px 20px",
+                borderRadius: "10px",
+                border: activeContentTab === "revisions" ? "2px solid #059669" : "1px solid var(--border-color)",
+                background: activeContentTab === "revisions" ? "#0f392b" : "var(--bg-surface-secondary)",
+                color: activeContentTab === "revisions" ? "#ffffff" : "var(--text-muted)",
+                fontSize: "13.5px",
+                fontWeight: 800,
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "8px",
+                transition: "all 0.15s ease",
+              }}
+            >
+              <Zap size={16} />
+              <span>المراجعات والورش المفعلة</span>
+            </button>
 
-          <button
-            onClick={() => setActiveContentTab("assignments")}
-            style={{
-              padding: "10px 20px",
-              borderRadius: "10px",
-              border: activeContentTab === "assignments" ? "2px solid #059669" : "1px solid var(--border-color)",
-              background: activeContentTab === "assignments" ? "#0f392b" : "var(--bg-surface-secondary)",
-              color: activeContentTab === "assignments" ? "#ffffff" : "var(--text-muted)",
-              fontSize: "13.5px",
-              fontWeight: 800,
-              cursor: "pointer",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "8px",
-              transition: "all 0.15s ease",
-            }}
-          >
-            <FileText size={16} />
-            <span>الواجبات والتكليفات</span>
-          </button>
+            <button
+              onClick={() => setActiveContentTab("assignments")}
+              style={{
+                padding: "10px 20px",
+                borderRadius: "10px",
+                border: activeContentTab === "assignments" ? "2px solid #059669" : "1px solid var(--border-color)",
+                background: activeContentTab === "assignments" ? "#0f392b" : "var(--bg-surface-secondary)",
+                color: activeContentTab === "assignments" ? "#ffffff" : "var(--text-muted)",
+                fontSize: "13.5px",
+                fontWeight: 800,
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "8px",
+                transition: "all 0.15s ease",
+              }}
+            >
+              <FileText size={16} />
+              <span>الواجبات والتكليفات</span>
+            </button>
 
-          <button
-            onClick={() => setActiveContentTab("quizzes")}
-            style={{
-              padding: "10px 20px",
-              borderRadius: "10px",
-              border: activeContentTab === "quizzes" ? "2px solid #059669" : "1px solid var(--border-color)",
-              background: activeContentTab === "quizzes" ? "#0f392b" : "var(--bg-surface-secondary)",
-              color: activeContentTab === "quizzes" ? "#ffffff" : "var(--text-muted)",
-              fontSize: "13.5px",
-              fontWeight: 800,
-              cursor: "pointer",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "8px",
-              transition: "all 0.15s ease",
-            }}
-          >
-            <Zap size={16} />
-            <span>الاختبارات والكويزات</span>
-          </button>
+            <button
+              onClick={() => setActiveContentTab("quizzes")}
+              style={{
+                padding: "10px 20px",
+                borderRadius: "10px",
+                border: activeContentTab === "quizzes" ? "2px solid #059669" : "1px solid var(--border-color)",
+                background: activeContentTab === "quizzes" ? "#0f392b" : "var(--bg-surface-secondary)",
+                color: activeContentTab === "quizzes" ? "#ffffff" : "var(--text-muted)",
+                fontSize: "13.5px",
+                fontWeight: 800,
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "8px",
+                transition: "all 0.15s ease",
+              }}
+            >
+              <Zap size={16} />
+              <span>الاختبارات والكويزات</span>
+            </button>
 
-          <button
-            onClick={() => setActiveContentTab("books")}
-            style={{
-              padding: "10px 20px",
-              borderRadius: "10px",
-              border: activeContentTab === "books" ? "2px solid #059669" : "1px solid var(--border-color)",
-              background: activeContentTab === "books" ? "#0f392b" : "var(--bg-surface-secondary)",
-              color: activeContentTab === "books" ? "#ffffff" : "var(--text-muted)",
-              fontSize: "13.5px",
-              fontWeight: 800,
-              cursor: "pointer",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "8px",
-              transition: "all 0.15s ease",
-            }}
-          >
-            <Book size={16} />
-            <span>كتبي والمذكرات المشتراة</span>
-          </button>
+            <button
+              onClick={() => setActiveContentTab("books")}
+              style={{
+                padding: "10px 20px",
+                borderRadius: "10px",
+                border: activeContentTab === "books" ? "2px solid #059669" : "1px solid var(--border-color)",
+                background: activeContentTab === "books" ? "#0f392b" : "var(--bg-surface-secondary)",
+                color: activeContentTab === "books" ? "#ffffff" : "var(--text-muted)",
+                fontSize: "13.5px",
+                fontWeight: 800,
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "8px",
+                transition: "all 0.15s ease",
+              }}
+            >
+              <Book size={16} />
+              <span>كتبي والمذكرات المشتراة</span>
+            </button>
+          </div>
+
+          {/* Dedicated Search Box (Left side in RTL - Exact place circled in Image 2) */}
+          <div style={{ display: "flex", alignItems: "center", minWidth: "260px", maxWidth: "380px", flex: "1 1 260px" }}>
+            <div style={{ position: "relative", width: "100%", display: "flex", alignItems: "center" }}>
+              <Search
+                size={16}
+                style={{
+                  position: "absolute",
+                  insetInlineStart: "12px",
+                  color: "var(--text-muted)",
+                  pointerEvents: "none",
+                }}
+              />
+              <input
+                type="text"
+                value={courseSearchQuery}
+                onChange={(e) => setCourseSearchQuery(e.target.value)}
+                placeholder={
+                  activeContentTab === "lessons" ? "بحث في شروحات ودروس المقرر…" :
+                  activeContentTab === "revisions" ? "بحث في ورش ومراجعات المقرر…" :
+                  activeContentTab === "assignments" ? "بحث في الواجبات والتكليفات…" :
+                  activeContentTab === "quizzes" ? "بحث في الاختبارات والكويزات…" :
+                  "بحث في الكتب والمذكرات المشتراة…"
+                }
+                style={{
+                  width: "100%",
+                  padding: "9px 36px 9px 36px",
+                  borderRadius: "10px",
+                  border: "1.5px solid var(--border-color)",
+                  background: "var(--bg-surface-secondary)",
+                  color: "var(--text-main)",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  outline: "none",
+                  transition: "all 0.15s ease",
+                  boxSizing: "border-box",
+                }}
+              />
+              {courseSearchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setCourseSearchQuery("")}
+                  style={{
+                    position: "absolute",
+                    insetInlineEnd: "10px",
+                    background: "transparent",
+                    border: "none",
+                    color: "var(--text-muted)",
+                    cursor: "pointer",
+                    padding: "2px",
+                    display: "flex",
+                    alignItems: "center",
+                  }}
+                  title="مسح البحث"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -764,12 +1331,34 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 لا توجد فيديوهات أو دروس مرفوعة في هذا المقرر حالياً.
               </p>
             </div>
+          ) : filteredLessons.length === 0 ? (
+            <div style={{ background: "var(--bg-surface)", border: "1.5px dashed var(--border-color)", borderRadius: "18px", padding: "50px 20px", textAlign: "center" }}>
+              <Search size={36} style={{ color: "var(--text-muted)", margin: "0 auto 10px" }} />
+              <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)" }}>
+                لا توجد شروحات أو دروس تطابق «{courseSearchQuery}»
+              </h3>
+              <button
+                type="button"
+                onClick={() => setCourseSearchQuery("")}
+                className="btn-secondary"
+                style={{ marginTop: "10px", padding: "8px 16px", borderRadius: "8px", fontSize: "12.5px", fontWeight: 700 }}
+              >
+                مسح البحث
+              </button>
+            </div>
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 320px), 1fr))", gap: "20px" }}>
-              {courseLessons.map((lesson, idx) => {
+              {filteredLessons.map((lesson, idx) => {
                 const isCompleted = completedLessonIds.includes(lesson.id);
                 const price = Number(lesson.price || 0);
-                const isPurchased = !isStudent || Number(activeCourse?.price || 0) > 0 || price === 0 || purchasedLessonIds.includes(lesson.id);
+                const isPurchased =
+                  !isStudent ||
+                  Number(activeCourse?.price || 0) > 0 ||
+                  price === 0 ||
+                  purchasedLessonIds.includes(lesson.id) ||
+                  localPurchasedIds.has(lesson.id);
+                const isPending = pendingRequestLessonIds.has(lesson.id);
+                const isRequesting = requestingLessonId === lesson.id;
 
                 return (
                   <div
@@ -788,7 +1377,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   >
                     {/* Lesson Card Media Header */}
                     <div
-                      onClick={() => (isPurchased ? setActiveLessonModal(lesson) : handleBuyLesson(lesson))}
+                      onClick={() =>
+                        isPurchased
+                          ? setActiveLessonModal(lesson)
+                          : isPending
+                          ? toast({ message: "طلب إتاحة هذا الدرس قيد المراجعة لدى المعلم", tone: "info" })
+                          : handleRequestAccess(lesson)
+                      }
                       style={{
                         height: "150px",
                         background: isPurchased ? "#0f392b" : "#1e293b",
@@ -865,16 +1460,58 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                             <Play size={13} fill="currentColor" />
                             <span>مشاهدة الدرس</span>
                           </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => handleBuyLesson(lesson)}
-                            className="btn-primary"
-                            style={{ fontSize: "12px", padding: "7px 14px", gap: "6px", background: "#059669" }}
+                        ) : isPending ? (
+                          <div
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "6px",
+                              padding: "6px 12px",
+                              borderRadius: "8px",
+                              background: "rgba(217, 119, 6, 0.12)",
+                              color: "#d97706",
+                              fontSize: "12px",
+                              fontWeight: 700,
+                              border: "1px solid rgba(217, 119, 6, 0.3)",
+                            }}
                           >
-                            <ShoppingCart size={13} />
-                            <span>شراء الدرس — {price} ج.م</span>
-                          </button>
+                            <Clock size={14} />
+                            <span>قيد مراجعة المعلم</span>
+                          </div>
+                        ) : (
+                          <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+                            <button
+                              type="button"
+                              onClick={() => handleRequestAccess(lesson)}
+                              disabled={isRequesting}
+                              style={{
+                                fontSize: "12px",
+                                padding: "7px 12px",
+                                gap: "6px",
+                                background: "#0284c7",
+                                color: "#ffffff",
+                                border: "none",
+                                borderRadius: "8px",
+                                cursor: isRequesting ? "not-allowed" : "pointer",
+                                fontWeight: 700,
+                                display: "inline-flex",
+                                alignItems: "center",
+                              }}
+                            >
+                              <BookOpen size={13} />
+                              <span>{isRequesting ? "جاري الطلب..." : "طلب إتاحة الدرس"}</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleBuyLesson(lesson)}
+                              className="btn-primary"
+                              style={{ fontSize: "12px", padding: "7px 12px", gap: "6px", background: "#059669" }}
+                            >
+                              <ShoppingCart size={13} />
+                              <span>شراء — {price} ج.م</span>
+                            </button>
+                          </div>
                         )}
                       </div>
                     </div>
@@ -891,14 +1528,14 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
          ========================================================================= */}
       {activeContentTab === "revisions" && (
         <div>
-          {purchasedRevisionIds.length === 0 ? (
+          {filteredRevisionVideoLessons.length === 0 && purchasedRevisionIds.length === 0 ? (
             <div style={{ background: "var(--bg-surface)", border: "1.5px dashed var(--border-color)", borderRadius: "18px", padding: "60px 20px", textAlign: "center" }}>
               <Zap size={48} style={{ color: "#059669", margin: "0 auto 12px" }} />
               <h3 style={{ margin: "0 0 6px", fontSize: "18px", fontWeight: 800, color: "var(--text-main)" }}>
-                لا توجد معسكرات مراجعة أو ورش عمل مفعلة حالياً
+                لا توجد فيديوهات مراجعة أو معسكرات مفعلة حالياً
               </h3>
               <p style={{ margin: "0 0 18px", color: "var(--text-muted)", fontSize: "13.5px", maxWidth: "480px", marginInline: "auto" }}>
-                يمكنك الاشتراك في معسكرات مراجعة نصف العام، ورش حل المسائل والمعادلات الكيميائية، ومراجعات ليلة الامتحان من متجر المنصة.
+                يمكنك متابعة شروحات المراجعات الدورية المنشورة من قبل المعلم أو تصفح ورش المراجعة ومعسكرات نصف العام والامتحانات من متجر المنصة.
               </p>
               <button
                 className="btn-primary"
@@ -910,8 +1547,95 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               </button>
             </div>
           ) : (
+            <div>
+              {/* Revision Video Lessons uploaded by Teacher */}
+              {filteredRevisionVideoLessons.length > 0 && (
+                <div style={{ marginBottom: purchasedRevisionIds.length > 0 ? "32px" : "0" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px" }}>
+                    <Video size={20} style={{ color: "#059669" }} />
+                    <h3 style={{ margin: 0, fontSize: "16.5px", fontWeight: 800, color: "var(--text-main)" }}>
+                      فيديوهات المراجعة الشاملة ({filteredRevisionVideoLessons.length})
+                    </h3>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 330px), 1fr))", gap: "20px" }}>
+                    {filteredRevisionVideoLessons.map(({ lesson, course }) => (
+                      <div
+                        key={`rev_vid_${lesson.id}`}
+                        className="course-card"
+                        style={{
+                          background: "var(--bg-surface)",
+                          border: "2px solid #059669",
+                          borderRadius: "18px",
+                          overflow: "hidden",
+                          display: "flex",
+                          flexDirection: "column",
+                          boxShadow: "var(--card-shadow)",
+                        }}
+                      >
+                        {/* Header */}
+                        <div style={{ background: "#0f392b", padding: "18px 20px", color: "white" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                            <span style={{ background: "#059669", padding: "3px 10px", borderRadius: "6px", fontSize: "11px", fontWeight: 800 }}>
+                              {lesson.unitTitle || "الوحدة الدراسية"}
+                            </span>
+                            <span style={{ fontSize: "11px", background: "rgba(255,255,255,0.18)", padding: "3px 8px", borderRadius: "6px", fontWeight: 700 }}>
+                              فيديو مراجعة
+                            </span>
+                          </div>
+                          <h3 style={{ margin: "4px 0 2px", fontSize: "15.5px", fontWeight: 800, lineHeight: 1.35 }}>
+                            {lesson.title}
+                          </h3>
+                          <span style={{ fontSize: "11.5px", opacity: 0.85 }}>{course.title}</span>
+                        </div>
+
+                        {/* Content */}
+                        <div style={{ padding: "18px", flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                          <div>
+                            {lesson.description && (
+                              <p style={{ fontSize: "12.5px", color: "var(--text-muted)", lineHeight: 1.5, margin: "0 0 14px" }}>
+                                {lesson.description}
+                              </p>
+                            )}
+
+                            <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px", fontSize: "12px", color: "var(--text-muted)" }}>
+                              <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                <Clock size={14} style={{ color: "#059669" }} /> {lesson.durationFormatted || `${lesson.durationMinutes} دقيقة`}
+                              </span>
+                              {lesson.materials && lesson.materials.length > 0 && (
+                                <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                  <BookOpen size={14} style={{ color: "#059669" }} /> {lesson.materials.length} مذكرات مرفقة
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => setActiveLessonModal(lesson)}
+                            className="btn-primary"
+                            style={{
+                              width: "100%",
+                              justifyContent: "center",
+                              padding: "10px",
+                              borderRadius: "10px",
+                              fontWeight: 800,
+                              fontSize: "13px",
+                              gap: "6px",
+                              background: "#059669",
+                            }}
+                          >
+                            <Play size={15} fill="white" />
+                            <span>مشاهدة فيديو المراجعة الآن</span>
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 330px), 1fr))", gap: "20px" }}>
-              {allRevisions
+              {filteredRevisions
                 .filter((r) => purchasedRevisionIds.includes(r.id))
                 .map((rev) => (
                   <div
@@ -987,6 +1711,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     </div>
                   </div>
                 ))}
+              </div>
             </div>
           )}
         </div>
@@ -995,9 +1720,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       {/* =========================================================================
           SECTION 2: ASSIGNMENTS GRID (في شكل بطاقات زي المقررات مع الـ Deadline)
          ========================================================================= */}
-      {activeContentTab === "assignments" && serverAssignments.length > 0 && (
+      {activeContentTab === "assignments" && filteredServerAssignments.length > 0 && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 340px), 1fr))", gap: "20px", marginBottom: "24px" }}>
-          {serverAssignments.map((asg) => (
+          {filteredServerAssignments.map((asg) => (
             <div key={asg.id} style={{ background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "16px", padding: "20px", boxShadow: "var(--card-shadow)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
                 <span style={{ fontSize: "11px", fontWeight: 800, color: "#92400e", background: "#fef3c7", padding: "3px 8px", borderRadius: "6px" }}>واجب منشور</span>
@@ -1070,7 +1795,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           </div>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 340px), 1fr))", gap: "20px" }}>
-            {courseAssignments.map((asg) => {
+            {filteredAssignments.map((asg) => {
               const isSubmitted = !!submittedAssignmentIds[asg.id];
               const timeInfo = getTimeStatus(asg.availableFrom, asg.dueDate, isSubmitted);
 
@@ -1186,9 +1911,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       {/* =========================================================================
           SECTION 3: QUIZZES GRID (في شكل بطاقات زي المقررات مع الـ Deadline)
          ========================================================================= */}
-      {activeContentTab === "quizzes" && serverQuizzes.length > 0 && (
+      {activeContentTab === "quizzes" && filteredServerQuizzes.length > 0 && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 340px), 1fr))", gap: "20px", marginBottom: "24px" }}>
-          {serverQuizzes.map((qz) => (
+          {filteredServerQuizzes.map((qz) => (
             <div key={qz.id} style={{ background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "16px", padding: "20px", boxShadow: "var(--card-shadow)", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
               <div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
@@ -1204,22 +1929,119 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 </p>
               </div>
               {qz.accessible && (qz.attemptsAllowed == null || (qz.attemptsUsed ?? 0) < qz.attemptsAllowed) ? (
-                <button
-                  className="btn-primary"
-                  style={{ width: "100%", justifyContent: "center", gap: 6 }}
-                  onClick={() => void openServerQuiz(qz)}
-                >
-                  <Play size={14} /> بدء حل الاختبار
-                </button>
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px", position: "relative" }}>
+                  {(qz.attemptsUsed ?? 0) > 0 && (
+                    <span
+                      title="تم حل هذا الاختبار"
+                      style={{
+                        position: "absolute", top: "-10px", insetInlineEnd: "-8px", zIndex: 2,
+                        width: "22px", height: "22px", borderRadius: "50%",
+                        background: "#059669", color: "#ffffff",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        border: "2px solid var(--bg-surface, #fff)", boxShadow: "0 2px 6px rgba(5,150,105,0.4)",
+                      }}
+                    >
+                      <CheckCircle2 size={14} />
+                    </span>
+                  )}
+                  <button
+                    className="btn-primary"
+                    style={{ width: "100%", justifyContent: "center", gap: 6 }}
+                    onClick={() => void openServerQuiz(qz)}
+                  >
+                    <Play size={14} /> بدء حل الاختبار
+                  </button>
+                  {(qz.attemptsUsed ?? 0) > 0 && (
+                    (qz.attemptsUsed ?? 0) > 1 ? (
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          style={{ flex: 1, justifyContent: "center", gap: 6, borderColor: "#059669", color: "#059669" }}
+                          onClick={() => void openQuizResultPage(qz.id)}
+                          title="عرض تصحيح أحدث محاولة"
+                        >
+                          <Award size={14} /> عرض النتيجة والتصحيح
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          style={{ padding: "0 11px", justifyContent: "center", gap: 5, borderColor: "#059669", color: "#059669", fontWeight: 800, fontSize: "12px", flexShrink: 0 }}
+                          onClick={() => void openQuizHistoryModal(qz)}
+                          title="سجل كل المرات التي امتحنت فيها لاختيار أي محاولة ورؤية غلطاتك فيها"
+                        >
+                          <History size={14} />
+                          <span>السجل ({qz.attemptsUsed})</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        style={{ width: "100%", justifyContent: "center", gap: 6, borderColor: "#059669", color: "#059669" }}
+                        onClick={() => void openQuizResultPage(qz.id)}
+                      >
+                        <Award size={14} /> عرض النتيجة والتصحيح
+                      </button>
+                    )
+                  )}
+                </div>
               ) : qz.accessible && qz.attemptsAllowed != null && (qz.attemptsUsed ?? 0) >= qz.attemptsAllowed ? (
-                <button
-                  className="btn-secondary"
-                  style={{ width: "100%", justifyContent: "center", gap: 6, borderColor: "#059669", color: "#059669" }}
-                  onClick={() => void openServerQuiz(qz)}
-                  title="محاولات تدريبية إضافية تُصحح لك فوراً لكن لا تصل للمعلم ولا تُحسب في الدرجات"
-                >
-                  <BookOpen size={14} /> امتحن نفسك (تدريب — لا يُرسل للمعلم)
-                </button>
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px", position: "relative" }}>
+                  <span
+                    title="تم حل هذا الاختبار"
+                    style={{
+                      position: "absolute", top: "-10px", insetInlineEnd: "-8px", zIndex: 2,
+                      width: "22px", height: "22px", borderRadius: "50%",
+                      background: "#059669", color: "#ffffff",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      border: "2px solid var(--bg-surface, #fff)", boxShadow: "0 2px 6px rgba(5,150,105,0.4)",
+                    }}
+                  >
+                    <CheckCircle2 size={14} />
+                  </span>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ width: "100%", justifyContent: "center", gap: 6, borderColor: "#059669", color: "#059669" }}
+                    onClick={() => void openServerQuiz(qz)}
+                    title="محاولات تدريبية إضافية تُصحح لك فوراً لكن لا تصل للمعلم ولا تُحسب في الدرجات"
+                  >
+                    <BookOpen size={14} /> امتحن نفسك (تدريب — لا يُرسل للمعلم)
+                  </button>
+                  {(qz.attemptsUsed ?? 0) > 1 ? (
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        style={{ flex: 1, justifyContent: "center", gap: 6 }}
+                        onClick={() => void openQuizResultPage(qz.id)}
+                        title="عرض تصحيح أحدث محاولة"
+                      >
+                        <Award size={14} /> عرض النتيجة والتصحيح
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        style={{ padding: "0 11px", justifyContent: "center", gap: 5, borderColor: "#059669", color: "#059669", fontWeight: 800, fontSize: "12px", flexShrink: 0 }}
+                        onClick={() => void openQuizHistoryModal(qz)}
+                        title="سجل كل المرات التي امتحنت فيها لاختيار أي محاولة ورؤية غلطاتك فيها"
+                      >
+                        <History size={14} />
+                        <span>السجل ({qz.attemptsUsed})</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      style={{ width: "100%", justifyContent: "center", gap: 6 }}
+                      onClick={() => void openQuizResultPage(qz.id)}
+                    >
+                      <Award size={14} /> عرض النتيجة والتصحيح
+                    </button>
+                  )}
+                </div>
               ) : (
                 <button className="btn-primary" style={{ width: "100%", justifyContent: "center", gap: 6 }} onClick={() => { const lesson = (currentCourse?.lessons || []).find((l) => l.id === qz.lessonId); if (lesson) handleBuyLesson(lesson); }}>
                   <Lock size={14} /> اشترِ الدرس لفتح الكويز
@@ -1272,7 +2094,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           </div>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 340px), 1fr))", gap: "20px" }}>
-            {courseQuizzes.map((quiz) => {
+            {filteredQuizzes.map((quiz) => {
               const isCompleted = !!completedQuizzes[quiz.id];
               const timeInfo = getTimeStatus(quiz.availableFrom, quiz.dueDate, isCompleted);
               const userScore = completedQuizzes[quiz.id]?.score;
@@ -1394,14 +2216,14 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
          ========================================================================= */}
       {activeContentTab === "books" && (
         <div>
-          {purchasedBookIds.length === 0 ? (
+          {allPurchasedBooks.length === 0 ? (
             <div style={{ background: "var(--bg-surface)", border: "1.5px dashed var(--border-color)", borderRadius: "18px", padding: "60px 20px", textAlign: "center" }}>
               <Book size={48} style={{ color: "#059669", margin: "0 auto 12px" }} />
               <h3 style={{ margin: "0 0 6px", fontSize: "18px", fontWeight: 800, color: "var(--text-main)" }}>
                 لا توجد كتب أو مذكرات مشتراة حتى الآن
               </h3>
               <p style={{ margin: "0 0 18px", color: "var(--text-muted)", fontSize: "13.5px", maxWidth: "480px", marginInline: "auto" }}>
-                يمكنك تصفح وشراء كتب الشرح المعتمدة، بنوك الأسئلة، ومذكرات ليلة الامتحان من متجر المنصة وتفعيلها مباشرة هنا.
+                يمكنك تصفح وشراء كتب الشرح المعتمدة، بنوك الأسئلة، ومذكرات ليلة الامتحان من متجر المنصة، كما تظهر هنا المذكرات والملفات المرفقة مع الفيديوهات المشتراة تلقائياً.
               </p>
               <button
                 className="btn-primary"
@@ -1412,73 +2234,94 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 <span>تصفح وشراء الكتب من المتجر</span>
               </button>
             </div>
+          ) : filteredBooks.length === 0 ? (
+            <div style={{ background: "var(--bg-surface)", border: "1.5px dashed var(--border-color)", borderRadius: "18px", padding: "50px 20px", textAlign: "center" }}>
+              <Search size={36} style={{ color: "var(--text-muted)", margin: "0 auto 10px" }} />
+              <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)" }}>
+                لا توجد كتب أو مذكرات تطابق «{courseSearchQuery}»
+              </h3>
+              <button
+                type="button"
+                onClick={() => setCourseSearchQuery("")}
+                className="btn-secondary"
+                style={{ marginTop: "10px", padding: "8px 16px", borderRadius: "8px", fontSize: "12.5px", fontWeight: 700 }}
+              >
+                مسح البحث
+              </button>
+            </div>
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 320px), 1fr))", gap: "20px" }}>
-              {allBooks
-                .filter((b) => purchasedBookIds.includes(b.id))
-                .map((book) => (
-                  <div
-                    key={book.id}
-                    className="course-card"
-                    style={{
-                      background: "var(--bg-surface)",
-                      border: "2px solid #059669",
-                      borderRadius: "18px",
-                      overflow: "hidden",
-                      display: "flex",
-                      flexDirection: "column",
-                      boxShadow: "var(--card-shadow)",
-                    }}
-                  >
-                    {/* Header */}
-                    <div style={{ background: book.gradient, padding: "20px", color: "white" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-                        <span style={{ background: "rgba(255,255,255,0.2)", padding: "3px 8px", borderRadius: "6px", fontSize: "11px", fontWeight: 700 }}>
-                          نسخة مملوكة ومفعلة
-                        </span>
-                        <span style={{ fontSize: "12px", opacity: 0.9 }}>{book.pagesCount} صفحة</span>
-                      </div>
-                      <h3 style={{ margin: "4px 0", fontSize: "16px", fontWeight: 800, lineHeight: 1.3 }}>
-                        {book.title}
-                      </h3>
-                      <span style={{ fontSize: "11.5px", opacity: 0.85 }}>إعداد: {book.author}</span>
+              {filteredBooks.map((book) => (
+                <div
+                  key={book.id}
+                  className="course-card"
+                  style={{
+                    background: "var(--bg-surface)",
+                    border: "2px solid #059669",
+                    borderRadius: "18px",
+                    overflow: "hidden",
+                    display: "flex",
+                    flexDirection: "column",
+                    boxShadow: "var(--card-shadow)",
+                  }}
+                >
+                  {/* Header */}
+                  <div style={{ background: book.gradient, padding: "20px", color: "white" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                      <span style={{ background: "rgba(255,255,255,0.2)", padding: "3px 8px", borderRadius: "6px", fontSize: "11px", fontWeight: 700 }}>
+                        {book.isLessonMaterial ? "مذكرة درس مرفقة" : "نسخة مملوكة ومفعلة"}
+                      </span>
+                      <span style={{ fontSize: "12px", opacity: 0.9 }}>
+                        {book.fileSize ? book.fileSize : `${book.pagesCount} صفحة`}
+                      </span>
                     </div>
-
-                    {/* Content */}
-                    <div style={{ padding: "18px", flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-                      <div>
-                        <p style={{ fontSize: "12.5px", color: "var(--text-muted)", lineHeight: 1.5, margin: "0 0 14px" }}>
-                          {book.description}
-                        </p>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginBottom: "16px" }}>
-                          {book.sampleTopics?.map((top: string, idx: number) => (
-                            <span key={idx} style={{ fontSize: "10.5px", background: "var(--bg-accent)", color: "#065f46", padding: "2px 7px", borderRadius: "4px", fontWeight: 700 }}>
-                              {top}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-
-                      <button
-                        onClick={() => setActiveBookModal(book)}
-                        className="btn-primary"
-                        style={{
-                          width: "100%",
-                          justifyContent: "center",
-                          padding: "10px",
-                          borderRadius: "10px",
-                          fontWeight: 800,
-                          fontSize: "13px",
-                          gap: "6px",
-                          background: "#047857",
-                        }}
-                      >
-                        <Download size={15} />
-                        <span>فتح وتحميل الكتاب - PDF</span>
-                      </button>
-                    </div>
+                    <h3 style={{ margin: "4px 0", fontSize: "16px", fontWeight: 800, lineHeight: 1.3 }}>
+                      {book.title}
+                    </h3>
+                    <span style={{ fontSize: "11.5px", opacity: 0.85 }}>إعداد: {book.author}</span>
                   </div>
-                ))}
+
+                  {/* Content */}
+                  <div style={{ padding: "18px", flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                    <div>
+                      <p style={{ fontSize: "12.5px", color: "var(--text-muted)", lineHeight: 1.5, margin: "0 0 14px" }}>
+                        {book.description}
+                      </p>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginBottom: "16px" }}>
+                        {book.sampleTopics?.map((top: string, idx: number) => (
+                          <span key={idx} style={{ fontSize: "10.5px", background: "var(--bg-accent)", color: "#065f46", padding: "2px 7px", borderRadius: "4px", fontWeight: 700 }}>
+                            {top}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        if (book.fileUrl) {
+                          void downloadLessonMaterial(book.fileUrl, book.title);
+                        } else {
+                          setActiveBookModal(book);
+                        }
+                      }}
+                      className="btn-primary"
+                      style={{
+                        width: "100%",
+                        justifyContent: "center",
+                        padding: "10px",
+                        borderRadius: "10px",
+                        fontWeight: 800,
+                        fontSize: "13px",
+                        gap: "6px",
+                        background: "#047857",
+                      }}
+                    >
+                      <Download size={15} />
+                      <span>{book.fileUrl ? "تحميل المذكرة - PDF" : "فتح وتحميل الكتاب - PDF"}</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -1498,41 +2341,69 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             overflowY: "auto",
           }}
         >
-          {/* Our site's own topbar (same Header component used app-wide) */}
-          <div style={{ height: "68px", flexShrink: 0 }}>
-            <Header
-              onToggleMenu={() => undefined}
-              menuOpen={false}
-              notifications={[]}
-              onMarkNotificationRead={() => undefined}
-              theme={typeof document !== "undefined" && document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light"}
-              onToggleTheme={() => undefined}
-              lang={lang}
-              onToggleLang={() => undefined}
-              currentUser={currentUser}
-            />
-          </div>
-
-          {/* Sub-header: quiz title + progress + timer + exit */}
-          <div
+          {/* Unified Quiz Header (Exact match to Image 3 with Sidebar, Logo, Theme, Lang, and Exit) */}
+          <header
             style={{
+              height: "68px",
               background: "var(--bg-surface, #ffffff)",
               borderBottom: "1px solid var(--border-color)",
-              padding: "14px 28px",
+              padding: "0 24px",
               display: "flex",
               justifyContent: "space-between",
               alignItems: "center",
               gap: "14px",
-              flexWrap: "wrap",
               position: "sticky",
               top: 0,
-              zIndex: 20,
+              zIndex: 100,
+              boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+              boxSizing: "border-box",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", minWidth: 0 }}>
-              <h2 style={{ margin: 0, fontSize: "17px", fontWeight: 900, color: "var(--text-main)" }}>
+            {/* Right side (RTL Start): Sidebar menu, Logo, Quiz Title, Points */}
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={onToggleMenu}
+                aria-label={menuOpen ? "Close Menu" : "Open Menu"}
+                title={lang === "ar" ? "القائمة الجانبية" : "Sidebar Menu"}
+              >
+                {menuOpen ? <X size={18} /> : <Menu size={18} />}
+              </button>
+
+              <div
+                onClick={handleHeaderNavigateHome}
+                role="button"
+                tabIndex={0}
+                title={lang === "ar" ? "العودة إلى الصفحة الأولى" : "Go to Home"}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  cursor: "pointer",
+                  userSelect: "none",
+                }}
+              >
+                <div
+                  className="brand-mark"
+                  style={{
+                    width: "34px",
+                    height: "34px",
+                    borderRadius: "9px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  <GraduationCap size={18} />
+                </div>
+              </div>
+
+              <h2 style={{ margin: 0, fontSize: "16px", fontWeight: 900, color: "var(--text-main)", whiteSpace: "nowrap" }}>
                 {serverQuiz?.title || (serverQuizLoading ? "جاري التحميل…" : "اختبار")}
               </h2>
+
               {serverQuiz && !serverQuizResult && (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11.5px", fontWeight: 900, color: "#059669", background: "var(--bg-accent)", border: "1px solid var(--border-accent)", padding: "4px 11px", borderRadius: "999px", flexShrink: 0 }}>
                   <CheckCircle2 size={12} />
@@ -1540,54 +2411,79 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 </span>
               )}
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+
+            {/* Left side (RTL End): Theme, Lang, Practice badge, Question count, Timer, Exit */}
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexShrink: 0 }}>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={onToggleTheme}
+                title={theme === "dark" ? "تفعيل الوضع النهاري" : "تفعيل الوضع الليلي"}
+                aria-label="Toggle Theme"
+              >
+                {theme === "dark" ? <Sun size={18} style={{ color: "#f59e0b" }} /> : <Moon size={18} />}
+              </button>
+
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={onToggleLang}
+                title="Switch Language / تغيير اللغة"
+                style={{ width: "auto", minWidth: "42px", padding: "0 8px", fontSize: "11.5px", fontWeight: 800 }}
+              >
+                <span>{lang === "ar" ? "AR" : "EN"}</span>
+              </button>
+
               {serverQuizAttempt?.isPractice && (
                 <span style={{ fontSize: "11px", fontWeight: 800, color: "#92400e", background: "#fef3c7", padding: "4px 10px", borderRadius: "8px" }}>
                   محاولة تدريبية — لن تصل للمعلم
                 </span>
               )}
+
               {serverQuiz && !serverQuizResult && (
-                <span style={{ fontSize: "12.5px", fontWeight: 800, color: "var(--text-muted)", display: "inline-flex", alignItems: "center", gap: "5px" }}>
-                  <Timer size={14} /> السؤال {Math.min(serverQuizQuestionIndex + 1, serverQuiz.questions.length)} من {serverQuiz.questions.length}
+                <span style={{ fontSize: "13px", fontWeight: 800, color: "var(--text-main)", display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                  <Timer size={15} style={{ color: "var(--text-main)" }} /> السؤال {Math.min(serverQuizQuestionIndex + 1, serverQuiz.questions.length)} من {serverQuiz.questions.length}
                 </span>
               )}
+
               {serverQuizRemaining !== null && !serverQuizResult && (
-                <div
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "7px",
-                    padding: "7px 14px",
-                    borderRadius: "10px",
-                    fontWeight: 900,
-                    fontSize: "15px",
-                    fontVariantNumeric: "tabular-nums",
-                    direction: "ltr",
-                    background: "#fef2f2",
-                    color: "#b91c1c",
-                    border: "1.5px solid #fca5a5",
-                  }}
-                >
-                  <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: serverQuizRemaining <= 60 ? "#dc2626" : "#ef4444" }} />
-                  <span>
+                <div className="quiz-timer-pill">
+                  <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: "#ef4444", display: "inline-block", flexShrink: 0 }} />
+                  <span style={{ fontWeight: 900, letterSpacing: "0.5px" }}>
                     {Math.floor(serverQuizRemaining / 60)}:{String(serverQuizRemaining % 60).padStart(2, "0")}
                   </span>
                 </div>
               )}
+
               <button
-                onClick={() => { setServerQuiz(null); setServerQuizError(null); }}
+                type="button"
+                onClick={() => {
+                  closeOverlay("serverQuiz", () => {
+                    setServerQuiz(null);
+                    setServerQuizError(null);
+                  });
+                }}
                 style={{
-                  display: "inline-flex", alignItems: "center", gap: "6px",
-                  background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)",
-                  borderRadius: "8px", padding: "7px 14px", fontSize: "12.5px", fontWeight: 800,
-                  color: "var(--text-main)", cursor: "pointer", flexShrink: 0,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  background: "var(--bg-surface-secondary)",
+                  border: "1px solid var(--border-color)",
+                  borderRadius: "8px",
+                  padding: "7px 14px",
+                  fontSize: "12.5px",
+                  fontWeight: 800,
+                  color: "var(--text-main)",
+                  cursor: "pointer",
+                  flexShrink: 0,
+                  transition: "all 0.15s ease",
                 }}
               >
-                <X size={16} />
+                <X size={15} />
                 <span>خروج</span>
               </button>
             </div>
-          </div>
+          </header>
 
           {/* Body: question-map sidebar + one-question card */}
           <div
@@ -1603,9 +2499,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           >
             {/* Sidebar: question map + submit */}
             <div style={{ width: "280px", flexShrink: 0, display: "flex", flexDirection: "column", gap: "16px", position: "sticky", top: "84px" }}>
-              <div style={{ background: "var(--bg-surface, #ffffff)", border: "1px solid var(--border-color)", borderRadius: "16px", padding: "18px" }}>
-                <h3 style={{ margin: "0 0 14px", fontSize: "14px", fontWeight: 900, color: "var(--text-main)" }}>خريطة أسئلة الاختبار</h3>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "8px", direction: "rtl" }}>
+              <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "16px", padding: "20px 18px" }}>
+                <h3 style={{ margin: "0 0 16px", fontSize: "15px", fontWeight: 900, color: "var(--text-main)", textAlign: "center" }}>خريطة أسئلة الاختبار</h3>
+                <div style={{ display: "flex", justifyContent: "center", gap: "14px", flexWrap: "wrap", direction: "rtl", marginBottom: "16px" }}>
                   {serverQuiz?.questions.map((q, qIdx) => {
                     const answered = Boolean(serverQuizAnswers[q.id]);
                     const flagged = serverQuizFlagged[q.id];
@@ -1617,13 +2513,19 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         onClick={() => setServerQuizQuestionIndex(qIdx)}
                         title={answered ? "مُجاب" : flagged ? "مُعلّم للمراجعة" : "لم يُجاب بعد"}
                         style={{
-                          width: "40px",
-                          height: "40px",
+                          width: "44px",
+                          height: "44px",
                           borderRadius: "50%",
-                          border: isCurrent ? "2px solid #059669" : "1px solid var(--border-color)",
-                          background: answered ? "#059669" : "var(--bg-surface)",
-                          color: answered ? "#ffffff" : "var(--text-main)",
-                          fontSize: "13px",
+                          border: isCurrent
+                            ? "2px solid #059669"
+                            : answered
+                            ? "1.5px solid #059669"
+                            : "1px solid var(--border-color)",
+                          background: answered
+                            ? "#059669"
+                            : "var(--bg-surface)",
+                          color: answered ? "#ffffff" : isCurrent ? "#059669" : "var(--text-main)",
+                          fontSize: "15px",
                           fontWeight: 800,
                           cursor: "pointer",
                           display: "flex",
@@ -1635,33 +2537,37 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       >
                         {qIdx + 1}
                         {flagged && !answered && (
-                          <span style={{ position: "absolute", top: "-2px", insetInlineStart: "-2px", width: "10px", height: "10px", borderRadius: "50%", background: "#f59e0b", border: "1.5px solid var(--bg-surface, #fff)" }} />
+                          <span style={{ position: "absolute", top: "-2px", insetInlineStart: "-2px", width: "10px", height: "10px", borderRadius: "50%", background: "#f59e0b", border: "1.5px solid var(--bg-surface)" }} />
                         )}
                       </button>
                     );
                   })}
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: "7px", marginTop: "16px", paddingTop: "14px", borderTop: "1px solid var(--border-color)", fontSize: "11.5px", color: "var(--text-muted)", fontWeight: 700 }}>
-                  <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "50%", background: "#059669" }} /> تم الإجابة</span>
-                  <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "50%", border: "2px solid #059669", background: "var(--bg-surface)" }} /> الحالي</span>
-                  <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "50%", border: "1px solid var(--border-color)", background: "var(--bg-surface)" }} /> لم يتم الإجابة</span>
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px", paddingTop: "14px", borderTop: "1px solid var(--border-color)", fontSize: "12px", color: "var(--text-main)", fontWeight: 700 }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: "8px" }}><span style={{ width: "11px", height: "11px", borderRadius: "50%", background: "#059669", display: "inline-block" }} /> تم الإجابة</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: "8px" }}><span style={{ width: "11px", height: "11px", borderRadius: "50%", border: "2px solid #059669", background: "transparent", display: "inline-block" }} /> الحالي</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: "8px" }}><span style={{ width: "11px", height: "11px", borderRadius: "50%", border: "1px solid var(--border-color)", background: "transparent", display: "inline-block" }} /> لم يتم الإجابة</span>
                 </div>
               </div>
 
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={() => void submitServerQuiz()}
-                disabled={serverQuizSubmitting || serverQuizRemaining === 0 || Object.keys(serverQuizAnswers).length < (serverQuiz?.questions.length || 0)}
-                style={{ width: "100%", justifyContent: "center", gap: "7px", padding: "13px" }}
-              >
-                <CheckCircle2 size={17} />
-                <span>{serverQuizRemaining === 0 ? "انتهى الوقت" : serverQuizSubmitting ? "جاري التصحيح…" : "تسليم الاختبار"}</span>
-              </button>
-              {serverQuiz && Object.keys(serverQuizAnswers).length < serverQuiz.questions.length && (
-                <p style={{ margin: 0, fontSize: "11.5px", color: "var(--text-muted)", textAlign: "center" }}>
-                  أجب على كل الأسئلة ({Object.keys(serverQuizAnswers).length} من {serverQuiz.questions.length}) لتفعيل التسليم
-                </p>
+              {!serverQuizResult && (
+                <>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={() => setShowQuizSubmitConfirm(true)}
+                    disabled={serverQuizSubmitting || serverQuizRemaining === 0}
+                    style={{ width: "100%", justifyContent: "center", gap: "7px", padding: "13px" }}
+                  >
+                    <CheckCircle2 size={17} />
+                    <span>{serverQuizRemaining === 0 ? "انتهى الوقت" : serverQuizSubmitting ? "جاري التصحيح…" : "تسليم الاختبار"}</span>
+                  </button>
+                  {serverQuiz && Object.keys(serverQuizAnswers).length < serverQuiz.questions.length && (
+                    <p style={{ margin: 0, fontSize: "11.5px", color: "var(--text-muted)", textAlign: "center" }}>
+                      متبقي {serverQuiz.questions.length - Object.keys(serverQuizAnswers).length} أسئلة دون إجابة (يمكنك التسليم أو الإكمال)
+                    </p>
+                  )}
+                </>
               )}
             </div>
 
@@ -1693,9 +2599,38 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       {serverQuizResult.score} / {serverQuizResult.total} درجة
                     </div>
                   </div>
-                  <button type="button" className="btn-primary" style={{ width: "100%", justifyContent: "center" }} onClick={() => { setServerQuiz(null); setServerQuizError(null); }}>
-                    العودة إلى المقرر
-                  </button>
+                  <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", marginTop: "16px" }}>
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      style={{ flex: 1, minWidth: "220px", justifyContent: "center", gap: "8px", padding: "12px 20px", fontSize: "14px", fontWeight: 800 }}
+                      onClick={() => {
+                        const qId = serverQuiz?.quizId;
+                        const attId = serverQuizResult.attemptId;
+                        overlayHistoryStack.current = overlayHistoryStack.current.map((item) => (item === "serverQuiz" ? "quizResultPage" : item));
+                        window.history.replaceState({ lmsOverlay: "quizResultPage" }, "");
+                        setServerQuiz(null);
+                        setServerQuizError(null);
+                        if (qId) void openQuizResultPage(qId, attId);
+                      }}
+                    >
+                      <Eye size={17} />
+                      <span>عرض تصحيح هذه المحاولة والأخطاء</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      style={{ flex: 1, minWidth: "160px", justifyContent: "center", gap: "6px", padding: "12px 18px", fontSize: "14px", fontWeight: 800 }}
+                      onClick={() => {
+                        closeOverlay("serverQuiz", () => {
+                          setServerQuiz(null);
+                          setServerQuizError(null);
+                        });
+                      }}
+                    >
+                      العودة إلى المقرر
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -1748,10 +2683,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                             >
                               <input
                                 type="radio"
+                                className="quiz-radio-hidden"
                                 name={q.id}
                                 checked={chosen}
                                 onChange={() => setServerQuizAnswers({ ...serverQuizAnswers, [q.id]: opt.text })}
-                                style={{ accentColor: "#059669", width: "17px", height: "17px" }}
+                                style={{ visibility: "hidden", position: "absolute", width: 0, height: 0, opacity: 0, pointerEvents: "none" }}
                               />
                               <div style={{ flex: 1 }}>
                                 <FormulaRenderer inline text={opt.text} />
@@ -1781,7 +2717,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         disabled={serverQuizQuestionIndex === 0}
                         style={{ gap: "6px" }}
                       >
-                        <ArrowLeft size={15} /> السؤال السابق
+                        <ArrowRight size={15} /> السؤال السابق
                       </button>
                       {serverQuizQuestionIndex < serverQuiz.questions.length - 1 ? (
                         <button
@@ -1790,19 +2726,19 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                           onClick={() => setServerQuizQuestionIndex((i) => Math.min(serverQuiz!.questions.length - 1, i + 1))}
                           style={{ gap: "6px" }}
                         >
-                          السؤال التالي <ArrowRight size={15} />
+                          السؤال التالي <ArrowLeft size={15} />
                         </button>
-                      ) : (
+                      ) : !serverQuizResult ? (
                         <button
                           type="button"
                           className="btn-primary"
-                          onClick={() => void submitServerQuiz()}
-                          disabled={serverQuizSubmitting || serverQuizRemaining === 0 || Object.keys(serverQuizAnswers).length < serverQuiz.questions.length}
+                          onClick={() => setShowQuizSubmitConfirm(true)}
+                          disabled={serverQuizSubmitting || serverQuizRemaining === 0}
                           style={{ gap: "6px" }}
                         >
                           <Zap size={15} /> {serverQuizRemaining === 0 ? "انتهى الوقت" : "تسليم الاختبار"}
                         </button>
-                      )}
+                      ) : null}
                     </div>
                   </div>
                 );
@@ -1812,6 +2748,680 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         </div>
       )}
 
+      {/* =========================================================================
+          CONFIRMATION WIZARD: QUIZ SUBMISSION MODAL
+         ========================================================================= */}
+      {showQuizSubmitConfirm && serverQuiz && !serverQuizResult && (() => {
+        const totalCount = serverQuiz.questions.length;
+        const answeredCount = serverQuiz.questions.filter((q) => Boolean(serverQuizAnswers[q.id])).length;
+        const unansweredCount = totalCount - answeredCount;
+        const flaggedCount = serverQuiz.questions.filter((q) => Boolean(serverQuizFlagged[q.id])).length;
+
+        return (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              backgroundColor: "rgba(15, 23, 42, 0.72)",
+              backdropFilter: "blur(8px)",
+              WebkitBackdropFilter: "blur(8px)",
+              zIndex: 100000,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "20px",
+            }}
+            onClick={() => closeOverlay("quizSubmitConfirm", () => setShowQuizSubmitConfirm(false))}
+          >
+            <div
+              style={{
+                background: "var(--bg-surface, #ffffff)",
+                border: "1.5px solid var(--border-color)",
+                borderRadius: "20px",
+                width: "100%",
+                maxWidth: "520px",
+                boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.45)",
+                padding: "28px 24px",
+                position: "relative",
+                direction: "rtl",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div style={{ display: "flex", alignItems: "flex-start", gap: "14px", marginBottom: "20px" }}>
+                <div
+                  style={{
+                    width: "48px",
+                    height: "48px",
+                    borderRadius: "14px",
+                    background: unansweredCount > 0 ? "rgba(239, 68, 68, 0.12)" : "rgba(5, 150, 105, 0.12)",
+                    color: unansweredCount > 0 ? "#dc2626" : "#059669",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  {unansweredCount > 0 ? <AlertTriangle size={26} /> : <CheckCircle2 size={26} />}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <h3 style={{ margin: "0 0 6px", fontSize: "19px", fontWeight: 900, color: "var(--text-main)" }}>
+                    تأكيد تسليم الاختبار
+                  </h3>
+                  <p style={{ margin: 0, fontSize: "13px", color: "var(--text-muted)", lineHeight: 1.5 }}>
+                    هل أنت متأكد من رغبتك في إنهاء وتسليم الاختبار؟ سيتم تصحيح إجاباتك فورياً وحساب النتيجة.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => closeOverlay("quizSubmitConfirm", () => setShowQuizSubmitConfirm(false))}
+                  style={{
+                    background: "var(--bg-surface-secondary)",
+                    border: "none",
+                    borderRadius: "50%",
+                    width: "32px",
+                    height: "32px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    cursor: "pointer",
+                    color: "var(--text-main)",
+                    flexShrink: 0,
+                  }}
+                >
+                  <X size={17} />
+                </button>
+              </div>
+
+              {/* Statistics Grid */}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(3, 1fr)",
+                  gap: "10px",
+                  background: "var(--bg-surface-secondary)",
+                  padding: "14px",
+                  borderRadius: "14px",
+                  border: "1px solid var(--border-color)",
+                  marginBottom: "18px",
+                }}
+              >
+                <div style={{ textAlign: "center" }}>
+                  <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 700, display: "block" }}>
+                    إجمالي الأسئلة
+                  </span>
+                  <strong style={{ fontSize: "20px", fontWeight: 900, color: "var(--text-main)" }}>
+                    {totalCount}
+                  </strong>
+                </div>
+                <div style={{ textAlign: "center" }}>
+                  <span style={{ fontSize: "11px", color: "#059669", fontWeight: 700, display: "block" }}>
+                    تمت الإجابة
+                  </span>
+                  <strong style={{ fontSize: "20px", fontWeight: 900, color: "#059669" }}>
+                    {answeredCount}
+                  </strong>
+                </div>
+                <div style={{ textAlign: "center" }}>
+                  <span style={{ fontSize: "11px", color: unansweredCount > 0 ? "#dc2626" : "var(--text-muted)", fontWeight: 700, display: "block" }}>
+                    متبقية دون إجابة
+                  </span>
+                  <strong style={{ fontSize: "20px", fontWeight: 900, color: unansweredCount > 0 ? "#dc2626" : "var(--text-muted)" }}>
+                    {unansweredCount}
+                  </strong>
+                </div>
+              </div>
+
+              {/* Extra notice row (Flagged & Time) */}
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  fontSize: "12px",
+                  padding: "0 4px",
+                  marginBottom: "20px",
+                  color: "var(--text-muted)",
+                  fontWeight: 700,
+                }}
+              >
+                {flaggedCount > 0 ? (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", color: "#d97706" }}>
+                    <Flag size={14} /> لديك {flaggedCount} سؤال مُعلّم للمراجعة
+                  </span>
+                ) : (
+                  <span />
+                )}
+                {serverQuizRemaining !== null && (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                    <Clock size={14} /> الوقت المتبقي: {Math.floor(serverQuizRemaining / 60)}:{String(serverQuizRemaining % 60).padStart(2, "0")} دقيقة
+                  </span>
+                )}
+              </div>
+
+              {/* Unanswered Warning Alert */}
+              {unansweredCount > 0 ? (
+                <div
+                  style={{
+                    background: "rgba(239, 68, 68, 0.1)",
+                    border: "1px solid rgba(239, 68, 68, 0.25)",
+                    borderRadius: "12px",
+                    padding: "12px 14px",
+                    fontSize: "12.5px",
+                    color: "#b91c1c",
+                    fontWeight: 700,
+                    marginBottom: "22px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "9px",
+                  }}
+                >
+                  <AlertTriangle size={18} style={{ flexShrink: 0 }} />
+                  <span>
+                    تنبيه: لم تقم بالإجابة على <strong>{unansweredCount}</strong> سؤال! إذا سلّمت الآن فلن تتمكن من تعديلها وستُحسب درجاتها صفر.
+                  </span>
+                </div>
+              ) : (
+                <div
+                  style={{
+                    background: "rgba(5, 150, 105, 0.1)",
+                    border: "1px solid rgba(5, 150, 105, 0.25)",
+                    borderRadius: "12px",
+                    padding: "12px 14px",
+                    fontSize: "12.5px",
+                    color: "#047857",
+                    fontWeight: 700,
+                    marginBottom: "22px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "9px",
+                  }}
+                >
+                  <CheckCircle2 size={18} style={{ flexShrink: 0 }} />
+                  <span>
+                    ممتاز! قمت بالإجابة على جميع الأسئلة ({totalCount} من {totalCount}). يمكنك تأكيد التسليم الآن.
+                  </span>
+                </div>
+              )}
+
+              {/* Actions */}
+              <div style={{ display: "flex", gap: "10px" }}>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={handleConfirmSubmitQuiz}
+                  disabled={serverQuizSubmitting}
+                  style={{
+                    flex: 1,
+                    justifyContent: "center",
+                    padding: "13px 18px",
+                    fontSize: "14px",
+                    fontWeight: 800,
+                    borderRadius: "10px",
+                    gap: "8px",
+                    background: unansweredCount > 0 ? "#dc2626" : "#059669",
+                  }}
+                >
+                  <Zap size={16} />
+                  <span>{serverQuizSubmitting ? "جاري التسليم…" : "نعم، تأكيد وتسليم الآن"}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => closeOverlay("quizSubmitConfirm", () => setShowQuizSubmitConfirm(false))}
+                  disabled={serverQuizSubmitting}
+                  style={{
+                    flex: 1,
+                    background: "var(--bg-surface-secondary)",
+                    border: "1px solid var(--border-color)",
+                    borderRadius: "10px",
+                    padding: "13px 18px",
+                    fontSize: "14px",
+                    fontWeight: 800,
+                    color: "var(--text-main)",
+                    cursor: "pointer",
+                    textAlign: "center",
+                  }}
+                >
+                  متابعة ومراجعة الأسئلة
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* =========================================================================
+          STANDALONE PAGE A2: QUIZ GRADED RESULT — site topbar + hero score ring +
+          summary stats + filterable corrected question list (per approved mock).
+         ========================================================================= */}
+      {(quizResultPage || quizResultLoading || quizResultError) && (() => {
+        const percent = quizResultPage && quizResultPage.total_points > 0
+          ? Math.round((quizResultPage.score / quizResultPage.total_points) * 1000) / 10
+          : 0;
+        const rankLabel = percent >= 90 ? "ممتاز — أنت نجم!" : percent >= 75 ? "جيد جداً — استمر!" : percent >= 50 ? "جيد — يمكنك التحسن" : "تحتاج مراجعة الدرس";
+        const filtered = quizResultPage
+          ? quizResultPage.questions.filter((q) => quizResultFilter === "all" || q.state === quizResultFilter)
+          : [];
+        const stateLabel: Record<string, string> = { correct: "إجابة صحيحة", wrong: "إجابة خاطئة", skipped: "لم تُجب" };
+        const stateColor: Record<string, { bg: string; fg: string; border: string }> = {
+          correct: { bg: "rgba(5, 150, 105, 0.15)", fg: "#10b981", border: "rgba(5, 150, 105, 0.35)" },
+          wrong: { bg: "rgba(220, 38, 38, 0.15)", fg: "#f87171", border: "rgba(220, 38, 38, 0.35)" },
+          skipped: { bg: "var(--bg-surface-secondary)", fg: "var(--text-muted)", border: "var(--border-color)" },
+        };
+        return (
+          <div dir="rtl" style={{ position: "fixed", inset: 0, backgroundColor: "var(--bg-primary, #f8fafc)", zIndex: 100000, overflowY: "auto" }}>
+            {/* Unified Quiz Result Header (Single bar matching Image 3 with Sidebar, Logo, Theme, Lang, and Exit) */}
+            <header
+              style={{
+                height: "68px",
+                background: "var(--bg-surface, #ffffff)",
+                borderBottom: "1px solid var(--border-color)",
+                padding: "0 24px",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "14px",
+                position: "sticky",
+                top: 0,
+                zIndex: 100,
+                boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+                boxSizing: "border-box",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={onToggleMenu}
+                  aria-label={menuOpen ? "Close Menu" : "Open Menu"}
+                  title={lang === "ar" ? "القائمة الجانبية" : "Sidebar Menu"}
+                >
+                  {menuOpen ? <X size={18} /> : <Menu size={18} />}
+                </button>
+
+                <div
+                  onClick={handleHeaderNavigateHome}
+                  role="button"
+                  tabIndex={0}
+                  title={lang === "ar" ? "العودة إلى الصفحة الأولى" : "Go to Home"}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    cursor: "pointer",
+                    userSelect: "none",
+                  }}
+                >
+                  <div
+                    className="brand-mark"
+                    style={{
+                      width: "34px",
+                      height: "34px",
+                      borderRadius: "9px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <GraduationCap size={18} />
+                  </div>
+                </div>
+
+                <h2 style={{ margin: 0, fontSize: "16px", fontWeight: 900, color: "var(--text-main)" }}>
+                  نتيجة اختبار: {quizResultPage?.quiz.title || ""}
+                </h2>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", flexShrink: 0 }}>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={onToggleTheme}
+                  title={theme === "dark" ? "تفعيل الوضع النهاري" : "تفعيل الوضع الليلي"}
+                  aria-label="Toggle Theme"
+                >
+                  {theme === "dark" ? <Sun size={18} style={{ color: "#f59e0b" }} /> : <Moon size={18} />}
+                </button>
+
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={onToggleLang}
+                  title="Switch Language / تغيير اللغة"
+                  style={{ width: "auto", minWidth: "42px", padding: "0 8px", fontSize: "11.5px", fontWeight: 800 }}
+                >
+                  <span>{lang === "ar" ? "AR" : "EN"}</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    closeOverlay("quizResultPage", () => {
+                      setQuizResultPage(null);
+                      setQuizResultError(null);
+                    });
+                  }}
+                  style={{ display: "inline-flex", alignItems: "center", gap: "6px", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "8px", padding: "7px 14px", fontSize: "12.5px", fontWeight: 800, color: "var(--text-main)", cursor: "pointer", flexShrink: 0 }}
+                >
+                  <X size={16} /> <span>خروج</span>
+                </button>
+              </div>
+            </header>
+
+            <div style={{ maxWidth: "1200px", margin: "0 auto", padding: "24px 20px 70px" }}>
+              {quizResultLoading && <div style={{ padding: "70px", textAlign: "center", color: "var(--text-muted)", fontSize: "14px" }}>جاري تحميل النتيجة…</div>}
+
+              {quizResultError && (
+                <div style={{ padding: "18px", background: "#fee2e2", color: "#b91c1c", borderRadius: "12px", fontWeight: 800, fontSize: "13.5px" }}>{quizResultError}</div>
+              )}
+
+              {quizResultPage && (() => {
+                const dur = quizResultPage.attempt.duration_seconds;
+                const durLabel = dur != null ? `${Math.floor(dur / 60)}:${String(dur % 60).padStart(2, "0")}` : "—";
+                return (
+                  <>
+                    {/* ── Attempts History Bar: Switch attempts to review mistakes ── */}
+                    {quizResultPage.attempts_history && quizResultPage.attempts_history.length > 0 && (
+                      <div
+                        style={{
+                          ...assignmentPageCard,
+                          padding: "16px 20px",
+                          marginBottom: "20px",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          gap: "14px",
+                          flexWrap: "wrap",
+                          background: "var(--bg-surface)",
+                          border: "1px solid var(--border-color)",
+                          borderRadius: "14px",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                          <span
+                            style={{
+                              width: "32px",
+                              height: "32px",
+                              borderRadius: "8px",
+                              background: "var(--bg-accent, rgba(5,150,105,0.1))",
+                              color: "#059669",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              flexShrink: 0,
+                            }}
+                          >
+                            <History size={17} />
+                          </span>
+                          <div>
+                            <strong style={{ fontSize: "14px", color: "var(--text-main)", display: "block" }}>
+                              سجل المحاولات ({quizResultPage.attempts_history.length} {quizResultPage.attempts_history.length === 1 ? "محاولة" : "محاولات"})
+                            </strong>
+                            <span style={{ fontSize: "11.5px", color: "var(--text-muted)" }}>
+                              اختر أي محاولة لرؤية درجاتك، أخطائك، والإجابات الصحيحة فيها
+                            </span>
+                          </div>
+                        </div>
+
+                        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                          {quizResultPage.attempts_history.map((att) => {
+                            const isCurrent = att.id === quizResultPage.attempt.id;
+                            return (
+                              <button
+                                key={att.id}
+                                type="button"
+                                onClick={() => void openQuizResultPage(quizResultPage.quiz.id, att.id)}
+                                title={att.is_practice ? "محاولة تدريبية" : "محاولة رسمية"}
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "7px",
+                                  padding: "7px 14px",
+                                  borderRadius: "10px",
+                                  fontSize: "12.5px",
+                                  fontWeight: 800,
+                                  cursor: "pointer",
+                                  background: isCurrent ? "#059669" : "var(--bg-surface-secondary)",
+                                  color: isCurrent ? "#ffffff" : "var(--text-main)",
+                                  border: isCurrent ? "1.5px solid #059669" : "1px solid var(--border-color)",
+                                  boxShadow: isCurrent ? "0 2px 8px rgba(5,150,105,0.3)" : "none",
+                                  transition: "all 0.15s ease",
+                                }}
+                              >
+                                <span>المحاولة {att.attempt_number}</span>
+                                {att.is_practice || att.attempt_number > 1 ? (
+                                  <span style={{ fontSize: "10px", padding: "2px 6px", borderRadius: "5px", background: isCurrent ? "rgba(255,255,255,0.25)" : "rgba(245,158,11,0.15)", color: isCurrent ? "#ffffff" : "#d97706" }}>
+                                    تدريب
+                                  </span>
+                                ) : (
+                                  <span style={{ fontSize: "10px", padding: "2px 6px", borderRadius: "5px", background: isCurrent ? "rgba(255,255,255,0.25)" : "rgba(5,150,105,0.15)", color: isCurrent ? "#ffffff" : "#059669" }}>
+                                    رسمية
+                                  </span>
+                                )}
+                                <span style={{ fontWeight: 900, fontSize: "12px" }}>
+                                  ({att.score}/{att.total_points})
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ── Hero card: score ring + stats row ── */}
+                    <div style={{ ...assignmentPageCard, padding: "26px", marginBottom: "20px", display: "flex", gap: "26px", flexWrap: "wrap", alignItems: "center" }}>
+                      {/* Score ring */}
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", minWidth: "190px" }}>
+                        <div style={{ position: "relative", width: "130px", height: "130px" }}>
+                          <svg width="130" height="130" viewBox="0 0 130 130" style={{ transform: "rotate(-90deg)" }}>
+                            <circle cx="65" cy="65" r="56" fill="none" stroke="var(--border-color)" strokeWidth="11" />
+                            <circle
+                              cx="65" cy="65" r="56" fill="none"
+                              stroke={percent >= 75 ? "#10b981" : percent >= 50 ? "#f59e0b" : "#ef4444"}
+                              strokeWidth="11" strokeLinecap="round"
+                              strokeDasharray={`${(percent / 100) * 2 * Math.PI * 56} ${2 * Math.PI * 56}`}
+                            />
+                          </svg>
+                          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+                            <strong style={{ fontSize: "24px", fontWeight: 900, color: "var(--text-main)" }}>{percent}%</strong>
+                            <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>
+                              {quizResultPage.score.toLocaleString("ar-EG")} / {quizResultPage.total_points.toLocaleString("ar-EG")} درجة
+                            </span>
+                          </div>
+                        </div>
+                        <span style={{ fontSize: "12.5px", fontWeight: 900, color: "#059669", background: "var(--bg-accent)", border: "1px solid var(--border-accent)", padding: "5px 14px", borderRadius: "999px" }}>ممتاز — {rankLabel.split("—")[1]?.trim() || rankLabel}</span>
+                        {quizResultPage.attempt.is_practice && (
+                          <span style={{ fontSize: "11px", fontWeight: 800, color: "#92400e", background: "#fef3c7", padding: "3px 10px", borderRadius: "8px" }}>محاولة تدريبية — لن تصل للمعلم</span>
+                        )}
+                      </div>
+
+                      {/* Stats row */}
+                      <div style={{ flex: 1, minWidth: "280px", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "12px" }}>
+                        {[
+                          { label: "الإجابات الصحيحة", value: `${quizResultPage.summary.correct} من ${quizResultPage.summary.total}`, color: "#059669", icon: <CheckCircle2 size={17} /> },
+                          { label: "الإجابات الخاطئة", value: `${quizResultPage.summary.wrong} من ${quizResultPage.summary.total}`, color: "#dc2626", icon: <XCircle size={17} /> },
+                          { label: "الوقت المستغرق", value: durLabel, color: "var(--text-main)", icon: <Clock size={17} /> },
+                          { label: "الترتيب بالصف", value: "—", color: "var(--text-main)", icon: <Award size={17} /> },
+                        ].map((s) => (
+                          <div key={s.label} style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "14px", padding: "14px 16px" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11.5px", color: "var(--text-muted)", fontWeight: 800, marginBottom: "6px" }}>
+                              <span style={{ color: s.color }}>{s.icon}</span>
+                              {s.label}
+                            </div>
+                            <strong style={{ fontSize: "17px", fontWeight: 900, color: s.color }}>{s.value}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* ── Body: map sidebar + corrected questions ── */}
+                    <div style={{ display: "flex", gap: "22px", alignItems: "flex-start", flexDirection: "row-reverse" }}>
+                      {/* Correction map sidebar */}
+                      <div style={{ width: "270px", flexShrink: 0, position: "sticky", top: "84px", display: "flex", flexDirection: "column", gap: "12px" }}>
+                        <div style={{ ...assignmentPageCard, padding: "18px" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                            <h3 style={{ margin: 0, fontSize: "13.5px", fontWeight: 900, color: "var(--text-main)" }}>خريطة تصحيح الأسئلة</h3>
+                            <span style={{ fontSize: "11px", fontWeight: 800, color: "var(--text-muted)" }}>{quizResultPage.summary.total} سؤال</span>
+                          </div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: "7px", direction: "rtl" }}>
+                            {quizResultPage.questions.map((q, qIdx) => {
+                              const c = stateColor[q.state];
+                              return (
+                                <button
+                                  key={q.id}
+                                  type="button"
+                                  title={stateLabel[q.state]}
+                                  onClick={() => { const el = document.getElementById(`qr-q-${q.id}`); el?.scrollIntoView({ behavior: "smooth", block: "center" }); }}
+                                  style={{
+                                    width: "38px", height: "38px", borderRadius: "10px",
+                                    background: c.bg, color: c.fg, border: `1.5px solid ${c.border}`,
+                                    fontSize: "12.5px", fontWeight: 900, cursor: "pointer",
+                                    display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "1px",
+                                  }}
+                                >
+                                  <span>{String(qIdx + 1).padStart(2, "0")}</span>
+                                  <span style={{ fontSize: "9px", lineHeight: 1 }}>{q.state === "correct" ? "✓" : q.state === "wrong" ? "✕" : "—"}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "14px", paddingTop: "12px", borderTop: "1px solid var(--border-color)", fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>
+                            <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "3px", background: "#059669", border: "1.5px solid #059669" }} /> صحيح ({quizResultPage.summary.correct})</span>
+                            <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "3px", background: "#dc2626", border: "1.5px solid #dc2626" }} /> خطأ ({quizResultPage.summary.wrong})</span>
+                            <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "3px", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)" }} /> متروك ({quizResultPage.summary.skipped})</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Questions list */}
+                      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: "16px" }}>
+                        {/* Filters */}
+                        <div style={{ ...assignmentPageCard, padding: "12px 16px", display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                          {(["all", "correct", "wrong"] as const).map((f) => (
+                            <button
+                              key={f}
+                              type="button"
+                              onClick={() => setQuizResultFilter(f)}
+                              style={{
+                                padding: "7px 16px", borderRadius: "9px", cursor: "pointer",
+                                fontSize: "12px", fontWeight: 900, border: quizResultFilter === f ? "1.5px solid #059669" : "1px solid var(--border-color)",
+                                background: quizResultFilter === f ? "#059669" : "var(--bg-surface)",
+                                color: quizResultFilter === f ? "#ffffff" : "var(--text-main)",
+                              }}
+                            >
+                              {f === "all" ? `جميع الأسئلة (${quizResultPage.questions.length})` : f === "correct" ? `الأسئلة الصحيحة (${quizResultPage.summary.correct})` : `الأسئلة الخاطئة (${quizResultPage.summary.wrong})`}
+                            </button>
+                          ))}
+                        </div>
+
+                        {filtered.map((q) => {
+                          const qIdx = quizResultPage.questions.findIndex((item) => item.id === q.id);
+                          const c = stateColor[q.state];
+                          return (
+                            <div key={q.id} id={`qr-q-${q.id}`} style={{ ...assignmentPageCard, padding: "22px" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px", marginBottom: "12px", flexWrap: "wrap" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                                  <span style={{ fontSize: "13.5px", fontWeight: 900, color: "var(--text-main)" }}>السؤال {ORDINAL_AR[qIdx] || qIdx + 1}</span>
+                                  <span style={{ fontSize: "11.5px", fontWeight: 800, color: c.fg, background: c.bg, border: `1px solid ${c.border}`, padding: "3px 10px", borderRadius: "8px" }}>
+                                    {q.state === "correct" ? "✓ " : q.state === "wrong" ? "✕ " : ""}{stateLabel[q.state]}
+                                  </span>
+                                </div>
+                                <span style={{ fontSize: "11.5px", fontWeight: 800, color: "var(--text-muted)" }}>
+                                  الدرجة: {q.awarded.toLocaleString("ar-EG")} / {q.points.toLocaleString("ar-EG")}
+                                </span>
+                              </div>
+
+                              <div style={{ fontSize: "14.5px", color: "var(--text-main)", lineHeight: 1.8, fontWeight: 700, marginBottom: "14px" }}>
+                                <FormulaRenderer text={q.prompt} />
+                              </div>
+
+                              {/* Options review */}
+                              {q.options.length > 0 ? (
+                                <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: q.learning_objective ? "12px" : 0 }}>
+                                  {q.options.map((opt, oIdx) => {
+                                    const isStudentChoice = q.student_answer_letter === oIdx;
+                                    const isCorrect = q.correct_answer_letter === oIdx;
+                                    const revealWrong = isStudentChoice && q.state === "wrong";
+                                    return (
+                                      <div
+                                        key={oIdx}
+                                        style={{
+                                          display: "flex", alignItems: "center", gap: "10px", padding: "11px 14px",
+                                          borderRadius: "11px",
+                                          border: isCorrect ? "1.5px solid #059669" : revealWrong ? "1.5px solid #dc2626" : "1px solid var(--border-color)",
+                                          background: isCorrect ? "#059669" : revealWrong ? "#dc2626" : "var(--bg-surface-secondary)",
+                                          color: isCorrect || revealWrong ? "#ffffff" : "var(--text-main)",
+                                        }}
+                                      >
+                                        <span style={{
+                                          width: "28px", height: "28px", borderRadius: "8px", flexShrink: 0,
+                                          display: "flex", alignItems: "center", justifyContent: "center",
+                                          background: isCorrect || revealWrong ? "rgba(255, 255, 255, 0.2)" : "var(--bg-surface)",
+                                          color: isCorrect || revealWrong ? "#ffffff" : "var(--text-main)", fontSize: "12px", fontWeight: 900,
+                                        }}>
+                                          {OPTION_LETTERS_AR[oIdx] || oIdx + 1}
+                                        </span>
+                                        <div style={{ flex: 1, fontSize: "14px", color: isCorrect || revealWrong ? "#ffffff" : "var(--text-main)", fontWeight: isStudentChoice || isCorrect ? 800 : 600 }}>
+                                          <FormulaRenderer inline text={opt} />
+                                        </div>
+                                        {isStudentChoice && q.state === "wrong" && <span style={{ fontSize: "11px", fontWeight: 800, background: "rgba(0,0,0,0.25)", color: "#ffffff", padding: "2px 8px", borderRadius: "6px", flexShrink: 0 }}>إجابتك (خاطئة)</span>}
+                                        {isStudentChoice && q.state === "correct" && <span style={{ fontSize: "11px", fontWeight: 800, background: "rgba(255,255,255,0.25)", color: "#ffffff", padding: "2px 8px", borderRadius: "6px", flexShrink: 0 }}>إجابتك (صحيحة)</span>}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              ) : (
+                                <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: q.learning_objective ? "12px" : 0 }}>
+                                  <div style={{ padding: "12px 14px", borderRadius: "11px", background: q.state === "correct" ? "rgba(5, 150, 105, 0.12)" : "rgba(220, 38, 38, 0.12)", border: q.state === "correct" ? "1px solid rgba(5, 150, 105, 0.3)" : "1px solid rgba(220, 38, 38, 0.3)" }}>
+                                    <small style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "4px" }}>إجابتك:</small>
+                                    <span style={{ fontSize: "13.5px", color: "var(--text-main)", fontWeight: 700 }}>{q.student_answer || "— لم تُجب —"}</span>
+                                  </div>
+                                  <div style={{ padding: "12px 14px", borderRadius: "11px", background: "rgba(5, 150, 105, 0.12)", border: "1px solid rgba(5, 150, 105, 0.3)" }}>
+                                    <small style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "#059669", marginBottom: "4px" }}>الإجابة النموذجية:</small>
+                                    <span style={{ fontSize: "13.5px", color: "var(--text-main)", fontWeight: 700 }}>{q.correct_answer || "—"}</span>
+                                  </div>
+                                </div>
+                              )}
+
+                              {q.learning_objective && (
+                                <div style={{ padding: "11px 14px", borderRadius: "11px", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text-muted)", fontWeight: 700 }}>
+                                  <HelpCircle size={14} style={{ color: "#059669", flexShrink: 0 }} />
+                                  <span>الموضوع: {q.learning_objective}</span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+
+                        {filtered.length === 0 && (
+                          <div style={{ ...assignmentPageCard, padding: "34px", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>
+                            لا توجد أسئلة في هذا التصنيف
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "center", marginTop: "28px" }}>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => {
+                          closeOverlay("quizResultPage", () => {
+                            setQuizResultPage(null);
+                            setQuizResultError(null);
+                          });
+                        }}
+                        style={{ padding: "11px 28px", fontSize: "14px", fontWeight: 800 }}
+                      >
+                        العودة إلى المقرر
+                      </button>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* =========================================================================
           STANDALONE PAGE B: ASSIGNMENT SOLVE — site topbar + breadcrumb title +
@@ -1828,20 +3438,103 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             overflowY: "auto",
           }}
         >
-          {/* Our site's own topbar (same Header component used app-wide) */}
-          <div style={{ height: "68px", flexShrink: 0 }}>
-            <Header
-              onToggleMenu={() => undefined}
-              menuOpen={false}
-              notifications={[]}
-              onMarkNotificationRead={() => undefined}
-              theme={typeof document !== "undefined" && document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light"}
-              onToggleTheme={() => undefined}
-              lang={lang}
-              onToggleLang={() => undefined}
-              currentUser={currentUser}
-            />
-          </div>
+          {/* Unified Assignment Header (Single bar matching Image 3 with Sidebar, Logo, Theme, Lang, and Exit) */}
+          <header
+            style={{
+              height: "68px",
+              background: "var(--bg-surface, #ffffff)",
+              borderBottom: "1px solid var(--border-color)",
+              padding: "0 24px",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: "14px",
+              position: "sticky",
+              top: 0,
+              zIndex: 100,
+              boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+              boxSizing: "border-box",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={onToggleMenu}
+                aria-label={menuOpen ? "Close Menu" : "Open Menu"}
+                title={lang === "ar" ? "القائمة الجانبية" : "Sidebar Menu"}
+              >
+                {menuOpen ? <X size={18} /> : <Menu size={18} />}
+              </button>
+
+              <div
+                onClick={handleHeaderNavigateHome}
+                role="button"
+                tabIndex={0}
+                title={lang === "ar" ? "العودة إلى الصفحة الأولى" : "Go to Home"}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  cursor: "pointer",
+                  userSelect: "none",
+                }}
+              >
+                <div
+                  className="brand-mark"
+                  style={{
+                    width: "34px",
+                    height: "34px",
+                    borderRadius: "9px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  <GraduationCap size={18} />
+                </div>
+              </div>
+
+              <h2 style={{ margin: 0, fontSize: "16px", fontWeight: 900, color: "var(--text-main)" }}>
+                {serverAssignment?.title || "واجب"}
+              </h2>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexShrink: 0 }}>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={onToggleTheme}
+                title={theme === "dark" ? "تفعيل الوضع النهاري" : "تفعيل الوضع الليلي"}
+                aria-label="Toggle Theme"
+              >
+                {theme === "dark" ? <Sun size={18} style={{ color: "#f59e0b" }} /> : <Moon size={18} />}
+              </button>
+
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={onToggleLang}
+                title="Switch Language / تغيير اللغة"
+                style={{ width: "auto", minWidth: "42px", padding: "0 8px", fontSize: "11.5px", fontWeight: 800 }}
+              >
+                <span>{lang === "ar" ? "AR" : "EN"}</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  closeOverlay("serverAssignment", () => {
+                    setServerAssignment(null);
+                    setServerAssignmentError(null);
+                  });
+                }}
+                style={{ display: "inline-flex", alignItems: "center", gap: "6px", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "8px", padding: "7px 14px", fontSize: "12.5px", fontWeight: 800, color: "var(--text-main)", cursor: "pointer", flexShrink: 0 }}
+              >
+                <X size={16} /> <span>خروج</span>
+              </button>
+            </div>
+          </header>
 
           <div style={{ maxWidth: "760px", margin: "0 auto", padding: "26px 20px 70px" }}>
             {/* ── Breadcrumb lesson context + centered title + countdown chip ── */}
@@ -2002,7 +3695,12 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             <div style={{ textAlign: "center", marginTop: "18px" }}>
               <button
                 type="button"
-                onClick={() => { setServerAssignment(null); setServerAssignmentError(null); }}
+                onClick={() => {
+                  closeOverlay("serverAssignment", () => {
+                    setServerAssignment(null);
+                    setServerAssignmentError(null);
+                  });
+                }}
                 style={{
                   display: "inline-flex", alignItems: "center", gap: "6px",
                   background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)",
@@ -2063,7 +3761,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 </span>
               </div>
               <button
-                onClick={() => setActiveBookModal(null)}
+                onClick={() => closeOverlay("activeBookModal", () => setActiveBookModal(null))}
                 style={{ background: "var(--bg-surface-secondary)", border: "none", borderRadius: "50%", width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "var(--text-main)" }}
               >
                 <X size={18} />
@@ -2084,8 +3782,12 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             <div style={{ display: "flex", gap: "10px" }}>
               <button
                 onClick={() => {
-                  toast(`تم بدء تنزيل "${activeBookModal.title}" بنجاح!`, "success");
-                  setActiveBookModal(null);
+                  if (activeBookModal.fileUrl) {
+                    void downloadLessonMaterial(activeBookModal.fileUrl, activeBookModal.title);
+                  } else {
+                    toast(`تم بدء تنزيل "${activeBookModal.title}" بنجاح!`, "success");
+                  }
+                  closeOverlay("activeBookModal", () => setActiveBookModal(null));
                 }}
                 className="btn-primary"
                 style={{ flex: 1, justifyContent: "center", padding: "12px", borderRadius: "10px", fontWeight: 800, fontSize: "13.5px", gap: "6px" }}
@@ -2094,7 +3796,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 <span>تحميل النسخة الكاملة على الجهاز</span>
               </button>
               <button
-                onClick={() => setActiveBookModal(null)}
+                onClick={() => closeOverlay("activeBookModal", () => setActiveBookModal(null))}
                 className="btn-outline"
                 style={{ padding: "12px 20px", borderRadius: "10px", fontWeight: 800, fontSize: "13.5px" }}
               >
@@ -2145,7 +3847,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 </span>
               </div>
               <button
-                onClick={() => setActiveAssignmentModal(null)}
+                onClick={() => closeOverlay("activeAssignmentModal", () => setActiveAssignmentModal(null))}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -2217,7 +3919,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               <button
                 type="button"
                 className="btn-secondary"
-                onClick={() => setActiveAssignmentModal(null)}
+                onClick={() => closeOverlay("activeAssignmentModal", () => setActiveAssignmentModal(null))}
               >
                 إغلاق
               </button>
@@ -2276,7 +3978,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 </h2>
               </div>
               <button
-                onClick={() => setActiveQuizModal(null)}
+                onClick={() => closeOverlay("activeQuizModal", () => setActiveQuizModal(null))}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -2380,10 +4082,12 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                           >
                             <input
                               type="radio"
+                              className="quiz-radio-hidden"
                               name={q.id}
                               checked={isChosen}
                               disabled={quizSubmitted}
                               onChange={() => setQuizAnswers({ ...quizAnswers, [q.id]: optIdx })}
+                              style={{ visibility: "hidden", position: "absolute", width: 0, height: 0, opacity: 0, pointerEvents: "none" }}
                             />
                             <div style={{ flex: 1 }}>
                               <FormulaRenderer inline text={opt} />
@@ -2415,7 +4119,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               <button
                 type="button"
                 className="btn-secondary"
-                onClick={() => setActiveQuizModal(null)}
+                onClick={() => closeOverlay("activeQuizModal", () => setActiveQuizModal(null))}
               >
                 {quizSubmitted ? "تم والعودة للمقرر" : "إلغاء"}
               </button>
@@ -2433,6 +4137,150 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 </button>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================================
+          QUIZ ATTEMPT HISTORY MODAL — select any past attempt to review mistakes
+         ========================================================================= */}
+      {activeQuizHistoryModal && (
+        <div
+          dir="rtl"
+          className="modal-overlay"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.65)",
+            zIndex: 100060,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px",
+          }}
+          onClick={() => closeOverlay("activeQuizHistoryModal", () => setActiveQuizHistoryModal(null))}
+        >
+          <div
+            style={{
+              background: "var(--bg-surface, #ffffff)",
+              borderRadius: "18px",
+              padding: "24px",
+              maxWidth: "540px",
+              width: "100%",
+              maxHeight: "85vh",
+              overflowY: "auto",
+              boxShadow: "var(--card-shadow)",
+              border: "1px solid var(--border-color)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", paddingBottom: "12px", borderBottom: "1px solid var(--border-color)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <span style={{ width: "36px", height: "36px", borderRadius: "10px", background: "var(--bg-accent, rgba(5,150,105,0.1))", color: "#059669", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+                  <History size={20} />
+                </span>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 900, color: "var(--text-main)" }}>
+                    سجل محاولات الاختبار
+                  </h3>
+                  <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                    {activeQuizHistoryModal.title}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => closeOverlay("activeQuizHistoryModal", () => setActiveQuizHistoryModal(null))}
+                style={{
+                  width: "32px",
+                  height: "32px",
+                  borderRadius: "8px",
+                  background: "var(--bg-surface-secondary)",
+                  border: "1px solid var(--border-color)",
+                  color: "var(--text-main)",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <p style={{ margin: "0 0 16px", fontSize: "12.5px", color: "var(--text-muted)", lineHeight: 1.6 }}>
+              اختر أي محاولة امتحنت فيها لعرض تصحيحها بالكامل ومعرفة إجاباتك، أخطائك، والإجابة النموذجية:
+            </p>
+
+            {quizHistoryLoading ? (
+              <div style={{ padding: "40px", textAlign: "center", color: "var(--text-muted)", fontSize: "13.5px" }}>
+                جاري تحميل سجل المحاولات…
+              </div>
+            ) : !quizHistoryAttempts || quizHistoryAttempts.length === 0 ? (
+              <div style={{ padding: "30px", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>
+                لا توجد محاولات مسجلة بعد لهذا الاختبار.
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                {quizHistoryAttempts.map((att) => (
+                  <div
+                    key={att.id}
+                    style={{
+                      background: "var(--bg-surface-secondary)",
+                      border: "1px solid var(--border-color)",
+                      borderRadius: "12px",
+                      padding: "14px 16px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: "12px",
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <strong style={{ fontSize: "14px", fontWeight: 900, color: "var(--text-main)" }}>
+                          المحاولة رقم {att.attempt_number}
+                        </strong>
+                        {att.is_practice || att.attempt_number > 1 ? (
+                          <span style={{ fontSize: "10.5px", fontWeight: 800, color: "#92400e", background: "#fef3c7", padding: "2px 8px", borderRadius: "6px" }}>
+                            تدريبية
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: "10.5px", fontWeight: 800, color: "#065f46", background: "#d1fae5", padding: "2px 8px", borderRadius: "6px" }}>
+                            رسمية
+                          </span>
+                        )}
+                      </div>
+                      <span style={{ fontSize: "11.5px", color: "var(--text-muted)" }}>
+                        {att.submitted_at ? new Date(att.submitted_at).toLocaleString("ar-EG") : "—"}
+                      </span>
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                      <span style={{ fontSize: "15px", fontWeight: 900, color: "#059669" }}>
+                        {att.score} / {att.total_points}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        style={{ padding: "8px 14px", fontSize: "12.5px", gap: "6px" }}
+                        onClick={() => {
+                          const quizId = activeQuizHistoryModal.id;
+                          overlayHistoryStack.current = overlayHistoryStack.current.map((item) => (item === "activeQuizHistoryModal" ? "quizResultPage" : item));
+                          window.history.replaceState({ lmsOverlay: "quizResultPage" }, "");
+                          setActiveQuizHistoryModal(null);
+                          void openQuizResultPage(quizId, att.id);
+                        }}
+                      >
+                        <Eye size={14} />
+                        <span>عرض الأخطاء والتصحيح</span>
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

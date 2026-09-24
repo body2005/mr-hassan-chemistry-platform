@@ -276,7 +276,7 @@ html, body {
   position: fixed;
   inset: 0;
   background: rgba(15, 23, 42, 0.55);
-  z-index: 99;
+  z-index: 100090;
 }
 
 /* Sidebar Styles — Ultra-smooth GPU accelerated drawer */
@@ -291,7 +291,7 @@ html, body {
   position: fixed;
   top: 0;
   bottom: 0;
-  z-index: 100;
+  z-index: 100100;
   will-change: transform;
   transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   box-sizing: border-box;
@@ -311,6 +311,40 @@ html, body {
 .sidebar.translate-x-0 {
   transform: translate3d(0, 0, 0) !important;
   box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 10px 10px -5px rgba(0, 0, 0, 0.1);
+}
+
+/* Quiz Timer Pill */
+.quiz-timer-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 14px;
+  border-radius: 10px;
+  font-weight: 900;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  direction: ltr;
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1.5px solid #fee2e2;
+  transition: all 0.2s ease;
+}
+
+[data-theme="dark"] .quiz-timer-pill {
+  background: rgb(17, 24, 39) !important;
+  color: #ffffff !important;
+  border: 1.5px solid rgb(17, 24, 39) !important;
+}
+
+/* Quiz Option Radio - Hidden */
+.quiz-radio-hidden,
+.quiz-option-radio {
+  visibility: hidden !important;
+  position: absolute !important;
+  width: 0 !important;
+  height: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 
 .brand {
@@ -1719,3 +1753,19 @@ img, video, canvas, svg {
   0% { transform: translateX(100%); }
   100% { transform: translateX(-100%); }
 }
+
+/* Globally hide all native radio inputs */
+input[type="radio"],
+input.quiz-radio-hidden {
+  visibility: hidden !important;
+  position: absolute !important;
+  width: 0 !important;
+  height: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+

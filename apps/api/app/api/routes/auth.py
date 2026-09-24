@@ -134,6 +134,7 @@ def _auth_response(user: User, family_id: uuid.UUID, db: Session, response: Resp
         user=PrivateUserResponse.model_validate(user),
         expires_in=settings.session_ttl_seconds,
         expires_at=expires_at,
+        token=access_token,
     )
 
 

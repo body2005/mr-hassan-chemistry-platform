@@ -29,8 +29,8 @@ class Settings(BaseSettings):
     password_reset_ttl_minutes: int = Field(default=30, ge=5, le=24 * 60)
     default_institution_slug: str = "demo"
     database_url: str = "sqlite:///./learning_website.db"
-    db_pool_size: int = Field(default=5, ge=1, le=50)
-    db_max_overflow: int = Field(default=10, ge=0, le=100)
+    db_pool_size: int = Field(default=15, ge=1, le=50)
+    db_max_overflow: int = Field(default=25, ge=0, le=100)
     db_pool_timeout_seconds: int = Field(default=30, ge=5, le=120)
     db_pool_recycle_seconds: int = Field(default=1800, ge=60, le=7200)
     redis_url: str = "redis://localhost:6379/0"
@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     rate_limit_upload: int = Field(default=60, ge=1, le=1000)
     rate_limit_quiz_extraction: int = Field(default=30, ge=1, le=1000)
     rate_limit_pdf_render: int = Field(default=240, ge=1, le=10000)
+    rate_limit_heavy_query: int = Field(default=60, ge=1, le=1000)
     rate_limit_api_default: int = Field(default=600, ge=1, le=10000)
     rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
     # Max simultaneous video playback sessions per (account, lesson) pair.

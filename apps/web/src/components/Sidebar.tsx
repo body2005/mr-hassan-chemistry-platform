@@ -5,7 +5,6 @@ import {
   BookOpen,
   FileQuestion,
   GraduationCap,
-  LayoutDashboard,
   Layers,
   UploadCloud,
   Users,
@@ -16,7 +15,6 @@ import { CurrentUser } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
 
 export type NavTab =
-  | "GeneralHome"
   | "MyCourses"
   | "MySubmissions"
   | "LessonManagement"
@@ -52,7 +50,6 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
   const t = translations[lang];
 
   const studentNavItems: Array<{ id: NavTab; label: string; sub: string; icon: LucideIcon }> = [
-    { id: "GeneralHome", label: t.navHome, sub: t.navHomeSub, icon: LayoutDashboard },
     { id: "MyCourses", label: t.navMyCourses, sub: t.navMyCoursesSub, icon: BookOpen },
     { id: "Payments", label: lang === "ar" ? "الدفع والاشتراكات" : "Payments", sub: lang === "ar" ? "تفعيل الدروس والمساعد الذكي" : "Lessons and AI access", icon: WalletCards },
     { id: "Notifications", label: lang === "ar" ? "الإشعارات والمواعيد" : "Notifications & Alerts", sub: lang === "ar" ? "جدول إشعارات صفك والدروس" : "Class alerts & deadlines", icon: Bell },
@@ -142,7 +139,8 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
           {/* Brand Logo & Title */}
           <div
             onClick={() => {
-              onSelectTab(isStudent ? "GeneralHome" : "LessonManagement");
+              window.dispatchEvent(new CustomEvent("lms:close-overlays"));
+              onSelectTab(isStudent ? "MyCourses" : "LessonManagement");
               onCloseMenu();
             }}
             role="button"
@@ -176,6 +174,7 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
               type="button"
               className={`nav-item ${activeTab === id ? "active" : ""}`}
               onClick={() => {
+                window.dispatchEvent(new CustomEvent("lms:close-overlays"));
                 onSelectTab(id);
                 onCloseMenu();
               }}

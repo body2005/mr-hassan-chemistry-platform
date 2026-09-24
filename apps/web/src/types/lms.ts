@@ -82,6 +82,8 @@ export interface LessonAISignals {
 export interface VideoLesson {
   id: string;
   moduleId?: string;
+  unitTitle?: string;
+  isRevision?: boolean;
   courseId: string;
   academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary";
   title: string;
@@ -150,13 +152,14 @@ export interface NotificationItem {
   id: string;
   title: string;
   message: string;
-  type: "assignment" | "quiz" | "system" | "warning";
+  type: "assignment" | "quiz" | "system" | "warning" | "payment" | "lesson_access";
   dueDate?: string;
   targetYear?: "all" | "1st_secondary" | "2nd_secondary" | "3rd_secondary" | string;
   createdAt: string;
   read: boolean;
   actionUrl?: string;
-  actionTab?: "GeneralHome" | "MyCourses" | "MySubmissions" | "LessonManagement" | "QuizGen" | "Submissions" | "StudentAnalytics" | "Notifications" | string;
+  actionTab?: "MyCourses" | "MySubmissions" | "LessonManagement" | "QuizGen" | "Submissions" | "StudentAnalytics" | "Notifications" | "Payments" | "PaymentManagement" | string;
+  paymentOrderId?: string;
   targetCourseId?: string;
   targetLessonId?: string;
   quizDurationMinutes?: number;
@@ -275,4 +278,5 @@ export interface CalendarScheduleEvent {
   publishStartDate?: string;
   publishStartTime?: string;
   closeDeadline?: string; // Deadline after which quiz is locked
+  customMessage?: string; // Custom alert message for general announcements
 }

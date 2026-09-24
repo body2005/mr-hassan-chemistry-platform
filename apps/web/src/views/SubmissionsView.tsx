@@ -12,17 +12,59 @@ import {
 } from "lucide-react";
 import { AssignmentSubmission, CustomColumn, StudentRecord } from "../types/lms";
 import { submissionService, userService } from "../services/lmsService";
+import { getCachedData } from "../services/apiClient";
 import { AssignmentModal } from "../components/AssignmentModal";
 import { CustomColumnModal } from "../components/CustomColumnModal";
 import { exportToCsv, exportToDocx, exportToPrintPdf } from "../utils/exportEngine";
 import { useToast } from "../components/ToastProvider";
 
+function mapApiStudentToRecord(item: any): StudentRecord {
+  const year: "1st_secondary" | "2nd_secondary" | "3rd_secondary" =
+    item.grade_level === "SECONDARY_2"
+      ? "2nd_secondary"
+      : item.grade_level === "SECONDARY_3"
+      ? "3rd_secondary"
+      : "1st_secondary";
+
+  const label =
+    year === "2nd_secondary"
+      ? "الصف الثاني الثانوي"
+      : year === "3rd_secondary"
+      ? "الصف الثالث الثانوي"
+      : "الصف الأول الثانوي";
+
+  return {
+    id: item.id,
+    name: item.display_name,
+    email: item.email,
+    nationalId: "—",
+    academicYear: year,
+    academicYearLabel: label,
+    overallAttendanceRatio: 0,
+    assignmentSubmissionRatio: 0,
+    averageQuizScore: 0,
+    homeworkSuccessRate: 0,
+    quizSuccessRate: 0,
+    totalOverallGrade: 0,
+    lastActiveDate: item.created_at ? item.created_at.slice(0, 10) : "",
+    customFieldValues: {},
+    watchHistory: [],
+  };
+}
+
 export const SubmissionsView: React.FC = () => {
   const toast = useToast();
   const [selectedYear, setSelectedYear] = useState<"1st_secondary" | "2nd_secondary" | "3rd_secondary">("1st_secondary");
   const [minThreshold, setMinThreshold] = useState<number>(65); // Minimum passing threshold %
-  const [submissions, setSubmissions] = useState<AssignmentSubmission[]>([]);
-  const [students, setStudents] = useState<StudentRecord[]>([]);
+  const [submissions, setSubmissions] = useState<AssignmentSubmission[]>(() => {
+    const cached = getCachedData<any[]>("/submissions");
+    return Array.isArray(cached) ? cached : [];
+  });
+  const [students, setStudents] = useState<StudentRecord[]>(() => {
+    const cached = getCachedData<any[]>("/users?role=student");
+    return Array.isArray(cached) ? cached.map(mapApiStudentToRecord) : [];
+  });
+  const [loading, setLoading] = useState(() => students.length === 0 || submissions.length === 0);
   const [customColumns, setCustomColumns] = useState<CustomColumn[]>([]);
 
   const [activeSubmission, setActiveSubmission] = useState<AssignmentSubmission | null>(null);
@@ -33,29 +75,36 @@ export const SubmissionsView: React.FC = () => {
     void Promise.all([submissionService.getTeacherSubmissions(), userService.getStudents()])
       .then(([serverSubmissions, serverStudents]) => {
         setSubmissions(serverSubmissions);
-        setStudents(serverStudents.map((item) => ({
-          id: item.id,
-          name: item.display_name,
-          email: item.email,
-          nationalId: "—",
-          academicYear: "1st_secondary",
-          academicYearLabel: "الصف الأول الثانوي",
-          overallAttendanceRatio: 0,
-          assignmentSubmissionRatio: 0,
-          averageQuizScore: 0,
-          homeworkSuccessRate: 0,
-          quizSuccessRate: 0,
-          totalOverallGrade: 0,
-          lastActiveDate: item.created_at.slice(0, 10),
-          customFieldValues: {},
-          watchHistory: [],
-        })));
+        setStudents(serverStudents.map(mapApiStudentToRecord));
       })
       .catch(() => {
         setSubmissions([]);
         setStudents([]);
+      })
+      .finally(() => setLoading(false));
+
+    const handleSubmissionEvent = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      // Refresh teacher submissions live
+      void submissionService.getTeacherSubmissions().then((updated) => {
+        setSubmissions(updated);
+        if (detail?.student_name) {
+          toast({
+            message: `وصل تسليم واجب جديد من الطالب: ${detail.student_name}`,
+            tone: "info",
+          });
+        }
       });
-  }, []);
+    };
+
+    window.addEventListener("lms_submission_received", handleSubmissionEvent);
+    window.addEventListener("lms_submission_graded", handleSubmissionEvent);
+
+    return () => {
+      window.removeEventListener("lms_submission_received", handleSubmissionEvent);
+      window.removeEventListener("lms_submission_graded", handleSubmissionEvent);
+    };
+  }, [toast]);
 
   // Filter students and submissions for selected year
   const yearStudents = students.filter((s) => s.academicYear === selectedYear);
@@ -305,7 +354,22 @@ export const SubmissionsView: React.FC = () => {
             </tr>
           </thead>
           <tbody>
-            {yearStudents.length === 0 ? (
+            {loading && yearStudents.length === 0 ? (
+              [...Array(4)].map((_, i) => (
+                <tr key={`skel-sub-${i}`}>
+                  <td colSpan={6 + yearCustomCols.length} style={{ padding: "16px 20px" }}>
+                    <div
+                      style={{
+                        height: "22px",
+                        background: "var(--bg-surface-secondary)",
+                        borderRadius: "6px",
+                        animation: "pulse 1.5s infinite ease-in-out",
+                      }}
+                    />
+                  </td>
+                </tr>
+              ))
+            ) : yearStudents.length === 0 ? (
               <tr>
                 <td
                   colSpan={6 + yearCustomCols.length}

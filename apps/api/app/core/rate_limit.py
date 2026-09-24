@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 import os
@@ -51,16 +51,23 @@ end
 """
 
 
+_last_redis_failure: float = 0.0
+_REDIS_COOLDOWN_SECONDS: float = 30.0
+
+
 def _get_redis_client() -> redis.Redis | None:
-    global _redis_client, _redis_script
+    global _redis_client, _redis_script, _last_redis_failure
     settings = get_settings()
     if _redis_client is not None:
         return _redis_client
+    now = time.monotonic()
+    if now - _last_redis_failure < _REDIS_COOLDOWN_SECONDS:
+        return None
     try:
         client = redis.Redis.from_url(
             settings.redis_url,
-            socket_timeout=1.0,
-            socket_connect_timeout=1.0,
+            socket_timeout=0.2,
+            socket_connect_timeout=0.15,
             decode_responses=True,
         )
         client.ping()
@@ -69,10 +76,11 @@ def _get_redis_client() -> redis.Redis | None:
         return _redis_client
     except Exception:
         # A previous connection can become stale. Never retain it or expose
-        # connection details in logs; the next request may establish a new one.
+        # connection details in logs; cooldown prevents blocking subsequent requests.
         _redis_client = None
         _redis_script = None
-        logger.warning("Redis rate limiting is unavailable")
+        _last_redis_failure = time.monotonic()
+        logger.warning("Redis rate limiting is unavailable; falling back to in-memory window")
         return None
 
 
@@ -159,6 +167,8 @@ def _get_category_defaults(category: str) -> tuple[int, int]:
         return settings.rate_limit_quiz_extraction, window
     if "pdf" in cat_lower or "render" in cat_lower:
         return settings.rate_limit_pdf_render, window
+    if "heavy" in cat_lower or "analytics" in cat_lower or "submission" in cat_lower:
+        return getattr(settings, "rate_limit_heavy_query", 60), window
     return settings.rate_limit_api_default, window
 
 

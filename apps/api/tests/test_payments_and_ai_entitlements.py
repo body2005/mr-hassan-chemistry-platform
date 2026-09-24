@@ -87,7 +87,8 @@ def test_paid_course_requires_approved_order(db, monkeypatch) -> None:
     assert public_course.status_code == 200
     public_lesson = public_course.json()["modules"][0]["lessons"][0]
     assert public_lesson["content"] is None
-    assert public_lesson["video_asset_key"] is None
+    assert public_lesson["video_url"] is None
+    assert public_lesson["has_video"] is False
 
     assert student_client.post(
         f"/api/v1/courses/{course.id}/enroll", headers=_csrf_headers(student_client)
@@ -142,7 +143,8 @@ def test_paid_course_requires_approved_order(db, monkeypatch) -> None:
     paid_course = student_client.get(f"/api/v1/courses/{course.id}").json()
     paid_lesson = paid_course["modules"][0]["lessons"][0]
     assert paid_lesson["content"] == "Private paid lesson content"
-    assert paid_lesson["video_asset_key"] == "/api/v1/lessons/private/video"
+    assert paid_lesson["has_video"] is True
+    assert paid_lesson["video_url"] == f"/api/v1/lessons/{lesson.id}/video-token"
     db.expire_all()
     refreshed_student = db.get(User, student.id)
     assert can_access_lesson_content(db, refreshed_student, lesson.id)

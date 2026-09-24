@@ -20,8 +20,18 @@ DbSession = Annotated[Session, Depends(get_db)]
 
 
 def _extract_token(request: Request, session_cookie: str | None = None) -> str | None:
-    """General sessions are cookie-only; query and bearer tokens are never sessions."""
-    return session_cookie
+    # An explicit Authorization header must win over a stale browser cookie.
+    # The SPA keeps the freshly issued token in localStorage, while browsers
+    # can retain or reject cross-site cookie deletion independently.
+    auth = request.headers.get("Authorization") or request.headers.get("authorization")
+    if auth and auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    if session_cookie:
+        return session_cookie
+    query_token = request.query_params.get("token")
+    if query_token:
+        return query_token.strip()
+    return None
 
 
 def _active_session_family(db: Session, payload: dict) -> bool:

@@ -14,7 +14,10 @@ pytest.importorskip(
 
 def test_source_advisory_lock_is_connection_scoped(monkeypatch) -> None:
     """Two PostgreSQL connections contend; release must happen on the owner."""
-    from app.tasks import knowledge_ingestion
+    knowledge_ingestion = pytest.importorskip(
+        "app.tasks.knowledge_ingestion",
+        reason="Knowledge ingestion module was removed",
+    )
 
     dsn = os.getenv(
         "TEST_POSTGRES_DSN",

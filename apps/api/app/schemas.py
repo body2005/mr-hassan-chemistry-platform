@@ -143,6 +143,7 @@ class AuthResponse(BaseModel):
     user: PrivateUserResponse
     expires_in: int
     expires_at: datetime
+    token: str | None = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -627,3 +628,39 @@ class AuditLogResponse(BaseModel):
     after_json: dict | None
     request_id: str | None
     occurred_at: datetime
+
+
+class LessonAccessRequestCreate(BaseModel):
+    student_note: str | None = Field(default=None, max_length=2000)
+
+
+class LessonAccessReviewRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class LessonAccessRequestResponse(BaseModel):
+    id: uuid.UUID
+    student_id: uuid.UUID
+    student_name: str
+    student_phone: str | None = None
+    lesson_id: uuid.UUID
+    lesson_title: str
+    course_id: uuid.UUID
+    course_title: str
+    status: str
+    student_note: str | None = None
+    reviewer_note: str | None = None
+    created_at: datetime
+    reviewed_at: datetime | None = None
+
+
+class BootstrapResponse(BaseModel):
+    authenticated: bool
+    user: PrivateUserResponse | None = None
+    unread_notifications_count: int = 0
+    notifications: list[NotificationResponse] = Field(default_factory=list)
+    courses: list[CourseResponse] = Field(default_factory=list)
+    enrolled_course_ids: list[str] = Field(default_factory=list)
+    entitlements: list[dict[str, Any]] = Field(default_factory=list)
+    settings: dict[str, Any] = Field(default_factory=dict)
+

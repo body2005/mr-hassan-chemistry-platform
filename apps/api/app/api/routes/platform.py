@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import mimetypes
 import logging
 import os
@@ -17,9 +18,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import CurrentUser, require_roles
+from app.api.dependencies import CurrentUser, OptionalUser, require_roles
 from app.core.database import get_db
 from app.core.config import get_settings
+from app.core.events import event_broker
 from app.core.rate_limit import enforce_rate_limit
 from app.core.storage import generate_safe_object_key, get_storage_provider
 from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus, Lesson, MaterializationStatus
@@ -34,6 +36,7 @@ from app.models.platform import (
     Notification,
     Question,
     Quiz,
+    QuizAttemptAnswer,
     QuizQuestion,
     QuizStatus,
 )
@@ -48,9 +51,11 @@ from app.schemas import (
     AssignmentSubmissionCreateRequest,
     AssignmentSubmissionResponse,
     AuditLogResponse,
+    BootstrapResponse,
     CalendarEventCreateRequest,
     CalendarEventResponse,
     CertificateResponse,
+    CourseResponse,
     GradeSubmissionRequest,
     LessonCreateRequest,
     LessonProgressResponse,
@@ -59,6 +64,7 @@ from app.schemas import (
     NotificationBroadcastRequest,
     NotificationCreateRequest,
     NotificationResponse,
+    PrivateUserResponse,
     QuestionCreateRequest,
     QuestionResponse,
     QuizAttemptResponse,
@@ -1090,6 +1096,24 @@ def grade_submission(
 def list_notifications(
     user: CurrentUser, db: Db, unread_only: bool = False
 ) -> list[NotificationResponse]:
+    if user.role != UserRole.STUDENT:
+        # Teachers and admins see notifications addressed directly to them,
+        # PLUS all distinct student broadcast and scheduled notifications sent in their institution.
+        query = select(Notification).where(
+            Notification.institution_id == user.institution_id,
+        )
+        if unread_only:
+            query = query.where(Notification.read_at.is_(None))
+        all_notifs = db.scalars(query.order_by(Notification.created_at.desc()).limit(500)).all()
+        seen: set[tuple[str, str, str, str | None]] = set()
+        result: list[NotificationResponse] = []
+        for n in all_notifs:
+            sig = (n.kind, n.title, n.message, n.action_url)
+            if sig not in seen:
+                seen.add(sig)
+                result.append(NotificationResponse.model_validate(n))
+        return result
+
     query = select(Notification).where(
         Notification.recipient_id == user.id,
         Notification.institution_id == user.institution_id,
@@ -1181,6 +1205,19 @@ def cancel_calendar(event_id: uuid.UUID, user: Manager, db: Db) -> CalendarEvent
     event.cancelled_at = datetime.now(UTC)
     db.commit()
     db.refresh(event)
+    try:
+        event_broker.publish_event(
+            institution_id=event.institution_id,
+            event_type="calendar_updated",
+            data={
+                "event_id": str(event.id),
+                "action": "cancelled",
+                "title": event.title,
+                "event_type": event.event_type,
+            },
+        )
+    except Exception:
+        pass
     return CalendarEventResponse.model_validate(event)
 
 
@@ -1208,6 +1245,21 @@ def update_calendar(
     event.cancelled_at = None
     db.commit()
     db.refresh(event)
+    try:
+        event_broker.publish_event(
+            institution_id=event.institution_id,
+            event_type="calendar_updated",
+            data={
+                "event_id": str(event.id),
+                "action": "updated",
+                "title": event.title,
+                "event_type": event.event_type,
+                "starts_at": event.starts_at.isoformat() if event.starts_at else None,
+                "ends_at": event.ends_at.isoformat() if event.ends_at else None,
+            },
+        )
+    except Exception:
+        pass
     return CalendarEventResponse.model_validate(event)
 
 
@@ -1663,6 +1715,219 @@ def get_quiz_solve_view(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
     }
 
 
+@router.get("/quizzes/{quiz_id}/result")
+def get_quiz_result_view(
+    quiz_id: uuid.UUID,
+    user: CurrentUser,
+    db: Db,
+    attempt_id: uuid.UUID | None = None,
+) -> dict:
+    """Full graded result of a student's attempt on a quiz.
+
+    Serves the standalone result page: per-question correctness, the student's
+    answer vs the correct one, and the question's explanation. Only the owning
+    student may read it — the native question pool is never exposed to anyone
+    else, and teacher-facing analytics never surface practice attempts.
+    """
+    from app.services.platform_service import _as_utc, _enrolled
+
+    quiz = db.scalar(
+        select(Quiz).where(
+            Quiz.id == quiz_id,
+            Quiz.institution_id == user.institution_id,
+            Quiz.status == QuizStatus.PUBLISHED,
+        )
+    )
+    if quiz is None:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    if user.role != UserRole.STUDENT:
+        raise HTTPException(status_code=403, detail="Student only")
+    if not _enrolled(db, user, quiz.course_id):
+        raise HTTPException(status_code=403, detail="Not enrolled")
+
+    all_attempts = db.scalars(
+        select(QuizAttempt)
+        .where(
+            QuizAttempt.quiz_id == quiz.id,
+            QuizAttempt.student_id == user.id,
+            QuizAttempt.status.in_([AttemptStatus.SUBMITTED, AttemptStatus.EXPIRED]),
+        )
+        .order_by(QuizAttempt.attempt_number.desc())
+    ).all()
+    if not all_attempts:
+        raise HTTPException(status_code=404, detail="No graded attempt yet")
+
+    if attempt_id is not None:
+        attempt = next((a for a in all_attempts if a.id == attempt_id), None)
+        if attempt is None:
+            raise HTTPException(status_code=404, detail="Attempt not found")
+    else:
+        attempt = all_attempts[0]
+
+    rows = db.execute(
+        select(QuizQuestion, Question)
+        .join(Question, Question.id == QuizQuestion.question_id)
+        .where(QuizQuestion.quiz_id == quiz.id, Question.is_active.is_(True))
+        .order_by(QuizQuestion.position)
+    ).all()
+
+    answer_rows = {
+        item.question_id: item
+        for item in db.scalars(
+            select(QuizAttemptAnswer).where(QuizAttemptAnswer.attempt_id == attempt.id)
+        ).all()
+    }
+
+    def _answer_text(raw: object) -> str:
+        if raw is None:
+            return ""
+        if isinstance(raw, str):
+            return raw
+        return json.dumps(raw, ensure_ascii=False)
+
+    def _normalize(value: object) -> str:
+        return _answer_text(value).strip()
+
+    items = []
+    correct_count = 0
+    wrong_count = 0
+    skipped_count = 0
+    earned = 0.0
+    possible = 0.0
+    for qq, question in rows:
+        given = answer_rows.get(question.id)
+        given_text = _answer_text(given.answer) if given else ""
+        correct_text = _answer_text(question.correct_answer)
+        points = float(qq.points)
+        awarded = float(given.awarded_points) if given else 0.0
+        possible += points
+        earned += awarded
+        answered = bool(given and given_text.strip())
+        if awarded >= points > 0:
+            state = "correct"
+            correct_count += 1
+        elif answered:
+            state = "wrong"
+            wrong_count += 1
+        else:
+            state = "skipped"
+            skipped_count += 1
+        # Option labels for MCQ: map the stored answer text back to its letter.
+        options = question.options if isinstance(question.options, list) else []
+        opt_texts: list[str] = []
+        for opt in options:
+            if isinstance(opt, dict):
+                opt_texts.append(_normalize(opt.get("text", "")))
+            else:
+                opt_texts.append(_normalize(opt))
+        chosen_letter = None
+        for idx, t in enumerate(opt_texts):
+            if t and t == given_text.strip():
+                chosen_letter = idx
+                break
+        correct_letter = None
+        for idx, t in enumerate(opt_texts):
+            if t and t == correct_text.strip():
+                correct_letter = idx
+                break
+        items.append(
+            {
+                "id": str(question.id),
+                "question_type": question.question_type,
+                "prompt": question.prompt,
+                "learning_objective": question.learning_objective,
+                "points": points,
+                "awarded": awarded,
+                "state": state,
+                "answered": answered,
+                "student_answer": given_text,
+                "student_answer_letter": chosen_letter,
+                "correct_answer": correct_text,
+                "correct_answer_letter": correct_letter,
+                "options": opt_texts,
+            }
+        )
+
+    duration_seconds = None
+    if attempt.submitted_at and attempt.started_at:
+        duration_seconds = max(0, int((_as_utc(attempt.submitted_at) - _as_utc(attempt.started_at)).total_seconds()))
+
+    return {
+        "quiz": {"id": str(quiz.id), "title": quiz.title},
+        "attempt": {
+            "id": str(attempt.id),
+            "attempt_number": attempt.attempt_number,
+            "is_practice": bool(attempt.is_practice),
+            "submitted_at": attempt.submitted_at.isoformat() if attempt.submitted_at else None,
+            "duration_seconds": duration_seconds,
+        },
+        "attempts_history": [
+            {
+                "id": str(att.id),
+                "attempt_number": att.attempt_number,
+                "is_practice": bool(att.is_practice),
+                "score": float(att.score or 0.0),
+                "total_points": float(att.total_points or possible),
+                "submitted_at": att.submitted_at.isoformat() if att.submitted_at else None,
+                "duration_seconds": max(0, int((_as_utc(att.submitted_at) - _as_utc(att.started_at)).total_seconds())) if att.submitted_at and att.started_at else None,
+            }
+            for att in all_attempts
+        ],
+        "score": float(attempt.score or 0.0),
+        "total_points": float(attempt.total_points or possible),
+        "summary": {
+            "correct": correct_count,
+            "wrong": wrong_count,
+            "skipped": skipped_count,
+            "total": len(items),
+        },
+        "questions": items,
+    }
+
+
+@router.get("/quizzes/{quiz_id}/attempts-history")
+def get_quiz_attempts_history(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> list[dict]:
+    """List all completed attempts for the current student on a quiz."""
+    from app.services.platform_service import _as_utc, _enrolled
+
+    quiz = db.scalar(
+        select(Quiz).where(
+            Quiz.id == quiz_id,
+            Quiz.institution_id == user.institution_id,
+            Quiz.status == QuizStatus.PUBLISHED,
+        )
+    )
+    if quiz is None:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    if user.role != UserRole.STUDENT:
+        raise HTTPException(status_code=403, detail="Student only")
+    if not _enrolled(db, user, quiz.course_id):
+        raise HTTPException(status_code=403, detail="Not enrolled")
+
+    attempts = db.scalars(
+        select(QuizAttempt)
+        .where(
+            QuizAttempt.quiz_id == quiz.id,
+            QuizAttempt.student_id == user.id,
+            QuizAttempt.status.in_([AttemptStatus.SUBMITTED, AttemptStatus.EXPIRED]),
+        )
+        .order_by(QuizAttempt.attempt_number.desc())
+    ).all()
+
+    return [
+        {
+            "id": str(att.id),
+            "attempt_number": att.attempt_number,
+            "is_practice": bool(att.is_practice),
+            "score": float(att.score or 0.0),
+            "total_points": float(att.total_points or 0.0),
+            "submitted_at": att.submitted_at.isoformat() if att.submitted_at else None,
+            "duration_seconds": max(0, int((_as_utc(att.submitted_at) - _as_utc(att.started_at)).total_seconds())) if att.submitted_at and att.started_at else None,
+        }
+        for att in attempts
+    ]
+
+
 @router.get("/assignments/{assignment_id}/solve")
 def get_assignment_solve_view(assignment_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
     """Assignment details for the standalone solving page (download + upload)."""
@@ -1967,3 +2232,128 @@ def add_lesson_comment(
         "created_at": comment.created_at.isoformat() if comment.created_at else None,
         "replies": [],
     }
+
+
+@router.get("/bootstrap", response_model=BootstrapResponse)
+def get_bootstrap_data(
+    user: OptionalUser,
+    db: Db,
+    request: Request,
+) -> BootstrapResponse:
+    """Unified application bootstrap endpoint returning essential startup data in 1 request.
+
+    Replaces initial multi-endpoint request waterfalls (/auth/me, /notifications, /courses,
+    /courses/me/enrollments, /payments/me/entitlements).
+    """
+    settings = get_settings()
+    app_settings = {
+        "app_name": settings.app_name,
+        "api_v1_prefix": settings.api_v1_prefix,
+        "default_institution_slug": settings.default_institution_slug,
+    }
+    if user is None:
+        return BootstrapResponse(
+            authenticated=False,
+            user=None,
+            unread_notifications_count=0,
+            notifications=[],
+            courses=[],
+            enrolled_course_ids=[],
+            entitlements=[],
+            settings=app_settings,
+        )
+
+    # 1. User identity
+    user_res = PrivateUserResponse.model_validate(user)
+
+    # 2. Notifications (capped at 50 to avoid oversized responses)
+    notif_list: list[NotificationResponse] = []
+    unread_count = 0
+    try:
+        if user.role != UserRole.STUDENT:
+            query = select(Notification).where(
+                Notification.institution_id == user.institution_id,
+            )
+            all_notifs = db.scalars(query.order_by(Notification.created_at.desc()).limit(50)).all()
+            seen: set[tuple[str, str, str, str | None]] = set()
+            for n in all_notifs:
+                sig = (n.kind, n.title, n.message, n.action_url)
+                if sig not in seen:
+                    seen.add(sig)
+                    notif_list.append(NotificationResponse.model_validate(n))
+                if n.read_at is None:
+                    unread_count += 1
+        else:
+            q = select(Notification).where(
+                Notification.recipient_id == user.id,
+                Notification.institution_id == user.institution_id,
+            )
+            student_notifs = db.scalars(q.order_by(Notification.created_at.desc()).limit(50)).all()
+            for n in student_notifs:
+                notif_list.append(NotificationResponse.model_validate(n))
+                if n.read_at is None:
+                    unread_count += 1
+    except Exception:
+        logger.exception("Error loading bootstrap notifications")
+
+    # 3. Essential courses
+    courses_res: list[CourseResponse] = []
+    try:
+        from app.api.routes.courses import _safe_course_responses
+        from app.services import course_service
+        raw_courses, _ = course_service.list_courses(db, user, page=1, page_size=100, search=None, sort="created_at")
+        courses_res = _safe_course_responses(db, user, raw_courses)
+    except Exception:
+        logger.exception("Error loading bootstrap courses")
+
+    # 4. Enrolled course IDs and Entitlements for students
+    enrolled_ids: list[str] = []
+    entitlements_list: list[dict[str, Any]] = []
+    if user.role == UserRole.STUDENT:
+        try:
+            enrolled_ids = [
+                str(cid)
+                for cid in db.scalars(
+                    select(Enrollment.course_id).where(
+                        Enrollment.student_id == user.id,
+                        Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+                    )
+                ).all()
+            ]
+            from app.models.payment import StudentEntitlement
+            from app.services.payment_service import is_entitlement_active
+            rows = db.scalars(
+                select(StudentEntitlement)
+                .where(
+                    StudentEntitlement.student_id == user.id,
+                    StudentEntitlement.institution_id == user.institution_id,
+                    StudentEntitlement.revoked_at.is_(None),
+                )
+                .order_by(StudentEntitlement.created_at.desc())
+            ).all()
+            now = datetime.now(timezone.utc)
+            entitlements_list = [
+                {
+                    "id": str(r.id),
+                    "entitlement_type": r.entitlement_type.value,
+                    "resource_id": str(r.resource_id) if r.resource_id else None,
+                    "starts_at": r.starts_at.isoformat(),
+                    "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+                    "active": is_entitlement_active(r, now),
+                }
+                for r in rows
+            ]
+        except Exception:
+            logger.exception("Error loading bootstrap student data")
+
+    return BootstrapResponse(
+        authenticated=True,
+        user=user_res,
+        unread_notifications_count=unread_count,
+        notifications=notif_list,
+        courses=courses_res,
+        enrolled_course_ids=enrolled_ids,
+        entitlements=entitlements_list,
+        settings=app_settings,
+    )
+

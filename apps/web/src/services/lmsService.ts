@@ -1,4 +1,17 @@
-import { apiRequest, uploadWithProgress, ApiClientError, markBrowserSessionActive, isSessionKnownInvalid } from "./apiClient";
+import {
+  apiRequest,
+  apiUrl,
+  uploadWithProgress,
+  ApiClientError,
+  markBrowserSessionActive,
+  isSessionKnownInvalid,
+  setApiAuthScope,
+  clearApiCache,
+  invalidateApiCache,
+  getCachedData,
+  setCachedData,
+} from "./apiClient";
+import type { StudentEntitlement } from "./paymentService";
 /**
  * ============================================================================
  * MATGAR LMS - UNIFIED DATA ACCESS LAYER (DAL)
@@ -154,7 +167,7 @@ type ApiLessonProgress = {
   completed_at: string | null;
 };
 
-export { apiRequest, ApiClientError };
+export { apiRequest, ApiClientError, clearApiCache, invalidateApiCache };
 
 function mapApiUser(user: ApiUser): CurrentUser {
   const gradeMap = {
@@ -204,38 +217,47 @@ function mapApiCourse(course: ApiCourse): Course {
       module.lessons
         .slice()
         .sort((a, b) => a.position - b.position)
-        .map((lesson) => ({
-          id: lesson.id,
-          moduleId: module.id,
-          courseId: course.id,
-          academicYear: "1st_secondary" as const,
-          title: lesson.title,
-          description: lesson.content || "",
-          durationMinutes: Math.ceil((lesson.video_duration_seconds || 0) / 60),
-          durationFormatted: lesson.video_duration_seconds
-            ? `${Math.ceil(lesson.video_duration_seconds / 60)} دقيقة`
-            : "",
-          // Playback entry points only: the API never exposes the private
-          // storage key. External URLs entered by the teacher stay as-is;
-          // native uploads resolve through the short-lived token endpoint.
-          videoUrl: lesson.video_url || "",
-          requiresProtectedPlayback: Boolean(
-            lesson.has_video && lesson.video_url && lesson.video_url.startsWith("/api/v1/lessons/"),
-          ),
-          price: Number(lesson.price_egp || 0),
-          materials: (lesson.materials || []).map((m) => ({
-            id: m.id,
-            title: m.filename,
-            fileType: (m.file_format === "pdf" ? "pdf" : "doc") as "pdf" | "video" | "doc",
-            fileUrl: m.download_url,
-            fileSize: `${Math.round(m.size_bytes / 1024)} KB`,
-            uploadedAt: m.created_at,
-          })),
-          uploadedByTeacherName: "",
-          uploadedAt: lesson.video_duration_seconds ? course.updated_at : course.created_at,
-          order: lesson.position,
-          materialization_status: lesson.materialization_status || "NOT_INDEXED",
-        })),
+        .map((lesson) => {
+          const isRevision = Boolean(
+            (lesson.content && lesson.content.includes("<!--is_revision:true-->")) ||
+            lesson.title.includes("مراجعة") ||
+            module.title.includes("مراجعة")
+          );
+          return {
+            id: lesson.id,
+            moduleId: module.id,
+            unitTitle: module.title,
+            isRevision,
+            courseId: course.id,
+            academicYear: "1st_secondary" as const,
+            title: lesson.title,
+            description: (lesson.content || "").replace("<!--is_revision:true-->", "").trim(),
+            durationMinutes: Math.ceil((lesson.video_duration_seconds || 0) / 60),
+            durationFormatted: lesson.video_duration_seconds
+              ? `${Math.ceil(lesson.video_duration_seconds / 60)} دقيقة`
+              : "",
+            // Playback entry points only: the API never exposes the private
+            // storage key. External URLs entered by the teacher stay as-is;
+            // native uploads resolve through the short-lived token endpoint.
+            videoUrl: lesson.video_url || "",
+            requiresProtectedPlayback: Boolean(
+              lesson.has_video && lesson.video_url && lesson.video_url.startsWith("/api/v1/lessons/"),
+            ),
+            price: Number(lesson.price_egp || 0),
+            materials: (lesson.materials || []).map((m) => ({
+              id: m.id,
+              title: m.filename,
+              fileType: (m.file_format === "pdf" ? "pdf" : "doc") as "pdf" | "video" | "doc",
+              fileUrl: m.download_url,
+              fileSize: `${Math.round(m.size_bytes / 1024)} KB`,
+              uploadedAt: m.created_at,
+            })),
+            uploadedByTeacherName: "",
+            uploadedAt: lesson.video_duration_seconds ? course.updated_at : course.created_at,
+            order: lesson.position,
+            materialization_status: lesson.materialization_status || "NOT_INDEXED",
+          };
+        }),
     );
   return {
     id: course.id,
@@ -257,19 +279,42 @@ function mapApiCourse(course: ApiCourse): Course {
 }
 
 function mapApiNotification(item: ApiNotification): NotificationItem {
-  const type: NotificationItem["type"] = ["assignment", "quiz", "warning"].includes(item.kind)
+  const isPayment = item.kind === "payment" || (item.action_url && item.action_url.includes("/payments/orders/"));
+  const type: NotificationItem["type"] = isPayment
+    ? "payment"
+    : ["assignment", "quiz", "warning"].includes(item.kind)
     ? (item.kind as NotificationItem["type"])
     : "system";
+
+  let paymentOrderId: string | undefined = undefined;
+  if (isPayment && item.action_url) {
+    const match = item.action_url.match(/\/payments\/orders\/([0-9a-fA-F-]+)/);
+    if (match) paymentOrderId = match[1];
+  }
+
+  // Detect target academic year from content/action_url so teachers & students can filter properly
+  let targetYear: NotificationItem["targetYear"] = "all";
+  const combinedText = `${item.title || ""} ${item.message || ""} ${item.action_url || ""}`;
+  if (combinedText.includes("1st_secondary") || combinedText.includes("الأول الثانوي")) {
+    targetYear = "1st_secondary";
+  } else if (combinedText.includes("2nd_secondary") || combinedText.includes("الثاني الثانوي")) {
+    targetYear = "2nd_secondary";
+  } else if (combinedText.includes("3rd_secondary") || combinedText.includes("الثالث الثانوي")) {
+    targetYear = "3rd_secondary";
+  }
+
   return {
     id: item.id,
     title: item.title,
     message: item.message,
     type,
+    targetYear,
     createdAt: item.created_at,
     read: Boolean(item.read_at),
     dueDate: item.scheduled_for || undefined,
     actionUrl: item.action_url || undefined,
-    actionTab: item.action_url?.replace(/^#/, "") as NotificationItem["actionTab"],
+    actionTab: isPayment ? "PaymentManagement" : (item.action_url?.replace(/^#/, "") as NotificationItem["actionTab"]),
+    paymentOrderId,
   };
 }
 
@@ -285,6 +330,7 @@ function mapApiCalendarEvent(item: ApiCalendarEvent): CalendarScheduleEvent {
   let quizDurationMinutes: number | undefined = undefined;
   let publishStartDate: string | undefined = undefined;
   let publishStartTime: string | undefined = undefined;
+  let customMessage: string | undefined = undefined;
 
   if (item.description) {
     try {
@@ -297,6 +343,7 @@ function mapApiCalendarEvent(item: ApiCalendarEvent): CalendarScheduleEvent {
         if (parsed.quizDurationMinutes !== undefined) quizDurationMinutes = parsed.quizDurationMinutes;
         if (parsed.publishStartDate) publishStartDate = parsed.publishStartDate;
         if (parsed.publishStartTime) publishStartTime = parsed.publishStartTime;
+        if (parsed.customMessage) customMessage = parsed.customMessage;
       }
     } catch {
       if (item.description.includes("2nd_secondary") || item.description.includes("الثاني الثانوي")) {
@@ -322,6 +369,7 @@ function mapApiCalendarEvent(item: ApiCalendarEvent): CalendarScheduleEvent {
     quizDurationMinutes,
     publishStartDate,
     publishStartTime,
+    customMessage,
   };
 }
 
@@ -393,6 +441,116 @@ export function deduplicateNotifications(list: NotificationItem[]): Notification
 // the browser. The server session is the only source of authentication state.
 
 // ============================================================================
+// 0. BOOTSTRAP SERVICE (Unified 1-roundtrip initial startup)
+// ============================================================================
+export interface BootstrapData {
+  authenticated: boolean;
+  user: CurrentUser | null;
+  unread_notifications_count: number;
+  notifications: NotificationItem[];
+  courses: Course[];
+  enrolledCourseIds: string[];
+  entitlements: StudentEntitlement[];
+  settings: Record<string, any>;
+}
+
+export const bootstrapService = {
+  async getBootstrap(): Promise<BootstrapData> {
+    try {
+      const res = await apiRequest<{
+        authenticated: boolean;
+        user: ApiUser | null;
+        unread_notifications_count: number;
+        notifications: ApiNotification[];
+        courses: ApiCourse[];
+        enrolled_course_ids: string[];
+        entitlements: any[];
+        settings: Record<string, any>;
+      }>("/platform/bootstrap", { cacheTtlMs: 15_000 });
+
+      if (!res.authenticated || !res.user) {
+        markBrowserSessionActive(false);
+        setApiAuthScope("anonymous");
+        return {
+          authenticated: false,
+          user: null,
+          unread_notifications_count: 0,
+          notifications: [],
+          courses: [],
+          enrolledCourseIds: [],
+          entitlements: [],
+          settings: res.settings || {},
+        };
+      }
+
+      markBrowserSessionActive(true);
+      const user = mapApiUser(res.user);
+      setApiAuthScope(user.id);
+
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem("lms_cached_user", JSON.stringify(user));
+      }
+
+      // Prepopulate cache for /auth/me so any subsequent call hits cache in 0ms
+      setCachedData(apiUrl("/auth/me"), res.user, 30_000);
+
+      // Map notifications
+      const notifs = Array.isArray(res.notifications)
+        ? deduplicateNotifications(res.notifications.map(mapApiNotification))
+        : [];
+      setCachedData(apiUrl("/notifications"), res.notifications || [], 10_000);
+
+      // Map courses
+      const mappedCourses = Array.isArray(res.courses) ? res.courses.map(mapApiCourse) : [];
+      setCachedData(
+        apiUrl("/courses"),
+        { items: res.courses || [], pagination: { total: mappedCourses.length, page: 1, page_size: 100, pages: 1 } },
+        30_000
+      );
+      if (typeof localStorage !== "undefined" && mappedCourses.length > 0) {
+        localStorage.setItem("lms_courses_v2", JSON.stringify(mappedCourses));
+      }
+
+      // Enrolled courses
+      const enrolled = Array.isArray(res.enrolled_course_ids) ? res.enrolled_course_ids : [];
+      setCachedData(
+        apiUrl("/courses/me/enrollments"),
+        (res.enrolled_course_ids || []).map((cid) => ({ course_id: cid, status: "active" })),
+        60_000
+      );
+
+      // Entitlements
+      const entitlements = Array.isArray(res.entitlements) ? res.entitlements : [];
+      setCachedData(apiUrl("/payments/me/entitlements"), entitlements, 60_000);
+
+      return {
+        authenticated: true,
+        user,
+        unread_notifications_count: res.unread_notifications_count || 0,
+        notifications: notifs,
+        courses: mappedCourses,
+        enrolledCourseIds: enrolled,
+        entitlements,
+        settings: res.settings || {},
+      };
+    } catch (err) {
+      console.warn("Bootstrap request failed, falling back to local cached identity", err);
+      const cached = authService.getCachedUser();
+      return {
+        authenticated: Boolean(cached),
+        user: cached,
+        unread_notifications_count: 0,
+        notifications: [],
+        courses: courseService.getCachedCourses(),
+        enrolledCourseIds: [],
+        entitlements: [],
+        settings: {},
+      };
+    }
+  },
+};
+
+// ============================================================================
 // 1. AUTH & USER SERVICE (Server session is the ONLY source of identity)
 // ============================================================================
 let meInFlight: Promise<CurrentUser | null> | null = null;
@@ -402,11 +560,22 @@ export const authService = {
     return [];
   },
 
+  getCachedUser(): CurrentUser | null {
+    if (typeof localStorage === "undefined") return null;
+    try {
+      const raw = localStorage.getItem("lms_cached_user");
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  },
+
   async getCurrentUser(): Promise<CurrentUser | null> {
     // Skip the probe entirely when a previous request already proved the
     // session is gone. Re-probing only generates duplicate 401/refresh churn.
     if (isSessionKnownInvalid()) {
       markBrowserSessionActive(false);
+      setApiAuthScope("anonymous");
       return null;
     }
     // Concurrent callers (mount + sync events) share one in-flight /me call
@@ -420,13 +589,23 @@ export const authService = {
 
   async getCurrentUserUncached(): Promise<CurrentUser | null> {
     try {
-      const apiUser = await apiRequest<ApiUser>("/auth/me");
+      const apiUser = await apiRequest<ApiUser>("/auth/me", { cacheTtlMs: 30_000 });
       markBrowserSessionActive(true);
-      return mapApiUser(apiUser);
+      setApiAuthScope(apiUser.id);
+      const user = mapApiUser(apiUser);
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem("lms_cached_user", JSON.stringify(user));
+      }
+      return user;
     } catch (err: unknown) {
       // ONLY genuine 401 Unauthenticated means the session is expired or invalid
       if (err instanceof ApiClientError && err.status === 401) {
         markBrowserSessionActive(false);
+        setApiAuthScope("anonymous");
+        if (typeof localStorage !== "undefined") {
+          localStorage.removeItem("lms_session_token");
+          localStorage.removeItem("lms_cached_user");
+        }
         return null;
       }
       // 403 Forbidden is an authorization error, NOT an unauthenticated session!
@@ -440,14 +619,20 @@ export const authService = {
     const cleanPass = (pass || "").trim();
 
     try {
-      const result = await apiRequest<{ user: ApiUser; expires_at: string }>("/auth/login", {
+      const result = await apiRequest<{ user: ApiUser; expires_at: string; token?: string }>("/auth/login", {
         method: "POST",
         body: JSON.stringify({ email: cleanEmail, password: cleanPass, institution_slug: institutionSlug }),
       });
       const user = mapApiUser(result.user);
       markBrowserSessionActive(true);
+      setApiAuthScope(user.id);
+      clearApiCache();
       if (typeof localStorage !== "undefined") {
-        const targetTab = user.role === "student" ? "GeneralHome" : "LessonManagement";
+        if (result.token) {
+          localStorage.setItem("lms_session_token", result.token);
+        }
+        localStorage.setItem("lms_cached_user", JSON.stringify(user));
+        const targetTab = user.role === "student" ? "MyCourses" : "LessonManagement";
         localStorage.setItem("lms_active_tab", targetTab);
       }
       window.dispatchEvent(new Event("lms_user_updated"));
@@ -478,7 +663,7 @@ export const authService = {
 
     // 1. Try FastAPI backend API
     try {
-      const result = await apiRequest<{ user: ApiUser; expires_at: string }>("/auth/register", {
+      const result = await apiRequest<{ user: ApiUser; expires_at: string; token?: string }>("/auth/register", {
         method: "POST",
         body: JSON.stringify({
           display_name: userData.name,
@@ -501,8 +686,14 @@ export const authService = {
       });
       const user = mapApiUser(result.user);
       markBrowserSessionActive(true);
+      setApiAuthScope(user.id);
+      clearApiCache();
       if (typeof localStorage !== "undefined") {
-        const targetTab = user.role === "student" ? "GeneralHome" : "LessonManagement";
+        if (result.token) {
+          localStorage.setItem("lms_session_token", result.token);
+        }
+        localStorage.setItem("lms_cached_user", JSON.stringify(user));
+        const targetTab = user.role === "student" ? "MyCourses" : "LessonManagement";
         localStorage.setItem("lms_active_tab", targetTab);
       }
       window.dispatchEvent(new Event("lms_user_updated"));
@@ -521,7 +712,11 @@ export const authService = {
     } catch {
       // Logout is local-first so an unavailable server cannot trap the user in the UI.
     }
+    setApiAuthScope("anonymous");
+    clearApiCache();
     if (typeof localStorage !== "undefined") {
+      localStorage.removeItem("lms_session_token");
+      localStorage.removeItem("lms_cached_user");
       localStorage.setItem("lms_active_tab", "Landing");
     }
     if (typeof window !== "undefined") {
@@ -537,23 +732,29 @@ export const authService = {
 // ============================================================================
 export const notificationService = {
   async getNotifications(): Promise<NotificationItem[]> {
-    const result = await apiRequest<ApiNotification[]>("/notifications");
+    const result = await apiRequest<ApiNotification[]>("/notifications", { cacheTtlMs: 10_000 });
     return Array.isArray(result) ? deduplicateNotifications(result.map(mapApiNotification)) : [];
   },
 
   async saveNotification(item: NotificationItem): Promise<NotificationItem[]> {
-    await apiRequest<ApiNotification[]>("/notifications/broadcast", {
+    const actionUrl = item.actionUrl || (item.actionTab ? `#${item.actionTab}` : undefined);
+    const result = await apiRequest<ApiNotification[]>("/notifications/broadcast", {
       method: "POST",
       body: JSON.stringify({
         kind: item.type,
         title: item.title,
         message: item.message,
-        action_url: item.actionTab ? `#${item.actionTab}` : item.actionUrl,
+        action_url: item.targetYear ? `${actionUrl || "#Notifications"}?grade=${item.targetYear}` : actionUrl,
         dedup_key: item.id,
         scheduled_for: item.createdAt.includes("T") ? item.createdAt : undefined,
       }),
     });
-    return this.getNotifications();
+    invalidateApiCache("/notifications");
+    const mappedNew = Array.isArray(result) ? result.map(mapApiNotification) : [];
+    const all = await this.getNotifications();
+    const merged = deduplicateNotifications([...mappedNew, ...all]);
+    window.dispatchEvent(new Event("lms_notifications_updated"));
+    return merged;
   },
 
   async saveNotifications(list: NotificationItem[]): Promise<void> {
@@ -562,6 +763,7 @@ export const notificationService = {
 
   async markAsRead(id: string): Promise<NotificationItem[]> {
     await apiRequest(`/notifications/${id}/read`, { method: "POST" });
+    invalidateApiCache("/notifications");
     return this.getNotifications();
   },
 };
@@ -571,8 +773,12 @@ export const notificationService = {
 // ============================================================================
 export const calendarService = {
   async getCalendarEvents(): Promise<CalendarScheduleEvent[]> {
-    const result = await apiRequest<ApiCalendarEvent[]>("/calendar");
-    return result.map(mapApiCalendarEvent);
+    const result = await apiRequest<ApiCalendarEvent[]>("/calendar", { cacheTtlMs: 30_000 });
+    const mapped = result.map(mapApiCalendarEvent);
+    try {
+      localStorage.setItem("lms_calendar_events_cache", JSON.stringify(mapped));
+    } catch {}
+    return mapped;
   },
 
   async saveCalendarEvent(event: CalendarScheduleEvent): Promise<CalendarScheduleEvent[]> {
@@ -583,6 +789,7 @@ export const calendarService = {
       quizDurationMinutes: event.quizDurationMinutes,
       publishStartDate: event.publishStartDate,
       publishStartTime: event.publishStartTime,
+      customMessage: event.customMessage,
     };
     const payload = {
       title: event.dayName,
@@ -597,6 +804,7 @@ export const calendarService = {
       method: isServerId ? "PUT" : "POST",
       body: JSON.stringify(payload),
     });
+    invalidateApiCache("/calendar");
     return this.getCalendarEvents();
   },
 
@@ -609,6 +817,7 @@ export const calendarService = {
         .filter((event) => !event.isCancelled)
         .map((event) => apiRequest(`/calendar/${event.id}/cancel`, { method: "POST" })),
     );
+    invalidateApiCache("/calendar");
     return this.getCalendarEvents();
   },
 
@@ -650,48 +859,80 @@ function parseScheduleClock(value: string): string {
 // ============================================================================
 // 4. COURSES & ENROLLMENT SERVICE
 // ============================================================================
+let composedCoursesInFlight: Promise<Course[]> | null = null;
+
 export const courseService = {
-  async getCourses(): Promise<Course[]> {
-    const result = await apiRequest<{ items: ApiCourse[] }>("/courses?page=1&page_size=100");
-    const courses = Array.isArray(result.items) ? result.items.map(mapApiCourse) : [];
-    // Attach published quizzes/assignments (scoped per lesson/unit) once per
-    // course; a failure here must never break the course list itself.
-    await Promise.all(
-      courses.map(async (course) => {
-        try {
-          course.assessments = await courseService.getCourseAssessments(course.id).then((data) => [
-            ...data.quizzes.map((q) => ({
-              id: q.id,
-              kind: "quiz" as const,
-              title: q.title,
-              lessonId: q.lesson_id,
-              moduleId: q.module_id,
-              durationMinutes: q.duration_seconds ? Math.ceil(q.duration_seconds / 60) : undefined,
-              dueLabel: q.ends_at,
-              attemptsUsed: q.attempts_used,
-              attemptsAllowed: q.attempts_allowed,
-              accessible: q.accessible,
-            })),
-            ...data.assignments.map((a) => ({
-              id: a.id,
-              kind: "assignment" as const,
-              title: a.title,
-              lessonId: a.lesson_id,
-              moduleId: a.module_id,
-              maxScore: a.max_score,
-              dueLabel: a.due_at,
-              accessible: a.accessible,
-            })),
-          ]);
-        } catch {
-          course.assessments = [];
-        }
-      }),
-    );
-    return courses;
+  async getCourses(options?: { skipCache?: boolean }): Promise<Course[]> {
+    const composedKey = "composed:/courses";
+    if (!options?.skipCache) {
+      const cached = getCachedData<Course[]>(composedKey);
+      if (cached) return cached;
+      if (composedCoursesInFlight) return composedCoursesInFlight;
+    }
+
+    const fetchPromise = (async () => {
+      const result = await apiRequest<{ items: ApiCourse[] }>("/courses?page=1&page_size=100", {
+        cacheTtlMs: 60_000,
+        skipCache: options?.skipCache,
+      });
+      const courses = Array.isArray(result.items) ? result.items.map(mapApiCourse) : [];
+      setCachedData(composedKey, courses, 60_000);
+
+      // Asynchronously enrich courses with assessments in the background without blocking the course list
+      void Promise.all(
+        courses.map(async (course) => {
+          try {
+            const data = await courseService.getCourseAssessments(course.id);
+            course.assessments = [
+              ...data.quizzes.map((q) => ({
+                id: q.id,
+                kind: "quiz" as const,
+                title: q.title,
+                lessonId: q.lesson_id,
+                moduleId: q.module_id,
+                durationMinutes: q.duration_seconds ? Math.ceil(q.duration_seconds / 60) : undefined,
+                dueLabel: q.ends_at,
+                attemptsUsed: q.attempts_used,
+                attemptsAllowed: q.attempts_allowed,
+                accessible: q.accessible,
+              })),
+              ...data.assignments.map((a) => ({
+                id: a.id,
+                kind: "assignment" as const,
+                title: a.title,
+                lessonId: a.lesson_id,
+                moduleId: a.module_id,
+                maxScore: a.max_score,
+                dueLabel: a.due_at,
+                accessible: a.accessible,
+              })),
+            ];
+          } catch {
+            course.assessments = [];
+          }
+        }),
+      ).then(() => {
+        setCachedData(composedKey, courses, 60_000);
+      });
+
+      return courses;
+    })();
+
+    composedCoursesInFlight = fetchPromise.finally(() => {
+      composedCoursesInFlight = null;
+    });
+
+    return composedCoursesInFlight;
+  },
+
+  getCachedCourses(): Course[] {
+    const cached = getCachedData<Course[]>("composed:/courses");
+    if (cached && Array.isArray(cached) && cached.length > 0) return cached;
+    return [];
   },
 
   async saveCourses(courses: Course[]): Promise<void> {
+    invalidateApiCache("/courses");
     if (typeof localStorage !== "undefined") {
       localStorage.setItem("lms_courses_v2", JSON.stringify(courses));
       window.dispatchEvent(new Event("lms_courses_updated"));
@@ -699,29 +940,35 @@ export const courseService = {
   },
 
   async getEnrolledCourseIds(): Promise<string[]> {
-    const result = await apiRequest<ApiEnrollment[]>("/courses/me/enrollments");
+    const result = await apiRequest<ApiEnrollment[]>("/courses/me/enrollments", { cacheTtlMs: 60_000 });
     return Array.isArray(result) ? result.map((enrollment) => enrollment.course_id) : [];
   },
 
   async enrollCourse(courseId: string): Promise<string[]> {
     await apiRequest(`/courses/${courseId}/enroll`, { method: "POST" });
+    invalidateApiCache("/courses");
     return this.getEnrolledCourseIds();
   },
 
   async getLessonProgress(): Promise<ApiLessonProgress[]> {
-    return apiRequest<ApiLessonProgress[]>("/progress/me");
+    return apiRequest<ApiLessonProgress[]>("/progress/me", { cacheTtlMs: 15_000 });
   },
 
   async completeLesson(lessonId: string): Promise<ApiLessonProgress> {
-    return apiRequest<ApiLessonProgress>(`/progress/lessons/${lessonId}/complete`, { method: "POST" });
+    const res = await apiRequest<ApiLessonProgress>(`/progress/lessons/${lessonId}/complete`, { method: "POST" });
+    invalidateApiCache("/progress");
+    invalidateApiCache("/courses");
+    return res;
   },
 
   async createCourse(payload: { code: string; title: string; description?: string; price_egp?: number }): Promise<ApiCourse> {
-    return apiRequest<ApiCourse>("/courses", { method: "POST", body: JSON.stringify(payload) });
+    const res = await apiRequest<ApiCourse>("/courses", { method: "POST", body: JSON.stringify(payload) });
+    invalidateApiCache("/courses");
+    return res;
   },
 
   async getCourseContent(courseId: string): Promise<ApiCourse> {
-    return apiRequest<ApiCourse>(`/courses/${courseId}`);
+    return apiRequest<ApiCourse>(`/courses/${courseId}`, { cacheTtlMs: 60_000 });
   },
 
   /** Server-side shape of a published assessment the student can attempt. */
@@ -752,7 +999,7 @@ export const courseService = {
       accessible: boolean;
     }>;
   }> {
-    return apiRequest(`/courses/${courseId}/assessments`);
+    return apiRequest(`/courses/${courseId}/assessments`, { cacheTtlMs: 60_000 });
   },
 
   /** Publish a real quiz to the server: questions -> quiz -> publish. */
@@ -803,6 +1050,7 @@ export const courseService = {
     await apiRequest(`/quizzes/${quiz.id}/publish`, {
       method: "POST",
     });
+    invalidateApiCache("/courses");
     return { quiz_id: quiz.id };
   },
 
@@ -831,14 +1079,17 @@ export const courseService = {
     await apiRequest(`/assignments/${created.id}/publish`, {
       method: "POST",
     });
+    invalidateApiCache("/courses");
     return { assignment_id: created.id };
   },
 
   async addModule(courseId: string, payload: { title: string; position: number }): Promise<ApiCourse["modules"][number]> {
-    return apiRequest<ApiCourse["modules"][number]>(`/courses/${courseId}/modules`, {
+    const res = await apiRequest<ApiCourse["modules"][number]>(`/courses/${courseId}/modules`, {
       method: "POST",
       body: JSON.stringify(payload),
     });
+    invalidateApiCache("/courses");
+    return res;
   },
 
   async addLesson(moduleId: string, payload: {
@@ -850,10 +1101,12 @@ export const courseService = {
     video_duration_seconds?: number;
     price_egp?: number;
   }): Promise<{ id: string }> {
-    return apiRequest<{ id: string }>(`/modules/${moduleId}/lessons`, {
+    const res = await apiRequest<{ id: string }>(`/modules/${moduleId}/lessons`, {
       method: "POST",
       body: JSON.stringify(payload),
     });
+    invalidateApiCache("/courses");
+    return res;
   },
 
 
@@ -907,6 +1160,7 @@ export const courseService = {
 
   async deleteLesson(moduleId: string, lessonId: string): Promise<void> {
     await apiRequest<void>(`/modules/${moduleId}/lessons/${lessonId}`, { method: "DELETE" });
+    invalidateApiCache("/courses");
   },
 };
 
@@ -928,12 +1182,12 @@ export const analyticsService = {
 // ============================================================================
 export const submissionService = {
   async getStudentSubmissions(): Promise<AssignmentSubmission[]> {
-    const result = await apiRequest<ApiSubmission[]>("/submissions/me");
+    const result = await apiRequest<ApiSubmission[]>("/submissions/me", { cacheTtlMs: 30_000 });
     return Array.isArray(result) ? result.map(mapApiSubmission) : [];
   },
 
   async getTeacherSubmissions(): Promise<AssignmentSubmission[]> {
-    const result = await apiRequest<ApiSubmission[]>("/submissions");
+    const result = await apiRequest<ApiSubmission[]>("/submissions", { cacheTtlMs: 30_000 });
     return Array.isArray(result) ? result.map(mapApiSubmission) : [];
   },
 
@@ -946,26 +1200,37 @@ export const submissionService = {
       method: "POST",
       body: JSON.stringify({ final_score: finalScore, teacher_feedback: teacherFeedback, approve }),
     });
+    invalidateApiCache("/submissions");
     return mapApiSubmission(result);
   },
 };
 
-type ApiManagedUser = Pick<ApiUser, "id" | "email" | "display_name" | "role" | "is_active" | "created_at">;
+import { lessonAccessService } from "./paymentService";
+
+type ApiManagedUser = Pick<
+  ApiUser,
+  "id" | "email" | "display_name" | "role" | "grade_level" | "student_phone" | "is_active" | "created_at"
+>;
 
 export const userService = {
   async getStudents(): Promise<ApiManagedUser[]> {
-    const res = await apiRequest<ApiManagedUser[]>("/users?role=student");
+    const res = await apiRequest<ApiManagedUser[]>("/users?role=student", { cacheTtlMs: 60_000 });
     return Array.isArray(res) ? res : [];
   },
 
   async toggleBlock(studentId: string): Promise<ApiManagedUser> {
-    return apiRequest<ApiManagedUser>(`/users/${studentId}/block`, { method: "POST" });
+    const res = await apiRequest<ApiManagedUser>(`/users/${studentId}/block`, { method: "POST" });
+    invalidateApiCache("/users");
+    return res;
   },
 
   async deleteStudent(studentId: string): Promise<void> {
     await apiRequest<void>(`/users/${studentId}`, { method: "DELETE" });
+    invalidateApiCache("/users");
   },
 };
+
+export const accessService = lessonAccessService;
 
 export const systemService = {
   async getASRConfig(): Promise<{ kaggle_asr_url: string; mode: string; provider: string }> {

@@ -9,37 +9,63 @@ import {
 } from "lucide-react";
 import { CustomColumn, StudentRecord } from "../types/lms";
 import { userService } from "../services/lmsService";
+import { getCachedData } from "../services/apiClient";
 import { CustomColumnModal } from "../components/CustomColumnModal";
 import { exportToCsv, exportToDocx, exportToPrintPdf } from "../utils/exportEngine";
 
+function mapApiStudentToRecord(item: any): StudentRecord {
+  const year: "1st_secondary" | "2nd_secondary" | "3rd_secondary" =
+    item.grade_level === "SECONDARY_2"
+      ? "2nd_secondary"
+      : item.grade_level === "SECONDARY_3"
+      ? "3rd_secondary"
+      : "1st_secondary";
+
+  const label =
+    year === "2nd_secondary"
+      ? "الصف الثاني الثانوي"
+      : year === "3rd_secondary"
+      ? "الصف الثالث الثانوي"
+      : "الصف الأول الثانوي";
+
+  return {
+    id: item.id,
+    name: item.display_name,
+    email: item.email,
+    nationalId: "—",
+    academicYear: year,
+    academicYearLabel: label,
+    overallAttendanceRatio: 0,
+    assignmentSubmissionRatio: 0,
+    averageQuizScore: 0,
+    homeworkSuccessRate: 0,
+    quizSuccessRate: 0,
+    totalOverallGrade: 0,
+    lastActiveDate: item.created_at ? item.created_at.slice(0, 10) : "",
+    isBlocked: !item.is_active,
+    customFieldValues: {},
+    watchHistory: [],
+  };
+}
+
 export const StudentAnalyticsView: React.FC = () => {
   const [selectedYear, setSelectedYear] = useState<"1st_secondary" | "2nd_secondary" | "3rd_secondary">("1st_secondary");
-  const [students, setStudents] = useState<StudentRecord[]>([]);
+  const [students, setStudents] = useState<StudentRecord[]>(() => {
+    const cached = getCachedData<any[]>("/users?role=student");
+    return Array.isArray(cached) ? cached.map(mapApiStudentToRecord) : [];
+  });
+  const [loading, setLoading] = useState(() => students.length === 0);
   const [customColumns, setCustomColumns] = useState<CustomColumn[]>([]);
   const [isCustomColModalOpen, setIsCustomColModalOpen] = useState(false);
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false);
 
   React.useEffect(() => {
     void userService.getStudents()
-      .then((items) => setStudents(items.map((item) => ({
-        id: item.id,
-        name: item.display_name,
-        email: item.email,
-        nationalId: "—",
-        academicYear: "1st_secondary",
-        academicYearLabel: "الصف الأول الثانوي",
-        overallAttendanceRatio: 0,
-        assignmentSubmissionRatio: 0,
-        averageQuizScore: 0,
-        homeworkSuccessRate: 0,
-        quizSuccessRate: 0,
-        totalOverallGrade: 0,
-        lastActiveDate: item.created_at.slice(0, 10),
-        isBlocked: !item.is_active,
-        customFieldValues: {},
-        watchHistory: [],
-      }))))
-      .catch(() => setStudents([]));
+      .then((items) => {
+        setStudents(items.map(mapApiStudentToRecord));
+      })
+      .catch(() => setStudents([]))
+      .finally(() => setLoading(false));
   }, []);
 
   const yearStudents = students.filter((s) => s.academicYear === selectedYear);
@@ -477,7 +503,22 @@ export const StudentAnalyticsView: React.FC = () => {
             </tr>
           </thead>
           <tbody>
-            {yearStudents.length === 0 ? (
+            {loading && yearStudents.length === 0 ? (
+              [...Array(4)].map((_, i) => (
+                <tr key={`skel-${i}`}>
+                  <td colSpan={6 + yearCustomCols.length} style={{ padding: "16px 20px" }}>
+                    <div
+                      style={{
+                        height: "22px",
+                        background: "var(--bg-surface-secondary)",
+                        borderRadius: "6px",
+                        animation: "pulse 1.5s infinite ease-in-out",
+                      }}
+                    />
+                  </td>
+                </tr>
+              ))
+            ) : yearStudents.length === 0 ? (
               <tr>
                 <td
                   colSpan={6 + yearCustomCols.length}

@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.router import api_router
+from app.core.concurrency import concurrency_guard
 from app.core.config import get_settings
 from app.core.database import engine
 from app.core.metrics import record_request
@@ -73,6 +74,13 @@ def classify_rate_limit_category(method: str, path: str) -> str:
         "extract-from-file" in normalized_path or "/exam" in normalized_path
     ):
         return "quiz_extraction"
+    if (
+        f"{api_prefix}/submissions" in normalized_path
+        or f"{api_prefix}/analytics" in normalized_path
+        or f"{api_prefix}/payments/orders" in normalized_path
+        or f"{api_prefix}/users" in normalized_path
+    ):
+        return "heavy_query"
     if normalized_method in {"PUT", "PATCH", "DELETE"} or normalized_path.endswith(
         ("/reindex", "/stop-indexing")
     ):
@@ -87,12 +95,14 @@ async def security_middleware(request, call_next):
     request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     origin = request.headers.get("Origin")
     unsafe_method = request.method in {"POST", "PUT", "PATCH", "DELETE"}
+    category = "default"
     if request.url.path.startswith(settings.api_v1_prefix) and request.url.path not in {
         f"{settings.api_v1_prefix}/health",
         f"{settings.api_v1_prefix}/ready",
     }:
         try:
             category = classify_rate_limit_category(request.method, request.url.path)
+            request.state.category = category
             enforce_rate_limit(request, category=category)
             request.state.rate_limit_categories = {category}
         except HTTPException as exc:
@@ -127,12 +137,17 @@ async def security_middleware(request, call_next):
         f"{settings.api_v1_prefix}/auth/password-reset/request",
         f"{settings.api_v1_prefix}/auth/password-reset/confirm",
     }
+    authorization = request.headers.get("Authorization", "")
+    has_bearer_auth = authorization.lower().startswith("bearer ") and bool(
+        authorization[7:].strip()
+    )
     if (
         unsafe_method
         and (
             request.cookies.get(settings.session_cookie_name)
             or request.cookies.get(settings.refresh_cookie_name)
         )
+        and not has_bearer_auth
         and request.url.path not in csrf_exempt_paths
     ):
         csrf_cookie = request.cookies.get(settings.csrf_cookie_name)
@@ -150,8 +165,24 @@ async def security_middleware(request, call_next):
 
     request.state.request_id = request_id
     started = time.perf_counter()
+    is_heavy = getattr(request.state, "category", "") in {"heavy_query", "upload", "quiz_extraction"}
     try:
-        response = await call_next(request)
+        async with concurrency_guard(request, is_heavy=is_heavy):
+            response = await call_next(request)
+    except HTTPException as exc:
+        res = JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "detail": str(exc.detail),
+                "error": {
+                    "code": "RATE_LIMITED" if exc.status_code == 429 else "SERVICE_UNAVAILABLE",
+                    "message": exc.detail,
+                },
+                "request_id": request_id,
+            },
+            headers=exc.headers or ({"Retry-After": "1"} if exc.status_code == 503 else None),
+        )
+        return res
     except Exception as exc:
         logger.exception("Unhandled error processing request %s: %s", request_id, exc)
         err_res = JSONResponse(

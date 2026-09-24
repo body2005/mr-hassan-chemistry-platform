@@ -11,7 +11,6 @@ import {
   Share2,
   Eye,
   Calendar,
-  CheckCircle2,
   Download,
   FileText,
   Heart,
@@ -23,6 +22,7 @@ import {
 import { Course, CurrentUser, VideoLesson } from "../types/lms";
 import { apiRequest, apiUrl } from "../services/apiClient";
 import { VideoTelemetryTracker } from "../services/videoTelemetry";
+import { lessonAccessService } from "../services/paymentService";
 import { useToast } from "./ToastProvider";
 
 export interface VideoLessonPageProps {
@@ -142,6 +142,49 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
       disposed = true;
     };
   }, [lesson.id, lesson.videoUrl, lesson.requiresProtectedPlayback]);
+
+  const [isAccessRequested, setIsAccessRequested] = useState(false);
+  const [isSubmittingAccessRequest, setIsSubmittingAccessRequest] = useState(false);
+
+  useEffect(() => {
+    const handleUnlocked = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      const targetId = detail?.lesson_id || detail?.resource_id;
+      if (targetId && targetId === lesson.id) {
+        setPlaybackError(null);
+        setIsAccessRequested(false);
+        void apiRequest<{ stream_url: string }>(`/lessons/${lesson.id}/video-token`, {
+          method: "POST",
+        })
+          .then(({ stream_url }) => {
+            setPlaybackUrl(apiUrl(stream_url));
+            toast({ message: "تمت إتاحة الدرس بنجاح، جاري تشغيل الفيديو!", tone: "success" });
+          })
+          .catch(() => undefined);
+      }
+    };
+    window.addEventListener("lms_lesson_unlocked", handleUnlocked);
+    return () => window.removeEventListener("lms_lesson_unlocked", handleUnlocked);
+  }, [lesson.id, toast]);
+
+  async function handleRequestLessonAccess() {
+    setIsSubmittingAccessRequest(true);
+    try {
+      await lessonAccessService.requestAccess(lesson.id);
+      setIsAccessRequested(true);
+      toast({
+        message: "تم إرسال طلب إتاحة الدرس للمعلم. سيتم بدء تشغيل الفيديو تلقائياً فور موافقة المعلم.",
+        tone: "success",
+      });
+    } catch (err) {
+      toast({
+        message: err instanceof Error ? err.message : "تعذر إرسال طلب الإتاحة",
+        tone: "danger",
+      });
+    } finally {
+      setIsSubmittingAccessRequest(false);
+    }
+  }
 
   // Telemetry Tracker attachment
   useEffect(() => {
@@ -1159,6 +1202,47 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                   <span style={{ fontSize: "13px", opacity: 0.8 }}>
                     {playbackError || "جاري إعداد مشغل الفيديو التفاعلي..."}
                   </span>
+                  {playbackError && currentUser?.role === "student" && (
+                    <div style={{ marginTop: "16px" }}>
+                      {isAccessRequested ? (
+                        <span
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            background: "rgba(217, 119, 6, 0.25)",
+                            color: "#fbbf24",
+                            padding: "8px 18px",
+                            borderRadius: "10px",
+                            fontSize: "13px",
+                            fontWeight: 700,
+                            border: "1px solid rgba(217, 119, 6, 0.4)",
+                          }}
+                        >
+                          تم إرسال طلب الإتاحة (بانتظار موافقة المعلم...)
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={handleRequestLessonAccess}
+                          disabled={isSubmittingAccessRequest}
+                          style={{
+                            background: "#0284c7",
+                            color: "#ffffff",
+                            border: "none",
+                            borderRadius: "10px",
+                            padding: "10px 22px",
+                            fontSize: "13px",
+                            fontWeight: 700,
+                            cursor: isSubmittingAccessRequest ? "not-allowed" : "pointer",
+                            boxShadow: "0 4px 14px rgba(2, 132, 199, 0.35)",
+                          }}
+                        >
+                          {isSubmittingAccessRequest ? "جاري إرسال الطلب..." : "طلب إتاحة الدرس من المعلم"}
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1250,13 +1334,6 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                       تاريخ النشر: {lesson.uploadedAt ? new Date(lesson.uploadedAt).toLocaleDateString("ar-EG", { year: "numeric", month: "long", day: "numeric" }) : "24 يناير 2024"}
                     </span>
                   </div>
-
-                  {isLessonFinished && (
-                    <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "12px", fontWeight: 800, color: "#166534", background: "#dcfce7", padding: "3px 10px", borderRadius: "6px" }}>
-                      <CheckCircle2 size={14} color="#166534" />
-                      <span>مكتمل</span>
-                    </div>
-                  )}
                 </div>
               </div>
 

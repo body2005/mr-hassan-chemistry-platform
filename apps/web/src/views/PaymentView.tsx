@@ -447,59 +447,10 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
             <span style={{ display: "inline-flex", alignItems: "center", gap: "7px" }}><ShieldCheck size={17} style={{ color: "#059669" }} /> مراجعة بشرية لكل إيصال</span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: "7px" }}><InfinityIcon size={17} style={{ color: "#059669" }} /> وصول مستمر طوال فترة المقرر</span>
           </div>
-
-          {/* Order history */}
-          <section style={{ ...card, padding: "24px" }}>
-            <div style={{ ...sectionHead, justifyContent: "space-between" }}>
-              <div>
-                <h2 style={{ margin: 0, fontSize: "15px", fontWeight: 900, color: "var(--text-main)" }}>طلباتك السابقة</h2>
-                <p style={{ margin: "3px 0 0", fontSize: "11.5px", color: "var(--text-muted)" }}>تابع حالة مراجعة الإيصالات من هنا.</p>
-              </div>
-              <button type="button" onClick={() => void load()} aria-label="تحديث" style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "10px", padding: "8px", cursor: "pointer", color: "var(--text-main)", display: "flex" }}>
-                <RefreshCw size={16} />
-              </button>
-            </div>
-            {orders.length === 0 ? (
-              <div style={{ textAlign: "center", padding: "30px 10px", color: "var(--text-muted)" }}>
-                <CreditCard size={30} style={{ margin: "0 auto 10px", color: "#059669" }} />
-                <p style={{ margin: 0, fontSize: "12.5px" }}>لا توجد طلبات دفع حتى الآن.</p>
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                {orders.map((order) => {
-                  const StatusIcon = statusIcons[order.status];
-                  return (
-                    <article key={order.id} style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "14px", padding: "16px" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px", flexWrap: "wrap" }}>
-                        <div>
-                          <strong style={{ fontSize: "13px", color: "var(--text-main)" }}>{order.product_name}</strong>
-                          <small style={{ display: "block", fontSize: "11px", color: "var(--text-muted)", marginTop: "3px" }}>{new Date(order.created_at).toLocaleString("ar-EG")}</small>
-                        </div>
-                        <span style={{
-                          display: "inline-flex", alignItems: "center", gap: "5px",
-                          padding: "4px 10px", borderRadius: "999px", fontSize: "11px", fontWeight: 800,
-                          background: order.status === "paid" ? "var(--bg-accent)" : order.status === "rejected" ? "#fee2e2" : "var(--bg-surface)",
-                          color: order.status === "paid" ? "#059669" : order.status === "rejected" ? "#b91c1c" : "var(--text-muted)",
-                          border: "1px solid var(--border-color)",
-                        }}>
-                          <StatusIcon size={13} />{statusLabels[order.status]}
-                        </span>
-                      </div>
-                      <div style={{ display: "flex", gap: "14px", marginTop: "10px", fontSize: "12px", color: "var(--text-muted)", fontWeight: 700 }}>
-                        <span>{order.amount_egp.toLocaleString("ar-EG")} ج.م</span>
-                        <span>{config?.methods.find((item) => item.id === order.payment_method)?.label || order.payment_method}</span>
-                      </div>
-                      {order.review_note && <p style={{ margin: "10px 0 0", fontSize: "11.5px", color: "var(--text-muted)", background: "var(--bg-surface)", borderRadius: "8px", padding: "8px 10px" }}>ملاحظة المراجعة: {order.review_note}</p>}
-                    </article>
-                  );
-                })}
-              </div>
-            )}
-          </section>
         </div>
 
-        {/* ═══════════ LEFT COLUMN: order summary ═══════════ */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "20px", position: "sticky", top: "84px" }}>
+        {/* ═══════════ LEFT COLUMN: order summary + guarantee + previous orders ═══════════ */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
           {/* Course summary */}
           <section style={{ ...card, padding: "22px" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
@@ -598,6 +549,55 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
               </p>
             </div>
           </div>
+
+          {/* Order history (moved to left column as requested) */}
+          <section style={{ ...card, padding: "20px" }}>
+            <div style={{ ...sectionHead, justifyContent: "space-between" }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: "14.5px", fontWeight: 900, color: "var(--text-main)" }}>طلباتك السابقة</h2>
+                <p style={{ margin: "3px 0 0", fontSize: "11px", color: "var(--text-muted)" }}>تابع حالة مراجعة الإيصالات من هنا.</p>
+              </div>
+              <button type="button" onClick={() => void load()} aria-label="تحديث" title="تحديث حالة الطلبات" style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "10px", padding: "8px", cursor: "pointer", color: "var(--text-main)", display: "flex" }}>
+                <RefreshCw size={15} />
+              </button>
+            </div>
+            {orders.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "24px 10px", color: "var(--text-muted)" }}>
+                <CreditCard size={28} style={{ margin: "0 auto 8px", color: "#059669" }} />
+                <p style={{ margin: 0, fontSize: "12px", fontWeight: 700 }}>لا توجد طلبات دفع حتى الآن.</p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px", maxHeight: "380px", overflowY: "auto" }}>
+                {orders.map((order) => {
+                  const StatusIcon = statusIcons[order.status];
+                  return (
+                    <article key={order.id} style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "12px", padding: "14px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px", flexWrap: "wrap" }}>
+                        <div>
+                          <strong style={{ fontSize: "12.5px", color: "var(--text-main)" }}>{order.product_name}</strong>
+                          <small style={{ display: "block", fontSize: "10.5px", color: "var(--text-muted)", marginTop: "2px" }}>{new Date(order.created_at).toLocaleString("ar-EG")}</small>
+                        </div>
+                        <span style={{
+                          display: "inline-flex", alignItems: "center", gap: "4px",
+                          padding: "3px 9px", borderRadius: "999px", fontSize: "10.5px", fontWeight: 800,
+                          background: order.status === "paid" ? "var(--bg-accent)" : order.status === "rejected" ? "#fee2e2" : "var(--bg-surface)",
+                          color: order.status === "paid" ? "#059669" : order.status === "rejected" ? "#b91c1c" : "var(--text-muted)",
+                          border: "1px solid var(--border-color)",
+                        }}>
+                          <StatusIcon size={12} />{statusLabels[order.status]}
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", gap: "12px", marginTop: "8px", fontSize: "11.5px", color: "var(--text-muted)", fontWeight: 700 }}>
+                        <span>{order.amount_egp.toLocaleString("ar-EG")} ج.م</span>
+                        <span>{config?.methods.find((item) => item.id === order.payment_method)?.label || order.payment_method}</span>
+                      </div>
+                      {order.review_note && <p style={{ margin: "8px 0 0", fontSize: "11px", color: "var(--text-muted)", background: "var(--bg-surface)", borderRadius: "8px", padding: "6px 8px" }}>ملاحظة المراجعة: {order.review_note}</p>}
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
         </div>
       </div>
     </div>

@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import CurrentUser, require_roles
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.events import event_broker
 from app.core.storage import generate_safe_object_key, get_storage_provider
 from app.models.payment import (
     PaymentMethod,
@@ -27,6 +28,7 @@ from app.models.payment import (
     StudentEntitlement,
 )
 from app.models.course import Course, CourseModule, Lesson
+from app.models.platform import Notification
 from app.models.user import User, UserRole
 from app.services import payment_service
 
@@ -197,6 +199,30 @@ async def upload_payment_receipt(
     order.receipt_path = stored_path
     order.payer_reference = (payer_reference or order.payer_reference or "").strip()[:160] or None
     order.status = PaymentStatus.UNDER_REVIEW
+
+    # Dispatch notification to teachers/reviewers
+    try:
+        teachers = db.scalars(
+            select(User).where(
+                User.institution_id == order.institution_id,
+                User.role.in_([UserRole.TEACHER, UserRole.INSTITUTION_ADMIN, UserRole.PLATFORM_ADMIN]),
+            )
+        ).all()
+        student_name = order.student.display_name if order.student else "طالب"
+        for teacher in teachers:
+            db.add(
+                Notification(
+                    institution_id=order.institution_id,
+                    recipient_id=teacher.id,
+                    kind="payment",
+                    title=f"طلب دفع جديد: {order.product_name}",
+                    message=f"قام الطالب {student_name} برفع إيصال دفع بمبلغ {order.amount_egp} ج.م. اضغط لمعاينة الفاتورة وإيصال التحويل.",
+                    action_url=f"/payments/orders/{order.id}",
+                )
+            )
+    except Exception:
+        logger.exception("Failed to dispatch payment notification")
+
     try:
         db.commit()
     except SQLAlchemyError as exc:
@@ -212,7 +238,33 @@ async def upload_payment_receipt(
             storage.delete(previous_path)
         except Exception:
             logger.exception("Failed to clean up replaced receipt object: %s", previous_path)
-    return _order_response(order)
+
+    order_resp = _order_response(order)
+    try:
+        teacher_ids = [t.id for t in teachers]
+        event_broker.publish_event(
+            institution_id=order.institution_id,
+            event_type="payment_created",
+            data=order_resp,
+            target_user_ids=teacher_ids,
+            target_roles=["teacher", "institution_admin", "platform_admin"],
+        )
+        event_broker.publish_event(
+            institution_id=order.institution_id,
+            event_type="notification_created",
+            data={
+                "title": f"طلب دفع جديد: {order.product_name}",
+                "message": f"قام الطالب {student_name} برفع إيصال دفع بمبلغ {order.amount_egp} ج.م.",
+                "kind": "payment",
+                "action_url": f"/payments/orders/{order.id}",
+            },
+            target_user_ids=teacher_ids,
+            target_roles=["teacher", "institution_admin", "platform_admin"],
+        )
+    except Exception:
+        logger.exception("Failed to publish payment_created realtime event")
+
+    return order_resp
 
 
 @router.get("/me/orders")
@@ -296,7 +348,57 @@ def approve_payment_order(
     order = db.get(PaymentOrder, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Payment order not found")
-    return _order_response(payment_service.approve_order(db, user, order, payload.note))
+    approved_order = payment_service.approve_order(db, user, order, payload.note)
+
+    try:
+        student_notif = Notification(
+            institution_id=order.institution_id,
+            recipient_id=order.student_id,
+            kind="system",
+            title=f"تم تأكيد الدفع: {order.product_name}",
+            message=f"تم تأكيد عملية الدفع بنجاح لـ '{order.product_name}'. تم تفعيل اشتراكك بنجاح.",
+            action_url="#mycourses",
+        )
+        db.add(student_notif)
+        db.commit()
+    except Exception:
+        logger.exception("Failed to dispatch payment approval notification")
+
+    order_resp = _order_response(approved_order)
+    try:
+        event_broker.publish_event(
+            institution_id=order.institution_id,
+            event_type="payment_reviewed",
+            data=order_resp,
+            target_user_ids=[order.student_id, user.id],
+        )
+        if order.product_type == PaymentProductType.LESSON and order.product_id:
+            event_broker.publish_event(
+                institution_id=order.institution_id,
+                event_type="lesson_access_approved",
+                data={
+                    "request_id": str(order.id),
+                    "lesson_id": str(order.product_id),
+                    "student_id": str(order.student_id),
+                    "status": "approved",
+                },
+                target_user_ids=[order.student_id],
+            )
+        event_broker.publish_event(
+            institution_id=order.institution_id,
+            event_type="notification_created",
+            data={
+                "title": f"تم تأكيد الدفع: {order.product_name}",
+                "message": f"تم تأكيد عملية الدفع بنجاح لـ '{order.product_name}'.",
+                "kind": "system",
+                "action_url": "#mycourses",
+            },
+            target_user_ids=[order.student_id],
+        )
+    except Exception:
+        logger.exception("Failed to publish payment approval realtime event")
+
+    return order_resp
 
 
 @router.post("/orders/{order_id}/reject")
@@ -315,8 +417,70 @@ def reject_payment_order(
     order.reviewed_by = user.id
     order.reviewed_at = datetime.now(timezone.utc)
     order.review_note = (payload.note or "").strip()[:4000] or None
+
+    try:
+        reason = f" السبب: {payload.note}" if payload.note else ""
+        student_notif = Notification(
+            institution_id=order.institution_id,
+            recipient_id=order.student_id,
+            kind="system",
+            title=f"تم رفض إيصال الدفع: {order.product_name}",
+            message=f"تم رفض إيصال الدفع المقدم لـ '{order.product_name}'.{reason}",
+            action_url="#payments",
+        )
+        db.add(student_notif)
+    except Exception:
+        logger.exception("Failed to dispatch payment rejection notification")
+
     db.commit()
     db.refresh(order)
+    order_resp = _order_response(order)
+
+    try:
+        event_broker.publish_event(
+            institution_id=order.institution_id,
+            event_type="payment_reviewed",
+            data=order_resp,
+            target_user_ids=[order.student_id, user.id],
+        )
+        if order.product_type == PaymentProductType.LESSON and order.product_id:
+            event_broker.publish_event(
+                institution_id=order.institution_id,
+                event_type="lesson_access_rejected",
+                data={
+                    "request_id": str(order.id),
+                    "lesson_id": str(order.product_id),
+                    "student_id": str(order.student_id),
+                    "status": "rejected",
+                    "reviewer_note": order.review_note,
+                },
+                target_user_ids=[order.student_id],
+            )
+        event_broker.publish_event(
+            institution_id=order.institution_id,
+            event_type="notification_created",
+            data={
+                "title": f"تم رفض إيصال الدفع: {order.product_name}",
+                "message": f"تم رفض إيصال الدفع المقدم لـ '{order.product_name}'.",
+                "kind": "system",
+                "action_url": "#payments",
+            },
+            target_user_ids=[order.student_id],
+        )
+    except Exception:
+        logger.exception("Failed to publish payment rejection realtime event")
+
+    return order_resp
+
+
+@router.get("/orders/{order_id}")
+def get_payment_order(order_id: uuid.UUID, user: CurrentUser, db: Db) -> dict[str, Any]:
+    order = db.get(PaymentOrder, order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Payment order not found")
+    can_view = order.student_id == user.id or payment_service.can_review_order(db, user, order)
+    if not can_view:
+        raise HTTPException(status_code=403, detail="You do not have permission to view this order")
     return _order_response(order)
 
 
@@ -337,7 +501,7 @@ def view_payment_receipt(order_id: uuid.UUID, user: CurrentUser, db: Db) -> Resp
         filename = f"receipt-{order.id}{os.path.splitext(order.receipt_path)[1]}"
         media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         if local_path:
-            return FileResponse(local_path, filename=filename, media_type=media_type)
+            return FileResponse(local_path, filename=filename, media_type=media_type, content_disposition_type="inline")
         size = storage.get_size(order.receipt_path)
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=404, detail="Payment receipt not found") from exc
@@ -349,7 +513,7 @@ def view_payment_receipt(order_id: uuid.UUID, user: CurrentUser, db: Db) -> Resp
         media_type=media_type,
         headers={
             "Content-Length": str(size),
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": f'inline; filename="{filename}"',
             "X-Content-Type-Options": "nosniff",
             "Cache-Control": "private, no-store",
         },

@@ -21,6 +21,11 @@ export function hasBrowserSession(): boolean {
   return browserSessionActive;
 }
 
+export function authToken(): string | undefined {
+  if (typeof localStorage === "undefined") return undefined;
+  return localStorage.getItem("lms_session_token") || undefined;
+}
+
 export function apiUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) return path;
   const normalized = path.startsWith("/") ? path : `/${path}`;
@@ -51,10 +56,104 @@ export class ApiClientError extends Error {
 
 export interface ApiRequestInit extends RequestInit {
   timeoutMs?: number;
+  cacheTtlMs?: number;
+  skipCache?: boolean;
+  cacheKey?: string;
+}
+
+interface CacheEntry<T> {
+  data: T;
+  expiresAt: number;
+  authScope: string;
+}
+
+const apiCache = new Map<string, CacheEntry<unknown>>();
+const inFlightRequests = new Map<string, Promise<unknown>>();
+let currentAuthScope = "anonymous";
+
+export function setApiAuthScope(scope: string): void {
+  const normalized = scope || "anonymous";
+  if (currentAuthScope !== normalized) {
+    currentAuthScope = normalized;
+    clearApiCache();
+  }
+}
+
+export function getApiAuthScope(): string {
+  return currentAuthScope;
+}
+
+export function clearApiCache(): void {
+  apiCache.clear();
+}
+
+export function getCachedData<T>(key: string): T | undefined {
+  const entry = apiCache.get(key);
+  if (!entry) return undefined;
+  if (entry.expiresAt <= Date.now() || entry.authScope !== currentAuthScope) {
+    apiCache.delete(key);
+    return undefined;
+  }
+  return entry.data as T;
+}
+
+export function setCachedData<T>(key: string, data: T, ttlMs: number): void {
+  apiCache.set(key, {
+    data,
+    expiresAt: Date.now() + Math.max(0, ttlMs),
+    authScope: currentAuthScope,
+  });
+}
+
+export function invalidateApiCache(patternOrPrefix?: string | RegExp): void {
+  if (!patternOrPrefix) {
+    apiCache.clear();
+    return;
+  }
+  for (const key of Array.from(apiCache.keys())) {
+    if (typeof patternOrPrefix === "string") {
+      if (key.includes(patternOrPrefix)) {
+        apiCache.delete(key);
+      }
+    } else if (patternOrPrefix.test(key)) {
+      apiCache.delete(key);
+    }
+  }
+}
+
+function autoInvalidateOnMutation(path: string): void {
+  const normalized = path.replace(/^\/api\/v1/, "");
+  if (
+    normalized.startsWith("/courses") ||
+    normalized.startsWith("/quizzes") ||
+    normalized.startsWith("/assignments") ||
+    normalized.startsWith("/modules") ||
+    normalized.startsWith("/questions")
+  ) {
+    invalidateApiCache("/courses");
+  } else if (normalized.startsWith("/progress")) {
+    invalidateApiCache("/progress");
+    invalidateApiCache("/courses");
+  } else if (normalized.startsWith("/submissions")) {
+    invalidateApiCache("/submissions");
+  } else if (normalized.startsWith("/users")) {
+    invalidateApiCache("/users");
+  } else if (normalized.startsWith("/notifications")) {
+    invalidateApiCache("/notifications");
+  } else if (normalized.startsWith("/calendar")) {
+    invalidateApiCache("/calendar");
+  } else if (normalized.startsWith("/payments")) {
+    invalidateApiCache("/payments");
+    invalidateApiCache("/courses");
+  } else if (normalized.startsWith("/auth/logout") || normalized.startsWith("/auth/login") || normalized.startsWith("/auth/register")) {
+    clearApiCache();
+  }
 }
 
 export async function fetchApiBlob(path: string, retriedAfterRefresh = false): Promise<Blob> {
   const headers = new Headers();
+  const token = authToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
   let response: Response;
   try {
     response = await fetch(apiUrl(path), { headers, credentials: "include" });
@@ -81,6 +180,10 @@ function clearStaleSession(path: string): void {
   const normalized = path.replace(/^\/api\/v1/, "");
   if (["/auth/login", "/auth/register", "/auth/refresh"].includes(normalized)) return;
   sessionKnownInvalid = true;
+  if (typeof localStorage !== "undefined") {
+    localStorage.removeItem("lms_session_token");
+    localStorage.removeItem("lms_cached_user");
+  }
   if (!sessionInvalidationDispatched && typeof window !== "undefined") {
     browserSessionActive = false;
     sessionInvalidationDispatched = true;
@@ -104,6 +207,8 @@ async function refreshSession(): Promise<boolean> {
     const headers = new Headers();
     const csrf = csrfToken();
     if (csrf) headers.set("X-CSRF-Token", csrf);
+    const token = authToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
     try {
       const response = await fetch(apiUrl("/auth/refresh"), {
         method: "POST",
@@ -114,6 +219,12 @@ async function refreshSession(): Promise<boolean> {
         lastFailedRefreshAt = Date.now();
         return false;
       }
+      try {
+        const body = await response.json();
+        if (body?.token && typeof localStorage !== "undefined") {
+          localStorage.setItem("lms_session_token", body.token);
+        }
+      } catch {}
       lastFailedRefreshAt = 0;
       browserSessionActive = true;
       sessionInvalidationDispatched = false;
@@ -127,9 +238,13 @@ async function refreshSession(): Promise<boolean> {
   return refreshInFlight;
 }
 
-export async function apiRequest<T>(path: string, init: ApiRequestInit = {}, retriedAfterRefresh = false): Promise<T> {
-  const { timeoutMs = 30_000, ...requestInit } = init;
+async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retriedAfterRefresh = false): Promise<T> {
+  const { timeoutMs = 30_000, cacheTtlMs: _cacheTtlMs, skipCache: _skipCache, cacheKey: _cacheKey, ...requestInit } = init;
   const headers = new Headers(requestInit.headers);
+  const token = authToken();
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
   const isFormData = typeof FormData !== "undefined" && requestInit.body instanceof FormData;
   if (requestInit.body && !isFormData && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const method = (requestInit.method || "GET").toUpperCase();
@@ -189,7 +304,7 @@ export async function apiRequest<T>(path: string, init: ApiRequestInit = {}, ret
       // Keep status-derived error if the body is not JSON.
     }
     if (response.status === 401 && !retriedAfterRefresh && !isAuthPath(path) && await refreshSession()) {
-      return apiRequest<T>(path, init, true);
+      return executeRequest<T>(path, init, true);
     }
     if (response.status === 401) clearStaleSession(path);
     throw new ApiClientError(code, message, response.status);
@@ -197,9 +312,88 @@ export async function apiRequest<T>(path: string, init: ApiRequestInit = {}, ret
   if (path === "/auth/login" || path === "/auth/register") {
     sessionInvalidationDispatched = false;
     sessionKnownInvalid = false;
+    clearApiCache();
   }
   if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+  const json = (await response.json()) as T;
+  if (json && typeof json === "object" && "token" in json && typeof (json as any).token === "string" && (json as any).token) {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem("lms_session_token", (json as any).token);
+    }
+  }
+  return json;
+}
+
+export async function apiRequest<T>(path: string, init: ApiRequestInit = {}, retriedAfterRefresh = false): Promise<T> {
+  const method = (init.method || "GET").toUpperCase();
+  const isSafeMethod = method === "GET" || method === "HEAD";
+
+  // Mutations bypass cache, are never deduplicated, and invalidate related cache entries on completion
+  if (!isSafeMethod) {
+    const result = await executeRequest<T>(path, init, retriedAfterRefresh);
+    autoInvalidateOnMutation(path);
+    return result;
+  }
+
+  const normalizedUrl = apiUrl(path);
+  const cacheKey = init.cacheKey || `${method}:${normalizedUrl}`;
+  const effectiveTtl = typeof init.cacheTtlMs === "number" ? init.cacheTtlMs : 15_000;
+
+  // 1. Check client-side TTL cache
+  if (!init.skipCache && effectiveTtl > 0) {
+    const cached = apiCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now() && cached.authScope === currentAuthScope) {
+      return cached.data as T;
+    }
+  }
+
+  // 2. Check in-flight request deduplication
+  if (!init.skipCache) {
+    const inFlight = inFlightRequests.get(cacheKey);
+    if (inFlight) {
+      if (init.signal) {
+        if (init.signal.aborted) {
+          throw new ApiClientError("REQUEST_CANCELLED", "Request cancelled", 0);
+        }
+        return new Promise<T>((resolve, reject) => {
+          const onAbort = () => reject(new ApiClientError("REQUEST_CANCELLED", "Request cancelled", 0));
+          init.signal!.addEventListener("abort", onAbort, { once: true });
+          inFlight
+            .then((data) => {
+              init.signal?.removeEventListener("abort", onAbort);
+              resolve(data as T);
+            })
+            .catch((err) => {
+              init.signal?.removeEventListener("abort", onAbort);
+              reject(err);
+            });
+        });
+      }
+      return inFlight as Promise<T>;
+    }
+  }
+
+  // 3. Initiate new request and share its promise while in-flight
+  const requestPromise = executeRequest<T>(path, init, retriedAfterRefresh)
+    .then((result) => {
+      if (!init.skipCache && effectiveTtl > 0) {
+        apiCache.set(cacheKey, {
+          data: result,
+          expiresAt: Date.now() + effectiveTtl,
+          authScope: currentAuthScope,
+        });
+      }
+      return result;
+    })
+    .finally(() => {
+      inFlightRequests.delete(cacheKey);
+    });
+
+  if (!init.skipCache) {
+    inFlightRequests.set(cacheKey, requestPromise);
+  }
+
+  return requestPromise;
 }
 
 export function uploadWithProgress<T>(
@@ -223,6 +417,8 @@ export function uploadWithProgress<T>(
     if (timeoutMs > 0) xhr.timeout = timeoutMs;
     const csrf = csrfToken();
     if (csrf) xhr.setRequestHeader("X-CSRF-Token", csrf);
+    const token = authToken();
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     if (xhr.upload && onProgress) {
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable && event.total > 0) {
