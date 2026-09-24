@@ -270,9 +270,15 @@ export const SubmissionsView: React.FC = () => {
         ? "الصف الثاني الثانوي"
         : "الصف الثالث الثانوي";
 
+    const arabicDate = new Date().toLocaleDateString("ar-EG", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    });
+
     return {
       title: `تقرير متابعة الطالب وتقييم المجموعة - ${yearLabel}`,
-      subtitle: `نسبة نجاح المجموعة: ${groupPassingRate}% • نسبة المتابعة العامة: ${groupOverallAttendance}% • الالتزام بالواجبات: ${groupSubmissionRate}%`,
+      generatedDate: arabicDate,
       headers,
       rows,
       summaryStats: [
@@ -288,6 +294,16 @@ export const SubmissionsView: React.FC = () => {
       ],
     };
   }
+
+  const currentYearLabel =
+    selectedYear === "1st_secondary"
+      ? "الصف الأول الثانوي"
+      : selectedYear === "2nd_secondary"
+      ? "الصف الثاني الثانوي"
+      : "الصف الثالث الثانوي";
+
+  const exportDateStr = new Date().toISOString().slice(0, 10);
+  const baseExportFileName = `متابعة طلاب_${currentYearLabel}_${exportDateStr}`;
 
   return (
     <div className="page-container">
@@ -341,7 +357,7 @@ export const SubmissionsView: React.FC = () => {
               >
                 <button
                   onClick={() => {
-                    exportToDocx(getExportPayload(), `students_cohort_${selectedYear}.docx`);
+                    exportToDocx(getExportPayload(), `${baseExportFileName}.docx`);
                     setExportDropdownOpen(false);
                   }}
                   style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", borderBottom: "1px solid var(--border-color)", color: "var(--text-main)", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}
@@ -352,7 +368,7 @@ export const SubmissionsView: React.FC = () => {
 
                 <button
                   onClick={() => {
-                    exportToExcel(getExportPayload(), `students_cohort_${selectedYear}.xls`);
+                    exportToExcel(getExportPayload(), `${baseExportFileName}.xls`);
                     setExportDropdownOpen(false);
                   }}
                   style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", borderBottom: "1px solid var(--border-color)", color: "var(--text-main)", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}
@@ -363,7 +379,7 @@ export const SubmissionsView: React.FC = () => {
 
                 <button
                   onClick={() => {
-                    exportToCsv(getExportPayload(), `students_cohort_${selectedYear}.csv`);
+                    exportToCsv(getExportPayload(), `${baseExportFileName}.csv`);
                     setExportDropdownOpen(false);
                   }}
                   style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", borderBottom: "1px solid var(--border-color)", color: "var(--text-main)", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}
@@ -374,7 +390,7 @@ export const SubmissionsView: React.FC = () => {
 
                 <button
                   onClick={() => {
-                    exportToPrintPdf(getExportPayload());
+                    exportToPrintPdf(getExportPayload(), baseExportFileName);
                     setExportDropdownOpen(false);
                   }}
                   style={{ width: "100%", textAlign: "right", padding: "10px 14px", background: "none", border: "none", color: "var(--text-main)", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}

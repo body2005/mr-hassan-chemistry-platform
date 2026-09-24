@@ -168,6 +168,23 @@ def create_order(
     product_name, amount = resolve_product(db, student, product_type, product_id)
     if amount <= 0:
         raise HTTPException(status_code=409, detail="This item is free and does not require payment")
+    if product_id is not None:
+        if product_type == PaymentProductType.LESSON and has_lesson_entitlement(db, student, product_id):
+            raise HTTPException(status_code=409, detail="لقد قمت بشراء هذا الدرس وتفعيله مسبقاً، ولا يمكنك شراؤه مرة أخرى.")
+        if product_type == PaymentProductType.COURSE and has_course_entitlement(db, student, product_id):
+            raise HTTPException(status_code=409, detail="لقد قمت بشراء هذا المقرر وتفعيله مسبقاً، ولا يمكنك شراؤه مرة أخرى.")
+
+        paid_order = db.scalar(
+            select(PaymentOrder).where(
+                PaymentOrder.student_id == student.id,
+                PaymentOrder.product_type == product_type,
+                PaymentOrder.product_id == product_id,
+                PaymentOrder.status == PaymentStatus.PAID,
+            )
+        )
+        if paid_order:
+            raise HTTPException(status_code=409, detail="لقد قمت بشراء هذا المحتوى وتفعيله مسبقاً، ولا يمكنك شراؤه مرة أخرى.")
+
     existing = db.scalar(
         select(PaymentOrder)
         .where(
@@ -179,6 +196,8 @@ def create_order(
         .order_by(PaymentOrder.created_at.desc())
     )
     if existing:
+        if existing.status == PaymentStatus.UNDER_REVIEW:
+            raise HTTPException(status_code=409, detail="لديك طلب دفع قيد المراجعة بالفعل لهذا الدرس، يرجى انتظار اعتماد المعلم.")
         return existing
     order = PaymentOrder(
         institution_id=student.institution_id,

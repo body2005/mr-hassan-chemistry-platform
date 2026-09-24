@@ -7,7 +7,6 @@ import {
   TableRow,
   TextRun,
   WidthType,
-  HeadingLevel,
   AlignmentType,
   BorderStyle,
 } from "docx";
@@ -47,46 +46,54 @@ export async function exportToDocx(payload: ExportDataPayload, filename = "lms_r
 
   const docChildren: (Paragraph | Table)[] = [
     new Paragraph({
-      text: payload.title,
-      heading: HeadingLevel.HEADING_1,
       alignment: AlignmentType.CENTER,
       bidirectional: true,
-      spacing: { after: 120 },
+      spacing: { after: 100 },
+      children: [
+        new TextRun({
+          text: payload.title,
+          bold: true,
+          size: 32, // 16pt
+          color: "2563EB",
+          rightToLeft: true,
+        }),
+      ],
+    }),
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      bidirectional: true,
+      spacing: { after: 200 },
+      children: [
+        new TextRun({
+          text: `تاريخ التقرير: ${dateStr}`,
+          bold: true,
+          size: 24, // 12pt
+          color: "000000",
+          rightToLeft: true,
+        }),
+      ],
     }),
   ];
 
-  if (payload.subtitle) {
-    docChildren.push(
-      new Paragraph({
-        alignment: AlignmentType.CENTER,
-        bidirectional: true,
-        spacing: { after: 160 },
-        children: [
-          new TextRun({
-            text: `${payload.subtitle} | تاريخ التقرير: ${dateStr}`,
-            italics: true,
-            color: "666666",
-            rightToLeft: true,
-          }),
-        ],
-      })
-    );
-  }
-
   if (payload.summaryStats && payload.summaryStats.length > 0) {
-    const statRuns: TextRun[] = [];
     payload.summaryStats.forEach((s) => {
-      statRuns.push(
-        new TextRun({ text: `• ${s.label}: `, bold: true, rightToLeft: true, color: "0F392B" }),
-        new TextRun({ text: `${s.value}    `, rightToLeft: true })
+      docChildren.push(
+        new Paragraph({
+          alignment: AlignmentType.RIGHT,
+          bidirectional: true,
+          spacing: { after: 60 },
+          children: [
+            new TextRun({ text: `${s.label} : `, bold: true, size: 22, color: "000000", rightToLeft: true }),
+            new TextRun({ text: `${s.value}`, bold: true, size: 22, color: "000000", rightToLeft: true }),
+          ],
+        })
       );
     });
+    // Add spacing before table
     docChildren.push(
       new Paragraph({
-        children: statRuns,
-        alignment: AlignmentType.RIGHT,
-        bidirectional: true,
-        spacing: { after: 200 },
+        spacing: { after: 140 },
+        children: [],
       })
     );
   }
@@ -196,32 +203,30 @@ export function exportToExcel(payload: ExportDataPayload, filename = "lms_data.x
     </Row>
   `);
 
-  // Subtitle / Date Row
-  if (payload.subtitle || dateStr) {
-    const subText = `${payload.subtitle ? payload.subtitle + " | " : ""}صُدر بتاريخ: ${dateStr}`;
-    xmlRows.push(`
-      <Row ss:Height="22">
-        <Cell ss:MergeAcross="${Math.max(0, payload.headers.length - 1)}" ss:StyleID="SubtitleStyle">
-          <Data ss:Type="String">${sanitizeXml(subText)}</Data>
-        </Cell>
-      </Row>
-    `);
-  }
+  // Date Row
+  xmlRows.push(`
+    <Row ss:Height="24">
+      <Cell ss:MergeAcross="${Math.max(0, payload.headers.length - 1)}" ss:StyleID="DateStyle">
+        <Data ss:Type="String">${sanitizeXml(`تاريخ التقرير: ${dateStr}`)}</Data>
+      </Cell>
+    </Row>
+  `);
 
-  // Summary stats row if present
+  // Summary stats rows (each on its own line, right-aligned)
   if (payload.summaryStats && payload.summaryStats.length > 0) {
-    const summaryText = payload.summaryStats.map((s) => `${s.label}: ${s.value}`).join("   |   ");
-    xmlRows.push(`
-      <Row ss:Height="22">
-        <Cell ss:MergeAcross="${Math.max(0, payload.headers.length - 1)}" ss:StyleID="SummaryStyle">
-          <Data ss:Type="String">${sanitizeXml(summaryText)}</Data>
-        </Cell>
-      </Row>
-    `);
+    payload.summaryStats.forEach((s) => {
+      xmlRows.push(`
+        <Row ss:Height="22">
+          <Cell ss:MergeAcross="${Math.max(0, payload.headers.length - 1)}" ss:StyleID="SummaryRowStyle">
+            <Data ss:Type="String">${sanitizeXml(`${s.label} : ${s.value}`)}</Data>
+          </Cell>
+        </Row>
+      `);
+    });
   }
 
   // Empty separator row
-  xmlRows.push(`<Row ss:Height="10"/>`);
+  xmlRows.push(`<Row ss:Height="12"/>`);
 
   // Table Headers Row (starts from Column A on the right)
   xmlRows.push(`
@@ -279,16 +284,15 @@ export function exportToExcel(payload: ExportDataPayload, filename = "lms_data.x
   </Style>
   <Style ss:ID="TitleStyle">
    <Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:ReadingOrder="RightToLeft"/>
-   <Font ss:FontName="Segoe UI" ss:Size="16" ss:Bold="1" ss:Color="#0F392B"/>
+   <Font ss:FontName="Segoe UI" ss:Size="16" ss:Bold="1" ss:Color="#2563EB"/>
   </Style>
-  <Style ss:ID="SubtitleStyle">
+  <Style ss:ID="DateStyle">
    <Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:ReadingOrder="RightToLeft"/>
-   <Font ss:FontName="Segoe UI" ss:Size="10" ss:Italic="1" ss:Color="#64748B"/>
+   <Font ss:FontName="Segoe UI" ss:Size="12" ss:Bold="1" ss:Color="#000000"/>
   </Style>
-  <Style ss:ID="SummaryStyle">
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:ReadingOrder="RightToLeft"/>
-   <Font ss:FontName="Segoe UI" ss:Size="10" ss:Bold="1" ss:Color="#065F46"/>
-   <Interior ss:Color="#ECFDF5" ss:Pattern="Solid"/>
+  <Style ss:ID="SummaryRowStyle">
+   <Alignment ss:Horizontal="Right" ss:Vertical="Center" ss:ReadingOrder="RightToLeft"/>
+   <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#000000"/>
   </Style>
   <Style ss:ID="HeaderStyle">
    <Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:ReadingOrder="RightToLeft"/>
@@ -394,7 +398,7 @@ export function exportToCsv(payload: ExportDataPayload, filename = "lms_data.csv
  * Opens a styled printable window for native high-resolution PDF saving/printing,
  * 100% Right-To-Left (RTL) with the first column (اسم الطالب) at the far right.
  */
-export function exportToPrintPdf(payload: ExportDataPayload) {
+export function exportToPrintPdf(payload: ExportDataPayload, filename = "") {
   const printWindow = window.open("", "_blank");
   if (!printWindow) return;
 
@@ -408,7 +412,7 @@ export function exportToPrintPdf(payload: ExportDataPayload) {
 <html dir="rtl" lang="ar">
 <head>
   <meta charset="utf-8">
-  <title>${payload.title}</title>
+  <title>${filename || payload.title}</title>
   <style>
     @page {
       size: A4 landscape;
@@ -429,50 +433,37 @@ export function exportToPrintPdf(payload: ExportDataPayload) {
     }
     .header {
       text-align: center;
-      border-bottom: 2.5px solid #0f392b;
-      padding-bottom: 14px;
-      margin-bottom: 18px;
+      margin-bottom: 22px;
       direction: rtl;
     }
     .header h1 {
-      margin: 0 0 6px;
-      color: #0f392b;
+      margin: 0 0 8px;
+      color: #2563eb;
       font-size: 22px;
       font-weight: 800;
     }
-    .header p {
+    .header h2 {
       margin: 0;
-      color: #64748b;
-      font-size: 13px;
-      font-weight: 600;
+      color: #000000;
+      font-size: 17px;
+      font-weight: 900;
     }
-    .summary-box {
-      background: #f8fafc;
-      border: 1.5px solid #e2e8f0;
-      border-radius: 10px;
-      padding: 12px 18px;
-      margin-bottom: 18px;
+    .summary-list {
+      margin: 0 0 20px 0;
       display: flex;
-      flex-direction: row-reverse;
-      justify-content: flex-end;
-      gap: 24px;
-      flex-wrap: wrap;
+      flex-direction: column;
+      gap: 8px;
       direction: rtl;
+      text-align: right;
     }
-    .stat-item {
-      display: inline-flex;
+    .summary-item {
+      font-size: 14.5px;
+      font-weight: 800;
+      color: #000000;
+      display: flex;
       align-items: center;
       gap: 6px;
       direction: rtl;
-    }
-    .stat-item span {
-      color: #64748b;
-      font-size: 12px;
-    }
-    .stat-item strong {
-      color: #0f392b;
-      font-size: 13px;
-      font-weight: 800;
     }
     table {
       width: 100%;
@@ -533,19 +524,19 @@ export function exportToPrintPdf(payload: ExportDataPayload) {
 <body dir="rtl">
   <div class="header">
     <h1>${payload.title}</h1>
-    <p>${payload.subtitle || ""} • صُدر في: ${dateStr}</p>
+    <h2>تاريخ التقرير: ${dateStr}</h2>
   </div>
 
   ${
     payload.summaryStats && payload.summaryStats.length > 0
       ? `
-    <div class="summary-box">
+    <div class="summary-list">
       ${payload.summaryStats
         .map(
           (s) => `
-        <div class="stat-item">
-          <span>${s.label}: </span>
-          <strong>${s.value}</strong>
+        <div class="summary-item">
+          <span>${s.label} : </span>
+          <span style="font-weight: 900;">${s.value}</span>
         </div>
       `
         )

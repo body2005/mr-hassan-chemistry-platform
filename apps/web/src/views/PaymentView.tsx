@@ -27,6 +27,7 @@ import {
   PaymentOrder,
   PaymentProductType,
   PaymentTarget,
+  StudentEntitlement,
   paymentService,
 } from "../services/paymentService";
 import { useToast } from "../components/ToastProvider";
@@ -106,6 +107,7 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
   const toast = useToast();
   const [config, setConfig] = useState<PaymentConfig | null>(null);
   const [orders, setOrders] = useState<PaymentOrder[]>([]);
+  const [entitlements, setEntitlements] = useState<StudentEntitlement[]>([]);
   const productType: PaymentProductType = "lesson";
   const [productId, setProductId] = useState(
     initialTarget?.productType === "lesson" ? initialTarget.productId || "" : "",
@@ -119,12 +121,14 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const [nextConfig, nextOrders] = await Promise.all([
+    const [nextConfig, nextOrders, nextEntitlements] = await Promise.all([
       paymentService.getConfig(),
       paymentService.getMyOrders(),
+      paymentService.getMyEntitlements().catch(() => []),
     ]);
     setConfig(nextConfig);
     setOrders(nextOrders);
+    setEntitlements(nextEntitlements);
     const firstMethod = nextConfig.methods.find((item) => item.enabled)?.id || "";
     setMethod((current) => current || firstMethod);
   }, []);
@@ -141,6 +145,33 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
   const lessons = useMemo(() => courses.flatMap((course) => course.lessons.map((lesson) => ({ ...lesson, courseTitle: course.title }))), [courses]);
   const selectedLesson = lessons.find((lesson) => lesson.id === productId);
   const amount = Number(selectedLesson?.price || 0);
+
+  // Checks if student already purchased / has active access to this lesson
+  const isLessonPurchased = useCallback(
+    (lessonId: string): boolean => {
+      if (!lessonId) return false;
+      const hasEntitlement = entitlements.some(
+        (e) => e.active && e.entitlement_type === "lesson" && e.resource_id === lessonId
+      );
+      if (hasEntitlement) return true;
+      const hasPaidOrder = orders.some(
+        (o) => o.product_type === "lesson" && o.product_id === lessonId && o.status === "paid"
+      );
+      return hasPaidOrder;
+    },
+    [entitlements, orders]
+  );
+
+  // Checks if student already has a pending review order for this lesson
+  const isLessonUnderReview = useCallback(
+    (lessonId: string): boolean => {
+      if (!lessonId) return false;
+      return orders.some(
+        (o) => o.product_type === "lesson" && o.product_id === lessonId && o.status === "under_review"
+      );
+    },
+    [orders]
+  );
 
   const enabledMethods = useMemo(() => (config?.methods || []).filter((m) => m.enabled), [config]);
   const selectedMethod: PaymentMethodConfig | undefined = config?.methods.find((item) => item.id === method);
@@ -166,6 +197,14 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
     }
     if (!productId) {
       toast({ message: "اختر درسًا للدفع", tone: "warning" });
+      return;
+    }
+    if (isLessonPurchased(productId)) {
+      toast({ message: "لقد قمت بشراء هذا الدرس وتفعيله مسبقاً، ولا يمكنك شراؤه مرة أخرى.", tone: "warning" });
+      return;
+    }
+    if (isLessonUnderReview(productId)) {
+      toast({ message: "لديك إيصال دفع قيد المراجعة بالفعل لهذا الدرس، يرجى انتظار اعتماد المعلم.", tone: "warning" });
       return;
     }
     if (!receipt) {
@@ -364,19 +403,60 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
               <button
                 type="button"
                 onClick={submitPayment}
-                disabled={busy || amount <= 0 || !method || !receipt}
+                disabled={
+                  busy ||
+                  amount <= 0 ||
+                  !method ||
+                  !receipt ||
+                  isLessonPurchased(productId) ||
+                  isLessonUnderReview(productId)
+                }
                 style={{
-                  width: "100%", height: "52px", borderRadius: "14px",
-                  background: "linear-gradient(135deg, #059669, #047857)",
-                  color: "#ffffff", fontWeight: 900, fontSize: "14.5px",
-                  display: "flex", alignItems: "center", justifyContent: "center", gap: "10px",
-                  border: "none", cursor: busy || amount <= 0 || !receipt ? "not-allowed" : "pointer",
-                  opacity: busy || amount <= 0 || !receipt ? 0.55 : 1,
+                  width: "100%",
+                  height: "52px",
+                  borderRadius: "14px",
+                  background: isLessonPurchased(productId)
+                    ? "#166534"
+                    : isLessonUnderReview(productId)
+                    ? "#92400e"
+                    : "linear-gradient(135deg, #059669, #047857)",
+                  color: "#ffffff",
+                  fontWeight: 900,
+                  fontSize: "14.5px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "10px",
+                  border: "none",
+                  cursor:
+                    busy ||
+                    amount <= 0 ||
+                    !receipt ||
+                    isLessonPurchased(productId) ||
+                    isLessonUnderReview(productId)
+                      ? "not-allowed"
+                      : "pointer",
+                  opacity:
+                    busy ||
+                    amount <= 0 ||
+                    !receipt ||
+                    isLessonPurchased(productId) ||
+                    isLessonUnderReview(productId)
+                      ? 0.6
+                      : 1,
                   boxShadow: "0 8px 20px -6px rgba(5, 150, 105, 0.45)",
                 }}
               >
                 <LockKeyhole size={18} />
-                <span>{busy ? `جارٍ الإرسال ${progress}%` : `إرسال الإيصال وتأكيد الدفع — ${amount.toLocaleString("ar-EG")} ج.م`}</span>
+                <span>
+                  {busy
+                    ? `جارٍ الإرسال ${progress}%`
+                    : isLessonPurchased(productId)
+                    ? "تم شراء وتفعيل هذا الدرس مسبقاً"
+                    : isLessonUnderReview(productId)
+                    ? "طلب هذا الدرس قيد المراجعة حالياً"
+                    : `إرسال الإيصال وتأكيد الدفع — ${amount.toLocaleString("ar-EG")} ج.م`}
+                </span>
                 <ArrowLeft size={17} />
               </button>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "6px", marginTop: "10px", color: "var(--text-muted)", fontSize: "11px" }}>
@@ -433,11 +513,39 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
               الدرس المطلوب تفعيله
               <select value={productId} onChange={(event) => setProductId(event.target.value)} style={{ ...inputStyle, marginTop: "5px" }}>
                 <option value="">اختر درسًا</option>
-                {lessons.filter((lesson) => Number(lesson.price || 0) > 0).map((lesson) => (
-                  <option key={lesson.id} value={lesson.id}>{lesson.courseTitle} / {lesson.title} — {Number(lesson.price || 0).toLocaleString("ar-EG")} ج.م</option>
-                ))}
+                {lessons
+                  .filter((lesson) => Number(lesson.price || 0) > 0)
+                  .map((lesson) => {
+                    const purchased = isLessonPurchased(lesson.id);
+                    const underRev = isLessonUnderReview(lesson.id);
+                    let label = `${lesson.courseTitle} / ${lesson.title} — ${Number(lesson.price || 0).toLocaleString("ar-EG")} ج.م`;
+                    if (purchased) {
+                      label += " (تم الشراء مسبقاً - مفعل)";
+                    } else if (underRev) {
+                      label += " (طلبك قيد المراجعة)";
+                    }
+                    return (
+                      <option key={lesson.id} value={lesson.id} disabled={purchased || underRev}>
+                        {label}
+                      </option>
+                    );
+                  })}
               </select>
             </label>
+
+            {selectedLesson && isLessonPurchased(selectedLesson.id) && (
+              <div style={{ marginBottom: "16px", padding: "12px 14px", borderRadius: "10px", background: "#dcfce7", border: "1px solid #86efac", color: "#166534", fontSize: "12.5px", fontWeight: 800, display: "flex", alignItems: "center", gap: "8px" }}>
+                <CheckCircle2 size={16} />
+                <span>هذا الدرس تم شراؤه وتفعيله بالفعل في حسابك، ولا يمكن شراؤه مرة أخرى.</span>
+              </div>
+            )}
+
+            {selectedLesson && isLessonUnderReview(selectedLesson.id) && (
+              <div style={{ marginBottom: "16px", padding: "12px 14px", borderRadius: "10px", background: "#fef3c7", border: "1px solid #fde68a", color: "#92400e", fontSize: "12.5px", fontWeight: 800, display: "flex", alignItems: "center", gap: "8px" }}>
+                <Clock3 size={16} />
+                <span>لديك إيصال دفع قيد مراجعة المعلم بالفعل لهذا الدرس. سيتم تفعيله فور الاعتماد.</span>
+              </div>
+            )}
 
             {/* What student gets */}
             <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "18px", paddingBottom: "18px", borderBottom: "1px solid var(--border-color)", fontSize: "11.5px", color: "var(--text-main)" }}>
