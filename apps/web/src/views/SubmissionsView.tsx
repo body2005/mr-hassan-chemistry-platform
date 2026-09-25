@@ -669,7 +669,7 @@ export const SubmissionsView: React.FC = () => {
                 transform: "translateY(-50%)",
                 background: "none",
                 border: "none",
-                color: "var(--text-muted)",
+                color: "rgb(118, 40, 40)",
                 cursor: "pointer",
                 padding: "2px",
                 display: "flex",
@@ -713,7 +713,7 @@ export const SubmissionsView: React.FC = () => {
                     <span>{col.name}</span>
                     <button
                       onClick={() => handleDeleteCustomColumn(col.id)}
-                      style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 0 }}
+                      style={{ background: "none", border: "none", color: "rgb(118, 40, 40)", cursor: "pointer", padding: 0 }}
                       title="حذف هذا العمود المخصص"
                     >
                       <Trash2 size={12} />

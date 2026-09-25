@@ -389,7 +389,7 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
                   left: "10px",
                   background: "transparent",
                   border: "none",
-                  color: "var(--text-muted, #94a3b8)",
+                  color: "rgb(118, 40, 40)",
                   cursor: "pointer",
                   padding: 0,
                 }}
@@ -805,7 +805,7 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
                       borderRadius: "8px",
                       border: "none",
                       background: "transparent",
-                      color: "#dc2626",
+                      color: "rgb(118, 40, 40)",
                       fontSize: "12px",
                       fontWeight: 700,
                       cursor: "pointer",
@@ -911,8 +911,9 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
                 <button
                   type="button"
                   onClick={() => setPreviewQuiz(null)}
+                  className="modal-close-btn"
                   style={{
-                    background: "rgba(255, 255, 255, 0.15)",
+                    background: "var(--modal-close-bg)",
                     border: "none",
                     color: "#ffffff",
                     borderRadius: "8px",
@@ -1206,8 +1207,8 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
                 width: "48px",
                 height: "48px",
                 borderRadius: "50%",
-                background: "#fee2e2",
-                color: "#dc2626",
+                background: "rgba(118, 40, 40, 0.12)",
+                color: "rgb(118, 40, 40)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -1226,8 +1227,9 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
               <button
                 type="button"
                 onClick={handleConfirmDelete}
+                className="btn-delete"
                 style={{
-                  background: "#dc2626",
+                  background: "rgb(118, 40, 40)",
                   color: "#ffffff",
                   border: "none",
                   borderRadius: "8px",

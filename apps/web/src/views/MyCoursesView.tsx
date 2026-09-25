@@ -1290,7 +1290,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     insetInlineEnd: "10px",
                     background: "transparent",
                     border: "none",
-                    color: "var(--text-muted)",
+                    color: "rgb(118, 40, 40)",
                     cursor: "pointer",
                     padding: "2px",
                     display: "flex",
@@ -2491,13 +2491,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   display: "inline-flex",
                   alignItems: "center",
                   gap: "6px",
-                  background: "var(--bg-surface-secondary)",
-                  border: "1px solid var(--border-color)",
+                  background: "rgb(118, 40, 40)",
+                  border: "none",
                   borderRadius: "8px",
                   padding: "7px 14px",
                   fontSize: "12.5px",
                   fontWeight: 800,
-                  color: "var(--text-main)",
+                  color: "#ffffff",
                   cursor: "pointer",
                   flexShrink: 0,
                   transition: "all 0.15s ease",
@@ -2839,8 +2839,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 <button
                   type="button"
                   onClick={() => closeOverlay("quizSubmitConfirm", () => setShowQuizSubmitConfirm(false))}
+                  className="modal-close-btn"
                   style={{
-                    background: "var(--bg-surface-secondary)",
+                    background: "var(--modal-close-bg)",
                     border: "none",
                     borderRadius: "50%",
                     width: "32px",
@@ -2849,7 +2850,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     alignItems: "center",
                     justifyContent: "center",
                     cursor: "pointer",
-                    color: "var(--text-main)",
+                    color: "#ffffff",
                     flexShrink: 0,
                   }}
                 >
@@ -3125,7 +3126,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       setQuizResultError(null);
                     });
                   }}
-                  style={{ display: "inline-flex", alignItems: "center", gap: "6px", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "8px", padding: "7px 14px", fontSize: "12.5px", fontWeight: 800, color: "var(--text-main)", cursor: "pointer", flexShrink: 0 }}
+                  style={{ display: "inline-flex", alignItems: "center", gap: "6px", background: "rgb(118, 40, 40)", border: "none", borderRadius: "8px", padding: "7px 14px", fontSize: "12.5px", fontWeight: 800, color: "#ffffff", cursor: "pointer", flexShrink: 0 }}
                 >
                   <X size={16} /> <span>خروج</span>
                 </button>
@@ -3553,7 +3554,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     setServerAssignmentError(null);
                   });
                 }}
-                style={{ display: "inline-flex", alignItems: "center", gap: "6px", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "8px", padding: "7px 14px", fontSize: "12.5px", fontWeight: 800, color: "var(--text-main)", cursor: "pointer", flexShrink: 0 }}
+                style={{ display: "inline-flex", alignItems: "center", gap: "6px", background: "rgb(118, 40, 40)", border: "none", borderRadius: "8px", padding: "7px 14px", fontSize: "12.5px", fontWeight: 800, color: "#ffffff", cursor: "pointer", flexShrink: 0 }}
               >
                 <X size={16} /> <span>خروج</span>
               </button>
@@ -3786,7 +3787,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               </div>
               <button
                 onClick={() => closeOverlay("activeBookModal", () => setActiveBookModal(null))}
-                style={{ background: "var(--bg-surface-secondary)", border: "none", borderRadius: "50%", width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "var(--text-main)" }}
+                className="modal-close-btn"
+                style={{ background: "var(--modal-close-bg)", border: "none", borderRadius: "50%", width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#ffffff" }}
               >
                 <X size={18} />
               </button>
@@ -3869,13 +3871,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   display: "inline-flex",
                   alignItems: "center",
                   gap: "6px",
-                  background: "var(--bg-surface-secondary)",
-                  border: "1px solid var(--border-color)",
+                  background: "rgb(118, 40, 40)",
+                  border: "none",
                   borderRadius: "8px",
                   padding: "7px 14px",
                   fontSize: "12.5px",
                   fontWeight: 800,
-                  color: "var(--text-main)",
+                  color: "#ffffff",
                   cursor: "pointer",
                 }}
               >
@@ -3992,13 +3994,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   display: "inline-flex",
                   alignItems: "center",
                   gap: "6px",
-                  background: "var(--bg-surface-secondary)",
-                  border: "1px solid var(--border-color)",
+                  background: "rgb(118, 40, 40)",
+                  border: "none",
                   borderRadius: "8px",
                   padding: "7px 14px",
                   fontSize: "12.5px",
                   fontWeight: 800,
-                  color: "var(--text-main)",
+                  color: "#ffffff",
                   cursor: "pointer",
                 }}
               >
@@ -4200,13 +4202,14 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               <button
                 type="button"
                 onClick={() => closeOverlay("activeQuizHistoryModal", () => setActiveQuizHistoryModal(null))}
+                className="modal-close-btn"
                 style={{
                   width: "32px",
                   height: "32px",
                   borderRadius: "8px",
-                  background: "var(--bg-surface-secondary)",
-                  border: "1px solid var(--border-color)",
-                  color: "var(--text-main)",
+                  background: "var(--modal-close-bg)",
+                  border: "none",
+                  color: "#ffffff",
                   cursor: "pointer",
                   display: "flex",
                   alignItems: "center",

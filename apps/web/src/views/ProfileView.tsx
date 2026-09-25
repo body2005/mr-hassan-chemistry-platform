@@ -695,8 +695,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                     });
                   }
                 }}
+                className="btn-delete"
                 style={{
-                  background: "#dc2626",
+                  background: "var(--danger-action-bg)",
                   color: "#ffffff",
                   border: "none",
                   padding: "10px 18px",

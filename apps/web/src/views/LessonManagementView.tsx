@@ -988,7 +988,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                       <button
                         type="button"
                         onClick={() => removeAttachedFile(af.id)}
-                        style={{ background: "none", border: "none", color: "#dc2626", cursor: "pointer", padding: "2px" }}
+                        style={{ background: "none", border: "none", color: "rgb(118, 40, 40)", cursor: "pointer", padding: "2px" }}
                       >
                         <X size={13} />
                       </button>
@@ -1034,13 +1034,13 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                   type="button"
                   onClick={() => setIsDeleteMode((prev) => !prev)}
                   style={{
-                    background: isDeleteMode ? "#b91c1c" : isDark ? "rgb(63 22 22)" : "rgb(246 246 246)",
-                    color: isDeleteMode ? "#ffffff" : "rgb(185, 28, 28)",
+                    background: isDeleteMode ? "rgb(118, 40, 40)" : isDark ? "rgba(118, 40, 40, 0.2)" : "rgba(118, 40, 40, 0.08)",
+                    color: isDeleteMode ? "#ffffff" : "rgb(118, 40, 40)",
                     border: isDeleteMode
-                      ? "1.5px solid #991b1b"
+                      ? "1.5px solid rgb(118, 40, 40)"
                       : isDark
-                        ? "1px solid rgb(90 28 28)"
-                        : "1px solid rgb(215 204 204)",
+                        ? "1px solid rgba(118, 40, 40, 0.5)"
+                        : "1px solid rgba(118, 40, 40, 0.3)",
                     borderRadius: "8px",
                     padding: "6px 14px",
                     fontSize: "12px",
@@ -1128,7 +1128,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                         transform: "translateY(-50%)",
                         background: "none",
                         border: "none",
-                        color: "var(--text-muted, #94a3b8)",
+                        color: "rgb(118, 40, 40)",
                         cursor: "pointer",
                         padding: "2px",
                         display: "flex",

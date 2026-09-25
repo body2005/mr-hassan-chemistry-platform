@@ -37,6 +37,7 @@ storage/
 **/knowledge_center/page_cache/
 **/knowledge_center/ocr_cache/
 **/knowledge_center/cache_test/
+apps/api/tmp_render/
 
 # Backups & artifacts
 backups/

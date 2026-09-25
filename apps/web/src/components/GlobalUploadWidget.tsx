@@ -370,9 +370,9 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                           type="button"
                           onClick={() => uploadManager.cancelUpload(task.id)}
                           style={{
-                            background: "rgba(239, 68, 68, 0.1)",
+                            background: "rgb(118, 40, 40)",
                             border: "none",
-                            color: "#ef4444",
+                            color: "#ffffff",
                             cursor: "pointer",
                             padding: "4px",
                             borderRadius: "6px",
@@ -408,7 +408,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                           style={{
                             background: "transparent",
                             border: "none",
-                            color: "var(--text-muted, #94a3b8)",
+                            color: "rgb(118, 40, 40)",
                             cursor: "pointer",
                             padding: "4px",
                           }}

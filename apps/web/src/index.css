@@ -40,8 +40,8 @@
   --modal-overlay-bg: rgba(15, 23, 42, 0.65);
   --topbar-bg: rgba(255, 255, 255, 0.85);
   --progress-track-bg: rgb(216, 219, 223);
-  --danger-action-bg: rgb(185, 28, 28);
-  --modal-close-bg: rgb(185, 28, 28);
+  --danger-action-bg: rgb(118, 40, 40);
+  --modal-close-bg: rgb(118, 40, 40);
 }
 
 [data-theme="dark"] {
@@ -78,8 +78,8 @@
 
   --card-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -2px rgba(0, 0, 0, 0.3);
   --modal-overlay-bg: rgba(0, 0, 0, 0.82);
-  --danger-action-bg: rgb(63, 22, 22);
-  --modal-close-bg: rgb(63, 22, 22);
+  --danger-action-bg: rgb(118, 40, 40);
+  --modal-close-bg: rgb(118, 40, 40);
 }
 
 [data-theme="dark"] strong,
@@ -1476,18 +1476,23 @@ img, video, canvas, svg {
   color: #ffffff !important;
 }
 
-/* Modal Close X button & Danger action buttons (Ban, Delete, Logout) */
+/* Modal Close X button & Danger action buttons (Ban, Delete, Logout, Reject) */
 .modal-close-btn,
-.wizard-close-btn {
+.wizard-close-btn,
+.btn-close {
   background: var(--modal-close-bg) !important;
   color: #ffffff !important;
+  border: none !important;
 }
 
 .danger-action-btn,
 .btn-delete,
-.btn-ban {
+.btn-danger,
+.btn-ban,
+.reject-action {
   background: var(--danger-action-bg) !important;
   color: #ffffff !important;
+  border-color: var(--danger-action-bg) !important;
 }
 
 /* In-app toast (replaces window.alert for transient notices) */

@@ -1284,7 +1284,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                       setExtractedFileFingerprint(null);
                       setExtractedAt(null);
                     }}
-                    style={{ background: "none", border: "none", cursor: "pointer", padding: "2px", color: "#991b1b" }}
+                    style={{ background: "none", border: "none", cursor: "pointer", padding: "2px", color: "rgb(118, 40, 40)" }}
                     title="إلغاء الملف"
                   >
                     <X size={14} />
@@ -2003,7 +2003,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                           <button
                             type="button"
                             onClick={() => deleteQuestion(q.id)}
-                            style={{ background: "none", border: "none", color: "#dc2626", cursor: "pointer", padding: "2px" }}
+                            style={{ background: "none", border: "none", color: "rgb(118, 40, 40)", cursor: "pointer", padding: "2px" }}
                             title="حذف هذا السؤال"
                           >
                             <Trash2 size={14} />
@@ -2319,7 +2319,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                                   <button
                                     type="button"
                                     onClick={() => removeOptionFromQuestion(q.id, opt.key)}
-                                    style={{ background: "none", border: "none", color: "#dc2626", cursor: "pointer", padding: "2px" }}
+                                    style={{ background: "none", border: "none", color: "rgb(118, 40, 40)", cursor: "pointer", padding: "2px" }}
                                     title="حذف هذا الخيار"
                                   >
                                     <Trash2 size={12} />

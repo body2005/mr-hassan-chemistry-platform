@@ -99,13 +99,14 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
             <button
               type="button"
               onClick={onCloseMenu}
+              className="modal-close-btn"
               style={{
                 width: "32px",
                 height: "32px",
                 borderRadius: "8px",
-                background: "var(--bg-surface-secondary)",
-                border: "1px solid var(--border-color)",
-                color: "var(--text-main)",
+                background: "var(--modal-close-bg)",
+                border: "none",
+                color: "#ffffff",
                 cursor: "pointer",
                 display: "flex",
                 alignItems: "center",

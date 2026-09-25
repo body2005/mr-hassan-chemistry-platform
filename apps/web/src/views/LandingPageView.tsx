@@ -501,12 +501,13 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
 
               <button
                 onClick={() => setMobileMenuOpen(false)}
+                className="modal-close-btn"
                 style={{
-                  background: "var(--bg-surface-secondary)",
-                  border: "1px solid var(--border-color)",
+                  background: "var(--modal-close-bg)",
+                  border: "none",
                   borderRadius: "8px",
                   padding: "6px",
-                  color: "var(--text-muted)",
+                  color: "#ffffff",
                   cursor: "pointer",
                   display: "flex",
                   alignItems: "center",
