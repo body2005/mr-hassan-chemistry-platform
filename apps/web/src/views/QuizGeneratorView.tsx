@@ -1834,18 +1834,34 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                           <div style={{ display: "flex", gap: "2px" }}>
                             <button
                               type="button"
+                              className="question-reorder-btn"
                               onClick={() => moveQuestionOrder(qIdx, "up")}
                               disabled={qIdx === 0}
-                              style={{ background: "none", border: "none", padding: "2px", cursor: qIdx === 0 ? "not-allowed" : "pointer", opacity: qIdx === 0 ? 0.25 : 0.8 }}
+                              style={{
+                                background: "none",
+                                border: "none",
+                                padding: "2px",
+                                cursor: qIdx === 0 ? "not-allowed" : "pointer",
+                                opacity: qIdx === 0 ? 0.35 : 0.95,
+                                color: "var(--text-main)",
+                              }}
                               title="تحريك السؤال لأعلى"
                             >
                               <ArrowUp size={14} />
                             </button>
                             <button
                               type="button"
+                              className="question-reorder-btn"
                               onClick={() => moveQuestionOrder(qIdx, "down")}
                               disabled={qIdx === displayedQuestions.length - 1}
-                              style={{ background: "none", border: "none", padding: "2px", cursor: qIdx === displayedQuestions.length - 1 ? "not-allowed" : "pointer", opacity: qIdx === displayedQuestions.length - 1 ? 0.25 : 0.8 }}
+                              style={{
+                                background: "none",
+                                border: "none",
+                                padding: "2px",
+                                cursor: qIdx === displayedQuestions.length - 1 ? "not-allowed" : "pointer",
+                                opacity: qIdx === displayedQuestions.length - 1 ? 0.35 : 0.95,
+                                color: "var(--text-main)",
+                              }}
                               title="تحريك السؤال لأسفل"
                             >
                               <ArrowDown size={14} />

@@ -1849,4 +1849,27 @@ svg {
   -webkit-user-select: none !important;
 }
 
+/* Question reorder arrows */
+.question-reorder-btn {
+  color: var(--text-main);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.question-reorder-btn:hover:not(:disabled) {
+  color: var(--primary-emerald);
+}
+
+[data-theme="dark"] .question-reorder-btn {
+  color: #ffffff !important;
+}
+
+[data-theme="dark"] .question-reorder-btn svg,
+[data-theme="dark"] .question-reorder-btn svg * {
+  color: #ffffff !important;
+  stroke: #ffffff !important;
+}
+
 
