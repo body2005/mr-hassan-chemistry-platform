@@ -67,6 +67,15 @@ export const StudentDetailWizard: React.FC<StudentDetailWizardProps> = ({
   onBlock,
   onDelete,
 }) => {
+  React.useEffect(() => {
+    if (!student) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [student, onClose]);
+
   if (!student) return null;
 
   const s = student;
@@ -74,7 +83,12 @@ export const StudentDetailWizard: React.FC<StudentDetailWizardProps> = ({
   const yearLabel = ("academicYearLabel" in s && s.academicYearLabel) || getAcademicYearLabel(s.academicYear);
 
   return (
-    <div className="modal-overlay">
+    <div
+      className="modal-overlay"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
       <div
         className="modal-content"
         style={{

@@ -540,7 +540,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                           </div>
 
                           <div>
-                            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <div
+                              style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}
+                              onDoubleClick={() => setSelectedStudentForWizard(st)}
+                              title={lang === "ar" ? "انقر مرتين لعرض كافة بيانات التسجيل" : "Double-click to view registration details"}
+                            >
                               <strong style={{ fontSize: "14px", color: "var(--text-main)" }}>{st.name}</strong>
                               {isBlocked ? (
                                 <span style={{ fontSize: "10.5px", fontWeight: 800, padding: "2px 8px", borderRadius: "6px", background: "#fee2e2", color: "#b91c1c", display: "inline-flex", alignItems: "center", gap: "3px" }}>

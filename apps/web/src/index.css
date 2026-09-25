@@ -637,6 +637,21 @@ main {
   border-color: #059669;
 }
 
+/* Prevent page background scrolling whenever any wizard, modal, or popup dialog is open */
+body:has(.modal-overlay),
+body:has(.confirm-wizard-overlay),
+body:has([role="dialog"]),
+body:has([aria-modal="true"]),
+html:has(.modal-overlay),
+html:has(.confirm-wizard-overlay),
+html:has([role="dialog"]),
+html:has([aria-modal="true"]),
+body.modal-open,
+html.modal-open {
+  overflow: hidden !important;
+  overscroll-behavior: contain !important;
+}
+
 /* Modal Overlay & Eye-Comforting Backdrop Blur Animations */
 .modal-overlay {
   position: fixed;
@@ -1814,6 +1829,24 @@ body[data-video-enlarged="true"] .floating-progress-fab,
     opacity: 1;
     transform: scale(1);
   }
+}
+
+/* Prevent accidental capture of UI controls, badges, and icons during text copy */
+.question-card-controls,
+.question-card-controls *,
+.question-card-header-controls,
+.question-card-header-controls *,
+.quiz-action-bar-controls,
+.quiz-action-bar-controls * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
+}
+
+svg {
+  user-select: none !important;
+  -webkit-user-select: none !important;
 }
 
 

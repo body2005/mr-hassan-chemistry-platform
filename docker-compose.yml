@@ -1,0 +1,5 @@
+# Default Docker Compose configuration
+# Routes directly to the local production-like multi-container environment
+
+include:
+  - path: compose.prod-like.yml

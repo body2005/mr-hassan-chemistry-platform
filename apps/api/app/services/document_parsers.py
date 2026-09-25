@@ -14,6 +14,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 import unicodedata
 import uuid
 from dataclasses import dataclass, field
@@ -236,7 +238,7 @@ def is_reversed_arabic_token(w: str) -> bool:
         return False
     if w.startswith(('ة', '\ufe93', '\ufe94')):
         return True
-    if w.endswith(('لا', 'لآ', 'لأ', 'لإ')) and w not in ('لا', 'إلا', 'كلا', 'لولا', 'علا', 'هلا', 'جلا'):
+    if w.endswith(('لا', 'لآ', 'لأ', 'لإ')) and w not in ('لا', 'إلا', 'كلا', 'لولا', 'علا', 'العلا', 'هلا', 'جلا', 'المكلا'):
         return True
     if w.endswith(('لحا', 'لخا', 'لجا')):
         return True
@@ -251,7 +253,10 @@ def is_reversed_arabic(text: str) -> bool:
     words = text.split()
     if not words:
         return False
-    return any(is_reversed_arabic_token(w) for w in words)
+    # Reversed Arabic text has many tokens starting with Taa Marbuta (impossible in normal Arabic)
+    # or ending with reversed Alif-Lam. Require at least 2 distinct reversed tokens.
+    rev_tokens = sum(1 for w in words if is_reversed_arabic_token(w))
+    return rev_tokens >= 2 or (len(words) <= 3 and rev_tokens >= 1)
 
 
 def fix_reversed_arabic_text(text: str) -> str:
@@ -359,6 +364,11 @@ def normalize_arabic_presentation_forms(text: str) -> str:
         "",
         normalized,
     )
+    # Strip orphan combining marks at the start of strings or preceded by whitespace
+    normalized = re.sub(r"(?:^|(?<=\s))[\u064B-\u065F\u0670]+", "", normalized)
+    # Normalize detached waw prefix with tashkeel e.g. 'وُيستخدم' or 'و ُيستخدم' -> 'ويستخدم'
+    normalized = re.sub(r"\bو\s*ُ?يستخدم\b", "ويستخدم", normalized)
+    normalized = re.sub(r"\bوُ(?=[\u0621-\u064A])", "و", normalized)
 
     # 3. Filter out svg remnants, e.g. svgsvg, <svg ... </svg>, etc.
     normalized = re.sub(r'(?i)<svg\b[^>]*>[\s\S]*?<\/svg>', ' ', normalized)
@@ -389,35 +399,354 @@ def clean_arabic_ocr_text(text: str) -> str:
     return cleaned.strip()
 
 
+SUB_MAP = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+SUP_MAP = str.maketrans("0123456789+-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻")
+
+
+def clean_chemical_formula_text(text: str) -> str:
+    """
+    Normalizes chemical formulas, cleans LaTeX remnants and removes markdown asterisks.
+    Fully deterministic and general across scientific & chemical texts.
+    """
+    if not text:
+        return ""
+    s = text
+
+    # 1. Remove markdown bold/italic asterisks completely
+    s = re.sub(r"\*{2,}", "", s)
+    s = re.sub(r"(?<!\w)\*(?!\w)", "", s)
+
+    # 2. Clean LaTeX text wrappers: \text{...}, \mathrm{...}, \mathbf{...}
+    s = re.sub(r"\\(?:text|mathrm|mathbf)\{([^}]*)\}", r"\1", s)
+
+    # 3. Mathematical and chemical operators
+    s = s.replace(r"\cdot", "·").replace(r"\times", "×")
+    s = s.replace(r"^\circ", "°").replace(r"\circ", "°")
+    s = re.sub(r"\\Delta\s*H\b|Delta\s*H\b|\\Delta\b", "ΔH", s)
+    s = re.sub(r"\bquad\s*,\s*quad\b", ", ", s)
+    s = re.sub(r"\bquad\b", " ", s)
+    s = re.sub(r"\\[,;:]", " ", s)
+    s = re.sub(r"\\mid\b|(?<=\w)\s+mid\s+(?=\w)", " | ", s)
+    s = re.sub(r"\\parallel\b|(?<=\w)\s+parallel\s+(?=\w)", " || ", s)
+
+    # 4. Equilibrium constants and potentials
+    s = re.sub(r"K_\{?sp\}?", "Ksp", s)
+    s = re.sub(r"\bK_([abw])\b", r"K\1", s)
+    s = re.sub(r"E\^\{?[°\\]*circ\}?_\{?cell\}?", "E°cell", s)
+    s = re.sub(r"E\^\{?°\}?_\{?cell\}?", "E°cell", s)
+    s = re.sub(r"E°_\{?cell\}?", "E°cell", s)
+
+    # 5. Subscripts and superscripts
+    s = re.sub(r"\\?_\{?\((s|aq|l|g|dil|conc)\)\}?", r"(\1)", s)
+    s = re.sub(r"_\{(\d+)\((s|aq|l|g|dil|conc)\)\}", lambda m: m.group(1).translate(SUB_MAP) + f"({m.group(2)})", s)
+    s = re.sub(r"_\{(\d+)\}", lambda m: m.group(1).translate(SUB_MAP), s)
+    s = re.sub(r"\^\{([0-9\+\-]+)\}", lambda m: m.group(1).translate(SUP_MAP), s)
+    s = re.sub(r"\^([0-9\+\-]+)", lambda m: m.group(1).translate(SUP_MAP), s)
+    s = re.sub(r"([A-Za-z\)])_(\d+)", lambda m: m.group(1) + m.group(2).translate(SUB_MAP), s)
+    s = re.sub(r"\(([^)]+)\)_(\d+)", lambda m: f"({m.group(1)})" + m.group(2).translate(SUB_MAP), s)
+    s = re.sub(r"([A-Za-z]+)\^\{?([0-9]+[+-])\}?", lambda m: m.group(1) + m.group(2).translate(SUP_MAP), s)
+    s = re.sub(r"([A-Za-z]+)([2-4][+-])(?=[\s,\)\]\|]|$)", lambda m: m.group(1) + m.group(2).translate(SUP_MAP), s)
+    s = re.sub(r"\\alpha\b|\\?alpha(?=%)", "α", s)
+    s = s.replace(r"\alpha", "α").replace(r"\beta", "β").replace(r"\gamma", "γ")
+
+    # 6. LaTeX arrows
+    s = s.replace(r"\rightleftharpoons", "⇌").replace(r"\rightarrow", "→")
+
+    # 7. Delimiters and leftover LaTeX backslashes
+    s = s.replace("$$", "").replace("$", "")
+    s = re.sub(r"\\([a-zA-Z%])", r"\1", s)
+    s = re.sub(r"\\+", "", s)
+
+    # 8. Standard chemical symbols
+    s = re.sub(r"\bPH\b", "pH", s)
+
+    # Clean double spaces
+    s = re.sub(r"[ \t]{2,}", " ", s)
+    return s.strip()
+
+
+def fix_arabic_bidi_scrambling(text: str) -> str:
+    """
+    Repairs Arabic bidirectional text ordering anomalies produced by LTR-stream PDF extractors:
+    - Inverted parentheses e.g. ')word(' -> '(word)'
+    - Voltage and equality expressions e.g. '0.74+ =$ إذا علمت... V' -> 'إذا علمت أن جهد تأكسد الكروم = +0.74 V'
+    - Split quantities e.g. '14.3$ ُأذيب g' -> 'ُأذيب 14.3 g'
+    - Celsius temperature expressions and ranges e.g. 'من 400°C 700إلى°C' -> 'من 400°C إلى 700°C'
+    - Premise and lead clause inversions e.g. '، كيف يمكن... سبيكة...' -> 'سبيكة...، كيف يمكن...'
+    - Sequential condition and conclusion ordering
+    """
+    if not text:
+        return ""
+    s = text
+
+    # Delimiters clean early
+    s = s.replace("$$", "").replace("$", "")
+
+    # Step 1: Normalize reversed isolated parentheses )word( -> (word)
+    s = re.sub(r"(?:^|(?<=[\s،,؛;\.\:؟\?]))\)\s*([^\(\)]+?)\s*\((?=[\s،,؛;\.\:؟\?]|(?=[\u0600-\u06FF])|$)", r"(\1)", s)
+    s = re.sub(r"(?:^|(?<=[\s،,؛;\.\:؟\?]))\)\s*([^\(\)\s]+)\s*\)(?=[\s،,؛;\.\:؟\?]|(?=[\u0600-\u06FF])|$)", r"(\1)", s)
+    s = re.sub(r"(?:^|(?<=[\s،,؛;\.\:؟\?]))\(\s*([^\(\)\s]+)\s*\((?=[\s،,؛;\.\:؟\?]|(?=[\u0600-\u06FF])|$)", r"(\1)", s)
+
+    # Step 2: Separate tashkeel/damma-prefixed verbs fused without space e.g. 'التيرفثاليكُيعرف' -> 'التيرفثاليك يعرف'
+    s = re.sub(r"([\u0621-\u064A])\s*\u064f?(يعرف|يسمى|يستخدم|يعبر|ينتج)\b", r"\1 \2", s)
+
+    # Clean percentage symbols and escaped backslashes before digits
+    s = re.sub(r"\\?%[ \t]*\\?(\d+(?:\.\d+)?)", r"\1%", s)
+    s = re.sub(r"\\?(\d+(?:\.\d+)?)[ \t]*\\?%", r"\1%", s)
+
+    # Step 3: Voltage / Equality expressions like '0.74+ =$ إذا علمت... V'
+    def repl_volt(m):
+        val = m.group(1).strip()
+        clause = m.group(2).strip()
+        unit = m.group(3).strip()
+        if val.endswith("+") or val.endswith("-"):
+            val = val[-1] + val[:-1]
+        elif not val.startswith("+") and not val.startswith("-"):
+            val = "+" + val
+        return f"{clause} = {val} {unit}"
+
+    s = re.sub(
+        r"([+\-]?\d+(?:\.\d+)?\+?|\d+(?:\.\d+)?\-?)\s*=\s*([\u0600-\u06FF\s،؛\-]+?)\s*(?:\\?text\{\s*)?([A-Za-z]+)(?:\s*\})?",
+        repl_volt,
+        s
+    )
+
+    # Step 4: General quantity split: [Number] [Arabic words] [Unit]
+    def repl_quantity(m):
+        val = m.group(1).strip()
+        clause = m.group(2).strip()
+        unit = m.group(3).strip()
+        unit = re.sub(r"^\\?text\{\s*([^\}]+)\s*\}$", r"\1", unit)
+        return f"{clause} {val} {unit}"
+
+    s = re.sub(
+        r"(?<![0-9\.\-])(\d+(?:\.\d+)?)\s+([\u0600-\u06FF\u064B-\u065F\u0670\s،؛]+?)\s*(?:\\?text\{\s*)?(g|mL|L|M|mol|g/mol|A|s|min|h)(?:\s*\})?",
+        repl_quantity,
+        s
+    )
+
+    # Step 5: Degree Celsius expressions: '25 عند ^\circ\text{C}' -> 'عند 25°C'
+    def repl_celsius(m):
+        val = m.group(1).strip()
+        clause = m.group(2).strip()
+        return f"{clause} {val}°C"
+
+    s = re.sub(
+        r"(\d+(?:\.\d+)?)\s*([\u0600-\u06FF\s]+?)\s*(?:°C|\^?\\?circ(?:\\?text\{C\})?|درجة\s*(?:مئوية|سيليزية))",
+        repl_celsius,
+        s
+    )
+
+    # Step 6: Temperature range: 'من 400°C 700إلى°C' -> 'من 400°C إلى 700°C'
+    def repl_temp_range(m):
+        return f"من {m.group(1)}°C إلى {m.group(2)}°C"
+
+    s = re.sub(
+        r"(?:من\s*)?(\d+)(?:\^?\\?circ(?:\\?text\{C\})?|°C)\s*(\d+)\s*إلى\s*(?:\^?\\?circ(?:\\?text\{C\})?|°C)?",
+        repl_temp_range,
+        s,
+    )
+    s = re.sub(
+        r"(?:من\s*)?(\d+)\s*(\d+)\s*إلى\s*(?:\^?\\?circ(?:\\?text\{C\})?|°C)",
+        repl_temp_range,
+        s,
+    )
+
+    # Step 7: Fix Question 4 conclusion inversion
+    pattern_q4 = re.compile(
+        r"(وتكون\s+مع\s*\([^\)]+\))\s*(فإن\s+[\u0600-\u06FF\s]+?)\s*[\.\،\,]\s*(راسب\s+[\u0600-\u06FF\s]+?)\s*(\([^\)]+\)\s*و\s*\([^\)]+\)\s*هما\s+على\s+الترتيب)"
+    )
+    s = pattern_q4.sub(r"\1 \3، \2 \4", s)
+
+    # Step 8: Fix consumption / conclusion split e.g. 'اسُتهلك 25 mL فإن النسبة... تساوي .من الحمض:'
+    pattern_q5 = re.compile(
+        r"(اسُتهلك\s*\d+(?:\.\d+)?\s*(?:mL|L|g|mol|A))\s*(فإن\s+[\u0600-\u06FF\s]+?)\s*[\.\،\,]\s*(من\s+[\u0600-\u06FF]+)\s*:",
+        re.IGNORECASE
+    )
+    s = pattern_q5.sub(r"\1 \3، \2:", s)
+
+    # Step 9: Fix Clause inversions where question lead was placed at the start with leading comma
+    def repl_clause_inv(m):
+        q_part = m.group(1).lstrip("،,.- \t").strip()
+        parenthesis = m.group(2).strip()
+        premise = m.group(3).strip()
+        return f"{premise} {parenthesis}، {q_part}"
+
+    s = re.sub(
+        r"^[،,.\s]*(\b(?:كيف|ما|ماذا|علل|هل|وضح|احسب|فإن)\b[^()]+?\؟?)\s*(\([^)]+\))\s*([\u0600-\u06FF\s]{4,})$",
+        repl_clause_inv,
+        s,
+        flags=re.MULTILINE
+    )
+
+    # Step 10: Reorder parenthetical after question mark e.g. 'ما هو إجمالي عدد المتشكلات ... لهذه الصيغة؟ (الأيزوميرات)'
+    s = re.sub(
+        r"(\bعدد\s+المتشكلات\b)([\u0600-\u06FF\s]+)\؟\s*(\([^\)]+\))",
+        r"\1 \3\2؟",
+        s
+    )
+
+    # Step 11: Parenthetical definition followed by temporal premise
+    # e.g. 'وكبريتات الزئبق... 40% في وجود حمض الكبريتيك (الأسيتيلين) عند إضافة الماء إلى الإيثاين عند 60°C'
+    pat_ethyne = re.compile(
+        r"([\u0600-\u06FF\s%\\\d]+?\bفي وجود\b[\u0600-\u06FF\s%\\\d]+?)\s*(\([^\)]+\))\s*(\b(?:عند|إذا|في حالة|بعد|قبل)\b[\u0600-\u06FF\s]+?)(?=\s+(?:عند|ثم|درجة|\d)|$)"
+    )
+    m_eth = pat_ethyne.search(s)
+    if m_eth:
+        p1 = m_eth.group(1).strip()
+        paren = m_eth.group(2).strip()
+        p2 = m_eth.group(3).strip()
+        m_swap = re.match(r"^(و[\u0600-\u06FF\s]+?)\s*(\d+%\s*في وجود\s*[\u0600-\u06FF\s]+)$", p1)
+        if m_swap:
+            cond = m_swap.group(2).strip()
+            cond = re.sub(r"^(\d+%)\s*(في وجود\s*[\u0600-\u06FF\s]+)", r"\2 \1", cond)
+            p1 = f"{cond} {m_swap.group(1).strip()}"
+        else:
+            p1 = re.sub(r"^(\d+%)\s*(في وجود\s*[\u0600-\u06FF\s]+)", r"\2 \1", p1)
+        s = s[:m_eth.start()] + f"{p2} {paren} {p1} " + s[m_eth.end():]
+
+    # Step 12: Question header inversions e.g. ')درجات 3( :17 السؤال' -> 'السؤال 17: (3 درجات)'
+    s = re.sub(r"[:\.\-]\s*(\d+)\s*(السؤال|سؤال)\b", r"\2 \1:", s)
+    s = re.sub(r"\b(درجات|درجة|علامات|علامة)\s*(\d+)\b", r"\2 \1", s)
+    s = re.sub(r"(\([^\)]*(?:درجات|درجة|علامات|علامة|marks?|pts?)[^\)]*\))\s*(السؤال\s*\d+\s*[:\.\-]?)", r"\2 \1", s)
+
+    # Step 13: Section header inversions e.g. '[ )20 إلى 17 من( الأسئلة المقالية :ًثاني ]' -> '[ ثانياً: الأسئلة المقالية (من 17 إلى 20) ]'
+    s = re.sub(
+        r"\[?\s*\(\s*(?:من\s*)?(\d+)\s*إلى\s*(\d+)\s*(?:من\s*)?\)\s*(الأسئلة\s+المقالية)\s*:\s*ً?ثاني[ةا]?\s*\]?",
+        r"[ ثانياً: \3 (من \2 إلى \1) ]",
+        s,
+    )
+    s = re.sub(
+        r"\[?\s*\(\s*(?:من\s*)?(\d+)\s*إلى\s*(\d+)\s*(?:من\s*)?\)\s*(أسئلة\s+الاختيار[^\:]*)\s*:\s*ً?أول[ىا]?\s*\]?",
+        r"[ أولاً: \3 (من \2 إلى \1) ]",
+        s,
+    )
+
+    # Step 14: Parenthetical lead clause inversion e.g. '(فوسفات الباريوم) و (كبريتات الباريوم) لديك خليط صلب من ملحي.'
+    def repl_q17_lead(m):
+        parens = m.group(1).strip()
+        premise = m.group(2).strip()
+        punct = m.group(3) or "."
+        m_p = re.match(r"^\(([^\)]+)\)\s*(و|أو)\s*\(([^\)]+)\)$", parens)
+        if m_p:
+            parens = f"({m_p.group(3).strip()}) {m_p.group(2)} ({m_p.group(1).strip()})"
+        return f"{premise} {parens}{punct}"
+
+    s = re.sub(
+        r"^(\([^\)]+\)\s*(?:و|أو)\s*\([^\)]+\))\s*(لديك\s+[\u0600-\u06FF\s]+?)([\.\،\,]?)$",
+        repl_q17_lead,
+        s,
+        flags=re.MULTILINE,
+    )
+
+    # Step 15: Synthesis requirement inversion e.g. 'بنزوات الصوديوم مبتدئًا بـ نيترو كلوروبنزين - ميتا كيفية الحصول على مركب.'
+    pat_synth = re.compile(
+        r"([\u0600-\u06FF\s]+?\s*مبتدئً?ا\s*بـ?)\s*([\u0600-\u06FF\s\-]+?)\s*(كيفية\s+الحصول\s+على\s+مركب[\u0600-\u06FF\s\.]*)"
+    )
+    m_synth = pat_synth.search(s)
+    if m_synth:
+        p1 = m_synth.group(1).strip()
+        mid = m_synth.group(2).strip()
+        p3 = m_synth.group(3).strip().rstrip(".")
+        if "-" in mid:
+            parts = [p.strip() for p in mid.split("-")]
+            mid = f"{parts[1]} - {parts[0]}"
+        m_mob = re.match(r"^(.*?)(\s*مبتدئً?ا\s*بـ?)$", p1)
+        if m_mob:
+            p1 = f"{m_mob.group(2).strip()} {m_mob.group(1).strip()}"
+        mid = re.sub(r"نيترو\s*كلوروبنزين", "كلورو نيتروبنزين", mid)
+        prefix_nl = "\n" if s[:m_synth.start()].strip() and not s[:m_synth.start()].endswith("\n") else ""
+        s = s[:m_synth.start()] + f"{prefix_nl}{p3} {mid} {p1}.\n" + s[m_synth.end():].lstrip("\r\n")
+
+    # Clean detached or duplicated Arabic marks
+    s = re.sub(r"(?:^|(?<=\s))[\u064B-\u065F\u0670]+", "", s)
+    s = re.sub(r"\u064f?(أذيب|يعبر|يعرف|يسمى|ينتج)\b", r"\1", s)
+    s = re.sub(r"\bو\s*ُ?يستخدم\b", "ويستخدم", s)
+    s = re.sub(r"\bً?مساوية\s*تقريبً?ا?\b", "مساوية تقريبًا", s)
+
+    # Clean stray punctuation at the beginning of questions (preserve negative numbers)
+    s = re.sub(r"^[،,:\.\/]\s*", "", s.strip())
+    s = re.sub(r"^[-–—]\s*(?!\d)", "", s.strip())
+
+    # Clean double spaces
+    s = re.sub(r"[ \t]{2,}", " ", s)
+    return s.strip()
+
+
+PARSER_OCR_VERSION = "v3"
+_OCR_SEMAPHORE = threading.Semaphore(int(os.getenv("OCR_CONCURRENCY_LIMIT", "2")))
+
+
+def prune_ocr_cache(max_age_days: int = 7, max_size_mb: int = 500) -> None:
+    """Prunes disk OCR cache based on TTL and aggregate size limit."""
+    api_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    cache_base = os.path.join(api_dir, "storage", "ocr_cache")
+    if not os.path.isdir(cache_base):
+        return
+
+    now = time.time()
+    max_age_sec = max_age_days * 86400
+    cached_files: list[tuple[str, float, int]] = []
+
+    for root, _, files in os.walk(cache_base):
+        for f in files:
+            fp = os.path.join(root, f)
+            try:
+                st = os.stat(fp)
+                if now - st.st_mtime > max_age_sec:
+                    os.remove(fp)
+                    continue
+                cached_files.append((fp, st.st_mtime, st.st_size))
+            except Exception:
+                pass
+
+    max_bytes = max_size_mb * 1024 * 1024
+    total_bytes = sum(item[2] for item in cached_files)
+    if total_bytes > max_bytes:
+        cached_files.sort(key=lambda x: x[1])
+        for fp, _, sz in cached_files:
+            try:
+                os.remove(fp)
+                total_bytes -= sz
+                if total_bytes <= max_bytes:
+                    break
+            except Exception:
+                pass
+
+
 def ocr_pdf_page(file_bytes: bytes | None = None, page_number: int = 1, lang: str = "ara+eng", pdfium_doc: Any = None, file_path: str | None = None) -> str:
     """
     Renders a specific PDF page to an image and performs OCR using Tesseract.
     Uses disk caching to prevent re-running OCR on previously processed pages.
+    Cache key strictly uses the full file SHA-256, page number, language, and parser version.
     """
     cache_file = None
+    cache_dir = None
     try:
         if file_bytes:
-            file_hash = hashlib.sha256(file_bytes[:100000] + str(len(file_bytes)).encode()).hexdigest()[:16]
+            file_hash = hashlib.sha256(file_bytes).hexdigest()
         elif file_path and os.path.exists(file_path):
-            file_hash = hashlib.sha256(os.path.basename(file_path).encode() + str(os.path.getsize(file_path)).encode()).hexdigest()[:16]
+            h = hashlib.sha256()
+            with open(file_path, "rb") as f:
+                while chunk := f.read(65536):
+                    h.update(chunk)
+            file_hash = h.hexdigest()
         else:
             file_hash = "generic_ocr"
-        # Check standard app storage location first
+
         api_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         possible_dirs = [
-            os.path.join(api_dir, "storage", "knowledge_center", "ocr_cache", file_hash),
-            os.path.join("storage", "knowledge_center", "ocr_cache", file_hash),
+            os.path.join(api_dir, "storage", "ocr_cache", file_hash),
+            os.path.join("storage", "ocr_cache", file_hash),
         ]
-        for cdir in possible_dirs:
-            cfile = os.path.join(cdir, f"page_{page_number}.txt")
-            if os.path.exists(cfile):
-                with open(cfile, "r", encoding="utf-8") as cf:
-                    cached_text = cf.read()
-                    if cached_text:
-                        return cached_text
         cache_dir = possible_dirs[0]
         os.makedirs(cache_dir, exist_ok=True)
-        cache_file = os.path.join(cache_dir, f"page_{page_number}.txt")
+        cache_file = os.path.join(cache_dir, f"page_{page_number}_{lang}_{PARSER_OCR_VERSION}.txt")
+        if os.path.exists(cache_file):
+            with open(cache_file, "r", encoding="utf-8") as cf:
+                cached_text = cf.read()
+                if cached_text:
+                    return cached_text
     except Exception:
         pass
 
@@ -428,53 +757,58 @@ def ocr_pdf_page(file_bytes: bytes | None = None, page_number: int = 1, lang: st
     if os.getenv("ALLOW_IN_PROCESS_OCR", "true").strip().lower() in ("false", "0", "no"):
         raise RuntimeError("In-process OCR is disabled by configuration (ALLOW_IN_PROCESS_OCR=false).")
 
-    pdf = None
-    try:
-        import pypdfium2 as pdfium
-        import pytesseract
-        from app.core.config import get_tesseract_cmd
-
-        get_tesseract_cmd()  # Ensure Tesseract executable path is configured
-
-        if pdfium_doc is not None:
-            pdf = pdfium_doc
-        elif file_path:
-            pdf = pdfium.PdfDocument(file_path)
-        else:
-            pdf = pdfium.PdfDocument(file_bytes)
-        if page_number < 1 or page_number > len(pdf):
-            return ""
-        page = pdf[page_number - 1]
-        # Render at scale 1.5 (~150 DPI) with grayscale conversion to optimize memory
-        pil_image = page.render(scale=1.5).to_pil()
-        gray_image = pil_image.convert("L")
+    with _OCR_SEMAPHORE:
+        pdf = None
         try:
-            ocr_text = pytesseract.image_to_string(gray_image, lang=lang)
+            import pypdfium2 as pdfium
+            import pytesseract
+            from app.core.config import get_tesseract_cmd
+
+            get_tesseract_cmd()  # Ensure Tesseract executable path is configured
+
+            if pdfium_doc is not None:
+                pdf = pdfium_doc
+            elif file_path:
+                pdf = pdfium.PdfDocument(file_path)
+            else:
+                pdf = pdfium.PdfDocument(file_bytes)
+            if page_number < 1 or page_number > len(pdf):
+                return ""
+            page = pdf[page_number - 1]
+            # Render at scale 1.5 (~150 DPI) with grayscale conversion to optimize memory
+            pil_image = page.render(scale=1.5).to_pil()
+            gray_image = pil_image.convert("L")
+            try:
+                ocr_text = pytesseract.image_to_string(gray_image, lang=lang)
+            finally:
+                try:
+                    gray_image.close()
+                    pil_image.close()
+                except Exception:
+                    pass
+            cleaned = clean_arabic_ocr_text(ocr_text or "")
+
+            if cache_file and cache_dir and cleaned:
+                try:
+                    import tempfile
+                    tmp_fd, tmp_path = tempfile.mkstemp(dir=cache_dir, prefix="ocr_tmp_")
+                    with os.fdopen(tmp_fd, "w", encoding="utf-8") as cf:
+                        cf.write(cleaned)
+                    os.replace(tmp_path, cache_file)
+                    prune_ocr_cache()
+                except Exception:
+                    pass
+
+            return cleaned
+        except Exception:
+            logger.warning(f"OCR fallback failed on page {page_number}")
+            return ""
         finally:
-            try:
-                gray_image.close()
-                pil_image.close()
-            except Exception:
-                pass
-        cleaned = clean_arabic_ocr_text(ocr_text or "")
-
-        if cache_file and cleaned:
-            try:
-                with open(cache_file, "w", encoding="utf-8") as cf:
-                    cf.write(cleaned)
-            except Exception:
-                pass
-
-        return cleaned
-    except Exception:
-        logger.warning(f"OCR fallback failed on page {page_number}")
-        return ""
-    finally:
-        if pdfium_doc is None and pdf is not None and hasattr(pdf, "close"):
-            try:
-                pdf.close()
-            except Exception:
-                pass
+            if pdfium_doc is None and pdf is not None and hasattr(pdf, "close"):
+                try:
+                    pdf.close()
+                except Exception:
+                    pass
 
 
 # =============================================================================
@@ -545,7 +879,10 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
                 page_text = ""
                 if fitz_doc and p_idx - 1 < len(fitz_doc):
                     try:
-                        fitz_text = fitz_doc[p_idx - 1].get_text("text") or ""
+                        blocks = fitz_doc[p_idx - 1].get_text("blocks")
+                        # Sort blocks geometrically by (y0, x0) with 6pt line clustering tolerance
+                        blocks = sorted(blocks, key=lambda b: (round(b[1] / 6) * 6, b[0]))
+                        fitz_text = "\n".join(b[4].strip() for b in blocks if b[4].strip())
                         if fitz_text and not is_text_garbled(fitz_text):
                             page_text = normalize_arabic_presentation_forms(fitz_text)
                     except Exception as fe:
@@ -577,6 +914,7 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
                 # untouched, and reverses only when it finds concrete visual-
                 # order Arabic signals.
                 page_text = fix_reversed_arabic_text(page_text)
+                page_text = fix_arabic_bidi_scrambling(page_text)
 
                 parsed_page.raw_text = page_text
 
@@ -627,7 +965,7 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
                     r"^(.*?)\s*[\(\[]\s*([أبجدA-Da-d1-4]|i|z|s|\)\()\s*[\)\]][\.\:\-]?$"
                 )
                 QUESTION_HEADER_RE = re.compile(
-                    r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)|س\s*\d+|Question\s*\d+|Q\d+|^\(?\d{1,3}\)?[\.\-\:\)])\b",
+                    r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)|س\s*\d+|Question\s*\d+|Q\d+|^\(?\d{1,3}\)?\s*[\.\-\:]\s*(?!\d))",
                     re.IGNORECASE,
                 )
                 SECTION_HEADER_RE = re.compile(

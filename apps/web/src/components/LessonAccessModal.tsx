@@ -171,6 +171,7 @@ export const LessonAccessModal: React.FC<LessonAccessModalProps> = ({
 
   return (
     <div
+      className="modal-overlay"
       style={{
         position: "fixed",
         inset: 0,

@@ -212,6 +212,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
 
   return (
     <div
+      className="modal-overlay"
       style={{
         position: "fixed",
         inset: 0,

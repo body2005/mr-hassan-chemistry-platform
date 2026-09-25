@@ -8,6 +8,7 @@ WORKDIR /srv
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
+    poppler-utils \
     tesseract-ocr \
     tesseract-ocr-ara \
     tesseract-ocr-eng \

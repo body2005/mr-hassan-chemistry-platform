@@ -64,51 +64,36 @@ export async function exportToDocx(payload: ExportDataPayload, filename = "lms_r
   ];
 
   if (payload.summaryStats && payload.summaryStats.length > 0) {
-    const statsTable = new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
-      visuallyRightToLeft: true,
-      borders: {
-        top: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-        bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-        left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-        right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-        insideHorizontal: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-        insideVertical: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-      },
-      rows: payload.summaryStats.map(
-        (s) =>
-          new TableRow({
-            children: [
-              new TableCell({
-                width: { size: 100, type: WidthType.PERCENTAGE },
-                borders: {
-                  top: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-                  bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-                  left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-                  right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-                },
-                children: [
-                  new Paragraph({
-                    alignment: AlignmentType.RIGHT,
-                    bidirectional: true,
-                    spacing: { after: 60 },
-                    children: [
-                      new TextRun({ text: `${s.label} : `, bold: true, size: 22, color: "000000", rightToLeft: true }),
-                      new TextRun({ text: `${s.value}`, bold: true, size: 22, color: "000000", rightToLeft: true }),
-                    ],
-                  }),
-                ],
-              }),
-            ],
-          })
-      ),
+    payload.summaryStats.forEach((s) => {
+      docChildren.push(
+        new Paragraph({
+          alignment: AlignmentType.RIGHT,
+          bidirectional: true,
+          spacing: { after: 60 },
+          children: [
+            new TextRun({
+              text: `${s.label} : `,
+              bold: true,
+              size: 22,
+              color: "000000",
+              rightToLeft: true,
+            }),
+            new TextRun({
+              text: `${s.value}`,
+              bold: true,
+              size: 22,
+              color: "000000",
+              rightToLeft: true,
+            }),
+          ],
+        })
+      );
     });
 
-    docChildren.push(statsTable);
-    // Add spacing before table
+    // Add spacing after summary stats before the table
     docChildren.push(
       new Paragraph({
-        spacing: { after: 140 },
+        spacing: { after: 120 },
         children: [],
       })
     );
@@ -328,6 +313,8 @@ export function exportToPrintPdf(payload: ExportDataPayload, filename = "") {
       gap: 8px;
       direction: rtl;
       text-align: right;
+      align-items: flex-start;
+      justify-content: flex-start;
     }
     .summary-item {
       font-size: 14.5px;
@@ -337,6 +324,8 @@ export function exportToPrintPdf(payload: ExportDataPayload, filename = "") {
       align-items: center;
       gap: 6px;
       direction: rtl;
+      text-align: right;
+      justify-content: flex-start;
     }
     table {
       width: 100%;

@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   CheckSquare,
   Clock,
+  Copy,
   Edit3,
   FileQuestion,
   Loader2,
@@ -39,7 +40,13 @@ function getInitialQuizDraft(userId: string) {
   try {
     const raw = localStorage.getItem(getQuizDraftStorageKey(userId));
     if (!raw) return null;
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    const hasQuestions = Array.isArray(parsed?.questions) && parsed.questions.length > 0;
+    const hasTitle = typeof parsed?.title === "string" && parsed.title.trim().length > 0;
+    if (!hasQuestions && !hasTitle) {
+      return null;
+    }
+    return parsed;
   } catch (e) {
     console.error("Error reading saved quiz draft:", e);
     return null;
@@ -138,13 +145,15 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   const [showOnStudentCalendar, setShowOnStudentCalendar] = useState<boolean>(() => initialDraft?.showOnStudentCalendar ?? true);
   const [sendScheduledNotification, setSendScheduledNotification] = useState<boolean>(() => initialDraft?.sendScheduledNotification ?? true);
 
-  function normalizeQuestionType(t?: string): "multiple_choice" | "true_false" | "essay" | "fill_in_blank" {
+
+  function normalizeQuestionType(t?: string): "multiple_choice" | "true_false" | "essay" | "fill_in_blank" | "unknown" {
     if (!t) return "multiple_choice";
     const upper = t.toUpperCase();
     if (upper === "MCQ" || upper === "MULTIPLE_CHOICE") return "multiple_choice";
     if (upper === "TRUE_FALSE" || upper === "TRUEFALSE") return "true_false";
     if (upper === "ESSAY") return "essay";
     if (upper === "FILL_BLANK" || upper === "FILL_IN_BLANK") return "fill_in_blank";
+    if (upper === "UNKNOWN") return "unknown";
     return "multiple_choice";
   }
 
@@ -152,13 +161,15 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     const norm = normalizeQuestionType(t);
     switch (norm) {
       case "multiple_choice":
-        return { code: "MCQ", label: "اختيار من متعدد", bg: "rgba(16, 185, 129, 0.12)", color: "#065f46" };
+        return { code: "MCQ", label: "اختيار من متعدد (MCQ)", bg: "rgba(16, 185, 129, 0.12)", color: "#065f46" };
       case "true_false":
-        return { code: "TRUE_FALSE", label: "صح أو خطأ", bg: "rgba(59, 130, 246, 0.12)", color: "#1e40af" };
+        return { code: "TRUE_FALSE", label: "صح أو خطأ (True/False)", bg: "rgba(59, 130, 246, 0.12)", color: "#1e40af" };
       case "essay":
-        return { code: "ESSAY", label: "سؤال مقالي", bg: "rgba(245, 158, 11, 0.12)", color: "#92400e" };
+        return { code: "ESSAY", label: "سؤال مقالي (Essay)", bg: "rgba(245, 158, 11, 0.12)", color: "#92400e" };
       case "fill_in_blank":
-        return { code: "FILL_BLANK", label: "أكمل الفراغات", bg: "rgba(139, 92, 246, 0.12)", color: "#5b21b6" };
+        return { code: "FILL_BLANK", label: "أكمل الفراغ (Fill in blank)", bg: "rgba(139, 92, 246, 0.12)", color: "#5b21b6" };
+      case "unknown":
+        return { code: "UNKNOWN", label: "بحاجة لمراجعة التصنيف (Unknown)", bg: "rgba(239, 68, 68, 0.12)", color: "#b91c1c" };
     }
   }
 
@@ -228,7 +239,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   }
 
   // Unified Quiz / Assignment State (Extraction + Manual)
-  const [quizTitle, setQuizTitle] = useState(() => initialDraft?.title || initialDraft?.manualTitle || initialDraft?.draft?.title || "");
+  const [quizTitle, setQuizTitle] = useState(() => initialDraft?.manualTitle || initialDraft?.title || "");
   const [questions, setQuestions] = useState<GeneratedQuestion[]>(() => {
     if (Array.isArray(initialDraft?.questions) && initialDraft.questions.length > 0) {
       return initialDraft.questions;
@@ -268,16 +279,23 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     }
   }, [initialDraft, toast]);
 
+
   // ================= AUTO-SAVE PERSISTENCE FOR UN-UPLOADED QUIZ =================
   useEffect(() => {
-    // If the quiz is approved/published, remove the un-uploaded draft
+    // If the quiz is approved/published or actively extracting, do not auto-save
     if (approved) {
       localStorage.removeItem(quizDraftStorageKey);
       setHasRestoredDraft(false);
       return;
     }
 
+    if (extractingFile) {
+      return;
+    }
+
     if (questions.length === 0 && quizTitle.trim().length === 0) {
+      localStorage.removeItem(quizDraftStorageKey);
+      setHasRestoredDraft(false);
       return;
     }
 
@@ -309,6 +327,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     }
   }, [
     approved,
+    extractingFile,
     quizTitle,
     questions,
     selectedAcademicYear,
@@ -363,10 +382,15 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     setExtractingFile(true);
     setError(null);
     setDraft(null);
+    // CRITICAL: Immediately clear stale questions from state and local storage
+    setQuizTitle("");
+    setQuestions([]);
     setExtractedFileName(null);
     setExtractedFileFingerprint(null);
     setExtractedAt(null);
     localStorage.removeItem(quizDraftStorageKey);
+    setHasRestoredDraft(false);
+
     try {
       const resp = await quizExtractionService.extractQuizFromFile(
         file,
@@ -393,9 +417,6 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
 
       setDraft(resp);
       setQuestions(resp.questions || []);
-      if (resp.title && !quizTitle.trim()) {
-        setQuizTitle(resp.title);
-      }
       setExtractedFileName(file.name);
       setExtractedFileFingerprint(fingerprint || null);
       setExtractedAt(new Date().toISOString());
@@ -407,6 +428,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       });
     } catch (err: unknown) {
       if (extractionRequestRef.current !== requestNumber) return;
+      // Keep state clean on error: never retain or fall back to old questions
+      setQuestions([]);
+      setDraft(null);
       const errMsg = err instanceof Error ? err.message : "فشل استخراج الأسئلة من الملف. يرجى التأكد من صحة الملف وصيغته.";
       setError(errMsg);
       toast({
@@ -440,15 +464,64 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     );
   }
 
-  function updateQuestionPoints(qId: number, newPoints: number) {
+  function updateQuestionPoints(qId: number, newPoints: number | null) {
     setActiveQuestionsList((prev) =>
-      prev.map((q) => (q.id === qId ? { ...q, points: Math.max(1, newPoints) } : q))
+      prev.map((q) =>
+        q.id === qId
+          ? {
+              ...q,
+              points: newPoints !== null && newPoints > 0 ? newPoints : null,
+              needs_points_assignment: newPoints === null || newPoints <= 0,
+            }
+          : q
+      )
     );
+  }
+
+
+  function handleCopyQuestionsOnly() {
+    if (!questions || questions.length === 0) {
+      toast({
+        message: "لا توجد أسئلة لنسخها حالياً.",
+        tone: "warning",
+      });
+      return;
+    }
+
+    const lines: string[] = [];
+    questions.forEach((q, idx) => {
+      const qNum = idx + 1;
+      lines.push(`${qNum}. ${q.question_text}`);
+      if (q.options && q.options.length > 0) {
+        q.options.forEach((opt) => {
+          lines.push(`(${opt.key}) ${opt.text}`);
+        });
+      }
+      lines.push("");
+    });
+
+    const fullText = lines.join("\n").trim();
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard
+        .writeText(fullText)
+        .then(() => {
+          toast({
+            message: `تم نسخ نص ${questions.length} سؤالاً بنجاح (نص الأسئلة والخيارات فقط بدون أي عناصر واجهة مستخدم)!`,
+            tone: "success",
+          });
+        })
+        .catch(() => {
+          toast({
+            message: "تعذر النسخ التلقائي للحافظة.",
+            tone: "danger",
+          });
+        });
+    }
   }
 
   function updateQuestionCorrectAnswer(qId: number, newAnswer: string) {
     setActiveQuestionsList((prev) =>
-      prev.map((q) => (q.id === qId ? { ...q, correct_answer: newAnswer } : q))
+      prev.map((q) => (q.id === qId ? { ...q, correct_answer: newAnswer, needs_answer_review: !newAnswer.trim() } : q))
     );
   }
 
@@ -470,25 +543,36 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       prev.map((q) => {
         if (q.id !== qId) return q;
         let newOptions = q.options;
-        if (newType === "multiple_choice" && (!newOptions || newOptions.length < 2)) {
-          newOptions = [
-            { key: "أ", text: "الخيار أ", is_correct: true },
-            { key: "ب", text: "الخيار ب", is_correct: false },
-            { key: "ج", text: "الخيار ج", is_correct: false },
-            { key: "د", text: "الخيار د", is_correct: false },
-          ];
+        let needsAnswerReview = q.needs_answer_review;
+        let newCorrectAnswer = q.correct_answer;
+
+        if (newType === "multiple_choice") {
+          if (!newOptions || newOptions.length < 2) {
+            newOptions = [
+              { key: "أ", text: "الخيار أ", is_correct: false },
+              { key: "ب", text: "الخيار ب", is_correct: false },
+              { key: "ج", text: "الخيار ج", is_correct: false },
+              { key: "د", text: "الخيار د", is_correct: false },
+            ];
+            needsAnswerReview = true;
+          }
         } else if (newType === "true_false") {
+          const isCorrectTrue = q.correct_answer?.trim() === "صح" || q.correct_answer?.trim() === "صواب";
+          const isCorrectFalse = q.correct_answer?.trim() === "خطأ";
           newOptions = [
-            { key: "أ", text: "صح", is_correct: true },
-            { key: "ب", text: "خطأ", is_correct: false },
+            { key: "أ", text: "صح", is_correct: isCorrectTrue },
+            { key: "ب", text: "خطأ", is_correct: isCorrectFalse },
           ];
+          needsAnswerReview = !isCorrectTrue && !isCorrectFalse;
         } else if (newType === "essay" || newType === "fill_in_blank") {
           newOptions = undefined;
+          needsAnswerReview = !newCorrectAnswer || !newCorrectAnswer.trim();
         }
         return {
           ...q,
           question_type: newType,
           options: newOptions,
+          needs_answer_review: needsAnswerReview,
         };
       })
     );
@@ -519,6 +603,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
               is_correct: opt.key === optKey,
             })),
             correct_answer: q.options.find((o) => o.key === optKey)?.text || optKey,
+            needs_answer_review: false,
           };
         }
         return q;
@@ -647,6 +732,51 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       return;
     }
 
+    // Points Validation: all questions must have explicit positive points
+    const unassignedPointsCount = currentQuestions.filter(
+      (q) => q.points === null || q.points === undefined || q.points <= 0
+    ).length;
+    if (unassignedPointsCount > 0) {
+      const msg = `لا يمكن نشر ${isQuiz ? "الاختبار" : "الواجب"} قبل تحديد درجات جميع الأسئلة. يوجد ${unassignedPointsCount} سؤال بدون درجات محددة.`;
+      setError(msg);
+      toast({ message: msg, tone: "warning" });
+      return;
+    }
+
+    // Unknown Types Validation
+    const unknownTypeCount = currentQuestions.filter(
+      (q) => normalizeQuestionType(q.question_type) === "unknown"
+    ).length;
+    if (unknownTypeCount > 0) {
+      const msg = `توجد أسئلة (${unknownTypeCount} سؤال) غير محددة النوع (Unknown). يرجى تحديد نوع كل سؤال قبل النشر.`;
+      setError(msg);
+      toast({ message: msg, tone: "warning" });
+      return;
+    }
+
+    // Answer Review Validation for Quiz
+    if (isQuiz) {
+      const unreviewedMcqCount = currentQuestions.filter(
+        (q) => normalizeQuestionType(q.question_type) === "multiple_choice" && (!q.options || !q.options.some((o) => o.is_correct))
+      ).length;
+      if (unreviewedMcqCount > 0) {
+        const msg = `توجد أسئلة اختيار من متعدد (${unreviewedMcqCount} سؤال) بدون تحديد الإجابة الصحيحة. يرجى اختيار الإجابة الصحيحة قبل النشر.`;
+        setError(msg);
+        toast({ message: msg, tone: "warning" });
+        return;
+      }
+
+      const unreviewedTfCount = currentQuestions.filter(
+        (q) => normalizeQuestionType(q.question_type) === "true_false" && (!q.options || !q.options.some((o) => o.is_correct)) && !q.correct_answer
+      ).length;
+      if (unreviewedTfCount > 0) {
+        const msg = `توجد أسئلة صح أو خطأ (${unreviewedTfCount} سؤال) بدون تحديد الإجابة الصحيحة. يرجى تحديد الإجابة الصحيحة قبل النشر.`;
+        setError(msg);
+        toast({ message: msg, tone: "warning" });
+        return;
+      }
+    }
+
     setError(null);
     setShowPublishConfirmModal(true);
   }
@@ -685,6 +815,24 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       return;
     }
 
+    const unassignedPointsCount = currentQuestions.filter(
+      (q) => q.points === null || q.points === undefined || q.points <= 0
+    ).length;
+    if (unassignedPointsCount > 0) {
+      setError(`لا يمكن نشر ${isQuiz ? "الاختبار" : "الواجب"} قبل تحديد درجات جميع الأسئلة. يوجد ${unassignedPointsCount} سؤال بدون درجات محددة.`);
+      setShowPublishConfirmModal(false);
+      return;
+    }
+
+    const unknownTypeCount = currentQuestions.filter(
+      (q) => normalizeQuestionType(q.question_type) === "unknown"
+    ).length;
+    if (unknownTypeCount > 0) {
+      setError(`توجد أسئلة (${unknownTypeCount} سؤال) غير محددة النوع (Unknown). يرجى تحديد نوع كل سؤال.`);
+      setShowPublishConfirmModal(false);
+      return;
+    }
+
     setIsPublishing(true);
     try {
       const yearLabel =
@@ -700,7 +848,6 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       // The teacher's title is authoritative for both manual and extracted
       // assessments. If left blank, keep the extracted title.
       const titleToPublish = quizTitle.trim()
-        || draft?.title
         || `${isQuiz ? "اختبار" : "واجب"}: ${yearLabel}`;
 
       // 1. Mark in Calendar Schedule for Teacher & Students
@@ -762,7 +909,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
             question_type: q.question_type,
             options: q.options,
             correct_answer: q.correct_answer ?? null,
-            points: q.points,
+            points: q.points ?? undefined,
           })),
         });
       } else {
@@ -832,6 +979,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
 
   const displayedQuestions = activeQuestionsList();
   const totalPointsCount = displayedQuestions.reduce((sum, q) => sum + (q.points || 0), 0);
+  const questionsNeedingPoints = displayedQuestions.filter(
+    (q) => q.points === null || q.points === undefined || q.points <= 0 || q.needs_points_assignment
+  );
 
   return (
     <div className="page-container">
@@ -1527,7 +1677,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                         <Clock size={12} /> مدة الحل: {quizDurationMinutes} دقيقة
                       </span>
                     )}
-                    <span style={{ fontSize: "11px", fontWeight: 700, color: "#92400e", background: "#fef3c7", padding: "3px 8px", borderRadius: "6px", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                    <span style={{ fontSize: "11px", fontWeight: 700, color: "#ffffff", background: "rgb(15, 118, 110)", padding: "3px 8px", borderRadius: "6px", display: "inline-flex", alignItems: "center", gap: "4px" }}>
                       <Calendar size={12} /> النشر: {publishStartDate} ({publishStartTime})
                     </span>
                     <span style={{ fontSize: "11px", fontWeight: 700, color: "#991b1b", background: "#fee2e2", padding: "3px 8px", borderRadius: "6px", display: "inline-flex", alignItems: "center", gap: "4px" }}>
@@ -1554,7 +1704,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                     )}
                   </div>
                   <h2 style={{ margin: "2px 0 0", fontSize: "18px", color: "var(--text-main)" }}>
-                    {quizTitle || draft?.title || `${assessmentType === "quiz" ? "اختبار" : "واجب"} جديد`}
+                    {quizTitle.trim() || `${assessmentType === "quiz" ? "اختبار" : "واجب"} جديد`}
                   </h2>
                 </div>
 
@@ -1568,8 +1718,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                         fontSize: "12px",
                         gap: "5px",
                         color: "#ffffff",
-                        background: "#dc2626",
-                        borderColor: "#dc2626",
+                        background: "rgb(118, 40, 40)",
+                        borderColor: "rgb(118, 40, 40)",
                       }}
                       title="مسح المسودة الحالية والبدء باختبار جديد من الصفر"
                     >
@@ -1577,6 +1727,24 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                       <span>بدء اختبار جديد</span>
                     </button>
                   )}
+
+                  <button
+                    type="button"
+                    onClick={handleCopyQuestionsOnly}
+                    className="btn-secondary"
+                    style={{
+                      fontSize: "12px",
+                      gap: "5px",
+                      color: "#ffffff",
+                      background: "rgb(222, 138, 38)",
+                      borderColor: "rgb(222, 138, 38)",
+                      fontWeight: 700,
+                    }}
+                    title="نسخ نص الأسئلة والخيارات فقط إلى الحافظة بدون أي عناصر أو أزرار تحكم"
+                  >
+                    <Copy size={13} />
+                    <span>نسخ نص الأسئلة فقط</span>
+                  </button>
 
                   <button
                     type="button"
@@ -1601,8 +1769,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
               </div>
 
               {draft && draft.is_complete === false && (
-                <div style={{ padding: "12px 16px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "10px", color: "#92400e", fontSize: "12.5px", display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px" }}>
-                  <AlertCircle size={18} style={{ flexShrink: 0 }} />
+                <div style={{ padding: "12px 16px", background: "rgb(15, 118, 110)", border: "1px solid rgb(15, 118, 110)", borderRadius: "10px", color: "#ffffff", fontSize: "12.5px", display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px" }}>
+                  <AlertCircle size={18} style={{ flexShrink: 0, color: "#99f6e4" }} />
                   <span>تنبيه: تعذر استخراج كامل العدد المتوقع من الأسئلة من الملف، وتم إدراج كافة الأسئلة الموثوقة المتاحة بدقة.</span>
                 </div>
               )}
@@ -1612,6 +1780,32 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                   <CheckSquare size={18} />
                   <span>
                     تم حفظ ونشر {assessmentType === "quiz" ? "الاختبار" : "الواجب المنزلي"} بنجاح وتثبيت موعده في التقويم ({showOnStudentCalendar ? "معروض في جدول الطلاب" : "في جدول المعلم فقط"}) {sendScheduledNotification && "وإرسال إشعار فوري لطلاب هذا الصف!"}
+                  </span>
+                </div>
+              )}
+
+              {/* Points Assignment Alert Banner */}
+              {questionsNeedingPoints.length > 0 && !approved && (
+                <div
+                  className="question-card-controls"
+                  style={{
+                    padding: "12px 18px",
+                    background: "rgb(118, 40, 40)",
+                    border: "1.5px solid rgb(118, 40, 40)",
+                    borderRadius: "12px",
+                    marginBottom: "16px",
+                    boxShadow: "0 2px 6px rgba(118, 40, 40, 0.25)",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    color: "#ffffff",
+                    fontWeight: 800,
+                    fontSize: "13.5px",
+                  }}
+                >
+                  <AlertCircle size={18} style={{ flexShrink: 0, color: "#fca5a5" }} />
+                  <span>
+                    تنبيه: توجد أسئلة مستخرجة بدون درجات محددة ({questionsNeedingPoints.length} من أصل {displayedQuestions.length} سؤال). يرجى تحديد درجات الأسئلة قبل النشر.
                   </span>
                 </div>
               )}
@@ -1634,7 +1828,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                       }}
                     >
                       {/* Question Top Header */}
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", paddingBottom: "8px", borderBottom: "1px solid var(--border-color)" }}>
+                      <div className="question-card-controls" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", paddingBottom: "8px", borderBottom: "1px solid var(--border-color)", userSelect: "none", WebkitUserSelect: "none" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                           {/* Reorder Arrows */}
                           <div style={{ display: "flex", gap: "2px" }}>
@@ -1663,7 +1857,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                           </strong>
 
                           {/* Editable Question Type Selector with distinct badge (Requirement 9) */}
-                          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                             <select
                               value={normalizeQuestionType(q.question_type)}
                               onChange={(e) => updateQuestionType(q.id, e.target.value as "multiple_choice" | "essay" | "true_false" | "fill_in_blank")}
@@ -1681,6 +1875,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                               <option value="true_false">صح أو خطأ</option>
                               <option value="essay">سؤال مقالي</option>
                               <option value="fill_in_blank">أكمل الفراغات</option>
+                              {normalizeQuestionType(q.question_type) === "unknown" && (
+                                <option value="unknown">غير محدد (يحتاج مراجعة)</option>
+                              )}
                             </select>
 
                             <span
@@ -1696,6 +1893,43 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                             >
                               {getQuestionTypeLabel(q.question_type).code}
                             </span>
+
+                            {(q.points === null || q.points === undefined || q.points <= 0 || q.needs_points_assignment) && (
+                              <span
+                                style={{
+                                  fontSize: "11px",
+                                  fontWeight: 700,
+                                  color: "#ffffff",
+                                  background: "rgb(15, 118, 110)",
+                                  border: "1px solid rgb(15, 118, 110)",
+                                  padding: "2px 7px",
+                                  borderRadius: "6px",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "3px",
+                                }}
+                              >
+                                <AlertCircle size={12} style={{ color: "#99f6e4" }} /> حدد الدرجة
+                              </span>
+                            )}
+                            {q.needs_answer_review && (
+                              <span
+                                style={{
+                                  fontSize: "11px",
+                                  fontWeight: 700,
+                                  color: "#c2410c",
+                                  background: "#ffedd5",
+                                  border: "1px solid #fed7aa",
+                                  padding: "2px 7px",
+                                  borderRadius: "6px",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "3px",
+                                }}
+                              >
+                                <AlertCircle size={12} /> حدد الإجابة الصحيحة
+                              </span>
+                            )}
                           </div>
                         </div>
 
@@ -1707,18 +1941,22 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                               type="number"
                               min={1}
                               max={50}
-                              value={q.points}
-                              onChange={(e) => updateQuestionPoints(q.id, parseInt(e.target.value) || 1)}
+                              value={q.points ?? ""}
+                              onChange={(e) => {
+                                const val = e.target.value === "" ? null : parseInt(e.target.value);
+                                updateQuestionPoints(q.id, val);
+                              }}
+                              placeholder="—"
                               style={{
                                 width: "48px",
                                 padding: "3px 6px",
-                                border: "1px solid var(--border-color-strong)",
+                                border: (q.points === null || q.points === undefined || q.points <= 0) ? "1.5px solid rgb(15, 118, 110)" : "1px solid var(--border-color-strong)",
                                 borderRadius: "6px",
                                 fontSize: "12px",
                                 fontWeight: 800,
                                 textAlign: "center",
-                                background: "var(--bg-surface-secondary)",
-                                color: "#0f392b",
+                                background: (q.points === null || q.points === undefined || q.points <= 0) ? "rgba(15, 118, 110, 0.12)" : "var(--bg-surface-secondary)",
+                                color: (q.points === null || q.points === undefined || q.points <= 0) ? "rgb(15, 118, 110)" : "#0f392b",
                               }}
                             />
                           </div>
@@ -1756,6 +1994,62 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                           </button>
                         </div>
                       </div>
+
+                      {/* Unknown Type Quick Conversion Callout */}
+                      {normalizeQuestionType(q.question_type) === "unknown" && (
+                        <div
+                          className="question-card-controls"
+                          style={{
+                            padding: "10px 14px",
+                            background: "#fef2f2",
+                            border: "1px solid #fecaca",
+                            borderRadius: "8px",
+                            marginBottom: "12px",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            flexWrap: "wrap",
+                            gap: "8px",
+                            userSelect: "none",
+                            WebkitUserSelect: "none",
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#991b1b", fontSize: "12px", fontWeight: 700 }}>
+                            <AlertCircle size={15} />
+                            <span>نوع السؤال غير مصنف بدقة من الملف، حدد نوع السؤال:</span>
+                          </div>
+                          <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                            <button
+                              type="button"
+                              onClick={() => updateQuestionType(q.id, "multiple_choice")}
+                              style={{ padding: "4px 10px", borderRadius: "6px", border: "1px solid #059669", background: "#ecfdf5", color: "#065f46", fontSize: "11px", fontWeight: 700, cursor: "pointer" }}
+                            >
+                              اختيار من متعدد
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => updateQuestionType(q.id, "true_false")}
+                              style={{ padding: "4px 10px", borderRadius: "6px", border: "1px solid #2563eb", background: "#eff6ff", color: "#1e40af", fontSize: "11px", fontWeight: 700, cursor: "pointer" }}
+                            >
+                              صح أو خطأ
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => updateQuestionType(q.id, "essay")}
+                              style={{ padding: "4px 10px", borderRadius: "6px", border: "1px solid rgb(15, 118, 110)", background: "rgba(15, 118, 110, 0.12)", color: "rgb(15, 118, 110)", fontSize: "11px", fontWeight: 700, cursor: "pointer" }}
+                            >
+                              سؤال مقالي
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => updateQuestionType(q.id, "fill_in_blank")}
+                              style={{ padding: "4px 10px", borderRadius: "6px", border: "1px solid #7c3aed", background: "#f5f3ff", color: "#5b21b6", fontSize: "11px", fontWeight: 700, cursor: "pointer" }}
+                            >
+                              أكمل الفراغ
+                            </button>
+                          </div>
+                        </div>
+                      )}
 
                       {/* Question Text */}
                       {isEditing ? (
@@ -1831,8 +2125,86 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                         </div>
                       )}
 
-                      {/* Options List (for MCQ and True/False) */}
-                      {q.options && q.options.length > 0 && (
+                      {/* True / False Question Options */}
+                      {normalizeQuestionType(q.question_type) === "true_false" && (
+                        <div style={{ display: "flex", gap: "12px", marginBottom: "14px", marginTop: "8px" }}>
+                          {[
+                            { key: "أ", text: "صح" },
+                            { key: "ب", text: "خطأ" },
+                          ].map((tfOpt) => {
+                            const isSelected =
+                              q.options?.find((o) => (o.key === tfOpt.key || o.text === tfOpt.text) && o.is_correct) !== undefined ||
+                              q.correct_answer === tfOpt.text;
+                            return (
+                              <button
+                                key={tfOpt.key}
+                                type="button"
+                                onClick={() => {
+                                  const updatedOptions = [
+                                    { key: "أ", text: "صح", is_correct: tfOpt.key === "أ" },
+                                    { key: "ب", text: "خطأ", is_correct: tfOpt.key === "ب" },
+                                  ];
+                                  setActiveQuestionsList((prev) =>
+                                    prev.map((item) =>
+                                      item.id === q.id
+                                        ? {
+                                            ...item,
+                                            options: updatedOptions,
+                                            correct_answer: tfOpt.text,
+                                            needs_answer_review: false,
+                                          }
+                                        : item
+                                    )
+                                  );
+                                }}
+                                style={{
+                                  flex: 1,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  gap: "8px",
+                                  padding: "10px 16px",
+                                  borderRadius: "8px",
+                                  border: isSelected ? "2px solid #059669" : "1.5px solid var(--border-color)",
+                                  background: isSelected ? "var(--bg-accent, #ecfdf5)" : "var(--bg-surface-secondary)",
+                                  color: isSelected ? "#065f46" : "var(--text-main)",
+                                  fontWeight: 800,
+                                  fontSize: "14px",
+                                  cursor: "pointer",
+                                  transition: "all 0.15s ease",
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    width: "20px",
+                                    height: "20px",
+                                    borderRadius: "50%",
+                                    border: isSelected ? "2px solid #059669" : "2px solid var(--border-color-strong)",
+                                    background: isSelected ? "#059669" : "transparent",
+                                    color: "#fff",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    fontSize: "11px",
+                                    fontWeight: 900,
+                                  }}
+                                >
+                                  {isSelected ? "✓" : ""}
+                                </span>
+                                <span>{tfOpt.text}</span>
+                                {isSelected && (
+                                  <span style={{ fontSize: "11px", fontWeight: 700, color: "#059669", marginRight: "auto" }}>
+                                    (الإجابة الصحيحة)
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* Options List (for MCQ) */}
+                      {normalizeQuestionType(q.question_type) === "multiple_choice" && q.options && q.options.length > 0 && (
                         <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "12px" }}>
                           {q.options.map((opt) => (
                             <div
@@ -1927,7 +2299,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                                     الإجابة الصحيحة
                                   </span>
                                 )}
-                                {isEditing && normalizeQuestionType(q.question_type) === "multiple_choice" && (q.options?.length ?? 0) > 2 && (
+                                {isEditing && (q.options?.length ?? 0) > 2 && (
                                   <button
                                     type="button"
                                     onClick={() => removeOptionFromQuestion(q.id, opt.key)}
@@ -1941,7 +2313,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                             </div>
                           ))}
 
-                          {isEditing && normalizeQuestionType(q.question_type) === "multiple_choice" && (q.options?.length ?? 0) < 6 && (
+                          {isEditing && (q.options?.length ?? 0) < 6 && (
                             <button
                               type="button"
                               onClick={() => addOptionToQuestion(q.id)}
@@ -1960,6 +2332,28 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                               + إضافة خيار جديد
                             </button>
                           )}
+                        </div>
+                      )}
+
+                      {/* Options Placeholder for MCQ when empty */}
+                      {normalizeQuestionType(q.question_type) === "multiple_choice" && (!q.options || q.options.length === 0) && (
+                        <div style={{ marginBottom: "12px" }}>
+                          <button
+                            type="button"
+                            onClick={() => updateQuestionType(q.id, "multiple_choice")}
+                            style={{
+                              padding: "6px 12px",
+                              borderRadius: "6px",
+                              border: "1px dashed #059669",
+                              background: "#ecfdf5",
+                              color: "#059669",
+                              fontSize: "12px",
+                              fontWeight: 700,
+                              cursor: "pointer",
+                            }}
+                          >
+                            + إضافة خيارات السؤال (أ، ب، ج، د)
+                          </button>
                         </div>
                       )}
 
@@ -2166,6 +2560,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       {/* Confirmation Modal Before Upload / Publish */}
       {showPublishConfirmModal && (
         <div
+          className="modal-overlay"
+          role="dialog"
+          aria-modal="true"
           style={{
             position: "fixed",
             top: 0,
@@ -2261,7 +2658,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                 <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px solid var(--border-color, #e2e8f0)", paddingBottom: "8px" }}>
                   <span style={{ color: "var(--text-muted, #64748b)", fontWeight: 600 }}>العنوان:</span>
                   <span style={{ color: "var(--text-main, #0f172a)", fontWeight: 800 }}>
-                    {quizTitle.trim() || draft?.title || `${assessmentType === "quiz" ? "اختبار" : "واجب"} جديد`}
+                    {quizTitle.trim() || `${assessmentType === "quiz" ? "اختبار" : "واجب"} جديد`}
                   </span>
                 </div>
 

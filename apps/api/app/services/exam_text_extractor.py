@@ -12,6 +12,8 @@ import os
 import re
 from typing import Any
 
+from app.services.document_parsers import clean_chemical_formula_text, fix_arabic_bidi_scrambling
+
 KEY_SECTION_PATTERNS = [
     r"نموذج\s+(?:ال)?(?:[اإأ]جاب[ةه]|[اإأ]جابات|حل)",
     r"مفتاح\s+(?:ال)?(?:[اإأ]جاب[ةه]|[اإأ]جابات|حل)",
@@ -71,6 +73,9 @@ ADMINISTRATIVE_METADATA_PATTERNS = [
     r"مقرر\s+.*\s+امتحان\s+شامل",
     r"^\s*===.*===\s*$",
     r"(?:تم\s+تحميل|موقع\s+وتطبيق|مذكرات\s+جاهزة|حمل\s+المزيد|جروب\s+تليجرام|قناة\s+تليجرام)",
+    r"انتهت\s+الأسئل[ةه]",
+    r"مع\s+أطيب\s+الأمنيات",
+    r"والدرجات\s+العلا",
 ]
 EXCLUDED_METADATA_PATTERNS = ADMINISTRATIVE_METADATA_PATTERNS
 
@@ -96,11 +101,13 @@ BLOOM_OBJECTIVE_PATTERNS = [
 # block before question classification (conservative: short token removal only).
 _UI_LEAK_PATTERNS = [
     re.compile(r"svgsvg", re.IGNORECASE),
-    re.compile(r"^svg$", re.IGNORECASE),
-    re.compile(r"^تعديل$"),
+    re.compile(r"\bsvg\b", re.IGNORECASE),
+    re.compile(r"^\s*تعديل\s*$"),
     re.compile(r"مساحة إجابة الطالب"),
     re.compile(r"خانة إجابة الطالب"),
-    re.compile(r"^الدرجة[:：]?\s*$"),
+    re.compile(r"^\s*الدرجة[:：]?\s*$"),
+    re.compile(r"^\s*(?:اختيار من متعدد|صح أو خطأ|سؤال مقالي|أكمل الفراغات|MCQ)\s*$", re.IGNORECASE),
+    re.compile(r"^\s*(?:حدد الدرجة|حدد الإجابة الصحيحة)\s*$"),
 ]
 
 
@@ -127,6 +134,64 @@ def sanitize_source_filename(name: str) -> str:
     return base[:200]
 
 
+def extract_explicit_points(text: str) -> tuple[int | None, bool]:
+    """
+    Extracts explicit point values from question text.
+    Returns (points, needs_points_assignment).
+    Strictly deterministic: returns integer points ONLY if explicitly stated in text;
+    NEVER defaults to 5 or guesses points.
+    """
+    if not text:
+        return (None, True)
+
+    text_norm = text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+
+    # 1. Arabic word representations
+    if re.search(r"[\(\[]\s*(?:درجتان|علامتان)\s*[\)\]]", text):
+        return (2, False)
+    if re.search(r"[\(\[]\s*(?:درجة\s+واحدة|علامة\s+واحدة|درجة|علامة)\s*[\)\]]", text):
+        return (1, False)
+
+    # 2. Bracketed digit patterns: [3 درجات], (5 marks), [10 pts], (4 درجات)
+    m = re.search(
+        r"[\(\[]\s*(\d+)\s*(?:درجات|درجة|علامات|علامة|marks?|pts?|points?)\s*[\)\]]",
+        text_norm,
+        re.IGNORECASE,
+    )
+    if m:
+        val = int(m.group(1))
+        if 1 <= val <= 100:
+            return (val, False)
+
+    # 3. Trailing delimiter patterns e.g. " -- 3 درجات" or " - 2 درجات"
+    m_end = re.search(
+        r"[-–—:]\s*(\d+)\s*(?:درجات|درجة|علامات|علامة|marks?|pts?|points?)\s*$",
+        text_norm,
+        re.IGNORECASE,
+    )
+    if m_end:
+        val = int(m_end.group(1))
+        if 1 <= val <= 100:
+            return (val, False)
+
+    return (None, True)
+
+
+def clean_points_tokens_from_text(text: str) -> str:
+    """Removes point annotation tokens like '(3 درجات)' from question stems."""
+    cleaned = re.sub(
+        r"[\(\[]\s*(?:\d+\s*(?:درجات|درجة|علامات|علامة|marks?|pts?|points?)|درجتان|علامتان|درجة\s+واحدة|علامة\s+واحدة|درجة|علامة)\s*[\)\]]",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"[-–—:]\s*(?:\d+\s*(?:درجات|درجة|علامات|علامة|marks?|pts?|points?)|درجتان|علامتان|درجة\s+واحدة|علامة\s+واحدة)\s*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return cleaned.strip()
 
 
 def extract_distant_answer_keys(parsed_doc: Any) -> dict[str, str]:
@@ -503,9 +568,10 @@ def classify_and_parse_question(
 
     corr_answer_text, needs_rev = resolve_correct_answer_text(formatted_options, answer_raw)
 
-    # Extract marks if present
-    marks_m = re.search(r"[\(\[]\s*(\d+)\s*(?:درجات|درجة|علامات|علامة|marks?|pts?)\s*[\)\]]", clean_t, re.IGNORECASE)
-    extracted_points = int(marks_m.group(1)) if marks_m else 5
+    # Extract marks only if explicitly written in the source text; NEVER default to 5
+    extracted_points, needs_points_assignment = extract_explicit_points(clean_t)
+    if extracted_points is not None:
+        q_stem = clean_points_tokens_from_text(q_stem)
 
     # Determine Canonical Question Type (Requirement 4)
     if has_options:
@@ -529,6 +595,7 @@ def classify_and_parse_question(
             "options": formatted_options if formatted_options else None,
             "correct_answer": corr_answer_text,
             "points": extracted_points,
+            "needs_points_assignment": needs_points_assignment,
             "classification_confidence": "high",
             "needs_answer_review": needs_rev,
             "raw_text": clean_t,
@@ -541,11 +608,378 @@ def classify_and_parse_question(
             "options": formatted_options if formatted_options else None,
             "correct_answer": corr_answer_text,
             "points": extracted_points,
+            "needs_points_assignment": needs_points_assignment,
             "classification_confidence": "uncertain",
             "needs_answer_review": True,
             "raw_text": clean_t,
         })
     else:
         return ("content", None)
+
+
+class ExamQuestionSegmenter:
+    """
+    Deterministic state machine for segmenting exam questions across lines and blocks.
+    Tracks section context, handles multiline questions and option sets,
+    and guarantees no question invention, points guessing, or stale cross-file bleed.
+    """
+
+    def __init__(self, distant_keys: dict[str, str] | None = None, filename: str = ""):
+        self.distant_keys = distant_keys or {}
+        self.filename = filename
+        self.current_section_type: str | None = None
+        self.current_section_title: str | None = None
+        self.extracted_questions: list[dict[str, Any]] = []
+
+        # Current pending question builder state
+        self._q_stem_parts: list[str] = []
+        self._options: list[tuple[str, str]] = []
+        self._answer_raw: str | None = None
+        self._explicit_points: int | None = None
+        self._needs_points_assignment: bool = True
+        self._source_page: int | None = None
+        self._source_block_ids: list[str] = []
+        self._raw_lines: list[str] = []
+        self._q_num: str | None = None
+        self._section_hint: str | None = None
+
+    def _flush_active_question(self) -> None:
+        if not self._q_stem_parts and not self._raw_lines:
+            return
+
+        stem_text = " ".join(self._q_stem_parts).strip()
+        stem_text = clean_points_tokens_from_text(stem_text)
+        stem_text = clean_chemical_formula_text(fix_arabic_bidi_scrambling(stem_text))
+        for pattern in _UI_LEAK_PATTERNS:
+            stem_text = pattern.sub("", stem_text)
+        stem_text = re.sub(r"[ \t]{2,}", " ", stem_text).strip()
+
+        # Drop if empty or too short
+        if len(stem_text.split()) < 2 and not (self._options and len(stem_text) >= 2):
+            self._reset_builder()
+            return
+
+        # Check if stem is purely an administrative or excluded header
+        if any(re.search(pat, stem_text, re.IGNORECASE) for pat in ADMINISTRATIVE_METADATA_PATTERNS):
+            self._reset_builder()
+            return
+
+        if any(re.search(pat, stem_text, re.IGNORECASE) for pat in BLOOM_OBJECTIVE_PATTERNS):
+            self._reset_builder()
+            return
+
+        # If answer was not in question, check distant keys with question number
+        ans_raw = self._answer_raw
+        if not ans_raw and self._q_num and self._q_num in self.distant_keys:
+            ans_raw = self.distant_keys[self._q_num]
+
+        # Build options
+        formatted_options: list[dict[str, Any]] = []
+        for k, txt in self._options:
+            clean_opt_txt = clean_chemical_formula_text(fix_arabic_bidi_scrambling(txt))
+            m_opt_paren = re.match(r"^(\([^\)]+\))\s+([\u0600-\u06FF\s]{3,})$", clean_opt_txt)
+            if m_opt_paren:
+                clean_opt_txt = f"{m_opt_paren.group(2).strip()} {m_opt_paren.group(1).strip()}"
+            for pattern in _UI_LEAK_PATTERNS:
+                clean_opt_txt = pattern.sub("", clean_opt_txt)
+            clean_opt_txt = re.sub(r"[ \t]{2,}", " ", clean_opt_txt).strip()
+            formatted_options.append({"key": k, "text": clean_opt_txt, "is_correct": False})
+
+        corr_text, needs_rev = resolve_correct_answer_text(
+            formatted_options if formatted_options else None, ans_raw
+        )
+
+        # Determine Canonical Question Type
+        has_opts = len(formatted_options) >= 2
+        hint = self._section_hint or self.current_section_type
+
+        if has_opts:
+            if len(formatted_options) == 2 and any(
+                "صح" in o["text"] or "خطأ" in o["text"] or "True" in o["text"] or "False" in o["text"]
+                for o in formatted_options
+            ):
+                canonical_type = "TRUE_FALSE"
+                primary_type = "true_false"
+            else:
+                canonical_type = "MCQ"
+                primary_type = "multiple_choice"
+        elif hint == "TRUE_FALSE" or any(w in stem_text for w in ["صح أم خطأ", "ضع علامة", "True/False", "صواب أم خطأ", "صح أو خطأ"]):
+            canonical_type = "TRUE_FALSE"
+            primary_type = "true_false"
+            if not formatted_options:
+                opt_true = {"key": "أ", "text": "صح", "is_correct": False}
+                opt_false = {"key": "ب", "text": "خطأ", "is_correct": False}
+                if ans_raw:
+                    if any(t in ans_raw for t in ["صح", "صواب", "✓", "✔", "true"]):
+                        opt_true["is_correct"] = True
+                        corr_text = "صح"
+                        needs_rev = False
+                    elif any(f in ans_raw for f in ["خطأ", "خطا", "✗", "✘", "false"]):
+                        opt_false["is_correct"] = True
+                        corr_text = "خطأ"
+                        needs_rev = False
+                formatted_options = [opt_true, opt_false]
+        elif hint == "FILL_BLANK" or any(w in stem_text for w in ["أكمل الفراغ", "أكمل ما يأتي", "أكمل العبارات", "Fill in the blank"]) or re.search(r"(\.{3,}|_{3,}|\[\s*\]|\[\.+\])", stem_text):
+            canonical_type = "FILL_BLANK"
+            primary_type = "fill_in_blank"
+        elif hint == "ESSAY" or any(w in stem_text for w in ["علل", "بم تفسر", "وضح", "اشرح", "قارن", "اذكر", "ما المقصود", "اكتب", "احسب", "كيف"]):
+            canonical_type = "ESSAY"
+            primary_type = "essay"
+        elif "؟" in stem_text or "?" in stem_text or len(stem_text.split()) >= 4:
+            canonical_type = "ESSAY"
+            primary_type = "essay"
+        else:
+            canonical_type = "UNKNOWN"
+            primary_type = "unknown"
+            needs_rev = True
+
+        if canonical_type == "ESSAY":
+            formatted_options = []
+            corr_text = None
+            needs_rev = False
+
+        answer_confidence = "confirmed" if (corr_text and not needs_rev) else "unknown"
+
+        record = {
+            "question_text": stem_text,
+            "question_type": primary_type,
+            "canonical_type": canonical_type,
+            "options": formatted_options if canonical_type == "ESSAY" else (formatted_options if formatted_options else None),
+            "correct_answer": corr_text,
+            "needs_answer_review": needs_rev,
+            "answer_confidence": answer_confidence,
+            "points": self._explicit_points,
+            "needs_points_assignment": self._needs_points_assignment,
+            "topic": self.filename or "عام",
+            "classification_confidence": "high" if canonical_type != "UNKNOWN" else "uncertain",
+            "source_page": self._source_page,
+            "source_block_ids": list(self._source_block_ids),
+            "raw_text": "\n".join(self._raw_lines),
+        }
+        self.extracted_questions.append(record)
+        self._reset_builder()
+
+    def _reset_builder(self) -> None:
+        self._q_stem_parts = []
+        self._options = []
+        self._answer_raw = None
+        self._explicit_points = None
+        self._needs_points_assignment = True
+        self._source_page = None
+        self._source_block_ids = []
+        self._raw_lines = []
+        self._q_num = None
+        self._section_hint = None
+
+    def process_block(self, block_text: str, page_number: int | None = None, block_id: str | None = None) -> None:
+        # Strip Unicode directional marks
+        clean_block = re.sub(r"[\u200e\u200f\u202a-\u202e\ufeff]", "", block_text).strip()
+        if not clean_block:
+            return
+
+        # Reject PDF binary corruption tokens
+        if any(tok in clean_block for tok in ["FlateDecode", "endobj", "endstream", "/Type /Page", "/Resources", "/Contents"]):
+            return
+
+        lines = [l.strip() for l in clean_block.split("\n") if l.strip()]
+        lines = strip_ui_leak_lines(lines)
+        if not lines:
+            return
+
+        # Check if entire block is a distant answer key section
+        if any(re.search(pat, clean_block, re.IGNORECASE) for pat in KEY_SECTION_PATTERNS):
+            self._flush_active_question()
+            return
+
+        # Key normalization dictionary
+        KEY_NORM = {
+            'i': 'أ', '1': 'أ', 'a': 'أ', 'A': 'أ', 'أ': 'أ', 'ا': 'أ', 'ع': 'أ',
+            '2': 'ب', 'b': 'ب', 'B': 'ب', 'ب': 'ب',
+            '3': 'ج', 'c': 'ج', 'C': 'ج', 'ج': 'ج',
+            '4': 'د', 'd': 'د', 'D': 'د', 'د': 'د',
+        }
+        OPT_PATTERN = re.compile(r"^[\(\[]?\s*([أبجدA-Da-d]|i)\s*[\)\]\.\:\-\/]\s*(.*)$")
+        OPT_SUFFIX_PATTERN = re.compile(r"^(.*?)\s*[\(\[]\s*([أبجدA-Da-d]|i)\s*[\)\]][\.\:\-]?$")
+        ANS_PATTERN = re.compile(
+            r"^(?:الإجاب[ةه](?:\s+الصحيح[ةه])?|الجواب(?:\s+الصحيح)?|الحل(?:\s+الصحيح)?|فكرة\s+الحل|Answer|Key)\s*[\:\.\-\/]?\s*(.*)$",
+            re.IGNORECASE,
+        )
+        INLINE_OPT_PATTERN = re.compile(
+            r"(?:^|\s+)[\(\[]?\s*([أبجدA-D1-4]|i)\s*[\)\]\.\:\-\/]\s*(.*?)(?=(?:\s+[\(\[]?\s*[أبجدA-D1-4]|i\s*[\)\]\.\:\-\/]|$))"
+        )
+        HEADER_ONLY_PATTERN = re.compile(
+            r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)|س\s*\d+|Question\s*\d+|Q\d+)\s*[\:\.\-\)]?\s*(?:\(?\s*\d+\s*(?:درجات|درجة|marks?|pts?)\s*\)?)?$",
+            re.IGNORECASE,
+        )
+
+        SECTION_LOCAL_PATTERNS: list[tuple[re.Pattern, str]] = [
+            (re.compile(r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)\s*[:\.\-]?\s*)?(?:اختر|إختر)\s+(?:الإجابة|الاجابة)\s+(?:الصحيحة|المناسبة|الأصح)", re.IGNORECASE), "MCQ"),
+            (re.compile(r"^(?:أسئلة\s+الاختيار\s+من\s+متعدد|Multiple\s+Choice\s+Questions|MCQ)\b", re.IGNORECASE), "MCQ"),
+            (re.compile(r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)\s*[:\.\-]?\s*)?(?:ضع\s+علامة|أجب\s+بـ|بين\s+مدى\s+صحة|صواب|صح)\b.*(?:صح|صواب|✓|✔).*(?:خطأ|خطا|✗|✘)", re.IGNORECASE), "TRUE_FALSE"),
+            (re.compile(r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)\s*[:\.\-]?\s*)?(?:صواب|صح)\s*(?:أم|أو)\s*(?:خطأ|خطا)", re.IGNORECASE), "TRUE_FALSE"),
+            (re.compile(r"^(?:True\s*(?:or|\/)\s*False)\b", re.IGNORECASE), "TRUE_FALSE"),
+            (re.compile(r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)\s*[:\.\-]?\s*)?أكمل\s+(?:العبارات|الجمل|الفراغات|مكان\s+النقط|ما\s+يأتي)", re.IGNORECASE), "FILL_BLANK"),
+            (re.compile(r"^(?:Fill\s+in\s+the\s+blanks?)\b", re.IGNORECASE), "FILL_BLANK"),
+            (re.compile(r"^(?:\[?\s*(?:ثانياً|أولاً)?\s*[:\.]?\s*)?(?:الأسئلة\s+المقالية)\b", re.IGNORECASE), "ESSAY"),
+            (re.compile(r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)\s*[:\.\-]?\s*)?(?:أجب|اجب)\s+عن\s+الأسئلة\s+(?:الآتية|التالية)", re.IGNORECASE), "ESSAY"),
+        ]
+
+        for line in lines:
+            # 1. Section Header check
+            is_section_header = False
+            if not (self._q_num is not None and not self._q_stem_parts):
+                for sec_pat, sec_type in SECTION_LOCAL_PATTERNS:
+                    if sec_pat.search(line):
+                        self._flush_active_question()
+                        self.current_section_type = sec_type
+                        self.current_section_title = line
+                        is_section_header = True
+                        break
+            if is_section_header:
+                continue
+
+            # 2. Exclude administrative metadata
+            if any(re.search(pat, line, re.IGNORECASE) for pat in ADMINISTRATIVE_METADATA_PATTERNS):
+                continue
+
+            # 3. Answer Line
+            ans_match = ANS_PATTERN.match(line)
+            if ans_match:
+                raw_ans = ans_match.group(1).strip()
+                raw_ans = re.sub(r"^(?:الصحيح[ةه]|الصواب)\s*[\:\.\-]?\s*", "", raw_ans, flags=re.IGNORECASE).strip()
+                clean_ans = raw_ans.lstrip(":.-/ ").strip()
+                if self._q_stem_parts:
+                    self._answer_raw = clean_ans
+                    self._raw_lines.append(line)
+                continue
+
+            # 4. Inline Options (e.g. (أ) ... (ب) ... (ج) ... (د) ...)
+            inline_opts = INLINE_OPT_PATTERN.findall(line)
+            if len(inline_opts) >= 2:
+                for k, txt in inline_opts:
+                    norm_k = KEY_NORM.get(k, k)
+                    self._options.append((norm_k, txt.strip()))
+                self._raw_lines.append(line)
+                continue
+
+            # 5. Single Line Option
+            opt_m = OPT_PATTERN.match(line)
+            opt_suff_m = OPT_SUFFIX_PATTERN.match(line)
+            if self._q_stem_parts and opt_m and len(line.split()) < 30:
+                norm_k = KEY_NORM.get(opt_m.group(1), opt_m.group(1))
+                self._options.append((norm_k, opt_m.group(2).strip()))
+                self._raw_lines.append(line)
+                continue
+            elif self._q_stem_parts and opt_suff_m and len(line.split()) <= 15:
+                norm_k = KEY_NORM.get(opt_suff_m.group(2), opt_suff_m.group(2))
+                self._options.append((norm_k, opt_suff_m.group(1).strip()))
+                self._raw_lines.append(line)
+                continue
+
+            # 6. Question Start Detection
+            norm_line = line.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+            is_q_start = bool(
+                re.match(r"^(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)", norm_line, re.IGNORECASE)
+                or re.match(r"^س\s*\d+\s*[\:\.\-\)]", norm_line)
+                or re.match(r"^(?:Question|Q)\s*\d+\s*[\:\.\-\)]", norm_line, re.IGNORECASE)
+                or re.match(r"^\(?\d{1,3}\)?\s*[\.\-\:]\s*(?!\d)", norm_line)
+            )
+
+            if is_q_start:
+                self._flush_active_question()
+                # Extract question number
+                q_num_m = re.search(r"\(?(\d+)\)?", norm_line)
+                self._q_num = q_num_m.group(1) if q_num_m else None
+                # Clean prefix from stem
+                clean_start = re.sub(
+                    r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)|س\s*\d+|Question\s*\d+|Q\d+|^\(?\d{1,3}\)?)\s*[\:\.\-\)]?\s*",
+                    "",
+                    line,
+                )
+                # Check points in line
+                pts, needs_pts = extract_explicit_points(line)
+                self._explicit_points = pts
+                self._needs_points_assignment = needs_pts
+                self._section_hint = self.current_section_type
+                self._source_page = page_number
+                if block_id:
+                    self._source_block_ids.append(block_id)
+                self._raw_lines.append(line)
+                if clean_start.strip():
+                    clean_stem_start = clean_points_tokens_from_text(clean_start).strip()
+                    if clean_stem_start:
+                        self._q_stem_parts.append(clean_stem_start)
+                continue
+
+            # 7. Narrative or Continuation line
+            if (self._q_stem_parts or self._q_num is not None) and not self._options:
+                self._q_stem_parts.append(line)
+                self._raw_lines.append(line)
+                if not self._explicit_points:
+                    pts, needs_pts = extract_explicit_points(line)
+                    if pts is not None:
+                        self._explicit_points = pts
+                        self._needs_points_assignment = needs_pts
+            elif not self._q_stem_parts:
+                has_q_mark = "؟" in line or "?" in line
+                starts_with_cmd = bool(re.match(r"^(?:علل|بم\s+تفسر|وضح|اشرح|قارن|ما\s+المقصود|اذكر|كيف|متى|أين|هل|ماذا)\b", line))
+                if has_q_mark or starts_with_cmd or (self.current_section_type and len(line.split()) >= 3):
+                    self._flush_active_question()
+                    pts, needs_pts = extract_explicit_points(line)
+                    self._explicit_points = pts
+                    self._needs_points_assignment = needs_pts
+                    self._section_hint = self.current_section_type
+                    self._source_page = page_number
+                    if block_id:
+                        self._source_block_ids.append(block_id)
+                    self._raw_lines.append(line)
+                    self._q_stem_parts.append(line)
+
+    def finish(self) -> list[dict[str, Any]]:
+        self._flush_active_question()
+        return self.extracted_questions
+
+
+def segment_exam_document(
+    parsed_doc: Any,
+    distant_keys: dict[str, str] | None = None,
+    filename: str = "",
+) -> list[dict[str, Any]]:
+    """
+    Parses a ParsedDocument through the state machine ExamQuestionSegmenter.
+    Extracts table questions first, then segments blocks and pages.
+    """
+    distant_keys = distant_keys or {}
+    candidates: list[dict[str, Any]] = []
+
+    # 1. Extract table questions
+    table_questions = parse_table_questions(parsed_doc, distant_keys)
+    candidates.extend(table_questions)
+
+    # 2. Extract structured block questions via state machine
+    segmenter = ExamQuestionSegmenter(distant_keys=distant_keys, filename=filename)
+    if hasattr(parsed_doc, "pages"):
+        for page in parsed_doc.pages:
+            p_num = getattr(page, "page_number", 1)
+            blocks = getattr(page, "blocks", [])
+            for block in blocks:
+                b_text = getattr(block, "text", "")
+                b_id = getattr(block, "block_id", None)
+                if b_text:
+                    segmenter.process_block(b_text, page_number=p_num, block_id=b_id)
+    elif isinstance(parsed_doc, str):
+        segmenter.process_block(parsed_doc, page_number=1)
+    elif isinstance(parsed_doc, list):
+        for idx, item in enumerate(parsed_doc):
+            segmenter.process_block(str(item), page_number=idx + 1)
+
+    block_questions = segmenter.finish()
+    candidates.extend(block_questions)
+
+    for idx, q in enumerate(candidates, start=1):
+        q["id"] = idx
+
+    return candidates
+
 
 

@@ -286,6 +286,45 @@ function App() {
     localStorage.setItem("lms_lang", lang);
   }, [lang]);
 
+  // Lock page background scrolling whenever any wizard, modal, or popup dialog is open
+  useEffect(() => {
+    let isCurrentlyLocked = false;
+
+    function updateModalScrollLock() {
+      const hasModal = !!document.querySelector(
+        ".modal-overlay, .confirm-wizard-overlay, [role='dialog'], [aria-modal='true']"
+      );
+      if (hasModal === isCurrentlyLocked) return;
+      isCurrentlyLocked = hasModal;
+
+      if (hasModal) {
+        document.body.classList.add("modal-open");
+        document.documentElement.classList.add("modal-open");
+      } else {
+        document.body.classList.remove("modal-open");
+        document.documentElement.classList.remove("modal-open");
+      }
+    }
+
+    // Only observe DOM insertions/removals (childList) so we NEVER react to our own class mutations
+    const observer = new MutationObserver(() => {
+      updateModalScrollLock();
+    });
+
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+
+    updateModalScrollLock();
+
+    return () => {
+      observer.disconnect();
+      document.body.classList.remove("modal-open");
+      document.documentElement.classList.remove("modal-open");
+    };
+  }, []);
+
   // Load business data from the backend after the server session is known.
   useEffect(() => {
     if (!currentUser) {

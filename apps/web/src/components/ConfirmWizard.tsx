@@ -41,6 +41,7 @@ function Dialog({ state }: { state: ConfirmState }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [confirm, dismiss]);
 
+
   return (
     <div
       className="confirm-wizard-overlay"
