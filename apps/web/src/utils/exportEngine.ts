@@ -7,10 +7,10 @@ import {
   TableRow,
   TextRun,
   WidthType,
-  HeadingLevel,
   AlignmentType,
   BorderStyle,
 } from "docx";
+import * as XLSX from "xlsx";
 
 export interface ExportDataPayload {
   title: string;
@@ -22,7 +22,8 @@ export interface ExportDataPayload {
 }
 
 /**
- * Generates and downloads a real Microsoft Word .docx (OOXML binary format) file.
+ * Generates and downloads a real Microsoft Word .docx (OOXML binary format) file,
+ * 100% Right-To-Left (RTL) with the first column (اسم الطالب) at the far right.
  */
 export async function exportToDocx(payload: ExportDataPayload, filename = "lms_report.docx") {
   const dateStr = payload.generatedDate || new Date().toLocaleDateString("ar-EG", {
@@ -33,62 +34,90 @@ export async function exportToDocx(payload: ExportDataPayload, filename = "lms_r
 
   const docChildren: (Paragraph | Table)[] = [
     new Paragraph({
-      text: payload.title,
-      heading: HeadingLevel.HEADING_1,
       alignment: AlignmentType.CENTER,
-      spacing: { after: 120 },
+      bidirectional: true,
+      spacing: { after: 100 },
+      children: [
+        new TextRun({
+          text: payload.title,
+          bold: true,
+          size: 32, // 16pt
+          color: "2563EB",
+          rightToLeft: true,
+        }),
+      ],
+    }),
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      bidirectional: true,
+      spacing: { after: 200 },
+      children: [
+        new TextRun({
+          text: `تاريخ التقرير: ${dateStr}`,
+          bold: true,
+          size: 24, // 12pt
+          color: "000000",
+          rightToLeft: true,
+        }),
+      ],
     }),
   ];
 
-  if (payload.subtitle) {
-    docChildren.push(
-      new Paragraph({
-        text: payload.subtitle,
-        alignment: AlignmentType.CENTER,
-        spacing: { after: 160 },
-        children: [
-          new TextRun({
-            text: ` | تاريخ التقرير: ${dateStr}`,
-            italics: true,
-            color: "666666",
-          }),
-        ],
-      })
-    );
-  }
-
   if (payload.summaryStats && payload.summaryStats.length > 0) {
-    const statRuns: TextRun[] = [];
     payload.summaryStats.forEach((s) => {
-      statRuns.push(
-        new TextRun({ text: `• ${s.label}: `, bold: true }),
-        new TextRun({ text: `${s.value}   ` })
+      docChildren.push(
+        new Paragraph({
+          alignment: AlignmentType.RIGHT,
+          bidirectional: true,
+          spacing: { after: 60 },
+          children: [
+            new TextRun({
+              text: `${s.label} : `,
+              bold: true,
+              size: 22,
+              color: "000000",
+              rightToLeft: true,
+            }),
+            new TextRun({
+              text: `${s.value}`,
+              bold: true,
+              size: 22,
+              color: "000000",
+              rightToLeft: true,
+            }),
+          ],
+        })
       );
     });
+
+    // Add spacing after summary stats before the table
     docChildren.push(
       new Paragraph({
-        children: statRuns,
-        spacing: { after: 200 },
+        spacing: { after: 120 },
+        children: [],
       })
     );
   }
 
-  // Build Document Table
+  // Build Document Table (Right-to-Left layout via visuallyRightToLeft)
+  // Because visuallyRightToLeft is true, the 1st TableCell is placed at the FAR RIGHT!
   const headerRow = new TableRow({
     tableHeader: true,
     children: payload.headers.map(
-      (h) =>
+      (h, idx) =>
         new TableCell({
           width: { size: Math.floor(100 / payload.headers.length), type: WidthType.PERCENTAGE },
-          shading: { fill: "164F40" },
+          shading: { fill: "0F392B" },
           children: [
             new Paragraph({
-              alignment: AlignmentType.CENTER,
+              alignment: idx === 0 ? AlignmentType.RIGHT : AlignmentType.CENTER,
+              bidirectional: true,
               children: [
                 new TextRun({
                   text: String(h),
                   bold: true,
                   color: "FFFFFF",
+                  rightToLeft: true,
                 }),
               ],
             }),
@@ -98,17 +127,24 @@ export async function exportToDocx(payload: ExportDataPayload, filename = "lms_r
   });
 
   const dataRows = payload.rows.map(
-    (row, idx) =>
+    (row, rowIdx) =>
       new TableRow({
         children: row.map(
-          (cell) =>
+          (cell, cellIdx) =>
             new TableCell({
               width: { size: Math.floor(100 / payload.headers.length), type: WidthType.PERCENTAGE },
-              shading: { fill: idx % 2 === 0 ? "F9FAFB" : "FFFFFF" },
+              shading: { fill: rowIdx % 2 === 0 ? "F8FAFC" : "FFFFFF" },
               children: [
                 new Paragraph({
-                  alignment: AlignmentType.CENTER,
-                  children: [new TextRun({ text: String(cell ?? "") })],
+                  alignment: cellIdx === 0 ? AlignmentType.RIGHT : AlignmentType.CENTER,
+                  bidirectional: true,
+                  children: [
+                    new TextRun({
+                      text: String(cell ?? "—"),
+                      bold: cellIdx === 0,
+                      rightToLeft: true,
+                    }),
+                  ],
                 }),
               ],
             })
@@ -118,13 +154,14 @@ export async function exportToDocx(payload: ExportDataPayload, filename = "lms_r
 
   const table = new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
+    visuallyRightToLeft: true,
     borders: {
-      top: { style: BorderStyle.SINGLE, size: 1, color: "D1D5DB" },
-      bottom: { style: BorderStyle.SINGLE, size: 1, color: "D1D5DB" },
-      left: { style: BorderStyle.SINGLE, size: 1, color: "D1D5DB" },
-      right: { style: BorderStyle.SINGLE, size: 1, color: "D1D5DB" },
-      insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: "E5E7EB" },
-      insideVertical: { style: BorderStyle.SINGLE, size: 1, color: "E5E7EB" },
+      top: { style: BorderStyle.SINGLE, size: 1, color: "CBD5E1" },
+      bottom: { style: BorderStyle.SINGLE, size: 1, color: "CBD5E1" },
+      left: { style: BorderStyle.SINGLE, size: 1, color: "CBD5E1" },
+      right: { style: BorderStyle.SINGLE, size: 1, color: "CBD5E1" },
+      insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: "E2E8F0" },
+      insideVertical: { style: BorderStyle.SINGLE, size: 1, color: "E2E8F0" },
     },
     rows: [headerRow, ...dataRows],
   });
@@ -145,7 +182,59 @@ export async function exportToDocx(payload: ExportDataPayload, filename = "lms_r
 }
 
 /**
- * Generates and downloads a CSV / Excel compatible spreadsheet file with UTF-8 BOM.
+ * Generates and downloads a genuine Microsoft Excel Workbook (.xlsx format)
+ * with native 100% Right-To-Left display (RTL), placing Column A
+ * on the far right with "اسم الطالب" as the first column and native Arabic typography.
+ */
+export function exportToExcel(payload: ExportDataPayload, filename = "lms_data.xlsx") {
+  const dateStr = payload.generatedDate || new Date().toLocaleDateString("ar-EG", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+
+  const sheetData: (string | number)[][] = [
+    [payload.title],
+    [`تاريخ التقرير: ${dateStr}`],
+    [],
+  ];
+
+  if (payload.summaryStats && payload.summaryStats.length > 0) {
+    payload.summaryStats.forEach((s) => {
+      sheetData.push([`${s.label} : ${s.value}`]);
+    });
+    sheetData.push([]);
+  }
+
+  sheetData.push(payload.headers);
+  payload.rows.forEach((row) => {
+    sheetData.push(row.map((cell) => (cell ?? "—")));
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(sheetData);
+  ws["!views"] = [{ RTL: true }];
+  ws["!cols"] = payload.headers.map((h, i) => ({
+    wch: i === 0 ? 25 : Math.max(String(h).length + 6, 16),
+  }));
+
+  const wb = XLSX.utils.book_new();
+  const cleanSheetName = (payload.title || "التقرير")
+    .replace(/[\\/?*[\]]/g, "")
+    .slice(0, 31)
+    .trim() || "التقرير";
+  XLSX.utils.book_append_sheet(wb, ws, cleanSheetName);
+
+  const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+  const blob = new Blob([wbout], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  const actualFilename = filename.replace(/\.xls[x]?$/, "") + ".xlsx";
+  triggerDownload(blob, actualFilename);
+}
+
+/**
+ * Generates and downloads a CSV spreadsheet file with UTF-8 BOM,
+ * retaining the exact table order starting from the rightmost column (اسم الطالب).
  */
 export function exportToCsv(payload: ExportDataPayload, filename = "lms_data.csv") {
   const csvRows: string[] = [];
@@ -164,9 +253,10 @@ export function exportToCsv(payload: ExportDataPayload, filename = "lms_data.csv
 }
 
 /**
- * Opens a styled printable window for native high-resolution PDF saving/printing.
+ * Opens a styled printable window for native high-resolution PDF saving/printing,
+ * 100% Right-To-Left (RTL) with the first column (اسم الطالب) at the far right.
  */
-export function exportToPrintPdf(payload: ExportDataPayload) {
+export function exportToPrintPdf(payload: ExportDataPayload, filename = "") {
   const printWindow = window.open("", "_blank");
   if (!printWindow) return;
 
@@ -176,139 +266,178 @@ export function exportToPrintPdf(payload: ExportDataPayload) {
     day: "numeric",
   });
 
-  const html = `
-    <!DOCTYPE html>
-    <html dir="rtl" lang="ar">
-    <head>
-      <meta charset="utf-8">
-      <title>${payload.title}</title>
-      <style>
-        body {
-          font-family: 'Cairo', 'Segoe UI', Tahoma, sans-serif;
-          margin: 30px;
-          color: #1e293b;
-          direction: rtl;
-        }
-        .header {
-          text-align: center;
-          border-bottom: 2px solid #0f392b;
-          padding-bottom: 16px;
-          margin-bottom: 24px;
-        }
-        .header h1 {
-          margin: 0 0 6px;
-          color: #0f392b;
-          font-size: 24px;
-        }
-        .header p {
-          margin: 0;
-          color: #64748b;
-          font-size: 13px;
-        }
-        .summary-box {
-          background: #f8fafc;
-          border: 1px solid #e2e8f0;
-          border-radius: 8px;
-          padding: 12px 18px;
-          margin-bottom: 20px;
-          display: flex;
-          gap: 20px;
-          flex-wrap: wrap;
-        }
-        .stat-item strong {
-          color: #0f392b;
-        }
-        table {
-          width: 100%;
-          border-collapse: collapse;
-          margin-top: 10px;
-          font-size: 13px;
-        }
-        th {
-          background: #0f392b;
-          color: white;
-          padding: 10px 12px;
-          border: 1px solid #0f392b;
-          font-weight: bold;
-        }
-        td {
-          padding: 9px 12px;
-          border: 1px solid #cbd5e1;
-          text-align: center;
-        }
-        tr:nth-child(even) {
-          background: #f8fafc;
-        }
-        .footer {
-          margin-top: 30px;
-          text-align: center;
-          color: #94a3b8;
-          font-size: 11px;
-          border-top: 1px solid #e2e8f0;
-          padding-top: 10px;
-        }
-        @media print {
-          body { margin: 15mm; }
-          button { display: none; }
-        }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <h1>${payload.title}</h1>
-        <p>${payload.subtitle || ""} • صُدر في: ${dateStr}</p>
-      </div>
+  const html = `<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+  <meta charset="utf-8">
+  <title>${filename || payload.title}</title>
+  <style>
+    @page {
+      size: A4 landscape;
+      margin: 10mm 12mm;
+    }
+    * {
+      box-sizing: border-box;
+      direction: rtl;
+    }
+    body {
+      font-family: 'Cairo', 'Segoe UI', Tahoma, Arial, sans-serif;
+      margin: 0;
+      padding: 24px;
+      color: #0f172a;
+      direction: rtl;
+      text-align: right;
+      background: #ffffff;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 22px;
+      direction: rtl;
+    }
+    .header h1 {
+      margin: 0 0 8px;
+      color: #2563eb;
+      font-size: 22px;
+      font-weight: 800;
+    }
+    .header h2 {
+      margin: 0;
+      color: #000000;
+      font-size: 17px;
+      font-weight: 900;
+    }
+    .summary-list {
+      margin: 0 0 20px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      direction: rtl;
+      text-align: right;
+      align-items: flex-start;
+      justify-content: flex-start;
+    }
+    .summary-item {
+      font-size: 14.5px;
+      font-weight: 800;
+      color: #000000;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      direction: rtl;
+      text-align: right;
+      justify-content: flex-start;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-size: 12px;
+      direction: rtl;
+      table-layout: auto;
+    }
+    th {
+      background: #0f392b;
+      color: #ffffff;
+      padding: 10px 8px;
+      border: 1px solid #0f392b;
+      font-weight: 800;
+      text-align: center;
+      font-size: 12px;
+      direction: rtl;
+    }
+    th:first-child {
+      text-align: right;
+      padding-right: 14px;
+    }
+    td {
+      padding: 8px 8px;
+      border: 1px solid #cbd5e1;
+      text-align: center;
+      color: #1e293b;
+      direction: rtl;
+    }
+    td:first-child {
+      text-align: right;
+      font-weight: 700;
+      padding-right: 14px;
+      color: #0f172a;
+    }
+    tr:nth-child(even) {
+      background: #f8fafc;
+    }
+    .footer {
+      margin-top: 24px;
+      text-align: center;
+      color: #94a3b8;
+      font-size: 11px;
+      border-top: 1px solid #e2e8f0;
+      padding-top: 10px;
+      direction: rtl;
+    }
+    @media print {
+      body { margin: 0; padding: 0; direction: rtl; }
+      button { display: none; }
+      thead { display: table-header-group; }
+      tr { page-break-inside: avoid; }
+      table { direction: rtl; }
+    }
+  </style>
+</head>
+<body dir="rtl">
+  <div class="header">
+    <h1>${payload.title}</h1>
+    <h2>تاريخ التقرير: ${dateStr}</h2>
+  </div>
 
-      ${
-        payload.summaryStats && payload.summaryStats.length > 0
-          ? `
-        <div class="summary-box">
-          ${payload.summaryStats
-            .map(
-              (s) => `
-            <div class="stat-item">
-              <span>${s.label}: </span>
-              <strong>${s.value}</strong>
-            </div>
-          `
-            )
-            .join("")}
+  ${
+    payload.summaryStats && payload.summaryStats.length > 0
+      ? `
+    <div class="summary-list">
+      ${payload.summaryStats
+        .map(
+          (s) => `
+        <div class="summary-item">
+          <span>${s.label} : </span>
+          <span style="font-weight: 900;">${s.value}</span>
         </div>
       `
-          : ""
-      }
+        )
+        .join("")}
+    </div>
+  `
+      : ""
+  }
 
-      <table>
-        <thead>
-          <tr>
-            ${payload.headers.map((h) => `<th>${h}</th>`).join("")}
-          </tr>
-        </thead>
-        <tbody>
-          ${payload.rows
-            .map(
-              (row) => `
-            <tr>
-              ${row.map((val) => `<td>${val ?? "—"}</td>`).join("")}
-            </tr>
-          `
-            )
-            .join("")}
-        </tbody>
-      </table>
+  <table dir="rtl">
+    <thead>
+      <tr>
+        ${payload.headers.map((h, i) => `<th style="${i === 0 ? 'text-align: right;' : 'text-align: center;'}">${h}</th>`).join("")}
+      </tr>
+    </thead>
+    <tbody>
+      ${payload.rows
+        .map(
+          (row) => `
+        <tr>
+          ${row.map((val, i) => `<td style="${i === 0 ? 'text-align: right; font-weight: 700;' : 'text-align: center;'}">${val ?? "—"}</td>`).join("")}
+        </tr>
+      `
+        )
+        .join("")}
+    </tbody>
+  </table>
 
-      <div class="footer">
-        منصة التعلم الذكية • تقرير رسمي معتمد
-      </div>
+  <div class="footer">
+    منصة التعلم الذكية • تقرير رسمي معتمد وموثق
+  </div>
 
-      <script>
-        window.onload = function() {
-          window.print();
-        }
-      </script>
-    </body>
-    </html>
-  `;
+  <script>
+    window.onload = function() {
+      window.print();
+    }
+  </script>
+</body>
+</html>`;
 
   printWindow.document.write(html);
   printWindow.document.close();

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 import uuid
 from datetime import datetime, timezone, timedelta
 UTC = timezone.utc
 
+logger = logging.getLogger(__name__)
+
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus
+from app.core.events import event_broker
+from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus, Lesson
 from app.models.platform import (
     Assignment,
     AssignmentAttempt,
@@ -41,6 +45,7 @@ from app.schemas import (
     ModuleCreateRequest,
     NotificationBroadcastRequest,
     NotificationCreateRequest,
+    NotificationResponse,
     QuestionCreateRequest,
     QuizAnswerInput,
     QuizAttemptSubmitRequest,
@@ -118,7 +123,10 @@ def add_lesson(db: Session, user: User, module_id: uuid.UUID, payload: LessonCre
         kind=payload.kind,
         position=payload.position,
         content=payload.content.strip() if payload.content else None,
-        video_asset_key=payload.video_asset_key,
+        # Native videos are attached only through the protected upload
+        # endpoint; the create payload can never plant a storage key.
+        # Public embed URLs (validated http(s) only) are public by design.
+        video_asset_key=payload.external_video_url,
         video_duration_seconds=payload.video_duration_seconds,
         price_egp=payload.price_egp,
     )
@@ -130,7 +138,7 @@ def add_lesson(db: Session, user: User, module_id: uuid.UUID, payload: LessonCre
 
 def delete_lesson(db: Session, user: User, module_id: uuid.UUID, lesson_id: uuid.UUID) -> None:
     from app.models.course import Lesson
-    from app.models.transcript import Transcript, TranscriptSegment, KnowledgeChunk, TranscriptionJob
+    from app.models.transcript import Transcript, TranscriptSegment, TranscriptionJob
     from app.models.progress import LessonProgress, VideoEvent
     from app.models.extended import LessonAsset
 
@@ -157,7 +165,6 @@ def delete_lesson(db: Session, user: User, module_id: uuid.UUID, lesson_id: uuid
                 pass
 
     # 2. Clean up all child relational entities
-    db.query(KnowledgeChunk).filter(KnowledgeChunk.lesson_id == lesson_id).delete()
     db.query(TranscriptSegment).filter(TranscriptSegment.lesson_id == lesson_id).delete()
     db.query(Transcript).filter(Transcript.lesson_id == lesson_id).delete()
     db.query(TranscriptionJob).filter(TranscriptionJob.lesson_id == lesson_id).delete()
@@ -204,9 +211,26 @@ def create_question(db: Session, user: User, payload: QuestionCreateRequest) -> 
     return question
 
 
+def _validate_assessment_scope(db: Session, course, module_id: uuid.UUID | None, lesson_id: uuid.UUID | None) -> tuple[uuid.UUID | None, uuid.UUID | None]:
+    """Ensure the module/lesson belong to the same course being assessed."""
+    if module_id is not None:
+        module = db.get(CourseModule, module_id)
+        if module is None or module.course_id != course.id:
+            raise ValueError("Module does not belong to this course")
+    if lesson_id is not None:
+        lesson = db.get(Lesson, lesson_id)
+        if lesson is None:
+            raise ValueError("Lesson not found")
+        module = db.get(CourseModule, lesson.module_id)
+        if module is None or module.course_id != course.id:
+            raise ValueError("Lesson does not belong to this course")
+    return module_id, lesson_id
+
+
 def create_quiz(db: Session, user: User, payload: QuizCreateRequest) -> Quiz:
     course = course_for_user(db, user, payload.course_id)
     ensure_course_manager(user, course)
+    module_id, lesson_id = _validate_assessment_scope(db, course, payload.module_id, payload.lesson_id)
     quiz = Quiz(
         institution_id=course.institution_id,
         course_id=course.id,
@@ -217,6 +241,8 @@ def create_quiz(db: Session, user: User, payload: QuizCreateRequest) -> Quiz:
         ends_at=payload.ends_at,
         randomize_questions=payload.randomize_questions,
         attempts_allowed=payload.attempts_allowed,
+        module_id=module_id,
+        lesson_id=lesson_id,
     )
     db.add(quiz)
     db.flush()
@@ -300,9 +326,11 @@ def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
         )
         or 0
     ) + 1
-    if attempt_number > quiz.attempts_allowed:
+    if attempt_number > quiz.attempts_allowed and not quiz.allow_practice_attempts:
         raise PermissionError("Attempt limit reached")
     expires_at = now + timedelta(seconds=quiz.duration_seconds) if quiz.duration_seconds else None
+    # Only attempt 1 is official; any subsequent attempt is self-training.
+    is_practice = attempt_number > 1
     attempt = QuizAttempt(
         institution_id=user.institution_id,
         quiz_id=quiz.id,
@@ -310,6 +338,7 @@ def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
         attempt_number=attempt_number,
         started_at=now,
         expires_at=expires_at,
+        is_practice=is_practice,
         total_points=db.scalar(
             select(func.sum(QuizQuestion.points)).where(QuizQuestion.quiz_id == quiz.id)
         )
@@ -391,6 +420,7 @@ def submit_quiz(
 def create_assignment(db: Session, user: User, payload: AssignmentCreateRequest) -> Assignment:
     course = course_for_user(db, user, payload.course_id)
     ensure_course_manager(user, course)
+    module_id, lesson_id = _validate_assessment_scope(db, course, payload.module_id, payload.lesson_id)
     assignment = Assignment(
         institution_id=course.institution_id,
         course_id=course.id,
@@ -399,6 +429,8 @@ def create_assignment(db: Session, user: User, payload: AssignmentCreateRequest)
         prompt=payload.prompt.strip(),
         due_at=payload.due_at,
         max_score=payload.max_score,
+        module_id=module_id,
+        lesson_id=lesson_id,
     )
     db.add(assignment)
     db.commit()
@@ -545,6 +577,67 @@ def submit_assignment(
             raise
         return existing
     db.refresh(submission)
+
+    try:
+        course = db.get(Course, assignment.course_id)
+        teacher_ids = [course.teacher_id] if (course and course.teacher_id) else []
+        if not teacher_ids:
+            teacher_ids = list(
+                db.scalars(
+                    select(User.id).where(
+                        User.institution_id == user.institution_id,
+                        User.role.in_([UserRole.TEACHER, UserRole.INSTITUTION_ADMIN]),
+                        User.is_active.is_(True),
+                    )
+                ).all()
+            )
+        student_name = user.display_name or "طالب"
+        assignment_title = assignment.title
+        for tid in teacher_ids:
+            notif = Notification(
+                institution_id=user.institution_id,
+                recipient_id=tid,
+                kind="assignment",
+                title=f"تسليم واجب جديد: {assignment_title}",
+                message=f"قام الطالب {student_name} بتسليم الواجب '{assignment_title}'.",
+                action_url="#submissions",
+                delivery_status=DeliveryStatus.PENDING,
+            )
+            db.add(notif)
+        db.commit()
+
+        submission_data = {
+            "id": str(submission.id),
+            "assignment_id": str(submission.assignment_id),
+            "assignment_title": assignment_title,
+            "student_id": str(submission.student_id),
+            "student_name": student_name,
+            "version": submission.version,
+            "status": submission.status.value if hasattr(submission.status, "value") else str(submission.status),
+            "submitted_at": submission.submitted_at.isoformat() if submission.submitted_at else None,
+        }
+        event_broker.publish_event(
+            institution_id=user.institution_id,
+            event_type="submission_created",
+            data=submission_data,
+            target_user_ids=teacher_ids,
+            target_roles=["teacher", "institution_admin", "platform_admin"],
+        )
+        event_broker.publish_event(
+            institution_id=user.institution_id,
+            event_type="notification_created",
+            data={
+                "title": f"تسليم واجب جديد: {assignment_title}",
+                "message": f"قام الطالب {student_name} بتسليم الواجب '{assignment_title}'.",
+                "kind": "assignment",
+                "action_url": "#submissions",
+            },
+            target_user_ids=teacher_ids,
+            target_roles=["teacher", "institution_admin", "platform_admin"],
+        )
+    except Exception:
+        logger.exception("Failed to dispatch submission notification or realtime event")
+
     return submission
 
 
@@ -571,8 +664,51 @@ def grade_submission(
     submission.status = SubmissionStatus.APPROVED if payload.approve else SubmissionStatus.GRADED
     if payload.approve:
         submission.approved_at = now
+
+    status_text = "قبول وتصحيح" if payload.approve else "تصحيح"
+    notif = Notification(
+        institution_id=user.institution_id,
+        recipient_id=submission.student_id,
+        kind="assignment",
+        title=f"تم {status_text} الواجب: {assignment.title}",
+        message=f"حصلت على درجة {submission.final_score} من {assignment.max_score} في الواجب '{assignment.title}'." + (f" ملاحظات المعلم: {payload.teacher_feedback}" if payload.teacher_feedback else ""),
+        action_url="#submissions",
+        delivery_status=DeliveryStatus.PENDING,
+    )
+    db.add(notif)
     db.commit()
     db.refresh(submission)
+
+    try:
+        event_broker.publish_event(
+            institution_id=user.institution_id,
+            event_type="submission_graded",
+            data={
+                "submission_id": str(submission.id),
+                "assignment_id": str(assignment.id),
+                "assignment_title": assignment.title,
+                "student_id": str(submission.student_id),
+                "final_score": submission.final_score,
+                "max_score": assignment.max_score,
+                "status": submission.status.value if hasattr(submission.status, "value") else str(submission.status),
+                "teacher_feedback": submission.teacher_feedback,
+            },
+            target_user_ids=[submission.student_id],
+        )
+        event_broker.publish_event(
+            institution_id=user.institution_id,
+            event_type="notification_created",
+            data={
+                "title": f"تم {status_text} الواجب: {assignment.title}",
+                "message": f"حصلت على درجة {submission.final_score} من {assignment.max_score}.",
+                "kind": "assignment",
+                "action_url": "#submissions",
+            },
+            target_user_ids=[submission.student_id],
+        )
+    except Exception:
+        logger.exception("Failed to publish submission_graded event")
+
     return submission
 
 
@@ -612,6 +748,17 @@ def create_notification(
     db.add(notification)
     db.commit()
     db.refresh(notification)
+
+    try:
+        event_broker.publish_event(
+            institution_id=notification.institution_id,
+            event_type="notification_created",
+            data=NotificationResponse.model_validate(notification).model_dump(mode="json"),
+            target_user_ids=[notification.recipient_id],
+        )
+    except Exception:
+        logger.exception("Failed to publish notification_created event")
+
     return notification
 
 
@@ -626,7 +773,7 @@ def broadcast_notification(
         raise PermissionError("Insufficient permissions")
     query = select(User).where(
         User.institution_id == user.institution_id,
-        User.role == UserRole.STUDENT,
+        User.role.in_([UserRole.STUDENT, UserRole.TEACHER, UserRole.INSTITUTION_ADMIN]),
         User.is_active.is_(True),
         User.deleted_at.is_(None),
     )
@@ -660,10 +807,25 @@ def broadcast_notification(
         )
         notifications.append(notification)
         new_notifications.append(notification)
-    db.add_all(new_notifications)
-    db.commit()
-    for item in new_notifications:
-        db.refresh(item)
+    if new_notifications:
+        db.add_all(new_notifications)
+        db.flush()
+        db.commit()
+        try:
+            event_broker.publish_event(
+                institution_id=user.institution_id,
+                event_type="notification_created",
+                data={
+                    "kind": payload.kind,
+                    "title": payload.title.strip(),
+                    "message": payload.message.strip(),
+                    "action_url": payload.action_url,
+                    "scheduled_for": payload.scheduled_for.isoformat() if payload.scheduled_for else None,
+                },
+                target_user_ids=[n.recipient_id for n in new_notifications],
+            )
+        except Exception:
+            logger.exception("Failed to publish broadcast notification event")
     return notifications
 
 
@@ -687,6 +849,23 @@ def create_calendar_event(
     db.add(event)
     db.commit()
     db.refresh(event)
+
+    try:
+        event_broker.publish_event(
+            institution_id=event.institution_id,
+            event_type="calendar_updated",
+            data={
+                "event_id": str(event.id),
+                "action": "created",
+                "title": event.title,
+                "event_type": event.event_type,
+                "starts_at": event.starts_at.isoformat() if event.starts_at else None,
+                "ends_at": event.ends_at.isoformat() if event.ends_at else None,
+            },
+        )
+    except Exception:
+        logger.exception("Failed to publish calendar_updated event")
+
     return event
 
 

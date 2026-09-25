@@ -17,6 +17,7 @@ import { Language, translations } from "../utils/i18n";
 import { userService } from "../services/lmsService";
 import { useConfirm } from "../components/ConfirmWizard";
 import { StudentDetailModal } from "../components/StudentDetailModal";
+import { StudentDetailWizard } from "../components/StudentDetailWizard";
 
 export interface ManagedStudentItem {
   id: string;
@@ -30,6 +31,10 @@ export interface ManagedStudentItem {
   phone?: string;
   studentPhone?: string;
   guardianPhone?: string;
+  governorate?: string;
+  schoolName?: string;
+  gender?: "MALE" | "FEMALE" | string;
+  createdAt?: string;
   overallAttendanceRatio?: number;
   assignmentSubmissionRatio?: number;
   averageQuizScore?: number;
@@ -64,17 +69,40 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [studentYearFilter, setStudentYearFilter] = useState<string>("all");
   const [studentActionMsg, setStudentActionMsg] = useState<string | null>(null);
   const [selectedStudentForDetail, setSelectedStudentForDetail] = useState<ManagedStudentItem | null>(null);
+  const [selectedStudentForWizard, setSelectedStudentForWizard] = useState<ManagedStudentItem | null>(null);
 
   useEffect(() => {
     void userService.getStudents()
-      .then((students) => setRegisteredStudents(students.map((student) => ({
-        id: student.id,
-        name: student.display_name,
-        email: student.email,
-        role: student.role,
-        isBlocked: !student.is_active,
-        academicYear: "1st_secondary",
-      }))))
+      .then((students) => setRegisteredStudents(students.map((student) => {
+        const year: "1st_secondary" | "2nd_secondary" | "3rd_secondary" =
+          student.grade_level === "SECONDARY_2"
+            ? "2nd_secondary"
+            : student.grade_level === "SECONDARY_3"
+            ? "3rd_secondary"
+            : "1st_secondary";
+        const yearLabel =
+          year === "2nd_secondary"
+            ? "الصف الثاني الثانوي"
+            : year === "3rd_secondary"
+            ? "الصف الثالث الثانوي"
+            : "الصف الأول الثانوي";
+        return {
+          id: student.id,
+          name: student.display_name,
+          email: student.email,
+          role: student.role,
+          isBlocked: !student.is_active,
+          academicYear: year,
+          academicYearLabel: yearLabel,
+          studentPhone: student.student_phone || "",
+          guardianPhone: student.guardian_phone || "",
+          nationalId: student.national_id || "",
+          governorate: student.governorate || "",
+          schoolName: student.school_name || "",
+          gender: student.gender || "",
+          createdAt: student.created_at ? student.created_at.slice(0, 10) : "",
+        };
+      })))
       .catch(() => setRegisteredStudents([]));
   }, []);
 
@@ -155,16 +183,24 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           </p>
         </div>
 
-        {/* Prominent Logout Button (Part 5 Requirement 10) */}
+        {/* Prominent Logout Button (styled like delete — red) */}
         <button
-          onClick={onLogout}
+          onClick={async () => {
+            const confirmed = await confirm({
+              title: "تسجيل الخروج",
+              message: "هل أنت متأكد من رغبتك في تسجيل الخروج من حسابك؟",
+              confirmLabel: "تسجيل الخروج",
+              tone: "danger",
+            });
+            if (confirmed) onLogout();
+          }}
           style={{
             display: "inline-flex",
             alignItems: "center",
             gap: "8px",
-            background: "#fee2e2",
-            color: "#b91c1c",
-            border: "1px solid #fca5a5",
+            background: "var(--danger-action-bg)",
+            color: "#ffffff",
+            border: "none",
             padding: "10px 18px",
             borderRadius: "10px",
             fontSize: "13px",
@@ -276,6 +312,20 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               <div style={{ background: "var(--bg-surface-secondary)", padding: "16px", borderRadius: "12px", border: "1px solid var(--border-color)" }}>
                 <span style={{ fontSize: "12px", color: "var(--text-muted)", display: "block" }}>{t.guardianPhoneLabel}</span>
                 <strong style={{ fontSize: "15px", color: "var(--text-main)", display: "block", marginTop: "2px" }}>{student.guardianPhone}</strong>
+              </div>
+              <div style={{ background: "var(--bg-surface-secondary)", padding: "16px", borderRadius: "12px", border: "1px solid var(--border-color)" }}>
+                <span style={{ fontSize: "12px", color: "var(--text-muted)", display: "block" }}>{lang === "ar" ? "المحافظة" : "Governorate"}</span>
+                <strong style={{ fontSize: "15px", color: "var(--text-main)", display: "block", marginTop: "2px" }}>{student.governorate || "—"}</strong>
+              </div>
+              <div style={{ background: "var(--bg-surface-secondary)", padding: "16px", borderRadius: "12px", border: "1px solid var(--border-color)" }}>
+                <span style={{ fontSize: "12px", color: "var(--text-muted)", display: "block" }}>{lang === "ar" ? "المدرسة" : "School"}</span>
+                <strong style={{ fontSize: "15px", color: "var(--text-main)", display: "block", marginTop: "2px" }}>{student.schoolName || "—"}</strong>
+              </div>
+              <div style={{ background: "var(--bg-surface-secondary)", padding: "16px", borderRadius: "12px", border: "1px solid var(--border-color)" }}>
+                <span style={{ fontSize: "12px", color: "var(--text-muted)", display: "block" }}>{lang === "ar" ? "النوع" : "Gender"}</span>
+                <strong style={{ fontSize: "15px", color: "var(--text-main)", display: "block", marginTop: "2px" }}>
+                  {student.gender === "MALE" ? "ذكر" : student.gender === "FEMALE" ? "أنثى" : student.gender || "—"}
+                </strong>
               </div>
             </div>
 
@@ -467,7 +517,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                           transition: "all 0.15s ease",
                         }}
                       >
-                        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                        <div
+                          style={{ display: "flex", alignItems: "center", gap: "12px", cursor: "pointer" }}
+                          onDoubleClick={() => setSelectedStudentForWizard(st)}
+                          title="انقر مرتين لعرض كافة بيانات تسجيل الطالب"
+                        >
                           <div
                             style={{
                               width: "42px",
@@ -486,7 +540,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                           </div>
 
                           <div>
-                            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <div
+                              style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}
+                              onDoubleClick={() => setSelectedStudentForWizard(st)}
+                              title={lang === "ar" ? "انقر مرتين لعرض كافة بيانات التسجيل" : "Double-click to view registration details"}
+                            >
                               <strong style={{ fontSize: "14px", color: "var(--text-main)" }}>{st.name}</strong>
                               {isBlocked ? (
                                 <span style={{ fontSize: "10.5px", fontWeight: 800, padding: "2px 8px", borderRadius: "6px", background: "#fee2e2", color: "#b91c1c", display: "inline-flex", alignItems: "center", gap: "3px" }}>
@@ -534,7 +592,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                             <span>{lang === "ar" ? "مخطط المشاهدة" : "Watch History"}</span>
                           </button>
 
-                          {/* Block / Unblock Button */}
+                          {/* Block / Unblock Button (styled red like delete) */}
                           <button
                             type="button"
                             onClick={() => handleToggleBlockStudent(st.id, st.name, isBlocked)}
@@ -544,9 +602,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                               gap: "5px",
                               padding: "6px 12px",
                               borderRadius: "8px",
-                              border: isBlocked ? "1px solid #86efac" : "1px solid #fca5a5",
-                              background: isBlocked ? "#dcfce7" : "#fee2e2",
-                              color: isBlocked ? "#166534" : "#b91c1c",
+                              border: "none",
+                              background: isBlocked ? "#dcfce7" : "var(--danger-action-bg)",
+                              color: isBlocked ? "#166534" : "#ffffff",
                               fontSize: "12px",
                               fontWeight: 800,
                               cursor: "pointer",
@@ -569,7 +627,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                               padding: "6px 12px",
                               borderRadius: "8px",
                               border: "none",
-                              background: "#dc2626",
+                              background: "var(--danger-action-bg)",
                               color: "#ffffff",
                               fontSize: "12px",
                               fontWeight: 800,
@@ -637,8 +695,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                     });
                   }
                 }}
+                className="btn-delete"
                 style={{
-                  background: "#dc2626",
+                  background: "var(--danger-action-bg)",
                   color: "#ffffff",
                   border: "none",
                   padding: "10px 18px",
@@ -710,6 +769,22 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           ],
         } : null}
         onClose={() => setSelectedStudentForDetail(null)}
+      />
+
+      {/* Student Registration Detail Wizard (on Double-Click) */}
+      <StudentDetailWizard
+        student={selectedStudentForWizard}
+        onClose={() => setSelectedStudentForWizard(null)}
+        onBlock={async (studentId, studentName, isBlocked) => {
+          await handleToggleBlockStudent(studentId, studentName, isBlocked);
+          if (selectedStudentForWizard && selectedStudentForWizard.id === studentId) {
+            setSelectedStudentForWizard({ ...selectedStudentForWizard, isBlocked: !isBlocked });
+          }
+        }}
+        onDelete={async (studentId, studentName) => {
+          await handleDeleteStudent(studentId, studentName);
+          setSelectedStudentForWizard(null);
+        }}
       />
     </div>
   );

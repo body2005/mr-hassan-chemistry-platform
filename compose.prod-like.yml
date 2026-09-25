@@ -93,11 +93,21 @@ services:
       context: apps/api
       dockerfile: ../../infra/Dockerfile.api
     container_name: chemistry_migration
-    command: ["alembic", "upgrade", "head"]
+    command: ["/bin/sh", "-c", "alembic upgrade head && python scripts/seed_teacher.py"]
     restart: "no"
     environment:
       APP_ENV: production_like
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-chemistry_platform}
+      # Local test credentials. The seed reconciles the existing records on
+      # every compose start so the browser always has usable test accounts.
+      INITIAL_TEACHER_EMAIL: teacher@hassanshaban.com
+      INITIAL_TEACHER_USERNAME: hassan_teacher
+      INITIAL_TEACHER_PASSWORD: admin
+      RESET_INITIAL_TEACHER_PASSWORD: "true"
+      ENABLE_DEMO_ACCOUNTS: "true"
+      DEMO_TEACHER_PASSWORD: admin
+      DEMO_STUDENT_PASSWORD: admin
+      RESET_DEMO_PASSWORDS: "true"
     depends_on:
       postgres:
         condition: service_healthy
@@ -113,7 +123,6 @@ services:
     environment:
       APP_ENV: production_like
       PROCESS_TYPE: api
-      ALLOW_IN_PROCESS_OCR: "false"
       SECRET_KEY: ${SECRET_KEY:-local-docker-production-secret-key-at-least-32-chars-long}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-chemistry_platform}
       REDIS_URL: redis://redis:6379/0
@@ -131,8 +140,13 @@ services:
       ALLOW_LOCAL_INGESTION: "false"
       MAX_CONCURRENT_INGESTIONS: 1
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      PAYMENT_INSTAPAY_ACCOUNT: ${PAYMENT_INSTAPAY_ACCOUNT:-01000000000}
+      PAYMENT_VODAFONE_CASH_NUMBER: ${PAYMENT_VODAFONE_CASH_NUMBER:-01000000000}
+      PAYMENT_BANK_DETAILS: ${PAYMENT_BANK_DETAILS:-"بنك مصر - حساب 1234567890 - مستر حسن شعبان"}
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      - video_uploads:/srv/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -217,3 +231,4 @@ volumes:
   postgres_data:
   redis_data:
   minio_data:
+  video_uploads:

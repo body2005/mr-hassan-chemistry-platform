@@ -28,37 +28,32 @@ def normalize_email(email: str) -> str:
     return email.strip().lower()
 
 
-def get_or_create_institution(db: Session, slug: str) -> Institution:
+def get_registration_institution(db: Session, slug: str) -> Institution:
     normalized_slug = slug.strip().lower()
     institution = db.scalar(select(Institution).where(Institution.slug == normalized_slug))
-    if institution:
-        return institution
-
-    institution = Institution(name=normalized_slug.replace("-", " ").title(), slug=normalized_slug)
-    db.add(institution)
-    try:
-        db.flush()
-    except IntegrityError:
-        db.rollback()
-        institution = db.scalar(select(Institution).where(Institution.slug == normalized_slug))
-        if institution is None:
-            raise
+    if institution is None:
+        # Public registration must never turn arbitrary client input into a
+        # tenant. Institutions are provisioned by the platform separately.
+        raise ValueError("Registration is not available for this institution")
     return institution
 
 
 def register_student(db: Session, payload: RegisterRequest) -> User:
-    institution = get_or_create_institution(db, payload.institution_slug)
+    institution = get_registration_institution(db, payload.institution_slug)
     email = normalize_email(str(payload.email))
     username = (payload.username or email.split("@", 1)[0]).strip().lower()
 
-    duplicate = db.scalar(
-        select(User).where(
+    if db.scalar(select(User.id).where(User.institution_id == institution.id, User.email == email)):
+        raise ValueError("Email address is already registered")
+    if db.scalar(select(User.id).where(User.institution_id == institution.id, User.username == username)):
+        raise ValueError("Username is already registered")
+    if payload.national_id and db.scalar(
+        select(User.id).where(
             User.institution_id == institution.id,
-            (User.email == email) | (User.username == username),
+            User.national_id == payload.national_id,
         )
-    )
-    if duplicate:
-        raise ValueError("An account with this email or username already exists")
+    ):
+        raise ValueError("National ID is already registered")
 
     user = User(
         institution_id=institution.id,
@@ -67,10 +62,21 @@ def register_student(db: Session, payload: RegisterRequest) -> User:
         display_name=payload.display_name.strip(),
         password_hash=hash_password(payload.password),
         role=UserRole.STUDENT,
+        grade_level=payload.grade_level.value,
+        student_phone=payload.student_phone,
+        guardian_phone=payload.guardian_phone,
+        national_id=payload.national_id,
+        governorate=payload.governorate,
+        school_name=payload.school_name,
+        gender=payload.gender,
+        religion=payload.religion,
     )
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise ValueError("Registration data conflicts with an existing account") from exc
     return user
 
 

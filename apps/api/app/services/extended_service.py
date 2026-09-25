@@ -17,15 +17,12 @@ UTC = timezone.utc
 
 from app.models.course import Course, CourseModule, Enrollment, Lesson
 from app.models.extended import (
-    AIJob,
-    AIRun,
     Grade,
     LearningObjective,
     LessonAsset,
     QuestionBank,
     QuestionVersion,
     ReportJob,
-    RiskAssessment,
     StudentMastery,
 )
 from app.models.platform import (
@@ -34,6 +31,7 @@ from app.models.platform import (
     Question,
     Quiz,
     QuizAttempt,
+    QuizAttemptAnswer,
 )
 from app.models.user import User, UserRole
 
@@ -138,7 +136,6 @@ def create_question_versioned(
     difficulty: str | None,
     topic: str | None,
     source: str = "manual",
-    ai_generated: bool = False,
     explanation: str | None = None,
 ) -> QuestionVersion:
     _ensure_manager(user)
@@ -169,7 +166,6 @@ def create_question_versioned(
         difficulty=difficulty,
         topic=topic,
         source=source,
-        ai_generated=ai_generated,
     )
     db.add(version_row)
 
@@ -236,7 +232,6 @@ def update_question_versioned(
         difficulty=changes.get("difficulty", current.difficulty),
         topic=changes.get("topic", current.topic),
         source=current.source,
-        ai_generated=current.ai_generated,
     )
     db.add(version_row)
     db.commit()
@@ -325,70 +320,7 @@ def student_grades(db: Session, viewer: User, student_id: uuid.UUID) -> list[Gra
         )
         .order_by(Grade.updated_at.desc())
     ).all()
-    return list(rows)
-
-
-# ---------------------------------------------------------------------------
-# AI jobs + runs
-# ---------------------------------------------------------------------------
-
-ALLOWED_AI_TASKS = {
-    "quiz_generation",
-    "essay_grading",
-    "document_processing",
-    "report_narrative",
-}
-
-
-def enqueue_ai_job(
-    db: Session,
-    user: User,
-    *,
-    task: str,
-    payload: dict,
-    idempotency_key: str | None,
-) -> AIJob:
-    if task not in ALLOWED_AI_TASKS:
-        raise ValueError("Unsupported AI task")
-    if idempotency_key:
-        existing = db.scalar(select(AIJob).where(AIJob.idempotency_key == idempotency_key))
-        if existing is not None:
-            return existing
-    job = AIJob(
-        institution_id=user.institution_id,
-        requested_by=user.id,
-        task=task,
-        payload_json=payload,
-        idempotency_key=idempotency_key,
-        status="queued",
-    )
-    db.add(job)
-    db.commit()
-    db.refresh(job)
-    return job
-
-
-def get_ai_job(db: Session, user: User, job_id: uuid.UUID) -> AIJob:
-    job = db.scalar(
-        select(AIJob).where(
-            AIJob.id == job_id,
-            AIJob.institution_id == user.institution_id,
-        )
-    )
-    if job is None:
-        raise LookupError("AI job not found")
-    return job
-
-
-def record_ai_run(db: Session, **fields: object) -> AIRun:
-    run = AIRun(**fields)
-    db.add(run)
-    db.commit()
-    db.refresh(run)
-    return run
-
-
-# ---------------------------------------------------------------------------
+    return list(rows)# ---------------------------------------------------------------------------
 # Report jobs
 # ---------------------------------------------------------------------------
 
@@ -450,7 +382,7 @@ def get_report_job(db: Session, user: User, job_id: uuid.UUID) -> ReportJob:
 
 
 # ---------------------------------------------------------------------------
-# Mastery & risk analytics
+# Mastery analytics
 # ---------------------------------------------------------------------------
 
 def compute_student_mastery(db: Session, user: User, student_id: uuid.UUID) -> list[dict]:
@@ -474,6 +406,7 @@ def compute_student_mastery(db: Session, user: User, student_id: uuid.UUID) -> l
             )
             .where(
                 QuizAttempt.student_id == student_id,
+                QuizAttempt.is_practice.is_(False),
                 Question.learning_objective == objective.code,
             )
         ).all()
@@ -495,98 +428,6 @@ def compute_student_mastery(db: Session, user: User, student_id: uuid.UUID) -> l
         )
     return result
 
-
-RISK_WEIGHTS = {
-    "quiz_average": 0.35,
-    "video_completion": 0.25,
-    "assignment_delay_ratio": 0.2,
-    "recent_activity_days": 0.2,
-}
-
-
-def assess_student_risk(
-    db: Session, viewer: User, student_id: uuid.UUID, course_id: uuid.UUID | None
-) -> dict:
-    """Explainable risk score: components are reported alongside the score."""
-    if viewer.role == UserRole.STUDENT and viewer.id != student_id:
-        raise PermissionError("Students can only view their own risk profile")
-
-    # Quiz average (0..1)
-    scores = db.scalars(
-        select(QuizAttempt.score).where(
-            QuizAttempt.student_id == student_id, QuizAttempt.score.is_not(None)
-        )
-    ).all()
-    totals = db.scalars(
-        select(QuizAttempt.total_points).where(
-            QuizAttempt.student_id == student_id, QuizAttempt.total_points.is_not(None)
-        )
-    ).all()
-    ratios = [s / t for s, t in zip(scores, totals) if t]
-    quiz_average = sum(ratios) / len(ratios) if ratios else None
-
-    # Assignment delay ratio
-    submissions = db.scalars(
-        select(AssignmentSubmission).where(AssignmentSubmission.student_id == student_id)
-    ).all()
-    delayed = 0
-    graded = 0
-    for submission in submissions:
-        assignment = db.get(Assignment, submission.assignment_id)
-        if assignment is None or assignment.due_at is None:
-            continue
-        graded += 1
-        if submission.submitted_at > assignment.due_at:
-            delayed += 1
-    delay_ratio = delayed / graded if graded else None
-
-    factors = {
-        "quiz_average": quiz_average,
-        "assignment_delay_ratio": delay_ratio,
-        # video completion/activity come from progress service when available
-    }
-
-    # Weighted score where missing evidence contributes neutral 0.5
-    def component(name: str, value: float | None, invert: bool = False) -> float:
-        v = value if value is not None else 0.5
-        if invert:
-            v = 1.0 - v
-        return max(0.0, min(1.0, v))
-
-    risk = (
-        RISK_WEIGHTS["quiz_average"] * component("q", quiz_average, invert=True)
-        + RISK_WEIGHTS["assignment_delay_ratio"] * component("d", delay_ratio)
-        + RISK_WEIGHTS["video_completion"] * 0.5  # placeholder until telemetry join lands
-        + RISK_WEIGHTS["recent_activity_days"] * 0.5
-    )
-    risk = round(max(0.0, min(1.0, risk)), 3)
-    band = "high" if risk >= 0.66 else ("medium" if risk >= 0.33 else "low")
-
-    explanation = {
-        "weights": RISK_WEIGHTS,
-        "components": factors,
-        "notes": [
-            "Missing signals contribute a neutral 0.5 rather than being ignored.",
-            "Score is deterministic and explainable; ML-based scoring augments it later.",
-        ],
-    }
-    assessment = RiskAssessment(
-        institution_id=viewer.institution_id,
-        student_id=student_id,
-        course_id=course_id,
-        risk_score=risk,
-        band=band,
-        factors_json=explanation,
-    )
-    db.add(assessment)
-    db.commit()
-    db.refresh(assessment)
-    return {
-        "student_id": str(student_id),
-        "risk_score": risk,
-        "band": band,
-        "explanation": explanation,
-    }
 
 
 def _ensure_manager(user: User) -> None:

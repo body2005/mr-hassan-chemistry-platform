@@ -109,16 +109,17 @@ export const CustomColumnModal: React.FC<CustomColumnModalProps> = ({
 
           <button
             onClick={onClose}
+            className="modal-close-btn"
             style={{
-              background: "var(--bg-surface-secondary, #f1f5f9)",
-              border: "1px solid var(--border-color, #e2e8f0)",
+              background: "var(--modal-close-bg)",
+              border: "none",
               borderRadius: "8px",
               width: "32px",
               height: "32px",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              color: "var(--text-muted, #64748b)",
+              color: "#ffffff",
               cursor: "pointer",
             }}
           >
@@ -129,7 +130,7 @@ export const CustomColumnModal: React.FC<CustomColumnModalProps> = ({
         <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
           <div>
             <label style={{ display: "block", fontSize: "12px", fontWeight: 800, marginBottom: "6px", color: "var(--text-main, #0f172a)" }}>
-              اسم العمود المخصص (Custom Column Label):
+              اسم العمود المخصص:
             </label>
             <input
               type="text"

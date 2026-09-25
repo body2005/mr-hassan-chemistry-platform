@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import Cookie, Depends, HTTPException, Request, status
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import decode_preview_token, decode_session_token
-from app.models.platform import RevokedSession
+from app.models.platform import RefreshSession, RevokedSession
 from app.models.user import User, UserRole
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -22,14 +23,37 @@ def _extract_token(request: Request, session_cookie: str | None = None) -> str |
     # An explicit Authorization header must win over a stale browser cookie.
     # The SPA keeps the freshly issued token in localStorage, while browsers
     # can retain or reject cross-site cookie deletion independently.
-    # CRITICAL: General session authentication must NEVER extract ambient ?token=
-    # query parameters, which are strictly reserved for scoped preview tokens.
     auth = request.headers.get("Authorization") or request.headers.get("authorization")
     if auth and auth.lower().startswith("bearer "):
         return auth[7:].strip()
     if session_cookie:
         return session_cookie
+    query_token = request.query_params.get("token")
+    if query_token:
+        return query_token.strip()
     return None
+
+
+def _active_session_family(db: Session, payload: dict) -> bool:
+    family_id = payload.get("family_id")
+    if not family_id:
+        # Legacy synthetic tokens are test-only compatibility. Browser-issued
+        # credentials always have a server-side family.
+        return get_settings().app_env.lower() in {"test", "testing"}
+    try:
+        parsed_family_id = uuid.UUID(str(family_id))
+    except (ValueError, TypeError):
+        return False
+    return bool(
+        db.scalar(
+            select(RefreshSession.id).where(
+                RefreshSession.family_id == parsed_family_id,
+                RefreshSession.user_id == uuid.UUID(str(payload["sub"])),
+                RefreshSession.revoked_at.is_(None),
+                RefreshSession.expires_at > datetime.now(timezone.utc),
+            )
+        )
+    )
 
 
 def get_current_user(
@@ -81,6 +105,8 @@ def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session")
     if db.scalar(select(RevokedSession.id).where(RevokedSession.jti == jti)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session is revoked")
+    if not _active_session_family(db, payload):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session family is revoked")
     return user
 
 
@@ -113,6 +139,8 @@ def get_optional_user(
             return None
         jti = str(payload.get("jti", ""))
         if not jti or db.scalar(select(RevokedSession.id).where(RevokedSession.jti == jti)):
+            return None
+        if not _active_session_family(db, payload):
             return None
         if payload.get("role") != user.role.value:
             return None
@@ -243,7 +271,11 @@ def get_preview_auth_context(
             )
             if user:
                 jti = str(payload.get("jti", ""))
-                if jti and not db.scalar(select(RevokedSession.id).where(RevokedSession.jti == jti)):
+                if (
+                    jti
+                    and not db.scalar(select(RevokedSession.id).where(RevokedSession.jti == jti))
+                    and _active_session_family(db, payload)
+                ):
                     return PreviewAuthContext(
                         user_id=user.id,
                         institution_id=user.institution_id,

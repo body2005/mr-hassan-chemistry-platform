@@ -4,7 +4,7 @@ export const paymentsAr = {
   navPaymentManagement: "إدارة المدفوعات والاشتراكات",
   navPaymentManagementSub: "سجل فواتير واشتراكات الطلاب",
   paymentTitle: "الاشتراكات وباقات الكيمياء",
-  paymentSubtitle: "اشترك في شروحات الكيمياء لمشاهدة الفيديوهات الحصرية والاستفادة من المساعد الذكي",
+  paymentSubtitle: "اشترك في شروحات الكيمياء لمشاهدة الفيديوهات الحصرية والوصول إلى كل المحتوى التعليمي",
   activeSubscriptions: "الاشتراكات المفعلة",
   availablePlans: "الباقات المتاحة للاشتراك",
   pricePerLesson: "{price} ج.م / للدرس",

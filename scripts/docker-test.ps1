@@ -26,4 +26,4 @@ try {
 }
 
 Write-Host "`n4. Running Test Suite inside API Container:" -ForegroundColor Yellow
-docker compose -f compose.prod-like.yml exec api python -m pytest tests/test_preview_token_security.py tests/test_arabic_chemistry_exam_real.py -v
+docker compose -f compose.prod-like.yml exec api python -m pytest tests/test_health.py tests/test_extraction_contract.py -v

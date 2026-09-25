@@ -33,8 +33,23 @@ export const StudentDetailModal: React.FC<StudentDetailModalProps> = ({
             </span>
           </div>
 
-          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer" }}>
-            <X size={20} />
+          <button
+            onClick={onClose}
+            className="modal-close-btn"
+            style={{
+              background: "var(--modal-close-bg)",
+              border: "none",
+              color: "#ffffff",
+              cursor: "pointer",
+              borderRadius: "8px",
+              width: "32px",
+              height: "32px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <X size={18} />
           </button>
         </div>
 
@@ -60,7 +75,7 @@ export const StudentDetailModal: React.FC<StudentDetailModalProps> = ({
         <div>
           <h3 style={{ margin: "0 0 12px", fontSize: "15px", fontWeight: 800, color: "var(--text-main)", display: "flex", alignItems: "center", gap: "6px" }}>
             <Video size={17} style={{ color: "#059669" }} />
-            <span>تفاصيل مشاهدة الفيديوهات ومخطط المتابعة الزمني (Timeline المشاهدة)</span>
+            <span>تفاصيل مشاهدة الفيديوهات ومخطط المتابعة الزمني</span>
           </h3>
 
           {student.watchHistory.length === 0 ? (
@@ -152,12 +167,6 @@ export const StudentDetailModal: React.FC<StudentDetailModalProps> = ({
               })}
             </div>
           )}
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "20px" }}>
-          <button className="btn-secondary" onClick={onClose}>
-            إغلاق
-          </button>
         </div>
       </div>
     </div>

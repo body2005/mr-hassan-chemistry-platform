@@ -100,17 +100,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
   const [isExpanded, setIsExpanded] = useState(false);
 
   // Strictly enforce role: Upload widget is exclusively for teachers
-  let role = currentUser?.role;
-  if (!role && typeof localStorage !== "undefined") {
-    try {
-      const cached = localStorage.getItem("lms_cached_user");
-      if (cached) {
-        role = JSON.parse(cached).role;
-      }
-    } catch {
-      role = undefined;
-    }
-  }
+  const role = currentUser?.role;
 
   useEffect(() => {
     const unsubscribe = uploadManager.subscribe((newTasks) => {
@@ -136,7 +126,8 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  if (role !== "teacher") {
+  // Strictly enforce role and active uploads: hide widget if no active upload
+  if (role !== "teacher" || activeTasks.length === 0) {
     return null;
   }
 
@@ -364,11 +355,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                           }}
                           title={task.title}
                         >
-                          {task.title.startsWith("فهرسة:")
-                            ? task.title
-                            : task.type === "knowledge_source"
-                            ? `فهرسة: ${task.fileName || task.title}`
-                            : task.title}
+                          {task.title}
                         </div>
                         <div style={{ fontSize: "10px", color: "var(--text-muted, #64748b)" }}>
                           {task.formattedSize}
@@ -383,9 +370,9 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                           type="button"
                           onClick={() => uploadManager.cancelUpload(task.id)}
                           style={{
-                            background: "rgba(239, 68, 68, 0.1)",
+                            background: "rgb(118, 40, 40)",
                             border: "none",
-                            color: "#ef4444",
+                            color: "#ffffff",
                             cursor: "pointer",
                             padding: "4px",
                             borderRadius: "6px",
@@ -393,7 +380,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                             alignItems: "center",
                             justifyContent: "center",
                           }}
-                          title="إيقاف الفهرسة (مع حفظ الملف بالسيرفر)"
+                          title="إلغاء الرفع"
                         >
                           <X size={15} />
                         </button>
@@ -421,7 +408,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                           style={{
                             background: "transparent",
                             border: "none",
-                            color: "var(--text-muted, #94a3b8)",
+                            color: "rgb(118, 40, 40)",
                             cursor: "pointer",
                             padding: "4px",
                           }}

@@ -1,0 +1,7 @@
+FROM learningproject-api:latest
+
+# Test-only layer.  The runtime image deliberately stays free of test-only
+# plugins; this runner adds the async pytest plugin used by the API suite.
+RUN pip install --no-cache-dir "pytest-asyncio>=0.24,<1"
+
+COPY . .

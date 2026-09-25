@@ -410,6 +410,7 @@ def get_storage_provider() -> BaseStorageProvider:
                     bucket_name=settings.s3_bucket,
                     access_key_id=settings.s3_access_key,
                     secret_access_key=settings.s3_secret_key,
+                    region_name=settings.s3_region,
                 )
             except Exception as e:
                 logger.warning("Failed to initialize S3 storage provider (%s); falling back to local storage.", e)

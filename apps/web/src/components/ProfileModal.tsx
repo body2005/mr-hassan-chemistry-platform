@@ -57,8 +57,23 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             </div>
           </div>
 
-          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer" }}>
-            <X size={20} />
+          <button
+            onClick={onClose}
+            className="modal-close-btn"
+            style={{
+              background: "var(--modal-close-bg)",
+              border: "none",
+              color: "#ffffff",
+              cursor: "pointer",
+              borderRadius: "8px",
+              width: "32px",
+              height: "32px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <X size={18} />
           </button>
         </div>
 
@@ -184,7 +199,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   }
                 }}
                 style={{
-                  background: "#dc2626",
+                  background: "var(--danger-action-bg)",
                   color: "#ffffff",
                   border: "none",
                   padding: "6px 12px",
@@ -199,12 +214,6 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             </div>
           </div>
         )}
-
-        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "20px" }}>
-          <button className="btn-secondary" onClick={onClose}>
-            إغلاق
-          </button>
-        </div>
       </div>
     </div>
   );
