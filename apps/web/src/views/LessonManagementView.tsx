@@ -75,6 +75,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   const { lang } = useTranslation();
   const isDark = useDataTheme() === "dark";
   void lang;
+  void isDark;
 
   const [courses, setCourses] = useState<Course[]>(availableCourses);
   React.useEffect(() => setCourses(availableCourses), [availableCourses]);
@@ -1033,14 +1034,11 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setIsDeleteMode((prev) => !prev)}
+                  className="btn-danger"
                   style={{
-                    background: isDeleteMode ? "rgb(118, 40, 40)" : isDark ? "rgba(118, 40, 40, 0.2)" : "rgba(118, 40, 40, 0.08)",
-                    color: isDeleteMode ? "#ffffff" : "rgb(118, 40, 40)",
-                    border: isDeleteMode
-                      ? "1.5px solid rgb(118, 40, 40)"
-                      : isDark
-                        ? "1px solid rgba(118, 40, 40, 0.5)"
-                        : "1px solid rgba(118, 40, 40, 0.3)",
+                    background: "rgb(118, 40, 40)",
+                    color: "#ffffff",
+                    border: "1px solid rgb(118, 40, 40)",
                     borderRadius: "8px",
                     padding: "6px 14px",
                     fontSize: "12px",
@@ -1244,10 +1242,10 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                     key={lesson.id}
                     style={{
                       background: "var(--bg-surface, #ffffff)",
-                      border: isDeleteMode ? "1.5px solid #ef4444" : "1px solid var(--border-color, #e2e8f0)",
+                      border: isDeleteMode ? "1.5px solid rgb(118, 40, 40)" : "1px solid var(--border-color, #e2e8f0)",
                       borderRadius: "14px",
                       overflow: "hidden",
-                      boxShadow: isDeleteMode ? "0 2px 10px rgba(239, 68, 68, 0.12)" : "0 1px 4px rgba(0,0,0,0.04)",
+                      boxShadow: isDeleteMode ? "0 2px 10px rgba(118, 40, 40, 0.25)" : "0 1px 4px rgba(0,0,0,0.04)",
                       display: "flex",
                       flexDirection: "column",
                       justifyContent: "space-between",
