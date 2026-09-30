@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, Eye, RefreshCw, Save, WalletCards, X } from "lucide-react";
+import { Check, Eye, FileText, RefreshCw, Save, WalletCards, X } from "lucide-react";
 import { Course } from "../types/lms";
 import { PaymentOrder, PaymentStatus, paymentService } from "../services/paymentService";
 import { useToast } from "../components/ToastProvider";
 import { useConfirm } from "../components/ConfirmWizard";
+import { InvoiceModal } from "../components/InvoiceModal";
 
 interface PaymentManagementViewProps {
   courses: Course[];
@@ -19,10 +20,11 @@ export function PaymentManagementView({ courses, onCoursesChanged }: PaymentMana
   const toast = useToast();
   const confirm = useConfirm();
   const [orders, setOrders] = useState<PaymentOrder[]>([]);
-  const [filter, setFilter] = useState<PaymentStatus | "all">("under_review");
+  const [filter, setFilter] = useState<PaymentStatus | "all">("all");
   const [loading, setLoading] = useState(true);
   const [workingId, setWorkingId] = useState<string | null>(null);
   const [prices, setPrices] = useState<Record<string, string>>({});
+  const [selectedInvoiceOrder, setSelectedInvoiceOrder] = useState<PaymentOrder | null>(null);
 
   useEffect(() => {
     const next: Record<string, string> = {};
@@ -106,6 +108,7 @@ export function PaymentManagementView({ courses, onCoursesChanged }: PaymentMana
           <div className="review-main"><strong>{order.student_name || "طالب"}</strong><span>{order.product_name}</span><small>{new Date(order.created_at).toLocaleString("ar-EG")}</small></div>
           <div className="review-amount"><strong>{order.amount_egp.toLocaleString("ar-EG")} ج.م</strong><span>{order.status === "under_review" ? "قيد المراجعة" : order.status}</span></div>
           <div className="review-actions">
+            <button className="secondary-action" onClick={() => setSelectedInvoiceOrder(order)}><FileText size={16} />معاينة الفاتورة</button>
             {order.has_receipt && <button className="secondary-action" onClick={() => void paymentService.openReceipt(order.id).catch((error) => toast({ message: error.message, tone: "danger" }))}><Eye size={16} />الإيصال</button>}
             {order.status !== "paid" && order.status !== "rejected" && <>
               <button disabled={workingId === order.id} className="approve-action" onClick={() => void review(order, true)}><Check size={16} />تفعيل</button>
@@ -118,9 +121,17 @@ export function PaymentManagementView({ courses, onCoursesChanged }: PaymentMana
     <section className="panel pricing-panel">
       <div className="panel-title-row"><div><h2>أسعار الدروس</h2><p>السعر صفر يعني أن الدرس مجاني. كل درس له سعر وصلاحية مستقلة.</p></div></div>
       <div className="pricing-list">{courses.map((course) => <div className="pricing-course" key={course.id}>
-        <div className="pricing-course-heading"><strong>{course.title}</strong><small>الدروس التابعة لهذا الصف</small></div>
+        <div className="pricing-course-heading"><strong>{course.title}</strong></div>
         {course.lessons.map((lesson) => <div className="pricing-row" key={lesson.id}><div><span>{lesson.title}</span><small>درس منفرد</small></div><div className="price-editor"><input type="number" min="0" step="1" value={prices[`lesson:${lesson.id}`] ?? "0"} onChange={(event) => setPrices((current) => ({ ...current, [`lesson:${lesson.id}`]: event.target.value }))} /><span>ج.م</span><button onClick={() => void savePrice("lesson", lesson.id)} disabled={workingId === `lesson:${lesson.id}`} aria-label="حفظ سعر الدرس"><Save size={15} /></button></div></div>)}
       </div>)}</div>
     </section>
+
+    <InvoiceModal
+      orderId={selectedInvoiceOrder?.id || null}
+      initialOrder={selectedInvoiceOrder}
+      isOpen={Boolean(selectedInvoiceOrder)}
+      onClose={() => setSelectedInvoiceOrder(null)}
+      onOrderUpdated={() => void load()}
+    />
   </div>;
 }

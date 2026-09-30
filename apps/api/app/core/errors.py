@@ -69,6 +69,21 @@ def _clear_auth_cookies(response: JSONResponse) -> None:
 
 
 def install_error_handlers(app: FastAPI) -> None:
+    from botocore.exceptions import BotoCoreError, ClientError
+    from sqlalchemy.exc import OperationalError, TimeoutError as DatabaseTimeout
+
+    async def dependency_unavailable(request: Request, exc: Exception) -> JSONResponse:
+        # Never log exception strings: DB URLs and signed S3 URLs may contain
+        # credentials. Connectivity failures are retryable, not lost files/500.
+        import logging
+        logging.getLogger("matgar.server").warning("Dependency unavailable: %s", type(exc).__name__)
+        return JSONResponse(status_code=503,
+                            content=_error_payload(request, "SERVICE_UNAVAILABLE", "A required service is temporarily unavailable"),
+                            headers={"Retry-After": "3"})
+
+    for exception_type in (OperationalError, DatabaseTimeout, BotoCoreError, ClientError):
+        app.add_exception_handler(exception_type, dependency_unavailable)
+
     @app.exception_handler(ApiError)
     async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
         res = JSONResponse(

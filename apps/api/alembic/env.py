@@ -7,7 +7,10 @@ from app.core.config import get_settings
 from app.models import Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", get_settings().sqlalchemy_database_url)
+# ConfigParser treats '%' as interpolation, while a URL-encoded random
+# credential legitimately contains %2B/%2F. Escape only for the config layer;
+# SQLAlchemy receives the original percent-encoded URL on retrieval.
+config.set_main_option("sqlalchemy.url", get_settings().sqlalchemy_database_url.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

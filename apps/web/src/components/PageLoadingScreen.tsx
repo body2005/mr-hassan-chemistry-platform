@@ -121,9 +121,12 @@ export const PageLoadingScreen: React.FC<PageLoadingScreenProps> = ({
             width: "42px",
             height: "42px",
             borderRadius: "50%",
-            border: `3.5px solid ${spinnerTrack}`,
+            borderWidth: 3.5,
+            borderStyle: "solid",
             borderTopColor: spinnerAccent,
             borderRightColor: "#059669",
+            borderBottomColor: spinnerTrack,
+            borderLeftColor: spinnerTrack,
             animation: "pageSpinAnimation 0.85s linear infinite",
           }}
           aria-label="جاري التحميل"

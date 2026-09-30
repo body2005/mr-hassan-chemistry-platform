@@ -13,7 +13,7 @@ Tests question block classification across 4+ diverse real-world exam formats:
 =============================================================================
 """
 import pytest
-from app.services.knowledge_center_service import (
+from app.services.exam_text_extractor import (
     classify_and_parse_question,
     extract_distant_answer_keys,
     parse_table_questions,

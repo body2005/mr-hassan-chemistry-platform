@@ -4,10 +4,12 @@ import uuid
 from datetime import datetime
 try:
     from enum import StrEnum
-except ImportError:
+except ImportError:  # Python 3.10: enum.StrEnum arrived in 3.11
     from enum import Enum
+
     class StrEnum(str, Enum):
-        pass
+        def __str__(self) -> str:
+            return str(self.value)
 
 
 from sqlalchemy import (
@@ -93,6 +95,26 @@ class RevokedSession(UUIDPrimaryKeyMixin, Base):
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), index=True, nullable=False
     )
+
+
+class RefreshSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Server-side record for one rotating refresh credential.
+
+    Only a SHA-256 hash of the random browser credential is stored.  A token
+    family lets us revoke every descendant if a rotated token is replayed.
+    """
+
+    __tablename__ = "refresh_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
+    family_id: Mapped[uuid.UUID] = mapped_column(index=True, nullable=False)
+    jti: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    replaced_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class Notification(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -188,6 +210,20 @@ class Quiz(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     randomize_questions: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     attempts_allowed: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # When true, students who consumed the official attempts may keep testing
+    # themselves: extra attempts are graded for them alone and never reach the
+    # teacher's gradebook or analytics.
+    allow_practice_attempts: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default="true"
+    )
+    # Scope: the quiz belongs to a module (unit) and optionally to one lesson.
+    # Students see it inside that lesson/unit and must have paid access to it.
+    module_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("course_modules.id", ondelete="SET NULL"), index=True
+    )
+    lesson_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("lessons.id", ondelete="SET NULL"), index=True
+    )
 
 
 class QuizQuestion(UUIDPrimaryKeyMixin, Base):
@@ -231,6 +267,9 @@ class QuizAttempt(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     score: Mapped[float | None] = mapped_column(Float)
     total_points: Mapped[float | None] = mapped_column(Float)
     submission_key: Mapped[str | None] = mapped_column(String(100), unique=True)
+    # Practice attempts (self-training beyond the official one) are graded for
+    # the student but never surface in teacher-facing listings or analytics.
+    is_practice: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
 
 
 class QuizAttemptAnswer(UUIDPrimaryKeyMixin, Base):
@@ -269,6 +308,13 @@ class Assignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     max_score: Mapped[float] = mapped_column(Float, default=100.0, nullable=False)
     status: Mapped[AssignmentStatus] = mapped_column(
         String(20), default=AssignmentStatus.DRAFT, nullable=False
+    )
+    # Scope: the assignment belongs to a module (unit) and optionally a lesson.
+    module_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("course_modules.id", ondelete="SET NULL"), index=True
+    )
+    lesson_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("lessons.id", ondelete="SET NULL"), index=True
     )
 
 
@@ -362,43 +408,19 @@ class Certificate(UUIDPrimaryKeyMixin, Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class AIInvocation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    __tablename__ = "ai_invocations"
+class LessonComment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "lesson_comments"
 
-    institution_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("institutions.id", ondelete="SET NULL"), index=True
+    institution_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    actor_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    lesson_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("lessons.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    task: Mapped[str] = mapped_column(String(60), index=True, nullable=False)
-    provider: Mapped[str] = mapped_column(String(60), nullable=False)
-    model: Mapped[str] = mapped_column(String(120), nullable=False)
-    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
-    input_tokens: Mapped[int | None] = mapped_column(Integer)
-    output_tokens: Mapped[int | None] = mapped_column(Integer)
-    estimated_cost: Mapped[float | None] = mapped_column(Float)
-    latency_ms: Mapped[int | None] = mapped_column(Integer)
-    status: Mapped[str] = mapped_column(String(20), nullable=False)
-    error_code: Mapped[str | None] = mapped_column(String(80))
-    output_json: Mapped[dict | list | None] = mapped_column(JSON)
-    approved_by: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL")
-    )
-
-
-class AIRefusalLog(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    __tablename__ = "ai_refusal_logs"
-
-    institution_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=True
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
+    student_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    course_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("courses.id", ondelete="CASCADE"), index=True, nullable=True
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("lesson_comments.id", ondelete="CASCADE"), index=True
     )
-    question_text: Mapped[str] = mapped_column(Text, nullable=False)
-    reason: Mapped[str] = mapped_column(String(200), default="no_matching_coverage", nullable=False)
-
+    body: Mapped[str] = mapped_column(Text, nullable=False)

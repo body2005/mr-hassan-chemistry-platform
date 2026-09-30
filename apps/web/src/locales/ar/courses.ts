@@ -70,7 +70,7 @@ export const coursesAr = {
   // Video Player & Materials Tabs
   askAITab: "اسأل الذكاء الاصطناعي حول الدرس",
   materialsTab: "المذكرات والملفات المرفقة",
-  askAIPlaceholder: "اسأل المساعد الذكي عن أي نقطة وردت في هذا الدرس...",
+  askAIPlaceholder: "",
   videoStreamLoading: "جاري تجهيز بث الفيديو الآمن...",
   videoProtectionNotice: "بث محمي ومخصص لحساب الطالب فقط",
   submittingHomework: "تسليم الواجب",

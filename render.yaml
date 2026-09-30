@@ -2,18 +2,31 @@
 # https://render.com/docs/blueprint-spec
 
 services:
+  - type: keyvalue
+    name: chemistry-platform-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
+
   - type: web
     name: chemistry-platform-api
-    runtime: python
-    rootDir: apps/api
-    buildCommand: pip install -r requirements.txt
-    preDeployCommand: alembic upgrade head
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    branch: fix/unified-p1
+    runtime: docker
+    dockerfilePath: infra/Dockerfile.api
+    dockerContext: apps/api
+    preDeployCommand: alembic upgrade head && python scripts/seed_teacher.py
+    # Do not enable Uvicorn's wildcard forwarded-header trust. The app uses
+    # direct peer IPs until Render's documented proxy CIDRs are configured.
+    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: APP_ENV
         value: production
       - key: SECRET_KEY
         generateValue: true
+      - key: TRUSTED_PROXIES
+        # Keep proxy trust explicit. Do not trust a client-supplied XFF chain
+        # until the Render load-balancer CIDR is configured in the dashboard.
+        value: "127.0.0.1,::1"
       - key: DATABASE_URL
         fromDatabase:
           name: chemistry-platform-db
@@ -25,40 +38,44 @@ services:
         value: https://mr-hassan-chemistry.vercel.app,https://mr-hassan-chemistry-platform.vercel.app
       - key: COOKIE_CROSS_SITE
         value: "true"
-      - key: PYTHON_VERSION
-        value: "3.12.11"
       - key: INITIAL_TEACHER_EMAIL
         value: teacher@hassanshaban.com
+      - key: INITIAL_TEACHER_USERNAME
+        value: hassan_teacher
       - key: INITIAL_TEACHER_PASSWORD
-        sync: false
-      # One-time recovery switch. Set to true in the Render dashboard, deploy,
-      # verify login, then set it back to false and deploy again.
+        # Test-only fixed credential requested for the initial teacher account.
+        value: admin
+      # Keep this off in production: the seed must never reset the password
+      # of an existing account, otherwise every deploy silently reverts
+      # operator password changes back to the fixed seed credential.
       - key: RESET_INITIAL_TEACHER_PASSWORD
-        sync: false
+        value: "false"
       - key: INITIAL_TEACHER_NAME
         value: "مستر حسن شعبان"
       - key: ENABLE_DEMO_ACCOUNTS
-        sync: false
+        value: "true"
       - key: DEMO_INSTITUTION_SLUG
         value: demo
       - key: DEMO_TEACHER_EMAIL
         value: teacher@demo.com
       - key: DEMO_TEACHER_PASSWORD
-        sync: false
-      - key: DEMO_STUDENT_EMAIL
-        value: student@demo.com
+        # Test-only fixed credential for teacher@demo.com.
+        value: admin
+      # Fixed test accounts: student01@demo.com through student10@demo.com.
+      # Their common password is supplied only through the secret below.
       - key: DEMO_STUDENT_PASSWORD
-        sync: false
-      # Optional manual reset flag. Enabled demo accounts are also reconciled
-      # against the configured secrets on every deploy to prevent stale hashes.
+        # Test-only fixed credential for student01 through student10.
+        value: admin
+      # Optional manual reset flag. Without it, rerunning the seed does not
+      # rotate existing demo passwords.
       - key: RESET_DEMO_PASSWORDS
-        sync: false
+        value: "true"
       - key: DB_POOL_SIZE
         value: "5"
       - key: DB_MAX_OVERFLOW
         value: "10"
       - key: REDIS_REQUIRED
-        value: "false"
+        value: "true"
       - key: MAX_CONCURRENT_INGESTIONS
         value: "1"
       - key: MAX_FILE_SIZE_MB
@@ -67,12 +84,6 @@ services:
         value: "1000"
       - key: MAX_BATCH_SIZE_MB
         value: "1000"
-      - key: STUDENT_AI_ACCESS_MODE
-        value: paid_content_or_subscription
-      - key: STUDENT_AI_MONTHLY_PRICE_EGP
-        value: "99"
-      - key: STUDENT_AI_SUBSCRIPTION_DAYS
-        value: "30"
       - key: PAYMENT_INSTAPAY_ACCOUNT
         sync: false
       - key: PAYMENT_VODAFONE_CASH_NUMBER
@@ -91,35 +102,63 @@ services:
         sync: false
       - key: S3_REGION
         value: "auto"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
       - key: REDIS_URL
-        sync: false
+        fromService:
+          type: keyvalue
+          name: chemistry-platform-redis
+          property: connectionString
       - key: CELERY_BROKER_URL
-        sync: false
+        fromService:
+          type: keyvalue
+          name: chemistry-platform-redis
+          property: connectionString
       - key: CELERY_RESULT_BACKEND
-        sync: false
+        fromService:
+          type: keyvalue
+          name: chemistry-platform-redis
+          property: connectionString
       - key: USE_CELERY_INGESTION
         value: "true"
     autoDeploy: true
 
   - type: worker
     name: chemistry-platform-worker
-    runtime: python
-    rootDir: apps/api
-    buildCommand: pip install -r requirements.txt
-    startCommand: celery -A app.tasks.celery_app.celery_app worker --loglevel=info --concurrency=1 --prefetch-multiplier=1 --max-tasks-per-child=1
+    branch: fix/unified-p1
+    runtime: docker
+    dockerfilePath: infra/Dockerfile.api
+    dockerContext: apps/api
+    dockerCommand: celery -A app.tasks.celery_app.celery_app worker --loglevel=info --concurrency=1 --prefetch-multiplier=1 --max-tasks-per-child=1
     envVars:
       - key: APP_ENV
         value: production
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: chemistry-platform-api
+          envVarKey: SECRET_KEY
       - key: DATABASE_URL
         fromDatabase:
           name: chemistry-platform-db
           property: connectionString
       - key: REDIS_URL
-        sync: false
+        fromService:
+          type: keyvalue
+          name: chemistry-platform-redis
+          property: connectionString
       - key: CELERY_BROKER_URL
-        sync: false
+        fromService:
+          type: keyvalue
+          name: chemistry-platform-redis
+          property: connectionString
       - key: CELERY_RESULT_BACKEND
-        sync: false
+        fromService:
+          type: keyvalue
+          name: chemistry-platform-redis
+          property: connectionString
       - key: STORAGE_BACKEND
         value: "s3"
       - key: S3_ENDPOINT_URL
@@ -132,8 +171,10 @@ services:
         sync: false
       - key: S3_REGION
         value: "auto"
-      - key: PYTHON_VERSION
-        value: "3.12.11"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
     autoDeploy: true
 
 databases:

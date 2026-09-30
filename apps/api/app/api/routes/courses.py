@@ -31,35 +31,57 @@ CourseManager = Annotated[
 Student = Annotated[User, Depends(require_roles(UserRole.STUDENT))]
 
 
+def _video_playback_fields(lesson, *, allow_external: bool = False) -> tuple[bool, str | None]:
+    """Playback info without ever serializing the private storage key.
+
+    Legacy external URLs are visible only to managers for migration; giving
+    them to students would bypass every protected playback control.
+    every locally-stored video is only reachable through the token-gated
+    stream endpoint, so the client just gets that entry point.
+    """
+    key = lesson.video_asset_key
+    if not key:
+        return False, None
+    if key.startswith("http://") or key.startswith("https://"):
+        return (True, key) if allow_external else (False, None)
+    return True, f"/api/v1/lessons/{lesson.id}/video-token"
+
+
 def _safe_course_responses(db: Session, user: User | None, courses: list) -> list[CourseResponse]:
     responses = [CourseResponse.model_validate(course) for course in courses]
+    # Pair each serialized lesson with its ORM source so playback fields can be
+    # derived from the private key without ever serializing the key itself.
+    orm_lessons_by_id = {
+        lesson.id: lesson
+        for course in courses
+        for module in getattr(course, "modules", [])
+        for lesson in getattr(module, "lessons", [])
+    }
     
     # Collect all lesson IDs across returned courses
     all_lesson_ids = [lesson.id for course in responses for module in course.modules for lesson in module.lessons]
     materials_by_lesson: dict[uuid.UUID, list[LessonMaterialSummary]] = {}
     if all_lesson_ids:
-        from app.models.knowledge_center import KnowledgeSource, SourceStatus, SourceRole
+        from app.models.extended import LessonAsset
         from app.schemas import LessonMaterialSummary
-        sources = db.scalars(
-            select(KnowledgeSource).where(
-                KnowledgeSource.lesson_id.in_(all_lesson_ids),
-                KnowledgeSource.status != SourceStatus.DELETING,
-                KnowledgeSource.source_role == SourceRole.LESSON_MATERIAL,
-                KnowledgeSource.is_current == True,
+
+        assets = db.scalars(
+            select(LessonAsset).where(
+                LessonAsset.lesson_id.in_(all_lesson_ids),
+                LessonAsset.asset_kind.in_(["pdf", "document", "attachment"]),
             )
         ).all()
-        for s in sources:
-            if not s.lesson_id:
-                continue
-            materials_by_lesson.setdefault(s.lesson_id, []).append(
+        for a in assets:
+            ext = (a.filename or "").rsplit(".", 1)[-1].lower() if a.filename else "bin"
+            materials_by_lesson.setdefault(a.lesson_id, []).append(
                 LessonMaterialSummary(
-                    id=s.id,
-                    filename=s.filename,
-                    file_format=s.file_format,
-                    size_bytes=s.size_bytes,
-                    source_role=s.source_role,
-                    download_url=f"/api/v1/knowledge-center/sources/{s.id}/download",
-                    created_at=s.created_at,
+                    id=a.id,
+                    filename=a.filename or "material",
+                    file_format=ext,
+                    size_bytes=a.size_bytes or 0,
+                    source_role="LESSON_MATERIAL",
+                    download_url=f"/api/v1/lessons/{a.lesson_id}/materials/{a.id}/download",
+                    created_at=a.created_at,
                 )
             )
 
@@ -68,6 +90,9 @@ def _safe_course_responses(db: Session, user: User | None, courses: list) -> lis
             for module in course.modules:
                 for lesson in module.lessons:
                     lesson.materials = materials_by_lesson.get(lesson.id, [])
+                    orm_lesson = orm_lessons_by_id.get(lesson.id)
+                    if orm_lesson is not None:
+                        lesson.has_video, lesson.video_url = _video_playback_fields(orm_lesson, allow_external=True)
         return responses
 
     enrolled_course_ids: set[uuid.UUID] = set()
@@ -110,9 +135,13 @@ def _safe_course_responses(db: Session, user: User | None, courses: list) -> lis
                 )
                 if has_lesson_access:
                     lesson.materials = materials_by_lesson.get(lesson.id, [])
+                    orm_lesson = orm_lessons_by_id.get(lesson.id)
+                    if orm_lesson is not None:
+                        lesson.has_video, lesson.video_url = _video_playback_fields(orm_lesson)
                 else:
                     lesson.content = None
-                    lesson.video_asset_key = None
+                    lesson.has_video = False
+                    lesson.video_url = None
                     lesson.materials = []
     return responses
 

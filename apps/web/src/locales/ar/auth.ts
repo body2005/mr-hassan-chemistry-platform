@@ -15,7 +15,7 @@ export const authAr = {
   dontHaveAccount: "طالب جديد؟ أنشئ حسابك وابدأ التعلم الآن",
   forgotPassword: "هل نسيت كلمة المرور؟",
   demoTeacherHint: "دخول كمعلم: teacher@demo.com",
-  demoStudentHint: "دخول كطالب: student@demo.com",
+  demoStudentHint: "دخول كطالب: student01@demo.com",
   emailLabel: "البريد الإلكتروني:",
   emailPlaceholder: "name@example.com",
   passwordLabel: "كلمة المرور:",

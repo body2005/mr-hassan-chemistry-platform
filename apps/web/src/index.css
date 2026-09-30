@@ -40,6 +40,8 @@
   --modal-overlay-bg: rgba(15, 23, 42, 0.65);
   --topbar-bg: rgba(255, 255, 255, 0.85);
   --progress-track-bg: rgb(216, 219, 223);
+  --danger-action-bg: rgb(118, 40, 40);
+  --modal-close-bg: rgb(118, 40, 40);
 }
 
 [data-theme="dark"] {
@@ -76,6 +78,8 @@
 
   --card-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -2px rgba(0, 0, 0, 0.3);
   --modal-overlay-bg: rgba(0, 0, 0, 0.82);
+  --danger-action-bg: rgb(118, 40, 40);
+  --modal-close-bg: rgb(118, 40, 40);
 }
 
 [data-theme="dark"] strong,
@@ -276,7 +280,7 @@ html, body {
   position: fixed;
   inset: 0;
   background: rgba(15, 23, 42, 0.55);
-  z-index: 99;
+  z-index: 100090;
 }
 
 /* Sidebar Styles — Ultra-smooth GPU accelerated drawer */
@@ -291,7 +295,7 @@ html, body {
   position: fixed;
   top: 0;
   bottom: 0;
-  z-index: 100;
+  z-index: 100100;
   will-change: transform;
   transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   box-sizing: border-box;
@@ -311,6 +315,40 @@ html, body {
 .sidebar.translate-x-0 {
   transform: translate3d(0, 0, 0) !important;
   box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 10px 10px -5px rgba(0, 0, 0, 0.1);
+}
+
+/* Quiz Timer Pill */
+.quiz-timer-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 14px;
+  border-radius: 10px;
+  font-weight: 900;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  direction: ltr;
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1.5px solid #fee2e2;
+  transition: all 0.2s ease;
+}
+
+[data-theme="dark"] .quiz-timer-pill {
+  background: rgb(17, 24, 39) !important;
+  color: #ffffff !important;
+  border: 1.5px solid rgb(17, 24, 39) !important;
+}
+
+/* Quiz Option Radio - Hidden */
+.quiz-radio-hidden,
+.quiz-option-radio {
+  visibility: hidden !important;
+  position: absolute !important;
+  width: 0 !important;
+  height: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 
 .brand {
@@ -597,6 +635,21 @@ main {
 
 [data-theme="dark"] .btn-outline {
   border-color: #059669;
+}
+
+/* Prevent page background scrolling whenever any wizard, modal, or popup dialog is open */
+body:has(.modal-overlay),
+body:has(.confirm-wizard-overlay),
+body:has([role="dialog"]),
+body:has([aria-modal="true"]),
+html:has(.modal-overlay),
+html:has(.confirm-wizard-overlay),
+html:has([role="dialog"]),
+html:has([aria-modal="true"]),
+body.modal-open,
+html.modal-open {
+  overflow: hidden !important;
+  overscroll-behavior: contain !important;
 }
 
 /* Modal Overlay & Eye-Comforting Backdrop Blur Animations */
@@ -1417,6 +1470,31 @@ img, video, canvas, svg {
   color: #34d399;
 }
 
+.confirm-wizard-btn.primary.tone-danger,
+[data-theme="dark"] .confirm-wizard-btn.primary.tone-danger {
+  background: var(--danger-action-bg) !important;
+  color: #ffffff !important;
+}
+
+/* Modal Close X button & Danger action buttons (Ban, Delete, Logout, Reject) */
+.modal-close-btn,
+.wizard-close-btn,
+.btn-close {
+  background: var(--modal-close-bg) !important;
+  color: #ffffff !important;
+  border: none !important;
+}
+
+.danger-action-btn,
+.btn-delete,
+.btn-danger,
+.btn-ban,
+.reject-action {
+  background: var(--danger-action-bg) !important;
+  color: #ffffff !important;
+  border-color: var(--danger-action-bg) !important;
+}
+
 /* In-app toast (replaces window.alert for transient notices) */
 .wizard-toast {
   position: fixed;
@@ -1654,7 +1732,7 @@ img, video, canvas, svg {
 .primary-action:disabled, button:disabled { cursor: not-allowed; opacity: .55; }
 .secondary-action, .icon-action { background: transparent; color: var(--text-main); border: 1px solid var(--border-color); }
 .approve-action { background: #047857; color: #fff; border: 1px solid #047857; }
-.reject-action { background: transparent; color: #dc2626; border: 1px solid #dc2626; }
+.reject-action { background: var(--danger-action-bg); color: #fff; border: 1px solid var(--danger-action-bg); }
 .panel-title-row,
 .order-card-head,
 .review-row,
@@ -1714,3 +1792,89 @@ img, video, canvas, svg {
     white-space: normal;
   }
 }
+
+@keyframes assignmentProgress {
+  0% { transform: translateX(100%); }
+  100% { transform: translateX(-100%); }
+}
+
+/* Globally hide all native radio inputs */
+input[type="radio"],
+input.quiz-radio-hidden {
+  visibility: hidden !important;
+  position: absolute !important;
+  width: 0 !important;
+  height: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* Floating Action Button (Course Progress) */
+.floating-progress-fab {
+  z-index: 9999;
+  transition: opacity 0.2s ease;
+}
+
+body[data-video-enlarged="true"] .floating-progress-fab,
+:fullscreen .floating-progress-fab,
+:-webkit-full-screen .floating-progress-fab {
+  display: none !important;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Prevent accidental capture of UI controls, badges, and icons during text copy */
+.question-card-controls,
+.question-card-controls *,
+.question-card-header-controls,
+.question-card-header-controls *,
+.quiz-action-bar-controls,
+.quiz-action-bar-controls * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
+}
+
+svg {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+/* Question reorder arrows */
+.question-reorder-btn {
+  color: var(--text-main);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.question-reorder-btn:hover:not(:disabled) {
+  color: var(--primary-emerald);
+}
+
+[data-theme="dark"] .question-reorder-btn {
+  color: #ffffff !important;
+}
+
+[data-theme="dark"] .question-reorder-btn svg,
+[data-theme="dark"] .question-reorder-btn svg * {
+  color: #ffffff !important;
+  stroke: #ffffff !important;
+}
+
+

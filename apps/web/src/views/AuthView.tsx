@@ -1,5 +1,5 @@
 import { PageLoadingScreen } from "../components/PageLoadingScreen";
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -8,7 +8,6 @@ import {
   EyeOff,
   GraduationCap,
   Moon,
-  ShieldCheck,
   Sparkles,
   Sun,
   UserPlus,
@@ -17,6 +16,18 @@ import {
 import { CurrentUser } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
 import { authService } from "../services/lmsService";
+
+const GOVERNORATES = [
+  ["ALEXANDRIA", "الإسكندرية", "Alexandria"], ["ASWAN", "أسوان", "Aswan"], ["ASIUT", "أسيوط", "Asiut"],
+  ["BEHEIRA", "البحيرة", "Beheira"], ["BENI_SUEF", "بني سويف", "Beni Suef"], ["CAIRO", "القاهرة", "Cairo"],
+  ["DAKAHLIA", "الدقهلية", "Dakahlia"], ["DAMIETTA", "دمياط", "Damietta"], ["FAYOUM", "الفيوم", "Fayoum"],
+  ["GHARBIA", "الغربية", "Gharbia"], ["GIZA", "الجيزة", "Giza"], ["ISMAILIA", "الإسماعيلية", "Ismailia"],
+  ["KAFR_EL_SHEIKH", "كفر الشيخ", "Kafr El Sheikh"], ["LUXOR", "الأقصر", "Luxor"], ["MATROUH", "مطروح", "Matrouh"],
+  ["MINYA", "المنيا", "Minya"], ["MONUFIA", "المنوفية", "Monufia"], ["NEW_VALLEY", "الوادي الجديد", "New Valley"],
+  ["NORTH_SINAI", "شمال سيناء", "North Sinai"], ["PORT_SAID", "بورسعيد", "Port Said"], ["QALYUBIA", "القليوبية", "Qalyubia"],
+  ["QENA", "قنا", "Qena"], ["RED_SEA", "البحر الأحمر", "Red Sea"], ["SHARQIA", "الشرقية", "Sharqia"],
+  ["SOHAG", "سوهاج", "Sohag"], ["SOUTH_SINAI", "جنوب سيناء", "South Sinai"], ["SUEZ", "السويس", "Suez"],
+] as const;
 
 interface AuthViewProps {
   initialTab?: "signin" | "register";
@@ -47,6 +58,22 @@ export const AuthView: React.FC<AuthViewProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+  const [resetToken, setResetToken] = useState(() => new URLSearchParams(window.location.hash.split("?", 2)[1] || "").get("reset_token") || "");
+  const [resetMode, setResetMode] = useState<"none" | "request" | "confirm">(resetToken ? "confirm" : "none");
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetConfirmPassword, setResetConfirmPassword] = useState("");
+  const [resetBusy, setResetBusy] = useState(false);
+
+  useEffect(() => {
+    const syncResetLink = () => {
+      const token = new URLSearchParams(window.location.hash.split("?", 2)[1] || "").get("reset_token") || "";
+      setResetToken(token);
+      if (token) setResetMode("confirm");
+    };
+    window.addEventListener("hashchange", syncResetLink);
+    return () => window.removeEventListener("hashchange", syncResetLink);
+  }, []);
 
   // Student Register State
   const [regName, setRegName] = useState("");
@@ -55,10 +82,13 @@ export const AuthView: React.FC<AuthViewProps> = ({
   const [showRegPassword, setShowRegPassword] = useState(false);
   const [regConfirmPassword, setRegConfirmPassword] = useState("");
   const [showRegConfirmPassword, setShowRegConfirmPassword] = useState(false);
-  const [regYear, setRegYear] = useState<"1st_secondary" | "2nd_secondary" | "3rd_secondary">("1st_secondary");
+  const [regYear, setRegYear] = useState<"" | "1st_secondary" | "2nd_secondary" | "3rd_secondary">("");
   const [regStudentPhone, setRegStudentPhone] = useState("");
   const [regGuardianPhone, setRegGuardianPhone] = useState("");
   const [regNationalId, setRegNationalId] = useState("");
+  const [regGovernorate, setRegGovernorate] = useState("");
+  const [regSchoolName, setRegSchoolName] = useState("");
+  const [regGender, setRegGender] = useState<"" | "MALE" | "FEMALE">("");
 
   // Handle Strict Validated Sign In via authService
   async function handleSignIn(e: React.FormEvent) {
@@ -90,13 +120,6 @@ export const AuthView: React.FC<AuthViewProps> = ({
     setError("");
     setSuccessMsg("");
 
-    const yearLabel =
-      regYear === "2nd_secondary"
-        ? lang === "ar" ? "الصف الثاني الثانوي" : "2nd Secondary Year"
-        : regYear === "3rd_secondary"
-        ? lang === "ar" ? "الصف الثالث الثانوي" : "3rd Secondary Year"
-        : lang === "ar" ? "الصف الأول الثانوي" : "1st Secondary Year";
-
     if (regPassword !== regConfirmPassword) {
       setError(lang === "ar" ? "كلمتا المرور غير متطابقتين، يرجى التأكد من تطابق كلمة المرور وتأكيدها." : "Passwords do not match. Please verify confirmation.");
       return;
@@ -107,16 +130,22 @@ export const AuthView: React.FC<AuthViewProps> = ({
       return;
     }
 
+    if (!regYear || !regGovernorate || !regSchoolName.trim() || !regGender) {
+      setError(lang === "ar" ? "يرجى استكمال الصف والمحافظة والمدرسة والنوع." : "Please complete grade, governorate, school, and gender.");
+      return;
+    }
+
     const res = await authService.register({
       name: regName,
       email: regEmail,
       password: regPassword,
       academicYear: regYear,
-      academicYearLabel: yearLabel,
       studentPhone: regStudentPhone,
       guardianPhone: regGuardianPhone,
       nationalId: regNationalId,
-      interestedSubjects: ["الكيمياء"],
+      governorate: regGovernorate,
+      schoolName: regSchoolName,
+      gender: regGender,
     });
 
     if (!res.success) {
@@ -129,6 +158,33 @@ export const AuthView: React.FC<AuthViewProps> = ({
       setTimeout(() => {
         onLoginSuccess(res.user!);
       }, 600);
+    }
+  }
+
+  async function handlePasswordReset(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setSuccessMsg("");
+    if (resetMode === "confirm" && resetPassword !== resetConfirmPassword) {
+      setError(lang === "ar" ? "كلمتا المرور غير متطابقتين" : "Passwords do not match");
+      return;
+    }
+    setResetBusy(true);
+    try {
+      if (resetMode === "request") {
+        await authService.requestPasswordReset(resetEmail);
+        setSuccessMsg(lang === "ar" ? "إذا كان الحساب موجودًا، ستصلك رسالة الاسترجاع." : "If the account exists, a reset email will arrive.");
+      } else if (resetMode === "confirm") {
+        await authService.confirmPasswordReset(resetToken, resetPassword);
+        window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#auth`);
+        setResetToken("");
+        setResetMode("none");
+        setSuccessMsg(lang === "ar" ? "تم تغيير كلمة المرور. سجّل الدخول بالكلمة الجديدة." : "Password changed. Sign in with the new password.");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : (lang === "ar" ? "تعذر إكمال الطلب" : "Unable to complete the request"));
+    } finally {
+      setResetBusy(false);
     }
   }
 
@@ -283,7 +339,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
             transition: "transform 0.6s cubic-bezier(0.4, 0, 0.2, 1)",
           }}
         >
-          <div style={{ maxWidth: "440px", width: "100%", margin: "auto 0" }}>
+          <div style={{ maxWidth: "540px", width: "100%", margin: "auto 0" }}>
             {/* Tab Switcher Pill (Moved down into the form header area) */}
             <div
               style={{
@@ -376,6 +432,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
             {/* Error & Success Messages */}
             {error && (
               <div
+                role="alert"
                 style={{
                   background: "#fef2f2",
                   border: "1px solid #fecaca",
@@ -410,7 +467,53 @@ export const AuthView: React.FC<AuthViewProps> = ({
             )}
 
             {/* ===================== VIEW A: SIGN IN FORM ===================== */}
-            {activeTab === "signin" ? (
+            {activeTab === "signin" && resetMode !== "none" ? (
+              <form onSubmit={handlePasswordReset} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                <h3>{resetMode === "request" ? (lang === "ar" ? "استرجاع كلمة المرور" : "Reset your password") : (lang === "ar" ? "كلمة مرور جديدة" : "Set a new password")}</h3>
+                {resetMode === "request" ? (
+                  <input
+                    aria-label={lang === "ar" ? "بريد الاسترجاع" : "Reset email"}
+                    type="email"
+                    required
+                    value={resetEmail}
+                    onChange={(event) => setResetEmail(event.target.value)}
+                    autoComplete="email"
+                  />
+                ) : (
+                  <>
+                    <input
+                      aria-label={lang === "ar" ? "كلمة المرور الجديدة" : "New password"}
+                      type="password"
+                      required
+                      minLength={10}
+                      value={resetPassword}
+                      onChange={(event) => setResetPassword(event.target.value)}
+                      autoComplete="new-password"
+                    />
+                    <input
+                      aria-label={lang === "ar" ? "تأكيد كلمة المرور الجديدة" : "Confirm new password"}
+                      type="password"
+                      required
+                      minLength={10}
+                      value={resetConfirmPassword}
+                      onChange={(event) => setResetConfirmPassword(event.target.value)}
+                      autoComplete="new-password"
+                    />
+                  </>
+                )}
+                <button type="submit" className="btn-primary" disabled={resetBusy}>
+                  {resetBusy ? (lang === "ar" ? "جارٍ الإرسال..." : "Sending...") : resetMode === "request" ? (lang === "ar" ? "إرسال رابط الاسترجاع" : "Send reset link") : (lang === "ar" ? "تغيير كلمة المرور" : "Change password")}
+                </button>
+                <button type="button" onClick={() => {
+                  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#auth`);
+                  setResetToken("");
+                  setResetMode("none");
+                  setError("");
+                }}>
+                  {lang === "ar" ? "العودة لتسجيل الدخول" : "Back to sign in"}
+                </button>
+              </form>
+            ) : activeTab === "signin" ? (
               <form onSubmit={handleSignIn} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
                 <div>
                   <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "5px", textTransform: "uppercase" }}>
@@ -496,6 +599,14 @@ export const AuthView: React.FC<AuthViewProps> = ({
                   {lang === "ar" ? "تسجيل الدخول للمنصة" : "Sign In to Platform"}
                 </button>
 
+                <button
+                  type="button"
+                  onClick={() => { setResetMode("request"); setError(""); setSuccessMsg(""); }}
+                  style={{ background: "none", border: "none", color: "#059669", cursor: "pointer", fontWeight: 700 }}
+                >
+                  {lang === "ar" ? "نسيت كلمة المرور؟" : "Forgot password?"}
+                </button>
+
                 <div style={{ textAlign: "center", marginTop: "8px" }}>
                   <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
                     {lang === "ar" ? "طالب جديد ليس لديك حساب؟ " : "New student without an account? "}
@@ -524,13 +635,13 @@ export const AuthView: React.FC<AuthViewProps> = ({
               <form onSubmit={handleRegister} style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                 <div>
                   <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>
-                    {lang === "ar" ? "اسم الطالب رباعي (حروف فقط):" : "Full Student Name (Letters only):"}
+                    {lang === "ar" ? "اسم الطالب رباعي:" : "Full Student Name:"}
                   </label>
                   <input
                     type="text"
                     required
                     value={regName}
-                    onChange={(e) => setRegName(e.target.value.replace(/[^a-zA-Z\u0600-\u06FF\s]/g, ""))}
+                    onChange={(e) => setRegName(e.target.value)}
                     placeholder={lang === "ar" ? "مثال: عمر زيدان عبد الرحمن" : "e.g. Omar Zeidan Abdelrahman"}
                     style={{
                       width: "100%",
@@ -665,6 +776,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                   <select
                     value={regYear}
                     onChange={(e) => setRegYear(e.target.value as "1st_secondary" | "2nd_secondary" | "3rd_secondary")}
+                    required
                     style={{
                       width: "100%",
                       padding: "9px 12px",
@@ -677,6 +789,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                       fontWeight: 700,
                     }}
                   >
+                    <option value="" disabled>{lang === "ar" ? "اختر الصف الدراسي" : "Select academic year"}</option>
                     <option value="1st_secondary">{lang === "ar" ? "الصف الأول الثانوي" : "1st Secondary Year"}</option>
                     <option value="2nd_secondary">{lang === "ar" ? "الصف الثاني الثانوي" : "2nd Secondary Year"}</option>
                     <option value="3rd_secondary">{lang === "ar" ? "الصف الثالث الثانوي" : "3rd Secondary Year"}</option>
@@ -687,14 +800,14 @@ export const AuthView: React.FC<AuthViewProps> = ({
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
                   <div>
                     <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>
-                      {lang === "ar" ? "هاتف الطالب (أرقام فقط):" : "Student Phone (Digits only):"}
+                      {lang === "ar" ? "هاتف الطالب:" : "Student Phone:"}
                     </label>
                     <input
                       type="tel"
                       inputMode="numeric"
                       maxLength={11}
                       value={regStudentPhone}
-                      onChange={(e) => setRegStudentPhone(e.target.value.replace(/\D/g, "").slice(0, 11))}
+                      onChange={(e) => setRegStudentPhone(e.target.value)}
                       placeholder="010XXXXXXXX"
                       style={{
                         width: "100%",
@@ -711,14 +824,14 @@ export const AuthView: React.FC<AuthViewProps> = ({
 
                   <div>
                     <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>
-                      {lang === "ar" ? "هاتف ولي الأمر (أرقام فقط):" : "Guardian Phone (Digits only):"}
+                      {lang === "ar" ? "هاتف ولي الأمر:" : "Guardian Phone:"}
                     </label>
                     <input
                       type="tel"
                       inputMode="numeric"
                       maxLength={11}
                       value={regGuardianPhone}
-                      onChange={(e) => setRegGuardianPhone(e.target.value.replace(/\D/g, "").slice(0, 11))}
+                      onChange={(e) => setRegGuardianPhone(e.target.value)}
                       placeholder="011XXXXXXXX"
                       style={{
                         width: "100%",
@@ -736,14 +849,14 @@ export const AuthView: React.FC<AuthViewProps> = ({
 
                 <div>
                   <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>
-                    {lang === "ar" ? "الرقم القومي (14 رقم فقط):" : "National ID (14 digits only):"}
+                    {lang === "ar" ? "الرقم القومي:" : "National ID:"}
                   </label>
                   <input
                     type="text"
                     inputMode="numeric"
                     maxLength={14}
                     value={regNationalId}
-                    onChange={(e) => setRegNationalId(e.target.value.replace(/\D/g, "").slice(0, 14))}
+                    onChange={(e) => setRegNationalId(e.target.value)}
                     placeholder="30608150104892"
                     style={{
                       width: "100%",
@@ -756,6 +869,25 @@ export const AuthView: React.FC<AuthViewProps> = ({
                       boxSizing: "border-box",
                     }}
                   />
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                  <div>
+                    <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>{lang === "ar" ? "المحافظة:" : "Governorate:"}</label>
+                    <select required value={regGovernorate} onChange={(e) => setRegGovernorate(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", background: "var(--bg-surface-secondary)", color: "var(--text-main)" }}>
+                      <option value="" disabled>{lang === "ar" ? "اختر المحافظة" : "Select governorate"}</option>
+                      {GOVERNORATES.map(([code, ar, en]) => <option key={code} value={code}>{lang === "ar" ? ar : en}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>{lang === "ar" ? "المدرسة:" : "School:"}</label>
+                    <input required minLength={2} maxLength={200} value={regSchoolName} onChange={(e) => setRegSchoolName(e.target.value)} placeholder={lang === "ar" ? "اسم المدرسة" : "School name"} style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", boxSizing: "border-box", background: "var(--bg-surface-secondary)", color: "var(--text-main)" }} />
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>{lang === "ar" ? "النوع:" : "Gender:"}</label>
+                  <select required value={regGender} onChange={(e) => setRegGender(e.target.value as "" | "MALE" | "FEMALE")} style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", background: "var(--bg-surface-secondary)", color: "var(--text-main)" }}><option value="" disabled>{lang === "ar" ? "اختر النوع" : "Select gender"}</option><option value="MALE">{lang === "ar" ? "ذكر" : "Male"}</option><option value="FEMALE">{lang === "ar" ? "أنثى" : "Female"}</option></select>
                 </div>
 
                 <button
@@ -862,15 +994,15 @@ export const AuthView: React.FC<AuthViewProps> = ({
 
             <p style={{ fontSize: "13px", opacity: 0.85, lineHeight: "1.6", margin: "0 0 24px" }}>
               {lang === "ar"
-                ? "شروحات فيديو تفاعلية، مذكرات حصرية، تصحيح ذكي للواجبات والمقالات، وتوقعات صعوبة دقيقة للمنهج."
-                : "Interactive video lessons, exclusive study guides, AI-assisted grading, and real-time difficulty forecasting."}
+                ? "شروحات فيديو تفاعلية، مذكرات حصرية، واختبارات وواجبات إلكترونية مع تصحيح مباشر من المعلم."
+                : "Interactive video lessons, exclusive study guides, and online quizzes & homework graded directly by your teacher."}
             </p>
 
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
               {[
                 lang === "ar" ? "فيديوهات شروحات متطورة ومذكرات PDF حصرية" : "Advanced video lectures & exclusive PDF notes",
                 lang === "ar" ? "تنبيهات مجدولة وإشعارات دقيقة لمواعيد صفك" : "Scheduled notifications strictly tied to your class",
-                lang === "ar" ? "مساعد ذكاء اصطناعي تفاعلي للإجابة وتفسير الدروس" : "Interactive AI tutor for instant 24/7 homework help",
+                lang === "ar" ? "متابعة مستمرة لدرجاتك ومستوى تقدمك في المنهج" : "Continuous tracking of your grades and progress",
               ].map((item, idx) => (
                 <div key={idx} style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "12.5px" }}>
                   <div
@@ -893,13 +1025,6 @@ export const AuthView: React.FC<AuthViewProps> = ({
             </div>
           </div>
 
-          {/* Bottom Security Footer */}
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "11.5px", opacity: 0.75, zIndex: 2 }}>
-            <ShieldCheck size={16} />
-            <span>
-              {lang === "ar" ? "نظام آمن ومشفر ومعتمد رسمياً من وزارة التربية والتعليم" : "Secure, encrypted & officially accredited platform"}
-            </span>
-          </div>
         </div>
       </div>
     </div>

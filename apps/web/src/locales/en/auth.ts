@@ -15,7 +15,7 @@ export const authEn = {
   dontHaveAccount: "New student? Create an account and start learning",
   forgotPassword: "Forgot your password?",
   demoTeacherHint: "Teacher Login: teacher@demo.com",
-  demoStudentHint: "Student Login: student@demo.com",
+  demoStudentHint: "Student Login: student01@demo.com",
   emailLabel: "Email Address:",
   emailPlaceholder: "name@example.com",
   passwordLabel: "Password:",

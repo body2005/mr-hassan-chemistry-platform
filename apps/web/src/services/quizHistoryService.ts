@@ -1,4 +1,4 @@
-import { GeneratedQuestion } from "../types/ai";
+import { GeneratedQuestion } from "../types/quiz";
 
 export interface PublishedQuizRecord {
   id: string;
@@ -6,7 +6,8 @@ export interface PublishedQuizRecord {
   assessmentType: "quiz" | "assignment";
   academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary";
   academicYearLabel: string;
-  creationMode: "ai" | "manual" | "extracted";
+  creationMode: "extract" | "manual" | "extracted";
+  /** Legacy value from records saved before AI generation was removed. */
   quizMode?: "mix" | "extract" | "generate";
   publishedAt: string;
   publishStartDate: string;

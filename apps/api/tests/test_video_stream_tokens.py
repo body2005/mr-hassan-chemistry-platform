@@ -1,12 +1,39 @@
 import uuid
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app.core.security import create_session_token
+from app.core.security import hash_password
+from app.core.config import get_settings
 from app.main import app
-from app.models.course import Course, CourseModule, CourseStatus, Lesson
+from app.models.course import Course, CourseModule, CourseStatus, Enrollment, EnrollmentStatus, Lesson
 from app.models.institution import Institution
 from app.models.user import User, UserRole
+
+
+class MemoryObjectStorage:
+    """Small object-store double proving media survives outside the web disk."""
+
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+
+    def save_file(self, local_source_path, storage_key, content_type=None):
+        self.objects[storage_key] = Path(local_source_path).read_bytes()
+        return f"s3://test-bucket/{storage_key}"
+
+    def get_local_path(self, storage_key):
+        return None
+
+    def get_size(self, storage_key):
+        return len(self.objects[storage_key.removeprefix("s3://test-bucket/")])
+
+    def open_stream(self, storage_key, start=0, length=None):
+        data = self.objects[storage_key.removeprefix("s3://test-bucket/")]
+        yield data[start:] if length is None else data[start : start + length]
+
+    def delete(self, storage_key):
+        self.objects.pop(storage_key.removeprefix("s3://test-bucket/"), None)
+        return True
 
 
 def test_video_stream_requires_a_scoped_token_and_supports_ranges(db, monkeypatch, tmp_path):
@@ -17,9 +44,9 @@ def test_video_stream_requires_a_scoped_token_and_supports_ranges(db, monkeypatc
     teacher = User(
         institution_id=institution.id,
         username=f"video-teacher-{uuid.uuid4().hex[:8]}",
-        email=f"video-teacher-{uuid.uuid4().hex[:8]}@example.test",
+        email=f"video-teacher-{uuid.uuid4().hex[:8]}@example.com",
         display_name="Video Teacher",
-        password_hash="test",
+        password_hash=hash_password("TeacherPass123!"),
         role=UserRole.TEACHER,
     )
     db.add(teacher)
@@ -27,9 +54,9 @@ def test_video_stream_requires_a_scoped_token_and_supports_ranges(db, monkeypatc
     student_without_entitlement = User(
         institution_id=institution.id,
         username=f"video-student-{uuid.uuid4().hex[:8]}",
-        email=f"video-student-{uuid.uuid4().hex[:8]}@example.test",
+        email=f"video-student-{uuid.uuid4().hex[:8]}@example.com",
         display_name="Video Student",
-        password_hash="test",
+        password_hash=hash_password("StudentPass123!"),
         role=UserRole.STUDENT,
     )
     db.add(student_without_entitlement)
@@ -53,24 +80,94 @@ def test_video_stream_requires_a_scoped_token_and_supports_ranges(db, monkeypatc
     monkeypatch.setenv("VIDEO_UPLOAD_DIR", str(tmp_path))
     (tmp_path / f"{lesson.id}.mp4").write_bytes(b"0123456789abcdef")
     client = TestClient(app)
-    auth = {"Authorization": f"Bearer {create_session_token(teacher)}"}
+    # Exercise the actual cookie-only login flow, not a legacy Bearer header.
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"email": teacher.email, "password": "TeacherPass123!", "institution_slug": institution.slug},
+    )
+    assert login.status_code == 200, login.text
 
-    token_response = client.post(f"/api/v1/lessons/{lesson.id}/video-token", headers=auth)
+    csrf_headers = {"X-CSRF-Token": client.cookies.get(get_settings().csrf_cookie_name)}
+    object_store = MemoryObjectStorage()
+    monkeypatch.setattr("app.api.routes.platform.get_storage_provider", lambda: object_store)
+    video_bytes = b"\x00\x00\x00\x18ftypisom" + b"persistent-video-content"
+    upload = client.post(
+        f"/api/v1/lessons/{lesson.id}/video",
+        headers=csrf_headers,
+        files={"file": ("lesson.mp4", video_bytes, "video/mp4")},
+    )
+    assert upload.status_code == 200, upload.text
+    db.refresh(lesson)
+    assert lesson.video_asset_key and lesson.video_asset_key.startswith("s3://test-bucket/")
+    assert object_store.objects
+
+    token_response = client.post(f"/api/v1/lessons/{lesson.id}/video-token", headers=csrf_headers)
     assert token_response.status_code == 200
     payload = token_response.json()
     assert set(payload) == {"video_token", "stream_url", "expires_in"}
     assert "manifest" not in payload
 
-    no_access = client.post(
-        f"/api/v1/lessons/{lesson.id}/video-token",
-        headers={"Authorization": f"Bearer {create_session_token(student_without_entitlement)}"},
+    # Range streaming works with the SAME session that requested the token:
+    # the stream is bound to the issuing session (nonce == session jti), so
+    # sharing the URL with another account or an anonymous client dies here.
+    response = client.get(payload["stream_url"], headers={"Range": "bytes=12-15"})
+    assert response.status_code == 206
+    assert response.content == b"pers"
+    assert response.headers["accept-ranges"] == "bytes"
+
+    # A password change or "sign out everywhere" must also invalidate a
+    # previously issued stream URL, even if the old browser keeps its cookie.
+    revoke = client.post("/api/v1/auth/revoke-all", headers=csrf_headers)
+    assert revoke.status_code == 204
+    assert client.get(payload["stream_url"]).status_code == 403
+
+    student_login = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": student_without_entitlement.email,
+            "password": "StudentPass123!",
+            "institution_slug": institution.slug,
+        },
     )
+    assert student_login.status_code == 200, student_login.text
+    student_csrf_headers = {"X-CSRF-Token": client.cookies.get(get_settings().csrf_cookie_name)}
+    no_access = client.post(f"/api/v1/lessons/{lesson.id}/video-token", headers=student_csrf_headers)
     assert no_access.status_code == 403
 
-    assert client.get(f"/api/v1/lessons/{lesson.id}/stream").status_code == 401
+    enrollment = Enrollment(course_id=course.id, student_id=student_without_entitlement.id)
+    db.add(enrollment)
+    db.commit()
+    entitled = client.post(f"/api/v1/lessons/{lesson.id}/video-token", headers=student_csrf_headers)
+    assert entitled.status_code == 200, entitled.text
+    entitled_url = entitled.json()["stream_url"]
+    assert client.get(entitled_url, headers={"Range": "bytes=0-3"}).status_code == 206
+    enrollment.status = EnrollmentStatus.WITHDRAWN
+    db.commit()
+    assert client.get(entitled_url, headers={"Range": "bytes=0-3"}).status_code == 403
+
+    # Missing token is now uniformly 403 (invalid/absent credentials are not
+    # distinguished to avoid revealing which part failed).
+    assert client.get(f"/api/v1/lessons/{lesson.id}/stream").status_code == 403
     assert client.get(f"/api/v1/lessons/{lesson.id}/manifest.m3u8?token={payload['video_token']}").status_code == 404
 
-    response = client.get(payload["stream_url"], headers={"Range": "bytes=0-3"})
-    assert response.status_code == 206
-    assert response.content == b"0123"
-    assert response.headers["accept-ranges"] == "bytes"
+    # Replay with the WRONG session (student cookies + teacher token) fails.
+    replay = client.get(payload["stream_url"], headers={"Range": "bytes=0-3"})
+    assert replay.status_code == 403
+
+
+def test_external_video_link_is_not_an_allowed_protected_source():
+    from pydantic import ValidationError
+
+    from app.api.routes.courses import _video_playback_fields
+    from app.schemas import LessonCreateRequest
+
+    try:
+        LessonCreateRequest(title="External", kind="video", position=1, external_video_url="https://example.com/video.mp4")
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("External video URL was accepted")
+
+    legacy_lesson = type("LegacyLesson", (), {"id": uuid.uuid4(), "video_asset_key": "https://example.com/video.mp4"})()
+    assert _video_playback_fields(legacy_lesson) == (False, None)
+    assert _video_playback_fields(legacy_lesson, allow_external=True) == (True, "https://example.com/video.mp4")

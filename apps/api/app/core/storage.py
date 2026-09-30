@@ -238,6 +238,8 @@ class S3StorageProvider(BaseStorageProvider):
                     signature_version="s3v4",
                     s3={"addressing_style": "path" if is_path_style else "virtual"},
                     retries={"max_attempts": 3, "mode": "standard"},
+                    connect_timeout=3,
+                    read_timeout=15,
                 ),
             )
         return self._client
@@ -284,8 +286,11 @@ class S3StorageProvider(BaseStorageProvider):
             range_header = f"bytes={start}-{start + length - 1}"
         response = client.get_object(Bucket=self.bucket_name, Key=key, Range=range_header)
         stream: BinaryIO = response["Body"]
-        while chunk := stream.read(64 * 1024):
-            yield chunk
+        try:
+            while chunk := stream.read(64 * 1024):
+                yield chunk
+        finally:
+            stream.close()
 
     def get_size(self, storage_key: str) -> int:
         client = self._get_client()
@@ -299,8 +304,13 @@ class S3StorageProvider(BaseStorageProvider):
         try:
             client.head_object(Bucket=self.bucket_name, Key=key)
             return True
-        except Exception:
-            return False
+        except Exception as exc:
+            from botocore.exceptions import ClientError
+            if isinstance(exc, ClientError) and str(exc.response.get("Error", {}).get("Code")) in {"404", "NoSuchKey", "NotFound"}:
+                return False
+            # An unreachable store is not a missing resource. Let the API
+            # dependency handler return a retryable 503, preserving ownership.
+            raise
 
     def delete(self, storage_key: str) -> bool:
         client = self._get_client()
@@ -329,10 +339,10 @@ class S3StorageProvider(BaseStorageProvider):
     def check_readiness(self) -> dict[str, str | bool]:
         """
         Active probe performing write, read, and delete of a temporary test object.
-        Result is cached for 45 seconds to avoid repeated external I/O on rapid readiness polls.
+        Result is cached briefly; readiness must notice outages and recovery.
         """
         now = time.time()
-        if self._probe_cache and (now - self._probe_cache[0]) < 45.0:
+        if self._probe_cache and (now - self._probe_cache[0]) < 5.0:
             return self._probe_cache[1]
 
         probe_key = f".probes/readiness_{uuid.uuid4().hex[:8]}.tmp"
@@ -365,7 +375,7 @@ class S3StorageProvider(BaseStorageProvider):
             res = {
                 "provider": "s3_object_storage",
                 "status": "unavailable",
-                "error": str(exc).split(":")[0],
+                "error": type(exc).__name__,
                 "writable": False,
                 "persistent": True,
             }
@@ -410,8 +420,11 @@ def get_storage_provider() -> BaseStorageProvider:
                     bucket_name=settings.s3_bucket,
                     access_key_id=settings.s3_access_key,
                     secret_access_key=settings.s3_secret_key,
+                    region_name=settings.s3_region,
                 )
             except Exception as e:
+                if settings.app_env.lower() == "production":
+                    raise RuntimeError("Configured object storage is unavailable") from e
                 logger.warning("Failed to initialize S3 storage provider (%s); falling back to local storage.", e)
                 _storage_instance = LocalStorageProvider()
         else:

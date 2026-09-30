@@ -42,13 +42,14 @@ def upgrade() -> None:
         )
     )
 
-    op.alter_column(
-        "knowledge_sources",
-        "source_role",
-        existing_type=sa.String(length=30),
-        server_default="COURSE_KNOWLEDGE",
-        existing_nullable=False,
-    )
+    # SQLite cannot ALTER COLUMN in place; batch mode rebuilds the table.
+    with op.batch_alter_table("knowledge_sources") as batch_op:
+        batch_op.alter_column(
+            "source_role",
+            existing_type=sa.String(length=30),
+            server_default="COURSE_KNOWLEDGE",
+            existing_nullable=False,
+        )
 
 
 def downgrade() -> None:

@@ -10,7 +10,6 @@ import {
   Clock,
   CheckCircle2,
   AlertCircle,
-  Sparkles,
   PenTool,
   Plus,
   X,
@@ -390,7 +389,7 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
                   left: "10px",
                   background: "transparent",
                   border: "none",
-                  color: "var(--text-muted, #94a3b8)",
+                  color: "rgb(118, 40, 40)",
                   cursor: "pointer",
                   padding: 0,
                 }}
@@ -437,8 +436,8 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
             }}
           >
             <option value="all">كل الأنواع (اختبارات وواجبات)</option>
-            <option value="quiz">اختبار إلكتروني (Quiz)</option>
-            <option value="assignment">واجب منزلي (Assignment)</option>
+            <option value="quiz">اختبار إلكتروني</option>
+            <option value="assignment">واجب منزلي</option>
           </select>
 
           {/* Status Filter */}
@@ -570,7 +569,7 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
                           border: isQuiz ? "1px solid #99f6e4" : "1px solid #a7f3d0",
                         }}
                       >
-                        {isQuiz ? "اختبار إلكتروني (Quiz)" : "واجب منزلي (Assignment)"}
+                        {isQuiz ? "اختبار إلكتروني" : "واجب منزلي"}
                       </span>
 
                       <span
@@ -599,11 +598,7 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
                           gap: "4px",
                         }}
                       >
-                        {quiz.creationMode === "ai" ? (
-                          <>
-                            <Sparkles size={11} /> ذكاء اصطناعي
-                          </>
-                        ) : quiz.creationMode === "extracted" ? (
+                        {quiz.creationMode === "extracted" || quiz.creationMode === "extract" ? (
                           <>
                             <FileText size={11} /> مستخرج من ملف
                           </>
@@ -810,7 +805,7 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
                       borderRadius: "8px",
                       border: "none",
                       background: "transparent",
-                      color: "#dc2626",
+                      color: "rgb(118, 40, 40)",
                       fontSize: "12px",
                       fontWeight: 700,
                       cursor: "pointer",
@@ -916,8 +911,9 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
                 <button
                   type="button"
                   onClick={() => setPreviewQuiz(null)}
+                  className="modal-close-btn"
                   style={{
-                    background: "rgba(255, 255, 255, 0.15)",
+                    background: "var(--modal-close-bg)",
                     border: "none",
                     color: "#ffffff",
                     borderRadius: "8px",
@@ -1144,7 +1140,7 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
                 padding: "14px 22px",
                 borderTop: "1px solid var(--border-color, #e2e8f0)",
                 display: "flex",
-                justifyContent: "space-between",
+                justifyContent: "flex-end",
                 alignItems: "center",
                 background: "var(--bg-surface-secondary, #f8fafc)",
               }}
@@ -1172,23 +1168,6 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
               >
                 <Edit3 size={14} />
                 <span>فتح وتعديل هذا الاختبار في الصانع</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setPreviewQuiz(null)}
-                style={{
-                  background: "var(--bg-surface, #ffffff)",
-                  border: "1px solid var(--border-color, #cbd5e1)",
-                  color: "var(--text-main, #0f172a)",
-                  borderRadius: "8px",
-                  padding: "8px 16px",
-                  fontSize: "12.5px",
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-              >
-                إغلاق النافذة
               </button>
             </div>
           </div>
@@ -1228,8 +1207,8 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
                 width: "48px",
                 height: "48px",
                 borderRadius: "50%",
-                background: "#fee2e2",
-                color: "#dc2626",
+                background: "rgba(118, 40, 40, 0.12)",
+                color: "rgb(118, 40, 40)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -1248,8 +1227,9 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
               <button
                 type="button"
                 onClick={handleConfirmDelete}
+                className="btn-delete"
                 style={{
-                  background: "#dc2626",
+                  background: "rgb(118, 40, 40)",
                   color: "#ffffff",
                   border: "none",
                   borderRadius: "8px",

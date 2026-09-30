@@ -1,0 +1,6 @@
+ARG API_TEST_IMAGE=chemistryprodlocal-api
+FROM ${API_TEST_IMAGE}
+# Test tooling never enters the production runtime image.
+RUN python -m ensurepip && python -m pip install --no-cache-dir \
+    requests==2.32.5 requests-toolbelt==1.0.0 docker==7.1.0
+COPY . .

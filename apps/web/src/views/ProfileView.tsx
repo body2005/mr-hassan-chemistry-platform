@@ -14,9 +14,10 @@ import {
 } from "lucide-react";
 import { CurrentUser, StudentProfile, StudentRecord, TeacherProfile } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
-import { userService } from "../services/lmsService";
+import { authService, userService } from "../services/lmsService";
 import { useConfirm } from "../components/ConfirmWizard";
 import { StudentDetailModal } from "../components/StudentDetailModal";
+import { StudentDetailWizard } from "../components/StudentDetailWizard";
 
 export interface ManagedStudentItem {
   id: string;
@@ -30,6 +31,10 @@ export interface ManagedStudentItem {
   phone?: string;
   studentPhone?: string;
   guardianPhone?: string;
+  governorate?: string;
+  schoolName?: string;
+  gender?: "MALE" | "FEMALE" | string;
+  createdAt?: string;
   overallAttendanceRatio?: number;
   assignmentSubmissionRatio?: number;
   averageQuizScore?: number;
@@ -64,19 +69,89 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [studentYearFilter, setStudentYearFilter] = useState<string>("all");
   const [studentActionMsg, setStudentActionMsg] = useState<string | null>(null);
   const [selectedStudentForDetail, setSelectedStudentForDetail] = useState<ManagedStudentItem | null>(null);
+  const [selectedStudentForWizard, setSelectedStudentForWizard] = useState<ManagedStudentItem | null>(null);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmNewPassword, setConfirmNewPassword] = useState("");
+  const [securityBusy, setSecurityBusy] = useState(false);
+  const [securityError, setSecurityError] = useState<string | null>(null);
+
+  async function handleChangePassword(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSecurityError(null);
+    if (newPassword.length < 10 || newPassword !== confirmNewPassword) {
+      setSecurityError(lang === "ar" ? "يجب أن تتطابق كلمة المرور الجديدة وتضم 10 أحرف على الأقل." : "New passwords must match and contain at least 10 characters.");
+      return;
+    }
+    setSecurityBusy(true);
+    try {
+      await authService.changePassword(currentPassword, newPassword);
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmNewPassword("");
+      onLogout();
+    } catch (error) {
+      setSecurityError(error instanceof Error ? error.message : (lang === "ar" ? "تعذر تغيير كلمة المرور." : "Could not change password."));
+    } finally {
+      setSecurityBusy(false);
+    }
+  }
+
+  async function handleRevokeAllSessions() {
+    const confirmed = await confirm({
+      title: lang === "ar" ? "إنهاء جميع الجلسات" : "End all sessions",
+      message: lang === "ar" ? "سيتم تسجيل خروجك من كل الأجهزة، بما فيها هذا الجهاز." : "You will be signed out on all devices, including this one.",
+      confirmLabel: lang === "ar" ? "إنهاء الجلسات" : "End sessions",
+      tone: "warning",
+    });
+    if (!confirmed) return;
+    setSecurityError(null);
+    setSecurityBusy(true);
+    try {
+      await authService.revokeAllSessions();
+      onLogout();
+    } catch (error) {
+      setSecurityError(error instanceof Error ? error.message : (lang === "ar" ? "تعذر إنهاء الجلسات." : "Could not end sessions."));
+    } finally {
+      setSecurityBusy(false);
+    }
+  }
 
   useEffect(() => {
+    if (isStudent) return;
     void userService.getStudents()
-      .then((students) => setRegisteredStudents(students.map((student) => ({
-        id: student.id,
-        name: student.display_name,
-        email: student.email,
-        role: student.role,
-        isBlocked: !student.is_active,
-        academicYear: "1st_secondary",
-      }))))
+      .then((students) => setRegisteredStudents(students.map((student) => {
+        const year: "1st_secondary" | "2nd_secondary" | "3rd_secondary" =
+          student.grade_level === "SECONDARY_2"
+            ? "2nd_secondary"
+            : student.grade_level === "SECONDARY_3"
+            ? "3rd_secondary"
+            : "1st_secondary";
+        const yearLabel =
+          year === "2nd_secondary"
+            ? "الصف الثاني الثانوي"
+            : year === "3rd_secondary"
+            ? "الصف الثالث الثانوي"
+            : "الصف الأول الثانوي";
+        return {
+          id: student.id,
+          name: student.display_name,
+          email: student.email,
+          role: student.role,
+          isBlocked: !student.is_active,
+          academicYear: year,
+          academicYearLabel: yearLabel,
+          studentPhone: student.student_phone || "",
+          guardianPhone: student.guardian_phone || "",
+          nationalId: student.national_id || "",
+          governorate: student.governorate || "",
+          schoolName: student.school_name || "",
+          gender: student.gender || "",
+          createdAt: student.created_at ? student.created_at.slice(0, 10) : "",
+        };
+      })))
       .catch(() => setRegisteredStudents([]));
-  }, []);
+  }, [isStudent]);
 
   async function handleToggleBlockStudent(studentId: string, studentName: string, currentlyBlocked: boolean) {
     const actionText = currentlyBlocked ? "إلغاء حظر" : "حظر";
@@ -155,16 +230,24 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           </p>
         </div>
 
-        {/* Prominent Logout Button (Part 5 Requirement 10) */}
+        {/* Prominent Logout Button (styled like delete — red) */}
         <button
-          onClick={onLogout}
+          onClick={async () => {
+            const confirmed = await confirm({
+              title: "تسجيل الخروج",
+              message: "هل أنت متأكد من رغبتك في تسجيل الخروج من حسابك؟",
+              confirmLabel: "تسجيل الخروج",
+              tone: "danger",
+            });
+            if (confirmed) onLogout();
+          }}
           style={{
             display: "inline-flex",
             alignItems: "center",
             gap: "8px",
-            background: "#fee2e2",
-            color: "#b91c1c",
-            border: "1px solid #fca5a5",
+            background: "var(--danger-action-bg)",
+            color: "#ffffff",
+            border: "none",
             padding: "10px 18px",
             borderRadius: "10px",
             fontSize: "13px",
@@ -177,6 +260,19 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           <span>{t.logoutBtn}</span>
         </button>
       </div>
+
+      <section aria-label={lang === "ar" ? "أمان الحساب" : "Account security"} style={{ background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "18px", padding: "24px", marginBottom: "24px" }}>
+        <h2 style={{ marginTop: 0 }}>{lang === "ar" ? "أمان الحساب" : "Account security"}</h2>
+        <p style={{ color: "var(--text-muted)" }}>{lang === "ar" ? "بعد تغيير كلمة المرور، ستنتهي كل الجلسات ويجب تسجيل الدخول من جديد." : "Changing your password ends all sessions. Sign in again afterward."}</p>
+        <form onSubmit={handleChangePassword} style={{ display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "end" }}>
+          <label>{lang === "ar" ? "كلمة المرور الحالية" : "Current password"}<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label>
+          <label>{lang === "ar" ? "كلمة المرور الجديدة" : "New password"}<input type="password" autoComplete="new-password" minLength={10} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required /></label>
+          <label>{lang === "ar" ? "تأكيد كلمة المرور الجديدة" : "Confirm new password"}<input type="password" autoComplete="new-password" minLength={10} value={confirmNewPassword} onChange={(event) => setConfirmNewPassword(event.target.value)} required /></label>
+          <button type="submit" disabled={securityBusy}>{lang === "ar" ? "تغيير كلمة المرور" : "Change password"}</button>
+        </form>
+        <button type="button" disabled={securityBusy} onClick={() => void handleRevokeAllSessions()} style={{ marginTop: "16px" }}>{lang === "ar" ? "تسجيل الخروج من جميع الأجهزة" : "Sign out on all devices"}</button>
+        {securityError && <p role="alert" style={{ color: "#b91c1c" }}>{securityError}</p>}
+      </section>
 
       {/* Main Profile Grid Card */}
       <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "18px", padding: "28px", marginBottom: "24px", boxShadow: "var(--card-shadow)" }}>
@@ -276,6 +372,20 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               <div style={{ background: "var(--bg-surface-secondary)", padding: "16px", borderRadius: "12px", border: "1px solid var(--border-color)" }}>
                 <span style={{ fontSize: "12px", color: "var(--text-muted)", display: "block" }}>{t.guardianPhoneLabel}</span>
                 <strong style={{ fontSize: "15px", color: "var(--text-main)", display: "block", marginTop: "2px" }}>{student.guardianPhone}</strong>
+              </div>
+              <div style={{ background: "var(--bg-surface-secondary)", padding: "16px", borderRadius: "12px", border: "1px solid var(--border-color)" }}>
+                <span style={{ fontSize: "12px", color: "var(--text-muted)", display: "block" }}>{lang === "ar" ? "المحافظة" : "Governorate"}</span>
+                <strong style={{ fontSize: "15px", color: "var(--text-main)", display: "block", marginTop: "2px" }}>{student.governorate || "—"}</strong>
+              </div>
+              <div style={{ background: "var(--bg-surface-secondary)", padding: "16px", borderRadius: "12px", border: "1px solid var(--border-color)" }}>
+                <span style={{ fontSize: "12px", color: "var(--text-muted)", display: "block" }}>{lang === "ar" ? "المدرسة" : "School"}</span>
+                <strong style={{ fontSize: "15px", color: "var(--text-main)", display: "block", marginTop: "2px" }}>{student.schoolName || "—"}</strong>
+              </div>
+              <div style={{ background: "var(--bg-surface-secondary)", padding: "16px", borderRadius: "12px", border: "1px solid var(--border-color)" }}>
+                <span style={{ fontSize: "12px", color: "var(--text-muted)", display: "block" }}>{lang === "ar" ? "النوع" : "Gender"}</span>
+                <strong style={{ fontSize: "15px", color: "var(--text-main)", display: "block", marginTop: "2px" }}>
+                  {student.gender === "MALE" ? "ذكر" : student.gender === "FEMALE" ? "أنثى" : student.gender || "—"}
+                </strong>
               </div>
             </div>
 
@@ -467,7 +577,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                           transition: "all 0.15s ease",
                         }}
                       >
-                        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                        <div
+                          style={{ display: "flex", alignItems: "center", gap: "12px", cursor: "pointer" }}
+                          onDoubleClick={() => setSelectedStudentForWizard(st)}
+                          title="انقر مرتين لعرض كافة بيانات تسجيل الطالب"
+                        >
                           <div
                             style={{
                               width: "42px",
@@ -486,7 +600,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                           </div>
 
                           <div>
-                            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <div
+                              style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}
+                              onDoubleClick={() => setSelectedStudentForWizard(st)}
+                              title={lang === "ar" ? "انقر مرتين لعرض كافة بيانات التسجيل" : "Double-click to view registration details"}
+                            >
                               <strong style={{ fontSize: "14px", color: "var(--text-main)" }}>{st.name}</strong>
                               {isBlocked ? (
                                 <span style={{ fontSize: "10.5px", fontWeight: 800, padding: "2px 8px", borderRadius: "6px", background: "#fee2e2", color: "#b91c1c", display: "inline-flex", alignItems: "center", gap: "3px" }}>
@@ -534,7 +652,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                             <span>{lang === "ar" ? "مخطط المشاهدة" : "Watch History"}</span>
                           </button>
 
-                          {/* Block / Unblock Button */}
+                          {/* Block / Unblock Button (styled red like delete) */}
                           <button
                             type="button"
                             onClick={() => handleToggleBlockStudent(st.id, st.name, isBlocked)}
@@ -544,9 +662,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                               gap: "5px",
                               padding: "6px 12px",
                               borderRadius: "8px",
-                              border: isBlocked ? "1px solid #86efac" : "1px solid #fca5a5",
-                              background: isBlocked ? "#dcfce7" : "#fee2e2",
-                              color: isBlocked ? "#166534" : "#b91c1c",
+                              border: "none",
+                              background: isBlocked ? "#dcfce7" : "var(--danger-action-bg)",
+                              color: isBlocked ? "#166534" : "#ffffff",
                               fontSize: "12px",
                               fontWeight: 800,
                               cursor: "pointer",
@@ -569,7 +687,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                               padding: "6px 12px",
                               borderRadius: "8px",
                               border: "none",
-                              background: "#dc2626",
+                              background: "var(--danger-action-bg)",
                               color: "#ffffff",
                               fontSize: "12px",
                               fontWeight: 800,
@@ -637,8 +755,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                     });
                   }
                 }}
+                className="btn-delete"
                 style={{
-                  background: "#dc2626",
+                  background: "var(--danger-action-bg)",
                   color: "#ffffff",
                   border: "none",
                   padding: "10px 18px",
@@ -710,6 +829,22 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           ],
         } : null}
         onClose={() => setSelectedStudentForDetail(null)}
+      />
+
+      {/* Student Registration Detail Wizard (on Double-Click) */}
+      <StudentDetailWizard
+        student={selectedStudentForWizard}
+        onClose={() => setSelectedStudentForWizard(null)}
+        onBlock={async (studentId, studentName, isBlocked) => {
+          await handleToggleBlockStudent(studentId, studentName, isBlocked);
+          if (selectedStudentForWizard && selectedStudentForWizard.id === studentId) {
+            setSelectedStudentForWizard({ ...selectedStudentForWizard, isBlocked: !isBlocked });
+          }
+        }}
+        onDelete={async (studentId, studentName) => {
+          await handleDeleteStudent(studentId, studentName);
+          setSelectedStudentForWizard(null);
+        }}
       />
     </div>
   );

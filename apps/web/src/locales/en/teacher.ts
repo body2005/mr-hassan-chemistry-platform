@@ -3,10 +3,10 @@ export const teacherEn = {
   navLessonManagementSub: "Content & Difficulty Forecast",
   navQuizGen: "Quiz & Assignment Studio",
   navQuizGenSub: "Smart Assessment & Homework Authoring",
-  navSubmissions: "Assignment Submissions & Grading",
-  navSubmissionsSub: "Essay Grading & Scores",
-  navStudentAnalytics: "Student Tracking & Cohorts",
-  navStudentAnalyticsSub: "Academic Years & Timelines",
+  navSubmissions: "Student Tracking",
+  navSubmissionsSub: "Cohort progress, attendance & grading",
+  navStudentAnalytics: "Student Tracking",
+  navStudentAnalyticsSub: "Cohort progress, attendance & grading",
 
   // Lesson Management & Upload
   uploadLessonBadge: "Content Management & Difficulty Forecast",
@@ -60,6 +60,6 @@ export const teacherEn = {
   lastActiveCol: "Last Active",
   belowThresholdAlert: "Below Minimum Threshold",
   stableStatus: "Regular & Stable",
-  viewAiGradingBtn: "View Student Answer & AI Rubric",
+  viewAiGradingBtn: "Preview & Edit Grade",
   notSubmittedYet: "Not submitted yet",
 };

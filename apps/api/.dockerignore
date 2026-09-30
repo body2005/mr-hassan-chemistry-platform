@@ -1,4 +1,4 @@
-﻿__pycache__/
+__pycache__/
 *.py[cod]
 *.class
 .pytest_cache/
@@ -10,6 +10,5 @@ venv/
 *.db-wal
 storage/
 uploads/
-tests/
 .env
 .env.*

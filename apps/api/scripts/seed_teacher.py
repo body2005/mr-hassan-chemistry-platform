@@ -9,7 +9,7 @@ from app.core.database import SessionLocal, engine
 from app.core.security import hash_password, verify_password
 from app.models import Base
 from app.models.institution import Institution
-from app.models.user import User, UserRole
+from app.models.user import Gender, GradeLevel, Religion, User, UserRole
 
 
 def _env_flag(name: str) -> bool:
@@ -36,16 +36,37 @@ def _seed_account(
     password: str,
     role: UserRole,
     reset_password: bool,
-    ensure_password_matches: bool = False,
     label: str,
+    grade_level: GradeLevel | None = None,
 ) -> None:
-    existing = db.query(User).filter(
+    existing_by_email = db.query(User).filter(
         User.institution_id == institution.id,
         User.email == email,
     ).first()
+    existing_by_username = db.query(User).filter(
+        User.institution_id == institution.id,
+        User.username == username,
+    ).first()
+
+    if (
+        existing_by_email
+        and existing_by_username
+        and existing_by_email.id != existing_by_username.id
+    ):
+        raise RuntimeError(
+            f"{label} seed identity is ambiguous: email and username belong to different accounts"
+        )
+
+    # A deployment may rename an authorized account's email. Reconcile the
+    # account by its institution-scoped username only when the requested email
+    # is not already owned by someone else.
+    existing = existing_by_email or existing_by_username
 
     if existing:
         changed = False
+        if existing.email != email:
+            existing.email = email
+            changed = True
         if existing.role != role:
             existing.role = role
             changed = True
@@ -59,7 +80,18 @@ def _seed_account(
         if existing.display_name != display_name:
             existing.display_name = display_name
             changed = True
-        if reset_password or (ensure_password_matches and not verify_password(password, existing.password_hash)):
+        # Demo students need complete student data so a login can be rendered
+        # by the student dashboard. Do not overwrite existing profile choices.
+        if grade_level and existing.grade_level is None:
+            existing.grade_level = grade_level
+            existing.governorate = "CAIRO"
+            existing.school_name = "Demo Secondary School"
+            existing.gender = Gender.MALE
+            existing.religion = Religion.MUSLIM
+            changed = True
+        # Passwords only change when an operator explicitly opts in. Seed runs
+        # are otherwise idempotent and must never invalidate a live login.
+        if reset_password:
             existing.password_hash = hash_password(password)
             changed = True
         if changed:
@@ -77,6 +109,11 @@ def _seed_account(
         password_hash=hash_password(password),
         role=role,
         is_active=True,
+        grade_level=grade_level,
+        governorate="CAIRO" if grade_level else None,
+        school_name="Demo Secondary School" if grade_level else None,
+        gender=Gender.MALE if grade_level else None,
+        religion=Religion.MUSLIM if grade_level else None,
     )
     db.add(account)
     db.commit()
@@ -141,26 +178,31 @@ def seed() -> None:
             password=demo_teacher_password,
             role=UserRole.TEACHER,
             reset_password=reset_demo_passwords,
-            ensure_password_matches=False,
             label="Demo teacher",
         )
-        _seed_account(
-            db,
-            institution=demo_institution,
-            email=os.getenv("DEMO_STUDENT_EMAIL", "student@demo.com").strip().lower(),
-            username=os.getenv("DEMO_STUDENT_USERNAME", "student").strip().lower(),
-            display_name=os.getenv("DEMO_STUDENT_NAME", "Demo Student").strip(),
-            password=demo_student_password,
-            role=UserRole.STUDENT,
-            reset_password=reset_demo_passwords,
-            ensure_password_matches=False,
-            label="Demo student",
-        )
+        # Keep exactly ten predictable demo identities. Password updates still
+        # require the explicit RESET_DEMO_PASSWORDS opt-in above.
+        for number in range(1, 11):
+            _seed_account(
+                db,
+                institution=demo_institution,
+                email=f"student{number:02d}@demo.com",
+                username=f"student{number:02d}",
+                display_name=f"Demo Student {number:02d}",
+                password=demo_student_password,
+                role=UserRole.STUDENT,
+                reset_password=reset_demo_passwords,
+                label=f"Demo student {number:02d}",
+                grade_level=GradeLevel.SECONDARY_1,
+            )
 
         if reset_demo_passwords:
             for email, password in (
                 (os.getenv("DEMO_TEACHER_EMAIL", "teacher@demo.com").strip().lower(), demo_teacher_password),
-                (os.getenv("DEMO_STUDENT_EMAIL", "student@demo.com").strip().lower(), demo_student_password),
+                *(
+                    (f"student{number:02d}@demo.com", demo_student_password)
+                    for number in range(1, 11)
+                ),
             ):
                 seeded = db.query(User).filter(
                     User.institution_id == demo_institution.id,
