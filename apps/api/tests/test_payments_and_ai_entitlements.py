@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import base64
 
 from fastapi.testclient import TestClient
 
@@ -12,6 +13,11 @@ from app.models.institution import Institution
 from app.models.payment import PaymentOrder, PaymentStatus, StudentEntitlement
 from app.models.user import User, UserRole
 from app.services.payment_service import can_access_lesson_content
+
+
+VALID_RECEIPT_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAE0lEQVR4nGP8//8/AwMDEwMYAAAkBgMBXaJOiAAAAABJRU5ErkJggg=="
+)
 
 
 def _seed_catalog(db, slug: str = "payments"):
@@ -121,7 +127,7 @@ def test_paid_course_requires_approved_order(db, monkeypatch) -> None:
 
     receipt = student_client.post(
         f"/api/v1/payments/orders/{created.json()['id']}/receipt",
-        files={"receipt": ("receipt.png", b"small-receipt", "image/png")},
+        files={"receipt": ("receipt.png", VALID_RECEIPT_PNG, "image/png")},
         headers=_csrf_headers(student_client),
     )
     assert receipt.status_code == 200
@@ -131,7 +137,7 @@ def test_paid_course_requires_approved_order(db, monkeypatch) -> None:
     _login(teacher_client, teacher, "payments", "teacher-password")
     receipt_view = teacher_client.get(f"/api/v1/payments/orders/{created.json()['id']}/receipt")
     assert receipt_view.status_code == 200
-    assert receipt_view.content == b"small-receipt"
+    assert receipt_view.content == VALID_RECEIPT_PNG
     approved = teacher_client.post(
         f"/api/v1/payments/orders/{created.json()['id']}/approve",
         json={"note": "Payment verified"},

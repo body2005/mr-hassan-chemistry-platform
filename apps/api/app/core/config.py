@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     session_ttl_seconds: int = Field(default=12 * 60 * 60, ge=300, le=60 * 60 * 24)
     refresh_ttl_seconds: int = Field(default=60 * 60 * 24 * 30, ge=60 * 60, le=60 * 60 * 24 * 365)
     password_reset_ttl_minutes: int = Field(default=30, ge=5, le=24 * 60)
+    smtp_host: str | None = None
+    smtp_port: int = Field(default=465, ge=1, le=65535)
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str | None = None
+    smtp_tls_verify: bool = True
     default_institution_slug: str = "demo"
     database_url: str = "sqlite:///./learning_website.db"
     db_pool_size: int = Field(default=15, ge=1, le=50)
@@ -87,8 +93,22 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_secret(self) -> "Settings":
-        if self.secure_cookies and self.secret_key == "development-only-change-me":
+        if self.app_env.lower() == "production" and self.secret_key == "development-only-change-me":
             raise ValueError("SECRET_KEY must be replaced before production startup")
+        if self.app_env.lower() == "production" and (
+            not self.cors_origins or any(not origin.startswith("https://") for origin in self.cors_origins)
+        ):
+            raise ValueError("FRONTEND_ORIGINS must use HTTPS in production")
+        if self.app_env.lower() == "production" and not all(
+            (self.smtp_host, self.smtp_user, self.smtp_password, self.smtp_from_email)
+        ):
+            raise ValueError("SMTP delivery must be configured before production startup")
+        if self.app_env.lower() == "production" and not self.smtp_tls_verify:
+            raise ValueError("SMTP TLS certificate verification must remain enabled in production")
+        if self.app_env.lower() == "production" and not any(
+            (self.payment_instapay_account, self.payment_vodafone_cash_number, self.payment_bank_details)
+        ):
+            raise ValueError("At least one payment destination must be configured before production startup")
         return self
 
     @property
@@ -106,15 +126,16 @@ class Settings(BaseSettings):
         if not origins and raw:
             origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
 
-        default_exact = [
-            "https://mr-hassan-chemistry-platform.vercel.app",
-            "https://mr-hassan-chemistry.vercel.app",
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-        ]
-        for d in default_exact:
-            if d not in origins:
-                origins.append(d)
+        if self.app_env.lower() != "production":
+            default_exact = [
+                "https://mr-hassan-chemistry-platform.vercel.app",
+                "https://mr-hassan-chemistry.vercel.app",
+                "http://localhost:5173",
+                "http://127.0.0.1:5173",
+            ]
+            for d in default_exact:
+                if d not in origins:
+                    origins.append(d)
         return origins
 
     @property
@@ -126,6 +147,8 @@ class Settings(BaseSettings):
             # fails closed rather than silently widening CORS.
             re.compile(configured)
             return configured
+        if self.app_env.lower() == "production":
+            return None
         return r"^https://mr-hassan-chemistry-platform-[a-z0-9]+-body19\.vercel\.app$"
 
     @property

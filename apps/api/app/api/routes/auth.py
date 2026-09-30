@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 UTC = timezone.utc
@@ -33,10 +34,12 @@ from app.schemas import (
     UserResponse,
 )
 from app.services import auth_service
+from app.services.mail_service import password_reset_mail_configured, send_password_reset_email
 from app.services.audit_service import record_audit
 
 router = APIRouter(prefix="/auth")
 Db = Annotated[Session, Depends(get_db)]
+logger = logging.getLogger(__name__)
 
 
 def _cookie_options(request: Request | None = None) -> tuple[str, bool]:
@@ -295,6 +298,7 @@ def logout(
                     db,
                     user.id,
                     uuid.UUID(str(family_id)) if family_id else None,
+                    str(payload["jti"]),
                 )
                 record_audit(db, request, action="logout", resource_type="session", actor=user)
                 db.commit()
@@ -323,6 +327,9 @@ def change_password(
     ).update({RefreshSession.revoked_at: datetime.now(UTC)}, synchronize_session=False)
     db.commit()
 
+    from app.api.routes.platform import clear_revoked_account_video_slots
+    clear_revoked_account_video_slots(user.id)
+
 
 @router.post("/revoke-all", status_code=status.HTTP_204_NO_CONTENT)
 def revoke_all_sessions(user: CurrentUser, db: Db, request: Request) -> None:
@@ -333,6 +340,8 @@ def revoke_all_sessions(user: CurrentUser, db: Db, request: Request) -> None:
     ).update({RefreshSession.revoked_at: now}, synchronize_session=False)
     record_audit(db, request, action="sessions_revoked", resource_type="session", actor=user)
     db.commit()
+    from app.api.routes.platform import clear_revoked_account_video_slots
+    clear_revoked_account_video_slots(user.id)
 
 
 @router.post("/password-reset/request")
@@ -340,8 +349,17 @@ def request_password_reset(
     payload: PasswordResetRequest, db: Db, request: Request
 ) -> dict[str, str]:
     enforce_rate_limit(request, bucket="auth", limit=5, window_seconds=300)
+    if not password_reset_mail_configured():
+        raise HTTPException(status_code=503, detail="Password reset is temporarily unavailable")
     # Deliberately generic: account existence must not be exposed to callers.
-    auth_service.request_password_reset(db, str(payload.email), payload.institution_slug)
+    token = auth_service.request_password_reset(db, str(payload.email), payload.institution_slug)
+    if token:
+        try:
+            send_password_reset_email(str(payload.email), token)
+        except Exception:
+            # SMTP failures must not reveal whether the account exists, and
+            # neither the token nor recipient address may enter the logs.
+            logger.error("Password reset email delivery failed")
     return {"message": "If the account exists, reset instructions will be sent securely."}
 
 

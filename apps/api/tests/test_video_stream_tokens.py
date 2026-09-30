@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from app.core.security import hash_password
 from app.core.config import get_settings
 from app.main import app
-from app.models.course import Course, CourseModule, CourseStatus, Lesson
+from app.models.course import Course, CourseModule, CourseStatus, Enrollment, EnrollmentStatus, Lesson
 from app.models.institution import Institution
 from app.models.user import User, UserRole
 
@@ -90,10 +90,11 @@ def test_video_stream_requires_a_scoped_token_and_supports_ranges(db, monkeypatc
     csrf_headers = {"X-CSRF-Token": client.cookies.get(get_settings().csrf_cookie_name)}
     object_store = MemoryObjectStorage()
     monkeypatch.setattr("app.api.routes.platform.get_storage_provider", lambda: object_store)
+    video_bytes = b"\x00\x00\x00\x18ftypisom" + b"persistent-video-content"
     upload = client.post(
         f"/api/v1/lessons/{lesson.id}/video",
         headers=csrf_headers,
-        files={"file": ("lesson.mp4", b"persistent-video-content", "video/mp4")},
+        files={"file": ("lesson.mp4", video_bytes, "video/mp4")},
     )
     assert upload.status_code == 200, upload.text
     db.refresh(lesson)
@@ -109,10 +110,16 @@ def test_video_stream_requires_a_scoped_token_and_supports_ranges(db, monkeypatc
     # Range streaming works with the SAME session that requested the token:
     # the stream is bound to the issuing session (nonce == session jti), so
     # sharing the URL with another account or an anonymous client dies here.
-    response = client.get(payload["stream_url"], headers={"Range": "bytes=0-3"})
+    response = client.get(payload["stream_url"], headers={"Range": "bytes=12-15"})
     assert response.status_code == 206
     assert response.content == b"pers"
     assert response.headers["accept-ranges"] == "bytes"
+
+    # A password change or "sign out everywhere" must also invalidate a
+    # previously issued stream URL, even if the old browser keeps its cookie.
+    revoke = client.post("/api/v1/auth/revoke-all", headers=csrf_headers)
+    assert revoke.status_code == 204
+    assert client.get(payload["stream_url"]).status_code == 403
 
     student_login = client.post(
         "/api/v1/auth/login",
@@ -127,6 +134,17 @@ def test_video_stream_requires_a_scoped_token_and_supports_ranges(db, monkeypatc
     no_access = client.post(f"/api/v1/lessons/{lesson.id}/video-token", headers=student_csrf_headers)
     assert no_access.status_code == 403
 
+    enrollment = Enrollment(course_id=course.id, student_id=student_without_entitlement.id)
+    db.add(enrollment)
+    db.commit()
+    entitled = client.post(f"/api/v1/lessons/{lesson.id}/video-token", headers=student_csrf_headers)
+    assert entitled.status_code == 200, entitled.text
+    entitled_url = entitled.json()["stream_url"]
+    assert client.get(entitled_url, headers={"Range": "bytes=0-3"}).status_code == 206
+    enrollment.status = EnrollmentStatus.WITHDRAWN
+    db.commit()
+    assert client.get(entitled_url, headers={"Range": "bytes=0-3"}).status_code == 403
+
     # Missing token is now uniformly 403 (invalid/absent credentials are not
     # distinguished to avoid revealing which part failed).
     assert client.get(f"/api/v1/lessons/{lesson.id}/stream").status_code == 403
@@ -135,3 +153,21 @@ def test_video_stream_requires_a_scoped_token_and_supports_ranges(db, monkeypatc
     # Replay with the WRONG session (student cookies + teacher token) fails.
     replay = client.get(payload["stream_url"], headers={"Range": "bytes=0-3"})
     assert replay.status_code == 403
+
+
+def test_external_video_link_is_not_an_allowed_protected_source():
+    from pydantic import ValidationError
+
+    from app.api.routes.courses import _video_playback_fields
+    from app.schemas import LessonCreateRequest
+
+    try:
+        LessonCreateRequest(title="External", kind="video", position=1, external_video_url="https://example.com/video.mp4")
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("External video URL was accepted")
+
+    legacy_lesson = type("LegacyLesson", (), {"id": uuid.uuid4(), "video_asset_key": "https://example.com/video.mp4"})()
+    assert _video_playback_fields(legacy_lesson) == (False, None)
+    assert _video_playback_fields(legacy_lesson, allow_external=True) == (True, "https://example.com/video.mp4")

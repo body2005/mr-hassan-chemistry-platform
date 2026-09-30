@@ -63,7 +63,7 @@ export const LessonAccessModal: React.FC<LessonAccessModalProps> = ({
         })
         .finally(() => setLoading(false));
     }
-  }, [isOpen, requestId, initialRequest]);
+  }, [isOpen, requestId, initialRequest, toast]);
 
   if (!isOpen) return null;
 

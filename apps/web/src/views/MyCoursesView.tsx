@@ -176,7 +176,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     return true;
   });
 
-  const selectedCourseId = validEnrolledCourses[0]?.id || "";
+  const [selectedCourseId, setSelectedCourseId] = useState("");
 
   const activeCourse =
     validEnrolledCourses.find((c) => c.id === selectedCourseId) || validEnrolledCourses[0];
@@ -432,14 +432,22 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   }, []);
 
   // Sync overlays with browser history for Google Chrome Back button support
+  const hasServerQuiz = Boolean(serverQuiz);
+  const hasQuizResultPage = Boolean(quizResultPage);
+  const hasServerAssignment = Boolean(serverAssignment);
+  const hasActiveLessonModal = Boolean(activeLessonModal);
+  const hasActiveBookModal = Boolean(activeBookModal);
+  const hasActiveQuizHistoryModal = Boolean(activeQuizHistoryModal);
+  const hasActiveQuizModal = Boolean(activeQuizModal);
+  const hasActiveAssignmentModal = Boolean(activeAssignmentModal);
   useEffect(() => {
-    if (serverQuiz) {
+    if (hasServerQuiz) {
       if (!overlayHistoryStack.current.includes("serverQuiz")) {
         overlayHistoryStack.current.push("serverQuiz");
         window.history.pushState({ lmsOverlay: "serverQuiz" }, "");
       }
     }
-  }, [Boolean(serverQuiz)]);
+  }, [hasServerQuiz]);
 
   useEffect(() => {
     if (showQuizSubmitConfirm) {
@@ -451,67 +459,67 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   }, [showQuizSubmitConfirm]);
 
   useEffect(() => {
-    if (quizResultPage) {
+    if (hasQuizResultPage) {
       if (!overlayHistoryStack.current.includes("quizResultPage")) {
         overlayHistoryStack.current.push("quizResultPage");
         window.history.pushState({ lmsOverlay: "quizResultPage" }, "");
       }
     }
-  }, [Boolean(quizResultPage)]);
+  }, [hasQuizResultPage]);
 
   useEffect(() => {
-    if (serverAssignment) {
+    if (hasServerAssignment) {
       if (!overlayHistoryStack.current.includes("serverAssignment")) {
         overlayHistoryStack.current.push("serverAssignment");
         window.history.pushState({ lmsOverlay: "serverAssignment" }, "");
       }
     }
-  }, [Boolean(serverAssignment)]);
+  }, [hasServerAssignment]);
 
   useEffect(() => {
-    if (activeLessonModal) {
+    if (hasActiveLessonModal) {
       if (!overlayHistoryStack.current.includes("activeLessonModal")) {
         overlayHistoryStack.current.push("activeLessonModal");
         window.history.pushState({ lmsOverlay: "activeLessonModal" }, "");
       }
     }
-  }, [Boolean(activeLessonModal)]);
+  }, [hasActiveLessonModal]);
 
   useEffect(() => {
-    if (activeBookModal) {
+    if (hasActiveBookModal) {
       if (!overlayHistoryStack.current.includes("activeBookModal")) {
         overlayHistoryStack.current.push("activeBookModal");
         window.history.pushState({ lmsOverlay: "activeBookModal" }, "");
       }
     }
-  }, [Boolean(activeBookModal)]);
+  }, [hasActiveBookModal]);
 
   useEffect(() => {
-    if (activeQuizHistoryModal) {
+    if (hasActiveQuizHistoryModal) {
       if (!overlayHistoryStack.current.includes("activeQuizHistoryModal")) {
         overlayHistoryStack.current.push("activeQuizHistoryModal");
         window.history.pushState({ lmsOverlay: "activeQuizHistoryModal" }, "");
       }
     }
-  }, [Boolean(activeQuizHistoryModal)]);
+  }, [hasActiveQuizHistoryModal]);
 
   useEffect(() => {
-    if (activeQuizModal) {
+    if (hasActiveQuizModal) {
       if (!overlayHistoryStack.current.includes("activeQuizModal")) {
         overlayHistoryStack.current.push("activeQuizModal");
         window.history.pushState({ lmsOverlay: "activeQuizModal" }, "");
       }
     }
-  }, [Boolean(activeQuizModal)]);
+  }, [hasActiveQuizModal]);
 
   useEffect(() => {
-    if (activeAssignmentModal) {
+    if (hasActiveAssignmentModal) {
       if (!overlayHistoryStack.current.includes("activeAssignmentModal")) {
         overlayHistoryStack.current.push("activeAssignmentModal");
         window.history.pushState({ lmsOverlay: "activeAssignmentModal" }, "");
       }
     }
-  }, [Boolean(activeAssignmentModal)]);
+  }, [hasActiveAssignmentModal]);
 
   useEffect(() => {
     const handlePopState = () => {
@@ -609,14 +617,21 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       const data = await apiRequest<{
         quiz: { id: string; title: string; duration_seconds: number | null; total_points: number };
         attempt: { id: string; attempt_number: number; started_at: string | null; expires_at: string | null } | null;
-        questions: ServerQuizSolve["questions"];
+        questions: Array<Omit<ServerQuizSolve["questions"][number], "options"> & { options: unknown }>;
       }>(`/quizzes/${assessment.id}/solve`);
       setServerQuiz({
         quizId: data.quiz.id,
         title: data.quiz.title,
         durationSeconds: data.quiz.duration_seconds,
         totalPoints: data.quiz.total_points,
-        questions: data.questions,
+        questions: data.questions.map((question) => ({
+          ...question,
+          options: Array.isArray(question.options)
+            ? question.options.map((option) => (
+                typeof option === "string" ? { text: option } : option
+              )) as ServerQuizSolve["questions"][number]["options"]
+            : null,
+        })),
       });
       if (data.attempt) {
         setServerQuizAttempt({
@@ -646,17 +661,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     return () => clearInterval(interval);
   }, [serverQuizDeadline, serverQuiz, serverQuizResult]);
 
-  // Auto-submit exactly once when the timer hits zero (server also enforces).
-  useEffect(() => {
-    if (serverQuizRemaining !== null && serverQuizRemaining <= 0 && serverQuiz && !serverQuizResult && !serverQuizSubmitting && !serverQuizAutoSubmitted.current) {
-      serverQuizAutoSubmitted.current = true;
-      toast({ message: "انتهى وقت الاختبار — جاري التسليم التلقائي", tone: "warning" });
-      void submitServerQuiz(true);
-    }
-  }, [serverQuizRemaining, serverQuiz, serverQuizResult, serverQuizSubmitting]);
-
   /** Submit the solved server quiz: real attempt + server-side grading. */
-  async function submitServerQuiz(force = false) {
+  const submitServerQuiz = useCallback(async (force = false) => {
     if (!serverQuiz) return;
     if (!force && serverQuizRemaining !== null && serverQuizRemaining <= 0) return; // manual submit after expiry
     setServerQuizSubmitting(true);
@@ -695,7 +701,16 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     } finally {
       setServerQuizSubmitting(false);
     }
-  }
+  }, [serverQuiz, serverQuizRemaining, serverQuizAttempt, serverQuizAnswers, toast]);
+
+  // Auto-submit exactly once when the timer hits zero (server also enforces).
+  useEffect(() => {
+    if (serverQuizRemaining !== null && serverQuizRemaining <= 0 && serverQuiz && !serverQuizResult && !serverQuizSubmitting && !serverQuizAutoSubmitted.current) {
+      serverQuizAutoSubmitted.current = true;
+      toast({ message: "انتهى وقت الاختبار — جاري التسليم التلقائي", tone: "warning" });
+      void submitServerQuiz(true);
+    }
+  }, [serverQuizRemaining, serverQuiz, serverQuizResult, serverQuizSubmitting, submitServerQuiz, toast]);
 
   /** Open the standalone assignment page: PDF download → solve → upload. */
   async function openServerAssignment(assessment: CourseAssessmentRef) {
@@ -895,7 +910,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       };
     }
 
-    const now = new Date(2026, 7, 25, 12, 0); // Reference local system context: Aug 25, 2026 12:00 PM
+    const now = new Date();
 
     // Helper to parse date strings
     function parseCustom(str: string) {
@@ -1109,6 +1124,23 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
       {/* Main Course Header Card */}
       <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "18px", padding: "24px", marginBottom: "24px", boxShadow: "var(--card-shadow)" }}>
+        {validEnrolledCourses.length > 1 && (
+          <div style={{ marginBottom: "18px" }}>
+            <label htmlFor="course-selector" style={{ display: "block", marginBottom: "7px", fontWeight: 800, color: "var(--text-main)" }}>اختر المقرر</label>
+            <select
+              id="course-selector"
+              value={currentCourse.id}
+              onChange={(event) => {
+                setSelectedCourseId(event.target.value);
+                setActiveContentTab("lessons");
+                setCourseSearchQuery("");
+              }}
+              style={{ width: "100%", maxWidth: "440px", padding: "10px 12px", borderRadius: "10px", border: "1px solid var(--border-color)", background: "var(--bg-surface)", color: "var(--text-main)" }}
+            >
+              {validEnrolledCourses.map((course) => <option key={course.id} value={course.id}>{course.title}</option>)}
+            </select>
+          </div>
+        )}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "16px" }}>
           <div>
             <span style={{ fontSize: "11px", fontWeight: 800, color: "#059669", background: "var(--bg-accent)", padding: "4px 10px", borderRadius: "6px", border: "1px solid var(--border-accent)" }}>

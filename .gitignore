@@ -66,9 +66,10 @@ COMPLETE_AI_AND_INDEXING_CODE.md
 # Misc
 *.log
 $null
-scratch/
+scratch/*
 *.csv
 *.sql
 locust_users.json
 .baseline-check/
 .freebuff/
+.qa/

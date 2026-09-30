@@ -14,7 +14,7 @@ class RealTimeService {
   private reconnectTimer: number | null = null;
   private reconnectAttempts = 0;
   private isConnecting = false;
-  private listeners = new Map<string, Set<EventCallback<any>>>();
+  private listeners = new Map<string, Set<EventCallback>>();
   private active = false;
 
   /**
@@ -35,7 +35,6 @@ class RealTimeService {
       es.onopen = () => {
         this.isConnecting = false;
         this.reconnectAttempts = 0;
-        // eslint-disable-next-line no-console
         console.debug("[RealTime] Connected to event stream");
         this.emit("status", { status: "connected" });
       };
@@ -65,13 +64,11 @@ class RealTimeService {
       };
 
       es.onerror = (err) => {
-        // eslint-disable-next-line no-console
         console.debug("[RealTime] SSE stream error or closed, scheduling reconnect", err);
         this.cleanupEventSource();
         this.scheduleReconnect();
       };
     } catch (err) {
-      // eslint-disable-next-line no-console
       console.warn("[RealTime] Failed to instantiate EventSource", err);
       this.cleanupEventSource();
       this.scheduleReconnect();
@@ -121,12 +118,16 @@ class RealTimeService {
   }
 
   private handleIncomingEvent(eventType: string, rawData: string): void {
-    let parsed: any = null;
+    let parsed: unknown = null;
     try {
       parsed = typeof rawData === "string" ? JSON.parse(rawData) : rawData;
     } catch {
       parsed = rawData;
     }
+
+    const detail = parsed !== null && typeof parsed === "object"
+      ? parsed as Record<string, unknown>
+      : {};
 
     // Invalidate caches and dispatch custom browser events
     switch (eventType) {
@@ -178,10 +179,10 @@ class RealTimeService {
         invalidateApiCache("/payments/me/orders");
         invalidateApiCache("/payments/me/entitlements");
         window.dispatchEvent(new CustomEvent("lms_payment_updated", { detail: parsed }));
-        if (parsed?.product_type === "lesson" && parsed?.product_id) {
+        if (detail.product_type === "lesson" && detail.product_id) {
           window.dispatchEvent(
             new CustomEvent("lms_lesson_unlocked", {
-              detail: { lesson_id: parsed.product_id, student_id: parsed.student_id },
+              detail: { lesson_id: detail.product_id, student_id: detail.student_id },
             })
           );
         }
@@ -208,9 +209,10 @@ class RealTimeService {
       this.listeners.set(eventType, new Set());
     }
     const bucket = this.listeners.get(eventType)!;
-    bucket.add(callback);
+    const listener: EventCallback = (data) => callback(data as T);
+    bucket.add(listener);
     return () => {
-      bucket.delete(callback);
+      bucket.delete(listener);
     };
   }
 
@@ -221,7 +223,6 @@ class RealTimeService {
       try {
         cb(data);
       } catch (err) {
-        // eslint-disable-next-line no-console
         console.error(`[RealTime] Error in listener for ${eventType}:`, err);
       }
     }

@@ -4,6 +4,11 @@ from app.core.config import Settings
 
 
 def test_s3_render_aliases_are_accepted(monkeypatch):
+    # Deployment Compose sets the canonical names; isolate this alias test so
+    # it remains valid when the suite runs inside a production-like container.
+    monkeypatch.delenv("S3_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("S3_SECRET_KEY", raising=False)
+    monkeypatch.delenv("S3_BUCKET", raising=False)
     monkeypatch.setenv("S3_ACCESS_KEY_ID", "render-access")
     monkeypatch.setenv("S3_SECRET_ACCESS_KEY", "render-secret")
     monkeypatch.setenv("S3_BUCKET_NAME", "render-bucket")

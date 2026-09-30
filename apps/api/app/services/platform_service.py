@@ -259,6 +259,9 @@ def create_quiz(db: Session, user: User, payload: QuizCreateRequest) -> Quiz:
         if len(questions) != len(set(payload.question_ids)):
             db.rollback()
             raise ValueError("One or more questions are unavailable")
+        if user.role == UserRole.TEACHER and any(question.author_id != user.id for question in questions):
+            db.rollback()
+            raise PermissionError("One or more questions are not owned by this teacher")
         for position, question in enumerate(questions, start=1):
             db.add(
                 QuizQuestion(
@@ -364,7 +367,7 @@ def submit_quiz(
             QuizAttempt.id == attempt_id,
             QuizAttempt.student_id == user.id,
             QuizAttempt.institution_id == user.institution_id,
-        )
+        ).with_for_update()
     )
     if attempt is None:
         raise LookupError("Attempt not found")

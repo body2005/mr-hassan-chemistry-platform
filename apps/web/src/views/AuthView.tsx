@@ -1,5 +1,5 @@
 import { PageLoadingScreen } from "../components/PageLoadingScreen";
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -58,6 +58,22 @@ export const AuthView: React.FC<AuthViewProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+  const [resetToken, setResetToken] = useState(() => new URLSearchParams(window.location.hash.split("?", 2)[1] || "").get("reset_token") || "");
+  const [resetMode, setResetMode] = useState<"none" | "request" | "confirm">(resetToken ? "confirm" : "none");
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetConfirmPassword, setResetConfirmPassword] = useState("");
+  const [resetBusy, setResetBusy] = useState(false);
+
+  useEffect(() => {
+    const syncResetLink = () => {
+      const token = new URLSearchParams(window.location.hash.split("?", 2)[1] || "").get("reset_token") || "";
+      setResetToken(token);
+      if (token) setResetMode("confirm");
+    };
+    window.addEventListener("hashchange", syncResetLink);
+    return () => window.removeEventListener("hashchange", syncResetLink);
+  }, []);
 
   // Student Register State
   const [regName, setRegName] = useState("");
@@ -142,6 +158,33 @@ export const AuthView: React.FC<AuthViewProps> = ({
       setTimeout(() => {
         onLoginSuccess(res.user!);
       }, 600);
+    }
+  }
+
+  async function handlePasswordReset(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setSuccessMsg("");
+    if (resetMode === "confirm" && resetPassword !== resetConfirmPassword) {
+      setError(lang === "ar" ? "كلمتا المرور غير متطابقتين" : "Passwords do not match");
+      return;
+    }
+    setResetBusy(true);
+    try {
+      if (resetMode === "request") {
+        await authService.requestPasswordReset(resetEmail);
+        setSuccessMsg(lang === "ar" ? "إذا كان الحساب موجودًا، ستصلك رسالة الاسترجاع." : "If the account exists, a reset email will arrive.");
+      } else if (resetMode === "confirm") {
+        await authService.confirmPasswordReset(resetToken, resetPassword);
+        window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#auth`);
+        setResetToken("");
+        setResetMode("none");
+        setSuccessMsg(lang === "ar" ? "تم تغيير كلمة المرور. سجّل الدخول بالكلمة الجديدة." : "Password changed. Sign in with the new password.");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : (lang === "ar" ? "تعذر إكمال الطلب" : "Unable to complete the request"));
+    } finally {
+      setResetBusy(false);
     }
   }
 
@@ -389,6 +432,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
             {/* Error & Success Messages */}
             {error && (
               <div
+                role="alert"
                 style={{
                   background: "#fef2f2",
                   border: "1px solid #fecaca",
@@ -423,7 +467,53 @@ export const AuthView: React.FC<AuthViewProps> = ({
             )}
 
             {/* ===================== VIEW A: SIGN IN FORM ===================== */}
-            {activeTab === "signin" ? (
+            {activeTab === "signin" && resetMode !== "none" ? (
+              <form onSubmit={handlePasswordReset} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                <h3>{resetMode === "request" ? (lang === "ar" ? "استرجاع كلمة المرور" : "Reset your password") : (lang === "ar" ? "كلمة مرور جديدة" : "Set a new password")}</h3>
+                {resetMode === "request" ? (
+                  <input
+                    aria-label={lang === "ar" ? "بريد الاسترجاع" : "Reset email"}
+                    type="email"
+                    required
+                    value={resetEmail}
+                    onChange={(event) => setResetEmail(event.target.value)}
+                    autoComplete="email"
+                  />
+                ) : (
+                  <>
+                    <input
+                      aria-label={lang === "ar" ? "كلمة المرور الجديدة" : "New password"}
+                      type="password"
+                      required
+                      minLength={10}
+                      value={resetPassword}
+                      onChange={(event) => setResetPassword(event.target.value)}
+                      autoComplete="new-password"
+                    />
+                    <input
+                      aria-label={lang === "ar" ? "تأكيد كلمة المرور الجديدة" : "Confirm new password"}
+                      type="password"
+                      required
+                      minLength={10}
+                      value={resetConfirmPassword}
+                      onChange={(event) => setResetConfirmPassword(event.target.value)}
+                      autoComplete="new-password"
+                    />
+                  </>
+                )}
+                <button type="submit" className="btn-primary" disabled={resetBusy}>
+                  {resetBusy ? (lang === "ar" ? "جارٍ الإرسال..." : "Sending...") : resetMode === "request" ? (lang === "ar" ? "إرسال رابط الاسترجاع" : "Send reset link") : (lang === "ar" ? "تغيير كلمة المرور" : "Change password")}
+                </button>
+                <button type="button" onClick={() => {
+                  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#auth`);
+                  setResetToken("");
+                  setResetMode("none");
+                  setError("");
+                }}>
+                  {lang === "ar" ? "العودة لتسجيل الدخول" : "Back to sign in"}
+                </button>
+              </form>
+            ) : activeTab === "signin" ? (
               <form onSubmit={handleSignIn} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
                 <div>
                   <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "5px", textTransform: "uppercase" }}>
@@ -507,6 +597,14 @@ export const AuthView: React.FC<AuthViewProps> = ({
                   }}
                 >
                   {lang === "ar" ? "تسجيل الدخول للمنصة" : "Sign In to Platform"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { setResetMode("request"); setError(""); setSuccessMsg(""); }}
+                  style={{ background: "none", border: "none", color: "#059669", cursor: "pointer", fontWeight: 700 }}
+                >
+                  {lang === "ar" ? "نسيت كلمة المرور؟" : "Forgot password?"}
                 </button>
 
                 <div style={{ textAlign: "center", marginTop: "8px" }}>

@@ -185,7 +185,9 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
           });
         }
       }
-    } catch {}
+    } catch {
+      // Fall back to the default schedule if local storage is unavailable.
+    }
     return DEFAULT_SCHEDULES;
   });
 
@@ -196,7 +198,9 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
       }
-    } catch {}
+    } catch {
+      // Fall back to the default calendar if local storage is unavailable.
+    }
     return DEFAULT_CALENDAR_EVENTS;
   });
 
@@ -381,7 +385,9 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       const updated = idx >= 0 ? [...prev.slice(0, idx), newEvent, ...prev.slice(idx + 1)] : [...prev, newEvent];
       try {
         localStorage.setItem("lms_calendar_events_cache", JSON.stringify(updated));
-      } catch {}
+      } catch {
+        // The server event remains saved even if local caching is unavailable.
+      }
       return updated;
     });
 
@@ -481,7 +487,9 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       });
       try {
         localStorage.setItem("lms_calendar_events_cache", JSON.stringify(updated));
-      } catch {}
+      } catch {
+        // The cancellation remains in memory if local caching is unavailable.
+      }
       return updated;
     });
 

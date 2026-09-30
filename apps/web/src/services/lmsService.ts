@@ -27,6 +27,7 @@ import {
   AssignmentSubmission,
   CalendarScheduleEvent,
   Course,
+  CourseAssessmentRef,
   CurrentUser,
   NotificationItem,
   NotificationSchedule,
@@ -452,7 +453,7 @@ export interface BootstrapData {
   courses: Course[];
   enrolledCourseIds: string[];
   entitlements: StudentEntitlement[];
-  settings: Record<string, any>;
+  settings: Record<string, unknown>;
 }
 
 export const bootstrapService = {
@@ -489,8 +490,8 @@ export const bootstrapService = {
         notifications: ApiNotification[];
         courses: ApiCourse[];
         enrolled_course_ids: string[];
-        entitlements: any[];
-        settings: Record<string, any>;
+        entitlements: StudentEntitlement[];
+        settings: Record<string, unknown>;
       }>("/bootstrap", { cacheTtlMs: 15_000 });
 
       if (!res.authenticated || !res.user) {
@@ -560,18 +561,11 @@ export const bootstrapService = {
         settings: res.settings || {},
       };
     } catch (err) {
-      console.warn("Bootstrap request failed, falling back to local cached identity", err);
-      const cached = authService.getCachedUser();
-      return {
-        authenticated: Boolean(cached),
-        user: cached,
-        unread_notifications_count: 0,
-        notifications: [],
-        courses: courseService.getCachedCourses(),
-        enrolledCourseIds: [],
-        entitlements: [],
-        settings: {},
-      };
+      // Preserve the existing in-memory snapshot in App, but surface the
+      // outage. Treating a cached identity as a successful bootstrap hides
+      // unavailable services and empties live entitlements/courses.
+      console.warn("Bootstrap request failed; awaiting retry", err);
+      throw err;
     }
   },
 };
@@ -751,6 +745,31 @@ export const authService = {
       window.dispatchEvent(new Event("lms_user_updated"));
     }
   },
+
+  async requestPasswordReset(email: string): Promise<void> {
+    await apiRequest<{ message: string }>("/auth/password-reset/request", {
+      method: "POST",
+      body: JSON.stringify({ email: email.trim().toLowerCase(), institution_slug: "demo" }),
+    });
+  },
+
+  async confirmPasswordReset(token: string, newPassword: string): Promise<void> {
+    await apiRequest<void>("/auth/password-reset/confirm", {
+      method: "POST",
+      body: JSON.stringify({ token, new_password: newPassword }),
+    });
+  },
+
+  async changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    await apiRequest<void>("/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    });
+  },
+
+  async revokeAllSessions(): Promise<void> {
+    await apiRequest<void>("/auth/revoke-all", { method: "POST" });
+  },
 };
 
 // ============================================================================
@@ -803,7 +822,9 @@ export const calendarService = {
     const mapped = result.map(mapApiCalendarEvent);
     try {
       localStorage.setItem("lms_calendar_events_cache", JSON.stringify(mapped));
-    } catch {}
+    } catch {
+      // Caching is optional when browser storage is unavailable.
+    }
     return mapped;
   },
 
@@ -908,31 +929,7 @@ export const courseService = {
       void Promise.all(
         courses.map(async (course) => {
           try {
-            const data = await courseService.getCourseAssessments(course.id);
-            course.assessments = [
-              ...data.quizzes.map((q) => ({
-                id: q.id,
-                kind: "quiz" as const,
-                title: q.title,
-                lessonId: q.lesson_id,
-                moduleId: q.module_id,
-                durationMinutes: q.duration_seconds ? Math.ceil(q.duration_seconds / 60) : undefined,
-                dueLabel: q.ends_at,
-                attemptsUsed: q.attempts_used,
-                attemptsAllowed: q.attempts_allowed,
-                accessible: q.accessible,
-              })),
-              ...data.assignments.map((a) => ({
-                id: a.id,
-                kind: "assignment" as const,
-                title: a.title,
-                lessonId: a.lesson_id,
-                moduleId: a.module_id,
-                maxScore: a.max_score,
-                dueLabel: a.due_at,
-                accessible: a.accessible,
-              })),
-            ];
+            course.assessments = await courseService.getCourseAssessmentRefs(course.id);
           } catch {
             course.assessments = [];
           }
@@ -997,6 +994,10 @@ export const courseService = {
     return apiRequest<ApiCourse>(`/courses/${courseId}`, { cacheTtlMs: 60_000 });
   },
 
+  async getMappedCourseContent(courseId: string): Promise<Course> {
+    return mapApiCourse(await courseService.getCourseContent(courseId));
+  },
+
   /** Server-side shape of a published assessment the student can attempt. */
   async getCourseAssessments(courseId: string): Promise<{
     course_id: string;
@@ -1026,6 +1027,34 @@ export const courseService = {
     }>;
   }> {
     return apiRequest(`/courses/${courseId}/assessments`, { cacheTtlMs: 60_000 });
+  },
+
+  async getCourseAssessmentRefs(courseId: string): Promise<CourseAssessmentRef[]> {
+    const data = await courseService.getCourseAssessments(courseId);
+    return [
+      ...data.quizzes.map((q) => ({
+        id: q.id,
+        kind: "quiz" as const,
+        title: q.title,
+        lessonId: q.lesson_id,
+        moduleId: q.module_id,
+        durationMinutes: q.duration_seconds ? Math.ceil(q.duration_seconds / 60) : undefined,
+        dueLabel: q.ends_at,
+        attemptsUsed: q.attempts_used,
+        attemptsAllowed: q.attempts_allowed,
+        accessible: q.accessible,
+      })),
+      ...data.assignments.map((a) => ({
+        id: a.id,
+        kind: "assignment" as const,
+        title: a.title,
+        lessonId: a.lesson_id,
+        moduleId: a.module_id,
+        maxScore: a.max_score,
+        dueLabel: a.due_at,
+        accessible: a.accessible,
+      })),
+    ];
   },
 
   /** Publish a real quiz to the server: questions -> quiz -> publish. */
@@ -1203,7 +1232,7 @@ export const submissionService = {
 
 import { lessonAccessService } from "./paymentService";
 
-type ApiManagedUser = Pick<
+export type ApiManagedUser = Pick<
   ApiUser,
   | "id"
   | "email"
@@ -1219,7 +1248,21 @@ type ApiManagedUser = Pick<
   | "religion"
   | "is_active"
   | "created_at"
->;
+> & {
+  parent_phone?: string | null;
+  phone?: string | null;
+  overall_attendance_ratio?: number;
+  assignment_submission_ratio?: number;
+  average_quiz_score?: number;
+  homework_success_rate?: number;
+  quiz_success_rate?: number;
+  total_overall_grade?: number;
+  last_active_date?: string | null;
+  quizzes_taken?: number;
+  quiz_attempts_count?: number;
+  has_completed_exam?: boolean;
+  exam_missed_deadline?: boolean;
+};
 
 export const userService = {
   async getStudents(): Promise<ApiManagedUser[]> {

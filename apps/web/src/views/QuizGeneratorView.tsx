@@ -544,7 +544,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
         if (q.id !== qId) return q;
         let newOptions = q.options;
         let needsAnswerReview = q.needs_answer_review;
-        let newCorrectAnswer = q.correct_answer;
+        const newCorrectAnswer = q.correct_answer;
 
         if (newType === "multiple_choice") {
           if (!newOptions || newOptions.length < 2) {

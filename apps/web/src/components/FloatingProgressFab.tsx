@@ -14,11 +14,6 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
   currentUser,
   theme,
 }) => {
-  // Only students see course progress FAB
-  if (!currentUser || currentUser.role !== "student") {
-    return null;
-  }
-
   const [isOpen, setIsOpen] = useState(false);
   const [coords, setCoords] = useState<{ x: number; y: number } | null>(null);
   const [completedLessonIds, setCompletedLessonIds] = useState<string[]>([]);
@@ -60,14 +55,16 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
   }, []);
 
   // Determine current student course
+  const studentAcademicYear = currentUser?.role === "student" ? currentUser.academicYear : null;
   const currentCourse =
-    courses.find((c) => c.academicYear === currentUser?.academicYear) ||
+    courses.find((c) => c.academicYear === studentAcademicYear) ||
     courses[0] ||
     null;
 
   // Load lesson progress
+  const studentId = currentUser?.role === "student" ? currentUser.id : null;
   useEffect(() => {
-    if (!currentUser?.id) return;
+    if (!studentId) return;
     let disposed = false;
 
     const loadProgress = () => {
@@ -90,7 +87,7 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
       disposed = true;
       window.removeEventListener("focus", loadProgress);
     };
-  }, [currentUser?.id, currentCourse?.id]);
+  }, [studentId, currentCourse?.id]);
 
   // Close popup when clicking outside
   useEffect(() => {
@@ -175,8 +172,8 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
     window.addEventListener("pointerup", handlePointerUp);
   };
 
-  // If video is fullscreen / theater mode, hide FAB completely
-  if (hiddenForVideo) {
+  // Keep hooks in the same order as the session changes.
+  if (!currentUser || currentUser.role !== "student" || hiddenForVideo) {
     return null;
   }
 

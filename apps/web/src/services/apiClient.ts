@@ -224,7 +224,9 @@ async function refreshSession(): Promise<boolean> {
         if (body?.token && typeof localStorage !== "undefined") {
           localStorage.setItem("lms_session_token", body.token);
         }
-      } catch {}
+      } catch {
+        // An HTTP-only session can still be valid when the refresh body is empty.
+      }
       lastFailedRefreshAt = 0;
       browserSessionActive = true;
       sessionInvalidationDispatched = false;
@@ -239,7 +241,12 @@ async function refreshSession(): Promise<boolean> {
 }
 
 async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retriedAfterRefresh = false): Promise<T> {
-  const { timeoutMs = 30_000, cacheTtlMs: _cacheTtlMs, skipCache: _skipCache, cacheKey: _cacheKey, ...requestInit } = init;
+  const timeoutMs = init.timeoutMs ?? 30_000;
+  const requestInit = { ...init };
+  delete requestInit.timeoutMs;
+  delete requestInit.cacheTtlMs;
+  delete requestInit.skipCache;
+  delete requestInit.cacheKey;
   const headers = new Headers(requestInit.headers);
   const token = authToken();
   if (token && !headers.has("Authorization")) {
@@ -316,9 +323,9 @@ async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retrie
   }
   if (response.status === 204) return undefined as T;
   const json = (await response.json()) as T;
-  if (json && typeof json === "object" && "token" in json && typeof (json as any).token === "string" && (json as any).token) {
+  if (json && typeof json === "object" && "token" in json && typeof json.token === "string" && json.token) {
     if (typeof localStorage !== "undefined") {
-      localStorage.setItem("lms_session_token", (json as any).token);
+      localStorage.setItem("lms_session_token", json.token);
     }
   }
   return json;

@@ -79,7 +79,7 @@ function tabAllowed(tab: AllTabs, user: CurrentUser): boolean {
 }
 
 function getTabFromHash(): AllTabs | null {
-  const raw = window.location.hash.replace("#", "").trim().toLowerCase();
+  const raw = window.location.hash.replace("#", "").split("?", 1)[0].trim().toLowerCase();
   if (!raw) return null;
   if (raw === "studentanalytics") return "Submissions";
   const match = VALID_TABS.find((t) => t.toLowerCase() === raw);
@@ -134,15 +134,37 @@ function App() {
           setCurrentUser(bootstrap.user);
           setAuthStatus("authenticated");
           setRetryAttempt(0);
-          if (bootstrap.notifications.length > 0) {
-            setNotifications(bootstrap.notifications);
-          }
-          if (bootstrap.courses.length > 0) {
-            setCourses(bootstrap.courses);
-          }
+          setNotifications(bootstrap.notifications);
+          setCourses(bootstrap.courses);
           if (bootstrap.user.role === "student") {
             setEnrolledCourseIds(bootstrap.enrolledCourseIds);
             setEntitlements(bootstrap.entitlements);
+            // Bootstrap is intentionally small and does not include assessment
+            // references. Load them for enrolled courses and recover any course
+            // omitted by the bootstrap catalog's first-page limit.
+            void Promise.all(bootstrap.enrolledCourseIds.map(async (courseId) => {
+              try {
+                const course = bootstrap.courses.find((item) => item.id === courseId)
+                  ?? await courseService.getMappedCourseContent(courseId);
+                const assessments = await courseService.getCourseAssessmentRefs(courseId);
+                return { ...course, assessments };
+              } catch {
+                return null;
+              }
+            })).then((enriched) => {
+              if (requestId !== authSyncId.current) return;
+              const resolved: Course[] = [];
+              for (const course of enriched) if (course) resolved.push(course);
+              if (resolved.length === 0) return;
+              setCourses((existing) => {
+                const byId = new Map(existing.map((course) => [course.id, course]));
+                for (const course of resolved) byId.set(course.id, course);
+                return [...byId.values()];
+              });
+            });
+          } else {
+            setEnrolledCourseIds([]);
+            setEntitlements([]);
           }
         } else {
           setCurrentUser(null);
@@ -201,7 +223,7 @@ function App() {
       window.location.hash = "#submissions";
     }
     const fromHash = getTabFromHash();
-    if (fromHash && fromHash !== "Landing" && fromHash !== "Auth") {
+    if (fromHash && fromHash !== "Landing") {
       return fromHash;
     }
 
@@ -325,43 +347,29 @@ function App() {
     };
   }, []);
 
-  // Load business data from the backend after the server session is known.
+  // Clear identity-scoped data when the session ends. Bootstrap supplies the
+  // initial data, so a second startup fetch would repeat the same requests.
   useEffect(() => {
     if (!currentUser) {
       setCourses([]);
       setEnrolledCourseIds([]);
       setEntitlements([]);
-      return;
     }
-
-    void courseService.getCourses().then(setCourses).catch(() => setCourses([]));
-    if (currentUser.role === "student") {
-      void Promise.all([courseService.getEnrolledCourseIds(), paymentService.getMyEntitlements()])
-        .then(([enrollments, access]) => {
-          setEnrolledCourseIds(enrollments);
-          setEntitlements(access);
-        })
-        .catch(() => {
-          setEnrolledCourseIds([]);
-          setEntitlements([]);
-        });
-    } else {
-      setEnrolledCourseIds([]);
-      setEntitlements([]);
-    }
-  }, [currentUser?.id, currentUser?.role]);
+  }, [currentUser]);
 
   // Stable callbacks so the SSE lifecycle effect below doesn't tear down and
   // re-open the stream whenever these identities change.
+  const studentUserId = currentUser?.role === "student" ? currentUser.id : null;
+  const realtimeUserId = currentUser?.id;
   const refreshStudentAccess = useCallback(() => {
-    if (currentUser?.role !== "student") return;
+    if (!studentUserId) return;
     void Promise.all([courseService.getEnrolledCourseIds(), paymentService.getMyEntitlements()])
       .then(([enrollments, access]) => {
         setEnrolledCourseIds(enrollments);
         setEntitlements(access);
       })
       .catch(() => undefined);
-  }, [currentUser?.id, currentUser?.role]);
+  }, [studentUserId]);
 
   const refreshNotifications = useCallback(() => {
     void notificationService.getNotifications().then(setNotifications).catch(() => undefined);
@@ -372,7 +380,7 @@ function App() {
   // changed on every notifications/state update, tearing down and re-opening
   // the SSE connection (the duplicate /realtime/stream entries in DevTools).
   useEffect(() => {
-    if (!currentUser) {
+    if (!realtimeUserId) {
       realtimeService.disconnect();
       return;
     }
@@ -391,7 +399,7 @@ function App() {
       window.removeEventListener("lms_payment_updated", handleLessonUnlocked);
       realtimeService.disconnect();
     };
-  }, [currentUser?.id, currentUser?.role, refreshStudentAccess]);
+  }, [realtimeUserId, refreshStudentAccess]);
 
   function handleToggleTheme() {
     setTheme((prev) => (prev === "light" ? "dark" : "light"));
@@ -492,7 +500,6 @@ function App() {
         <AuthView
           initialTab={authInitialTab}
           onLoginSuccess={(user) => {
-            authSyncId.current += 1;
             setIsLoggingIn(true);
             setCurrentUser(user);
             setAuthStatus("authenticated");

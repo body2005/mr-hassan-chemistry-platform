@@ -74,6 +74,9 @@ ADMINISTRATIVE_METADATA_PATTERNS = [
     r"^\s*===.*===\s*$",
     r"(?:تم\s+تحميل|موقع\s+وتطبيق|مذكرات\s+جاهزة|حمل\s+المزيد|جروب\s+تليجرام|قناة\s+تليجرام)",
     r"انتهت\s+الأسئل[ةه]",
+    # End-of-paper notices: any 'the paper is over' marker closes the exam,
+    # independent of the section wording that follows it (pure structure).
+    r"انتهت\s+الورق[ةه]",
     r"مع\s+أطيب\s+الأمنيات",
     r"والدرجات\s+العلا",
 ]
@@ -108,7 +111,42 @@ _UI_LEAK_PATTERNS = [
     re.compile(r"^\s*الدرجة[:：]?\s*$"),
     re.compile(r"^\s*(?:اختيار من متعدد|صح أو خطأ|سؤال مقالي|أكمل الفراغات|MCQ)\s*$", re.IGNORECASE),
     re.compile(r"^\s*(?:حدد الدرجة|حدد الإجابة الصحيحة)\s*$"),
+    # End-of-paper trailer: deterministic structural phrase closing the exam
+    # (never a question stem, regardless of the wording that follows it).
+    re.compile(r"^\s*انتهت\s+الورق[ةه].*$"),
 ]
+
+
+_TF_STATEMENT_RE = re.compile(
+    r"^[\u0600-\u06FF][\u0600-\u06FF\u064B-\u065F0-9\u0660-\u0669\s°%×÷+\-−=/()،,\.۔]*[\.۔]$"
+)
+
+
+def _looks_like_tf_statement(stem_text: str) -> bool:
+    """Structural TRUE_FALSE shape: a single Arabic declarative sentence that
+    asserts a fact and ends with a period ('مجموع زوايا المثلث الداخلية
+    يساوي 180°.').  Digits and math symbols may appear inside (values are
+    what get judged); Latin letters may not (formulas like 'x² − 5x + 6'
+    belong to computation prompts).  No '?' and no command verbs
+    (أكمل/اشرح/قارن ...) - those mark other question families.  The
+    conditional marker 'إذا' is excluded: conditionals are normally open
+    prompts, not judgeable claims."""
+    if not stem_text or ("؟" in stem_text or "?" in stem_text):
+        return False
+    if not stem_text.endswith((".", "۔")):
+        return False
+    if re.search(r"[A-Za-z]", stem_text):
+        return False
+    if not _TF_STATEMENT_RE.match(stem_text):
+        return False
+    if len(re.findall(r"[\u0600-\u06FF]{2,}", stem_text)) < 3:
+        return False
+    if re.search(
+        r"\b(?:أكمل|أكملوا|اشرح|اشرحو|قارن|قارنوا|فسّر|فسر|وضح|وضّح|علل|احسب|أوجد|اوجد|حل|أكتب|اكتب|اذكر|عدّد|أعد|إذا)\b",
+        stem_text,
+    ):
+        return False
+    return True
 
 
 def strip_ui_leak_lines(lines: list[str]) -> list[str]:
@@ -145,6 +183,13 @@ def extract_explicit_points(text: str) -> tuple[int | None, bool]:
         return (None, True)
 
     text_norm = text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+
+    # 0. Ordinal section labels ('أولاً:' 'ثانيًا' 'ثالثًا:') are layout
+    # ordinals, not marks: never read their number as points.
+    if re.match(r"^\s*[\u0600-\u06FF]+\s*[ً\u064B]?\s*:\s*$", text_norm.strip().rstrip(":أولا ثالثا رابعا خامسا سادسا")) or re.match(
+        r"^\s*(?:أولا|ثانيا|ثالثا|رابعا|خامسا|سادسا|أولاً|ثانيًا|ثالثًا|رابعًا|خامسًا|سادسًا)\b", text_norm
+    ):
+        return (None, True)
 
     # 1. Arabic word representations
     if re.search(r"[\(\[]\s*(?:درجتان|علامتان)\s*[\)\]]", text):
@@ -198,9 +243,28 @@ def extract_distant_answer_keys(parsed_doc: Any) -> dict[str, str]:
     """
     Scans document for distant answer-key sections (e.g. at the end of an exam).
     Returns mapping from question number (e.g. '1', '2', 'س1', 'q1') to answer text/letter.
+
+    Two-phase with structural confirmation: a KEY_SECTION_PATTERNS header only
+    ARMS the scanner; a key section is confirmed only when a dense run of
+    numbered short entries follows ('1. أ' '2. ب' ...).  A header followed by
+    long sentences (real questions in the exam body - every exam page starts
+    with a title) never confirms, so the exam body is never swallowed.
     """
     keys_map: dict[str, str] = {}
     is_in_answer_key_section = False
+    confirmed = False
+    entry_run = 0
+    last_entry_num: int | None = None
+    # Entries seen while the section is armed but not yet confirmed.  They
+    # are committed to keys_map only when confirmation succeeds, so a
+    # header followed by non-key content never leaks keys.
+    armed_entries: list[tuple[str, str]] = []
+    # Numbered-entry detector for confirmation and body protection.
+    entry_re = re.compile(
+        r"^\s*(?:س|q|question)?\s*\(?(\d{1,3})\)?\s*[\:\.\-\)]\s*\(?([أبجدA-Da-d1-4]|[^\n\r\,\;]{1,24})\)?\s*$",
+        re.IGNORECASE,
+    )
+    sentence_re = re.compile(r"[\u0600-\u06FF]{3,}\s+[\u0600-\u06FF]{3,}")
 
     blocks_text: list[str] = []
     if isinstance(parsed_doc, str):
@@ -217,21 +281,52 @@ def extract_distant_answer_keys(parsed_doc: Any) -> dict[str, str]:
         for line in lines:
             if any(re.search(pat, line, re.IGNORECASE) for pat in KEY_SECTION_PATTERNS):
                 is_in_answer_key_section = True
+                entry_run = 0
                 continue
 
             if is_in_answer_key_section:
-                line_norm = line.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
-                matches = re.findall(
-                    r"(?:س|q|question)?\s*\(?(\d+)\)?\s*[\:\.\-\)]\s*\(?([أبجدA-Da-d]|[^\n\r\,\;]{1,100})\)?",
-                    line_norm,
-                    re.IGNORECASE,
-                )
-                for q_num, ans in matches:
-                    clean_ans = ans.strip(" ()[].,:-")
-                    if clean_ans:
-                        keys_map[q_num] = clean_ans
-                        keys_map[f"س{q_num}"] = clean_ans
-                        keys_map[f"q{q_num}"] = clean_ans
+                if confirmed:
+                    line_norm = line.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+                    matches = re.findall(
+                        r"(?:س|q|question)?\s*\(?(\d+)\)?\s*[\:\.\-\)]\s*\(?([أبجدA-Da-d]|[^\n\r\,\;]{1,100})\)?",
+                        line_norm,
+                        re.IGNORECASE,
+                    )
+                    for q_num, ans in matches:
+                        clean_ans = ans.strip(" ()[].,:-")
+                        if clean_ans:
+                            keys_map[q_num] = clean_ans
+                            keys_map[f"س{q_num}"] = clean_ans
+                            keys_map[f"q{q_num}"] = clean_ans
+                    continue
+                # Confirmation phase: require consecutive SHORT numbered
+                # entries with increasing numbers ('1- أ' '2- أ' suffices:
+                # short quizzes have 2-entry keys).  Long sentences (question
+                # texts) reset the run; an interruption cancels the section.
+                m = entry_re.match(line.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")))
+                if m and not sentence_re.search(m.group(2) or ""):
+                    num = int(m.group(1)) if m.group(1) and m.group(1).isdigit() else None
+                    if entry_run == 0 or (num is not None and last_entry_num is not None and num == last_entry_num + 1):
+                        entry_run += 1
+                    else:
+                        entry_run = 1
+                        armed_entries.clear()
+                    last_entry_num = num
+                    clean_ans = (m.group(2) or "").strip(" ()[].,:-")
+                    if num is not None and clean_ans:
+                        armed_entries.append((str(num), clean_ans))
+                    if entry_run >= 2:
+                        confirmed = True
+                        for k, a in armed_entries:
+                            keys_map[k] = a
+                            keys_map[f"س{k}"] = a
+                            keys_map[f"q{k}"] = a
+                        armed_entries.clear()
+                else:
+                    entry_run = 0
+                    last_entry_num = None
+                    armed_entries.clear()
+                    is_in_answer_key_section = False
 
     return keys_map
 
@@ -624,9 +719,18 @@ class ExamQuestionSegmenter:
     and guarantees no question invention, points guessing, or stale cross-file bleed.
     """
 
-    def __init__(self, distant_keys: dict[str, str] | None = None, filename: str = ""):
+    def __init__(
+        self,
+        distant_keys: dict[str, str] | None = None,
+        filename: str = "",
+        ocr_page_numbers: set[int] | None = None,
+    ):
         self.distant_keys = distant_keys or {}
         self.filename = filename
+        # Pages whose content came from OCR (no usable PDF text layer).
+        # Questions sourced from them keep text_source='ocr' and are marked
+        # for content review instead of being silently trusted.
+        self.ocr_page_numbers = ocr_page_numbers or set()
         self.current_section_type: str | None = None
         self.current_section_title: str | None = None
         self.extracted_questions: list[dict[str, Any]] = []
@@ -642,6 +746,9 @@ class ExamQuestionSegmenter:
         self._raw_lines: list[str] = []
         self._q_num: str | None = None
         self._section_hint: str | None = None
+        self._page_is_ocr: bool = False
+        # True when a continuation line ending in ':' opened an option prompt.
+        self._awaiting_options_after_prompt: bool = False
 
     def _flush_active_question(self) -> None:
         if not self._q_stem_parts and not self._raw_lines:
@@ -703,28 +810,41 @@ class ExamQuestionSegmenter:
             else:
                 canonical_type = "MCQ"
                 primary_type = "multiple_choice"
-        elif hint == "TRUE_FALSE" or any(w in stem_text for w in ["صح أم خطأ", "ضع علامة", "True/False", "صواب أم خطأ", "صح أو خطأ"]):
+        elif hint in ("TRUE_FALSE", "صح/خطأ") or any(w in stem_text for w in ["صح أم خطأ", "ضع علامة", "True/False", "صواب أم خطأ", "صح أو خطأ", "تحقق من العبارات"]):
             canonical_type = "TRUE_FALSE"
             primary_type = "true_false"
-            if not formatted_options:
-                opt_true = {"key": "أ", "text": "صح", "is_correct": False}
-                opt_false = {"key": "ب", "text": "خطأ", "is_correct": False}
-                if ans_raw:
-                    if any(t in ans_raw for t in ["صح", "صواب", "✓", "✔", "true"]):
-                        opt_true["is_correct"] = True
-                        corr_text = "صح"
-                        needs_rev = False
-                    elif any(f in ans_raw for f in ["خطأ", "خطا", "✗", "✘", "false"]):
-                        opt_false["is_correct"] = True
-                        corr_text = "خطأ"
-                        needs_rev = False
-                formatted_options = [opt_true, opt_false]
-        elif hint == "FILL_BLANK" or any(w in stem_text for w in ["أكمل الفراغ", "أكمل ما يأتي", "أكمل العبارات", "Fill in the blank"]) or re.search(r"(\.{3,}|_{3,}|\[\s*\]|\[\.+\])", stem_text):
+            if ans_raw:
+                if any(t in ans_raw for t in ["صح", "صواب", "✓", "✔", "true"]):
+                    corr_text = "صح"
+                    needs_rev = False
+                elif any(f in ans_raw for f in ["خطأ", "خطا", "✗", "✘", "false"]):
+                    corr_text = "خطأ"
+                    needs_rev = False
+        elif hint == "FILL_BLANK" or any(w in stem_text for w in ["أكمل الفراغ", "أكمل ما يأتي", "أكمل العبارات", "Fill in the blank"]) or re.search(r"(\.{3,}|_{3,}|\[\s*\]|\[\.+\])", stem_text) or re.search(r"\s[بولفك]$", stem_text):
+            # The dangling lone preposition ('يرمز له ب') is the OCR-damaged
+            # shape of a fill-in blank: the dots were swallowed but the
+            # preposition that introduced them remains as a single-letter
+            # final token.
             canonical_type = "FILL_BLANK"
             primary_type = "fill_in_blank"
         elif hint == "ESSAY" or any(w in stem_text for w in ["علل", "بم تفسر", "وضح", "اشرح", "قارن", "اذكر", "ما المقصود", "اكتب", "احسب", "كيف"]):
             canonical_type = "ESSAY"
             primary_type = "essay"
+        elif _looks_like_tf_statement(stem_text):
+            # Structural shape: a standalone Arabic declarative sentence
+            # ('مجموع زوايا المثلث الداخلية يساوي 180°.') is a judgeable
+            # claim - TRUE_FALSE - even without an explicit section banner.
+            canonical_type = "TRUE_FALSE"
+            primary_type = "true_false"
+            # The printed paper lists no options for these, so none are
+            # synthesized here (no invented answer model).
+            if ans_raw:
+                if any(t in ans_raw for t in ["صح", "صواب", "✓", "✔", "true"]):
+                    corr_text = "صح"
+                    needs_rev = False
+                elif any(f in ans_raw for f in ["خطأ", "خطا", "✗", "✘", "false"]):
+                    corr_text = "خطأ"
+                    needs_rev = False
         elif "؟" in stem_text or "?" in stem_text or len(stem_text.split()) >= 4:
             canonical_type = "ESSAY"
             primary_type = "essay"
@@ -755,6 +875,14 @@ class ExamQuestionSegmenter:
             "source_page": self._source_page,
             "source_block_ids": list(self._source_block_ids),
             "raw_text": "\n".join(self._raw_lines),
+            # Provenance: text layer vs OCR.  Questions sourced from OCR
+            # pages always carry needs_content_review: OCR of Arabic exams
+            # loses dots and swaps letters ('Jor' for 'يحمل'), and the
+            # damage is not always structurally detectable, so the whole
+            # page is surfaced for teacher review instead of being silently
+            # trusted.
+            "text_source": "ocr" if self._page_is_ocr else "text_layer",
+            "needs_content_review": self._page_is_ocr,
         }
         self.extracted_questions.append(record)
         self._reset_builder()
@@ -770,11 +898,22 @@ class ExamQuestionSegmenter:
         self._raw_lines = []
         self._q_num = None
         self._section_hint = None
+        # NOTE: _page_is_ocr is page-scoped state, not builder state - it
+        # must survive flushes so every question on an OCR page keeps its
+        # provenance flag.
+        self._awaiting_options_after_prompt = False
 
     def process_block(self, block_text: str, page_number: int | None = None, block_id: str | None = None) -> None:
         # Strip Unicode directional marks
         clean_block = re.sub(r"[\u200e\u200f\u202a-\u202e\ufeff]", "", block_text).strip()
         if not clean_block:
+            return
+
+        # End-of-paper trailer: a structural exam terminator.  Whatever
+        # question is still building is complete; the trailer itself is
+        # never content, and banners after it belong to a new section.
+        if re.match(r"^\s*انتهت\s+الورق[ةه]", clean_block):
+            self._flush_active_question()
             return
 
         # Reject PDF binary corruption tokens
@@ -793,19 +932,21 @@ class ExamQuestionSegmenter:
 
         # Key normalization dictionary
         KEY_NORM = {
-            'i': 'أ', '1': 'أ', 'a': 'أ', 'A': 'أ', 'أ': 'أ', 'ا': 'أ', 'ع': 'أ',
+            'i': 'أ', 'I': 'أ', '1': 'أ', 'a': 'أ', 'A': 'أ', 'أ': 'أ', 'ا': 'أ', 'ع': 'أ',
             '2': 'ب', 'b': 'ب', 'B': 'ب', 'ب': 'ب',
             '3': 'ج', 'c': 'ج', 'C': 'ج', 'ج': 'ج',
             '4': 'د', 'd': 'د', 'D': 'د', 'د': 'د',
         }
-        OPT_PATTERN = re.compile(r"^[\(\[]?\s*([أبجدA-Da-d]|i)\s*[\)\]\.\:\-\/]\s*(.*)$")
-        OPT_SUFFIX_PATTERN = re.compile(r"^(.*?)\s*[\(\[]\s*([أبجدA-Da-d]|i)\s*[\)\]][\.\:\-]?$")
+        # 'I' (uppercase) is the OCR/RTL form of the first option key next to
+        # 'i': '(I) النواة' == '(أ) النواة'.
+        OPT_PATTERN = re.compile(r"^[\(\[]?\s*([أبجدA-Da-diI])\s*[\)\]\.\:\-\/]\s*(.*)$")
+        OPT_SUFFIX_PATTERN = re.compile(r"^(.*?)\s*[\(\[]\s*([أبجدA-Da-diI])\s*[\)\]][\.\:\-]?$")
         ANS_PATTERN = re.compile(
             r"^(?:الإجاب[ةه](?:\s+الصحيح[ةه])?|الجواب(?:\s+الصحيح)?|الحل(?:\s+الصحيح)?|فكرة\s+الحل|Answer|Key)\s*[\:\.\-\/]?\s*(.*)$",
             re.IGNORECASE,
         )
         INLINE_OPT_PATTERN = re.compile(
-            r"(?:^|\s+)[\(\[]?\s*([أبجدA-D1-4]|i)\s*[\)\]\.\:\-\/]\s*(.*?)(?=(?:\s+[\(\[]?\s*[أبجدA-D1-4]|i\s*[\)\]\.\:\-\/]|$))"
+            r"(?:^|\s+)[\(\[]?\s*([أبجدA-D1-4iI])\s*[\)\]\.\:\-\/]\s*(.*?)(?=(?:\s+[\(\[]?\s*[أبجدA-D1-4iI]\s*[\)\]\.\:\-\/]|$))"
         )
         HEADER_ONLY_PATTERN = re.compile(
             r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)|س\s*\d+|Question\s*\d+|Q\d+)\s*[\:\.\-\)]?\s*(?:\(?\s*\d+\s*(?:درجات|درجة|marks?|pts?)\s*\)?)?$",
@@ -813,25 +954,64 @@ class ExamQuestionSegmenter:
         )
 
         SECTION_LOCAL_PATTERNS: list[tuple[re.Pattern, str]] = [
-            (re.compile(r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)\s*[:\.\-]?\s*)?(?:اختر|إختر)\s+(?:الإجابة|الاجابة)\s+(?:الصحيحة|المناسبة|الأصح)", re.IGNORECASE), "MCQ"),
+            (re.compile(r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)\s*[:\.\-]?\s*)?(?:اختر|إختر)\s+(?:الإجابة|الاجابة)\s+(?:الصحيحة|المناسبة|الأصح|الأنسب)", re.IGNORECASE), "MCQ"),
             (re.compile(r"^(?:أسئلة\s+الاختيار\s+من\s+متعدد|Multiple\s+Choice\s+Questions|MCQ)\b", re.IGNORECASE), "MCQ"),
             (re.compile(r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)\s*[:\.\-]?\s*)?(?:ضع\s+علامة|أجب\s+بـ|بين\s+مدى\s+صحة|صواب|صح)\b.*(?:صح|صواب|✓|✔).*(?:خطأ|خطا|✗|✘)", re.IGNORECASE), "TRUE_FALSE"),
             (re.compile(r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)\s*[:\.\-]?\s*)?(?:صواب|صح)\s*(?:أم|أو)\s*(?:خطأ|خطا)", re.IGNORECASE), "TRUE_FALSE"),
             (re.compile(r"^(?:True\s*(?:or|\/)\s*False)\b", re.IGNORECASE), "TRUE_FALSE"),
+            # Verify-the-statements wording ('تحقق من العبارات'): a section
+            # of judgeable statements (structural instruction, no content).
+            (re.compile(r"^(?:تحقق\s+من\s+(?:العبارات|العبارة|ما\s+يلي|الآتي))\b", re.IGNORECASE), "TRUE_FALSE"),
             (re.compile(r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)\s*[:\.\-]?\s*)?أكمل\s+(?:العبارات|الجمل|الفراغات|مكان\s+النقط|ما\s+يأتي)", re.IGNORECASE), "FILL_BLANK"),
             (re.compile(r"^(?:Fill\s+in\s+the\s+blanks?)\b", re.IGNORECASE), "FILL_BLANK"),
-            (re.compile(r"^(?:\[?\s*(?:ثانياً|أولاً)?\s*[:\.]?\s*)?(?:الأسئلة\s+المقالية)\b", re.IGNORECASE), "ESSAY"),
+            (re.compile(r"^(?:\[?\s*(?:ثانياً|أولاً)?\s*[:\.]?\s*)?(?:الأسئلة\s+المقالية|أسئلة\s+مقالية|سؤال\s+مقالي|أجب\s+في\s+سطور|أجب\s+عن\s+الأسئلة\s+الآتية|أجب\s+عن\s+الأسئلة\s+التالية|الجزء\s+(?:الأخير|د)\s*[:\.]?)\b", re.IGNORECASE), "ESSAY"),
             (re.compile(r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)\s*[:\.\-]?\s*)?(?:أجب|اجب)\s+عن\s+الأسئلة\s+(?:الآتية|التالية)", re.IGNORECASE), "ESSAY"),
+            # Ordinal section labels - 'أولاً: اختر' / 'ثانيًا: صح أو خطأ' /
+            # 'رابعًا: أجب في سطور' / 'الجزء ج: أكمل'.  The TYPE is decided
+            # by the instruction keyword after the label, not by the ordinal.
+            (re.compile(r"^(?:أولاً|ثانيًا|ثالثًا|رابعًا|خامسًا|سادسًا|أولا|ثانيا|ثالثا|رابعا|خامسا|سادسا)\s*[:\.]"), "ORDINAL"),
+            (re.compile(r"^\s*الجزء\s+[أ-ي]\s*[:\.]"), "ORDINAL"),
+            # Subject-prefixed section banners: 'أحياء: الخلية وأعضاؤها'.
+            # Structural shape (SHORT label + colon, no sentence punctuation,
+            # no question number) - not a keyword list.  Requires at least a
+            # two-word banner ('أحياء: الخلية') so single-word prompts like
+            # 'يساوي:' (continuation of a stem) are never swallowed.  Own
+            # type so it can be suppressed while a stem is active: this
+            # generic shape also matches stem continuations ending in ':'
+            # ('...والزجاج :'), unlike explicit ordinal banners.
+            (re.compile(r"^[\u0600-\u06FF]{2,6}\s+[ء-ي]{2,20}(?:\s+[ء-ي]{2,20})*\s*:\s*$"), "SUBJECT_BANNER"),
         ]
 
         for line in lines:
             # 1. Section Header check
             is_section_header = False
+            # The generic subject-banner shape ('أحياء: ...') never
+            # terminates a question that already carries stem text - that
+            # shape also matches stem continuations ending in ':'
+            # ('...والزجاج :').  Explicit banners (ordinal labels,
+            # instruction keywords) remain structural section resets.
+            _banner_blocked_by_stem = bool(self._q_stem_parts)
             if not (self._q_num is not None and not self._q_stem_parts):
                 for sec_pat, sec_type in SECTION_LOCAL_PATTERNS:
+                    if sec_type == "SUBJECT_BANNER" and _banner_blocked_by_stem:
+                        continue
                     if sec_pat.search(line):
                         self._flush_active_question()
-                        self.current_section_type = sec_type
+                        # ORDINAL labels ('ثالثًا: أكمل') carry their real
+                        # type in the instruction after the label: sniff the
+                        # remainder against the same section families.
+                        if sec_type == "ORDINAL":
+                            rest = sec_pat.sub("", line).strip()
+                            sniffed = None
+                            for sniff_pat, sniff_type in SECTION_LOCAL_PATTERNS:
+                                if sniff_type == "ORDINAL":
+                                    continue
+                                if sniff_pat.search(rest):
+                                    sniffed = sniff_type
+                                    break
+                            self.current_section_type = sniffed or "ESSAY"
+                        else:
+                            self.current_section_type = sec_type
                         self.current_section_title = line
                         is_section_header = True
                         break
@@ -854,23 +1034,35 @@ class ExamQuestionSegmenter:
                 continue
 
             # 4. Inline Options (e.g. (أ) ... (ب) ... (ج) ... (د) ...)
+            # Guard against the RTL-displaced-number trap: '4. مقاومة...'
+            # looks like an inline option ('4' as key).  A real inline-option
+            # line does NOT start with 'N.' itself, and bare-number keys only
+            # count when the line carries no real sentence punctuation.
             inline_opts = INLINE_OPT_PATTERN.findall(line)
             if len(inline_opts) >= 2:
-                for k, txt in inline_opts:
-                    norm_k = KEY_NORM.get(k, k)
-                    self._options.append((norm_k, txt.strip()))
-                self._raw_lines.append(line)
-                continue
+                starts_numbered = bool(re.match(r"^\(?\d{1,3}\)?\s*[\.\-\:]\s*\S", line))
+                bare_number_keys = any(re.fullmatch(r"\d", k) for k, _ in inline_opts)
+                if not (starts_numbered and bare_number_keys):
+                    for k, txt in inline_opts:
+                        norm_k = KEY_NORM.get(k, k)
+                        self._options.append((norm_k, txt.strip()))
+                    self._raw_lines.append(line)
+                    continue
 
             # 5. Single Line Option
             opt_m = OPT_PATTERN.match(line)
             opt_suff_m = OPT_SUFFIX_PATTERN.match(line)
-            if self._q_stem_parts and opt_m and len(line.split()) < 30:
+            # A pending question-number (from a 'N' + '. text' split line) is
+            # an active builder: options may attach to it even before the
+            # stem text arrives ('4' -> '. جسم...' -> options).  A stem that
+            # ended in ':' (option prompt) also accepts option rows.
+            builder_active = bool(self._q_stem_parts or self._q_num is not None or self._awaiting_options_after_prompt)
+            if builder_active and opt_m and len(line.split()) < 30:
                 norm_k = KEY_NORM.get(opt_m.group(1), opt_m.group(1))
                 self._options.append((norm_k, opt_m.group(2).strip()))
                 self._raw_lines.append(line)
                 continue
-            elif self._q_stem_parts and opt_suff_m and len(line.split()) <= 15:
+            elif builder_active and opt_suff_m and len(line.split()) <= 15:
                 norm_k = KEY_NORM.get(opt_suff_m.group(2), opt_suff_m.group(2))
                 self._options.append((norm_k, opt_suff_m.group(1).strip()))
                 self._raw_lines.append(line)
@@ -878,21 +1070,84 @@ class ExamQuestionSegmenter:
 
             # 6. Question Start Detection
             norm_line = line.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+            # 'N.' with the dot DISPLACED by RTL bidi ('4 . مقاومة') is the
+            # same layout signal as '4.': a lone number, then a lone dot,
+            # then words.  A digit right after the separator is ambiguous
+            # ('0.1 M' value vs '5. 14.3 g' question whose stem opens with a
+            # value) - resolved below by number monotonicity, not here.
+            # Continuation lines starting with an LTR token are never
+            # question starts.
+            displaced_num_dot = (
+                re.match(r"^\d{1,3}\s*[.\-:]\s*\S", norm_line)
+                or re.match(r"^\d{1,3}\s+[.\-:]\s*\S", norm_line)
+            )
+            # OCR of the sequence '10.' can drop the leading '1' ('0 . وضح
+            # كيف...').  A question sequence NEVER starts at 0: a '0.'-shaped
+            # line while a previous question exists is structurally the NEXT
+            # question with a damaged number, so repair it to prev+1 and let
+            # it open a new question.  The '(?!\d)' lookahead rejects decimal
+            # values ('0.1 M') WITHOUT consuming the stem's first character
+            # ('وضح' must keep its 'و').
+            _zero_repair_m = re.match(r"^0\s*[.\-:]\s*(?!\d)", norm_line)
+            if _zero_repair_m and self._q_num is not None:
+                _prev = int(self._q_num) if self._q_num.isdigit() else None
+                if _prev is not None:
+                    norm_line = f"{_prev + 1}. " + norm_line[_zero_repair_m.end():]
+                    line = norm_line
+            # A NON-ADVANCING number followed by another digit is a decimal
+            # VALUE continuation ('0.1 M استُهلك...'), never a question
+            # start.  An ADVANCING number with a value stem ('5. 14.3 g ...')
+            # is a real question whose stem opens with a measurement.
+            if displaced_num_dot and self._q_num and self._q_num.isdigit():
+                _val_m = re.match(r"^(\d{1,3})\s*[.\-:]\s*(\d)", norm_line)
+                if _val_m and int(_val_m.group(1)) <= int(self._q_num):
+                    displaced_num_dot = False
+            # Option-list positional keys ('1.' '2.' rows produced by OCR of
+            # numbered options) must not open a question: a positional key
+            # NEVER advances past the pending question's number.  A real
+            # next question always advances (2 after 1, 3 after 2), so only
+            # NON-advancing numbers over an option-bearing builder are
+            # suppressed here.  Suppressing advancing numbers would swallow
+            # every MCQ that follows another MCQ's options.
+            if displaced_num_dot and self._options:
+                _key_num_m = re.match(r"^[\(\[]?(\d{1,3})\s*[.\-:]", norm_line)
+                if _key_num_m:
+                    _prev_num = int(self._q_num) if (self._q_num and self._q_num.isdigit()) else None
+                    if _prev_num is not None and int(_key_num_m.group(1)) <= _prev_num:
+                        displaced_num_dot = False
+            # A real numbered question START repeats a number already used
+            # (exam restart after a banner) or ADVANCES.  When it goes
+            # BACKWARD over a builder that has a stem, it is actually the
+            # NEXT question whose number the OCR/layout dropped...
+            # (nothing to repair here: backward never happens legitimately,
+            # keep the original question).
             is_q_start = bool(
                 re.match(r"^(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)", norm_line, re.IGNORECASE)
                 or re.match(r"^س\s*\d+\s*[\:\.\-\)]", norm_line)
                 or re.match(r"^(?:Question|Q)\s*\d+\s*[\:\.\-\)]", norm_line, re.IGNORECASE)
-                or re.match(r"^\(?\d{1,3}\)?\s*[\.\-\:]\s*(?!\d)", norm_line)
+                or displaced_num_dot
             )
 
             if is_q_start:
-                self._flush_active_question()
+                # The new numbered line opens a NEW question when the pending
+                # builder carries options (its question is complete) OR when
+                # the number advances normally (5 after 4).  A NON-advancing
+                # number over an option-less builder is a column-layout line
+                # split ('6. جذر...' broken mid-stem), not a new question.
+                new_num = None
+                nm = re.search(r"\(?(\d{1,3})\)?", norm_line)
+                if nm:
+                    new_num = int(nm.group(1))
+                prev_num = int(self._q_num) if (self._q_num and self._q_num.isdigit()) else None
+                number_advanced = prev_num is None or new_num is None or new_num == prev_num + 1
+                if self._options or number_advanced:
+                    self._flush_active_question()
                 # Extract question number
                 q_num_m = re.search(r"\(?(\d+)\)?", norm_line)
                 self._q_num = q_num_m.group(1) if q_num_m else None
                 # Clean prefix from stem
                 clean_start = re.sub(
-                    r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)|س\s*\d+|Question\s*\d+|Q\d+|^\(?\d{1,3}\)?)\s*[\:\.\-\)]?\s*",
+                    r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)|س\s*\d+|Question\s*\d+|Q\d+|^\(?\d{1,3}\)?\s*[\.\-\:]?)\s*[\:\.\-\)]?\s*",
                     "",
                     line,
                 )
@@ -920,6 +1175,11 @@ class ExamQuestionSegmenter:
                     if pts is not None:
                         self._explicit_points = pts
                         self._needs_points_assignment = needs_pts
+                # A continuation ending in ':' opens a prompt for what
+                # follows ('4. ميل ... يساوي:'); the option rows that follow
+                # belong to this question, so the builder now accepts them.
+                if line.endswith(":"):
+                    self._awaiting_options_after_prompt = True
             elif not self._q_stem_parts:
                 has_q_mark = "؟" in line or "?" in line
                 starts_with_cmd = bool(re.match(r"^(?:علل|بم\s+تفسر|وضح|اشرح|قارن|ما\s+المقصود|اذكر|كيف|متى|أين|هل|ماذا)\b", line))
@@ -957,10 +1217,18 @@ def segment_exam_document(
     candidates.extend(table_questions)
 
     # 2. Extract structured block questions via state machine
-    segmenter = ExamQuestionSegmenter(distant_keys=distant_keys, filename=filename)
+    ocr_pages: set[int] = set()
+    if hasattr(parsed_doc, "pages"):
+        for page in parsed_doc.pages:
+            if getattr(page, "extracted_via_ocr", False):
+                ocr_pages.add(getattr(page, "page_number", 0) or 0)
+    segmenter = ExamQuestionSegmenter(
+        distant_keys=distant_keys, filename=filename, ocr_page_numbers=ocr_pages
+    )
     if hasattr(parsed_doc, "pages"):
         for page in parsed_doc.pages:
             p_num = getattr(page, "page_number", 1)
+            segmenter._page_is_ocr = p_num in segmenter.ocr_page_numbers
             blocks = getattr(page, "blocks", [])
             for block in blocks:
                 b_text = getattr(block, "text", "")

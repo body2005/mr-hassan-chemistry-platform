@@ -1,0 +1,124 @@
+# Test-only overlay for the REAL production template. No storage substitution,
+# no exposed database/cache/object-store ports, no disabled TLS verification.
+services:
+  postgres:
+    cpus: 1
+    mem_limit: 768m
+  redis:
+    cpus: 0.5
+    mem_limit: 256m
+  s3:
+    cpus: 1
+    mem_limit: 1024m
+  api:
+    cpus: 1.5
+    mem_limit: 1536m
+    environment:
+      SSL_CERT_FILE: /run/secrets/qa_ca_cert
+    secrets:
+      - qa_ca_cert
+  migration:
+    environment:
+      SSL_CERT_FILE: /run/secrets/qa_ca_cert
+    secrets:
+      - qa_ca_cert
+  worker:
+    cpus: 0.5
+    mem_limit: 512m
+    command: ["celery", "-A", "app.tasks.celery_app.celery_app", "worker", "--loglevel=info", "--concurrency=1", "-Q", "notifications,reports,analytics", "-I", "tests.integration.worker_probe"]
+    environment:
+      SSL_CERT_FILE: /run/secrets/qa_ca_cert
+      QA_ISOLATED: "true"
+      CELERY_VISIBILITY_TIMEOUT: "10"
+    secrets:
+      - qa_ca_cert
+  web:
+    cpus: 0.5
+    mem_limit: 256m
+  mailpit:
+    image: axllent/mailpit:v1.31.1@sha256:98b916bd3c8d61f7633a52d3ea2f58d00620cb01ca57ab59edde68c347a95365
+    environment:
+      MP_SMTP_TLS_CERT: /run/secrets/tls_cert
+      MP_SMTP_TLS_KEY: /run/secrets/tls_key
+      MP_SMTP_REQUIRE_TLS: "true"
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_DISABLE_RDNS: "true"
+    secrets: [tls_cert, tls_key]
+    ports: ["127.0.0.1:18425:8025"]
+    networks: [private]
+  # Fresh target for disaster-recovery verification; never shares s3data.
+  postgres-restore:
+    profiles: [qa]
+    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lms}
+      POSTGRES_DB: restored
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes:
+      - qa_restore_pg:/var/lib/postgresql/data
+      - ${BACKUP_DIR}:/backups:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d restored"]
+      interval: 5s
+      retries: 15
+    networks: [private]
+  s3-restore:
+    profiles: [qa]
+    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ['export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/s3_password)"; exec /entrypoint.sh mini -dir=/data']
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+    secrets: [s3_password]
+    volumes: [qa_restore_s3:/data]
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8333"]
+      interval: 5s
+      retries: 15
+    networks: [private]
+  qa-tests:
+    profiles: [qa]
+    build:
+      context: ../apps/api
+      dockerfile: ../../infra/Dockerfile.qa
+      args:
+        API_TEST_IMAGE: chemistryprodlocal-api
+    entrypoint: ["/bin/sh", "/srv/entrypoint-prod.sh"]
+    environment:
+      APP_ENV: test
+      DB_PASSWORD_FILE: /run/secrets/postgres_password
+      SECRET_KEY_FILE: /run/secrets/app_secret_key
+      S3_SECRET_KEY_FILE: /run/secrets/s3_password
+      SMTP_PASSWORD_FILE: /run/secrets/smtp_password
+      POSTGRES_USER: ${POSTGRES_USER:-lms}
+      POSTGRES_DB: ${POSTGRES_DB:-lms}
+      S3_ENDPOINT_URL: http://s3:8333
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_BUCKET: ${S3_BUCKET}
+      S3_REGION: us-east-1
+      LIVE_API_BASE: https://proxy/api/v1
+      QA_CA_FILE: /run/secrets/qa_ca_cert
+      QA_PROJECT: chemistryprodlocal
+      QA_ISOLATED: "true"
+      QA_MEDIA_DIR: /qa/media
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      CELERY_VISIBILITY_TIMEOUT: "10"
+      REDIS_URL: redis://redis:6379/0
+    secrets: [postgres_password, app_secret_key, s3_password, smtp_password, qa_ca_cert]
+    volumes:
+      # Only the disposable test runner has engine access, never the web/API.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${QA_ARTIFACT_DIR}:/qa
+    command: ["python", "-m", "pytest", "tests", "-q", "--junitxml=/qa/api-tests.xml"]
+    networks: [private]
+
+volumes:
+  qa_restore_s3:
+    name: chemistryprodlocal_restore_s3_${QA_RESTORE_RUN_ID:-first}
+  qa_restore_pg:
+    name: chemistryprodlocal_restore_pg_${QA_RESTORE_RUN_ID:-first}
+secrets:
+  qa_ca_cert:
+    file: ${TLS_CERT_FILE}

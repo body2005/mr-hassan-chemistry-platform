@@ -10,6 +10,10 @@ from app.main import app
 from app.models.institution import Institution
 from app.models.platform import RefreshSession
 from app.models.user import User
+from app.services import auth_service
+from app.services import mail_service
+from app.core.config import get_settings
+import re
 
 
 def _register(client: TestClient, db, email: str = "session.student@example.com") -> None:
@@ -121,3 +125,95 @@ def test_cookie_mutation_requires_csrf_and_password_change_revokes_family(db) ->
     )
     assert changed.status_code == 204, changed.text
     assert client.get("/api/v1/auth/me").status_code == 401
+
+
+def test_password_reset_is_one_use_and_revokes_existing_sessions(db) -> None:
+    client = TestClient(app)
+    email = "reset.student@example.com"
+    _register(client, db, email)
+    assert client.get("/api/v1/auth/me").status_code == 200
+
+    # The reset service currently returns the raw token; delivery is tested
+    # separately because the public endpoint must never expose this secret.
+    token = auth_service.request_password_reset(db, email, "session-security")
+    assert token
+    anonymous = TestClient(app)
+    response = anonymous.post(
+        "/api/v1/auth/password-reset/confirm",
+        json={"token": token, "new_password": "replacement-strong-password"},
+    )
+    assert response.status_code == 204, response.text
+    assert client.get("/api/v1/auth/me").status_code == 401
+    assert anonymous.post(
+        "/api/v1/auth/password-reset/confirm",
+        json={"token": token, "new_password": "another-strong-password"},
+    ).status_code == 400
+    assert anonymous.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": "a-strong-password", "institution_slug": "session-security"},
+    ).status_code == 401
+    assert anonymous.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": "replacement-strong-password", "institution_slug": "session-security"},
+    ).status_code == 200
+
+
+def test_reset_request_sends_fragment_link_without_exposing_account(monkeypatch, db) -> None:
+    client = TestClient(app)
+    email = "email-reset.student@example.com"
+    _register(client, db, email)
+    request = {"email": email, "institution_slug": "session-security"}
+    # Test the unconfigured branch explicitly; the Docker QA environment has
+    # a real local SMTP sink and should not change this unit test's premise.
+    for name in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM_EMAIL"):
+        monkeypatch.delenv(name, raising=False)
+    get_settings.cache_clear()
+    assert client.post("/api/v1/auth/password-reset/request", json=request).status_code == 503
+
+    monkeypatch.setenv("SMTP_HOST", "smtp.example.test")
+    monkeypatch.setenv("SMTP_PORT", "465")
+    monkeypatch.setenv("SMTP_USER", "qa@example.test")
+    monkeypatch.setenv("SMTP_PASSWORD", "synthetic-test-only")
+    monkeypatch.setenv("SMTP_FROM_EMAIL", "qa@example.test")
+    monkeypatch.setenv("SMTP_TLS_VERIFY", "true")
+    get_settings.cache_clear()
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout, context):
+            assert (host, port, timeout) == ("smtp.example.test", 465, 10)
+            assert context.verify_mode == mail_service.ssl.CERT_REQUIRED
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def login(self, user, password):
+            assert (user, password) == ("qa@example.test", "synthetic-test-only")
+
+        def send_message(self, message):
+            sent.append(message)
+
+    monkeypatch.setattr(mail_service.smtplib, "SMTP_SSL", FakeSMTP)
+    try:
+        known = client.post("/api/v1/auth/password-reset/request", json=request)
+        missing = client.post(
+            "/api/v1/auth/password-reset/request",
+            json={"email": "nobody@example.com", "institution_slug": "session-security"},
+        )
+        assert known.status_code == missing.status_code == 200
+        assert known.json() == missing.json()
+        assert len(sent) == 1
+        body = sent[0].get_content()
+        assert "/#auth?reset_token=" in body
+        assert "/?reset_token=" not in body
+        token = re.search(r"reset_token=([A-Za-z0-9_-]+)", body)
+        assert token
+        assert client.post(
+            "/api/v1/auth/password-reset/confirm",
+            json={"token": token.group(1), "new_password": "email-reset-new-password"},
+        ).status_code == 204
+    finally:
+        get_settings.cache_clear()

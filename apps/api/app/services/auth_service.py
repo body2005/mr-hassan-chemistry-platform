@@ -154,9 +154,22 @@ def reset_password(db: Session, payload: PasswordResetConfirm) -> None:
         )
     )
     now = datetime.now(UTC)
-    if token is None or token.expires_at <= now:
+    # SQLite drops timezone metadata for DateTime columns; PostgreSQL keeps it.
+    expires_at = token.expires_at if token is not None else None
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if token is None or expires_at is None or expires_at <= now:
         raise ValueError("Reset token is invalid or expired")
 
     token.user.password_hash = hash_password(payload.new_password)
     token.used_at = now
+    # A recovered account must not retain sessions created with the old secret.
+    from app.models.platform import RefreshSession
+
+    db.query(RefreshSession).filter(
+        RefreshSession.user_id == token.user_id,
+        RefreshSession.revoked_at.is_(None),
+    ).update({RefreshSession.revoked_at: now}, synchronize_session=False)
     db.commit()
+    from app.api.routes.platform import clear_revoked_account_video_slots
+    clear_revoked_account_video_slots(token.user_id)

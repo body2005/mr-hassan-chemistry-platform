@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { AssignmentSubmission, CustomColumn, StudentRecord } from "../types/lms";
 import { submissionService, userService } from "../services/lmsService";
+import type { ApiManagedUser } from "../services/lmsService";
 import { getCachedData } from "../services/apiClient";
 import { AssignmentModal } from "../components/AssignmentModal";
 import { ExamGradingModal } from "../components/ExamGradingModal";
@@ -23,7 +24,7 @@ import { StudentDetailWizard } from "../components/StudentDetailWizard";
 import { exportToDocx, exportToExcel, exportToPrintPdf } from "../utils/exportEngine";
 import { useToast } from "../components/ToastProvider";
 
-function mapApiStudentToRecord(item: any): StudentRecord {
+function mapApiStudentToRecord(item: ApiManagedUser): StudentRecord {
   const year: "1st_secondary" | "2nd_secondary" | "3rd_secondary" =
     item.grade_level === "SECONDARY_2"
       ? "2nd_secondary"
@@ -78,11 +79,11 @@ export const SubmissionsView: React.FC = () => {
   const [selectedYear, setSelectedYear] = useState<"1st_secondary" | "2nd_secondary" | "3rd_secondary">("1st_secondary");
   const [minThreshold, setMinThreshold] = useState<number>(65); // Minimum passing threshold %
   const [submissions, setSubmissions] = useState<AssignmentSubmission[]>(() => {
-    const cached = getCachedData<any[]>("/submissions");
+    const cached = getCachedData<AssignmentSubmission[]>("/submissions");
     return Array.isArray(cached) ? cached : [];
   });
   const [students, setStudents] = useState<StudentRecord[]>(() => {
-    const cached = getCachedData<any[]>("/users?role=student");
+    const cached = getCachedData<ApiManagedUser[]>("/users?role=student");
     return Array.isArray(cached) ? cached.map(mapApiStudentToRecord) : [];
   });
   const [loading, setLoading] = useState(() => students.length === 0 || submissions.length === 0);
@@ -213,7 +214,7 @@ export const SubmissionsView: React.FC = () => {
     }
   }
 
-  function handleApproveExamGrade(studentId: string, updatedExamScore: number, _teacherNotes?: string) {
+  function handleApproveExamGrade(studentId: string, updatedExamScore: number) {
     setStudents((prev) =>
       prev.map((s) => {
         if (s.id !== studentId) return s;

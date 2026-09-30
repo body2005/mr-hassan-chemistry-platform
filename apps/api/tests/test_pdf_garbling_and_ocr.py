@@ -50,13 +50,10 @@ def test_is_text_garbled_detection():
 
 
 def test_ocr_page_extraction_on_real_geology_textbook():
-    pdf_path = os.path.join(
-        "storage", "knowledge_center", "courses",
-        "85a134ed-9182-4ce7-ba5b-36955be3bbdf",
-        "f456c273_كتاب الوزارة جيولوجيا تالتة ثانوي.pdf"
-    )
-    if not os.path.exists(pdf_path):
-        pytest.skip("Textbook PDF not found in local storage")
+    pdf_path = os.getenv("QA_GEOLOGY_PDF", os.path.join(
+        os.path.dirname(__file__), "fixtures", "textbook_sample_5pages.pdf"
+    ))
+    assert os.path.exists(pdf_path), "Required real textbook fixture is missing"
 
     with open(pdf_path, "rb") as f:
         file_bytes = f.read()
@@ -182,4 +179,3 @@ def test_pymupdf_page_raster_rendering_available(tmp_path):
 
     assert rendered is not None
     assert rendered.startswith(bytes([0xFF, 0xD8]))
-

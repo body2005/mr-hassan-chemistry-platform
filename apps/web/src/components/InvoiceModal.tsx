@@ -42,13 +42,14 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
     if (!isOpen) {
-      if (receiptUrl) {
-        URL.revokeObjectURL(receiptUrl);
-        setReceiptUrl(null);
-      }
+      setReceiptUrl(null);
       return;
     }
+
+    setReceiptUrl(null);
 
     if (initialOrder) {
       setOrder(initialOrder);
@@ -60,36 +61,43 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
       paymentService
         .getOrder(targetId)
         .then((fetched) => {
+          if (cancelled) return;
           setOrder(fetched);
           if (fetched.review_note) setReviewNote(fetched.review_note);
         })
         .catch((err) => {
+          if (cancelled) return;
           console.error("Failed to fetch order", err);
           if (!initialOrder) {
             toast({ message: "تعذر تحميل تفاصيل الفاتورة", tone: "danger" });
           }
         })
-        .finally(() => setLoading(false));
+        .finally(() => { if (!cancelled) setLoading(false); });
 
       // Fetch receipt image preview if order has receipt
       setLoadingReceipt(true);
       paymentService
         .getReceiptBlobUrl(targetId)
         .then((url) => {
+          if (cancelled) {
+            URL.revokeObjectURL(url);
+            return;
+          }
+          objectUrl = url;
           setReceiptUrl(url);
         })
         .catch((err) => {
+          if (cancelled) return;
           console.warn("Could not load receipt image blob", err);
         })
-        .finally(() => setLoadingReceipt(false));
+        .finally(() => { if (!cancelled) setLoadingReceipt(false); });
     }
 
     return () => {
-      if (receiptUrl) {
-        URL.revokeObjectURL(receiptUrl);
-      }
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [isOpen, orderId, initialOrder]);
+  }, [isOpen, orderId, initialOrder, toast]);
 
   if (!isOpen) return null;
 

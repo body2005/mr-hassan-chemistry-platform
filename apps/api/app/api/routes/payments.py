@@ -8,6 +8,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
+import fitz
+from PIL import Image
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
@@ -85,6 +88,22 @@ def _method_destination(method: PaymentMethod) -> str | None:
         PaymentMethod.VODAFONE_CASH: settings.payment_vodafone_cash_number,
         PaymentMethod.BANK_TRANSFER: settings.payment_bank_details,
     }[method]
+
+
+def _valid_receipt_file(path: str, extension: str) -> bool:
+    """Decode the claimed format, not merely its filename or client MIME."""
+    try:
+        if extension == ".pdf":
+            with fitz.open(path) as document:
+                return document.is_pdf and document.page_count > 0 and not document.is_encrypted
+        expected = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP"}[extension]
+        with Image.open(path) as picture:
+            if picture.format != expected:
+                return False
+            picture.verify()
+        return True
+    except Exception:
+        return False
 
 
 @router.get("/config")
@@ -177,6 +196,9 @@ async def upload_payment_receipt(
     if written == 0:
         os.remove(destination)
         raise HTTPException(status_code=422, detail="Payment receipt is empty")
+    if not _valid_receipt_file(destination, extension):
+        os.remove(destination)
+        raise HTTPException(status_code=422, detail="Payment receipt content does not match its format")
 
     previous_path = order.receipt_path
     storage = get_storage_provider()
@@ -459,7 +481,7 @@ def get_payment_order(order_id: uuid.UUID, user: CurrentUser, db: Db) -> dict[st
         raise HTTPException(status_code=404, detail="Payment order not found")
     can_view = order.student_id == user.id or payment_service.can_review_order(db, user, order)
     if not can_view:
-        raise HTTPException(status_code=403, detail="You do not have permission to view this order")
+        raise HTTPException(status_code=404, detail="Payment order not found")
     return _order_response(order)
 
 

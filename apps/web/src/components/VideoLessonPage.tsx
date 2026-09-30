@@ -119,6 +119,9 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   // Playback state
   const [playbackUrl, setPlaybackUrl] = useState("");
   const [playbackError, setPlaybackError] = useState<string | null>(null);
+  const playbackRenewingRef = useRef(false);
+  const lastPlaybackRenewalRef = useRef(0);
+  const pendingPlaybackResumeRef = useRef<{ time: number; playing: boolean } | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -192,6 +195,8 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   // Protected playback token fetching
   useEffect(() => {
     let disposed = false;
+    lastPlaybackRenewalRef.current = 0;
+    pendingPlaybackResumeRef.current = null;
     setPlaybackUrl("");
     setPlaybackError(null);
 
@@ -394,6 +399,29 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     saveVideoProgressToStorage(currentUser?.id, lesson.id, duration, duration, duration);
   };
 
+  async function renewProtectedPlayback() {
+    if (!lesson.requiresProtectedPlayback || playbackRenewingRef.current) return;
+    // A broken source should not cause an unbounded token/request loop.
+    if (Date.now() - lastPlaybackRenewalRef.current < 10_000) {
+      setPlaybackError("تعذر تشغيل الفيديو. أعد المحاولة بعد قليل.");
+      return;
+    }
+    lastPlaybackRenewalRef.current = Date.now();
+    playbackRenewingRef.current = true;
+    const player = videoElementRef.current;
+    const resume = { time: player?.currentTime ?? currentTime, playing: isPlaying || Boolean(player && !player.paused) };
+    try {
+      const { stream_url } = await apiRequest<{ stream_url: string }>(`/lessons/${lesson.id}/video-token`, { method: "POST" });
+      pendingPlaybackResumeRef.current = resume;
+      setPlaybackError(null);
+      setPlaybackUrl(apiUrl(stream_url));
+    } catch {
+      setPlaybackError("تعذر تجديد رابط الفيديو. تحقق من اتصالك واستحقاقك ثم أعد المحاولة.");
+    } finally {
+      playbackRenewingRef.current = false;
+    }
+  }
+
   const handleLoadedMetadata = () => {
     if (!videoElementRef.current) return;
     const dur = videoElementRef.current.duration;
@@ -424,6 +452,16 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
           setCurrentTime(resumePos);
         }
       }
+    }
+    const pendingResume = pendingPlaybackResumeRef.current;
+    if (pendingResume) {
+      pendingPlaybackResumeRef.current = null;
+      const allowedTime = isTeacher || isLessonFinished
+        ? pendingResume.time
+        : Math.min(pendingResume.time, maxWatchedRef.current);
+      videoElementRef.current.currentTime = Math.min(Math.max(0, dur - 0.1), allowedTime);
+      setCurrentTime(videoElementRef.current.currentTime);
+      if (pendingResume.playing) void videoElementRef.current.play().catch(() => undefined);
     }
   };
 
@@ -902,6 +940,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                     onTimeUpdate={handleTimeUpdate}
                     onEnded={handleEnded}
                     onLoadedMetadata={handleLoadedMetadata}
+                    onError={() => void renewProtectedPlayback()}
                     onPlay={() => setIsPlaying(true)}
                     onPause={() => setIsPlaying(false)}
                     onClick={handlePlayPause}
@@ -918,6 +957,13 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                       cursor: "pointer",
                     }}
                   />
+
+                  {playbackError && (
+                    <div role="alert" style={{ position: "absolute", top: "12px", left: "12px", right: "12px", zIndex: 3, padding: "10px", borderRadius: "8px", background: "rgba(127, 29, 29, 0.94)", color: "#fff", display: "flex", gap: "12px", alignItems: "center", justifyContent: "space-between" }}>
+                      <span>{playbackError}</span>
+                      <button type="button" onClick={() => { lastPlaybackRenewalRef.current = 0; void renewProtectedPlayback(); }} style={{ color: "#fff", border: "1px solid #fff", borderRadius: "6px", background: "transparent", padding: "5px 8px" }}>إعادة المحاولة</button>
+                    </div>
+                  )}
 
                   {/* Center Glass Play Button (Shows when paused) */}
                   {!isPlaying && (

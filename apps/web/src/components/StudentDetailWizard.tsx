@@ -228,7 +228,7 @@ export const StudentDetailWizard: React.FC<StudentDetailWizardProps> = ({
                 <Phone size={13} /> هاتف الطالب
               </div>
               <div style={{ ...fieldValueStyle, fontFamily: "monospace", direction: "ltr", textAlign: "right" }}>
-                {("studentPhone" in s ? s.studentPhone : (s as any).phone) || "—"}
+                {s.studentPhone || ("phone" in s ? s.phone : undefined) || "—"}
               </div>
             </div>
 
@@ -255,7 +255,7 @@ export const StudentDetailWizard: React.FC<StudentDetailWizardProps> = ({
               <div style={fieldLabelStyle}>
                 <MapPin size={13} /> المحافظة
               </div>
-              <div style={fieldValueStyle}>{("governorate" in s ? (s as any).governorate : undefined) || "—"}</div>
+              <div style={fieldValueStyle}>{s.governorate || "—"}</div>
             </div>
 
             {/* School */}
@@ -263,7 +263,7 @@ export const StudentDetailWizard: React.FC<StudentDetailWizardProps> = ({
               <div style={fieldLabelStyle}>
                 <BookOpen size={13} /> المدرسة
               </div>
-              <div style={fieldValueStyle}>{("schoolName" in s ? (s as any).schoolName : undefined) || "—"}</div>
+              <div style={fieldValueStyle}>{s.schoolName || "—"}</div>
             </div>
 
             {/* Gender */}
@@ -271,7 +271,7 @@ export const StudentDetailWizard: React.FC<StudentDetailWizardProps> = ({
               <div style={fieldLabelStyle}>
                 <User size={13} /> النوع
               </div>
-              <div style={fieldValueStyle}>{getGenderLabel("gender" in s ? (s as any).gender : undefined)}</div>
+              <div style={fieldValueStyle}>{getGenderLabel(s.gender)}</div>
             </div>
 
             {/* Joined / Created At */}
@@ -280,7 +280,7 @@ export const StudentDetailWizard: React.FC<StudentDetailWizardProps> = ({
                 <Calendar size={13} /> تاريخ التسجيل
               </div>
               <div style={fieldValueStyle}>
-                {("createdAt" in s ? (s as any).createdAt : undefined) || "—"}
+                {s.createdAt || "—"}
               </div>
             </div>
           </div>

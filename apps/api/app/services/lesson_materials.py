@@ -11,7 +11,6 @@ import os
 import uuid
 
 from fastapi import HTTPException, UploadFile, status
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.course import Course, CourseModule, Lesson
@@ -24,6 +23,24 @@ ALLOWED_MATERIAL_EXT = {
     ".png", ".jpg", ".jpeg", ".webp", ".zip",
 }
 MAX_MATERIAL_BYTES = 100 * 1024 * 1024  # 100MB per material file
+
+
+def _matches_material_format(ext: str, header: bytes) -> bool:
+    if not header:
+        return False
+    if ext == ".pdf":
+        return header.startswith(b"%PDF-")
+    if ext == ".png":
+        return header.startswith(b"\x89PNG\r\n\x1a\n")
+    if ext in {".jpg", ".jpeg"}:
+        return header.startswith(b"\xff\xd8\xff")
+    if ext == ".webp":
+        return header.startswith(b"RIFF") and header[8:12] == b"WEBP"
+    if ext in {".docx", ".pptx", ".zip"}:
+        return header.startswith((b"PK\x03\x04", b"PK\x05\x06"))
+    if ext in {".doc", ".ppt"}:
+        return header.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+    return b"\x00" not in header
 
 
 def _lesson_course(db: Session, lesson_id: uuid.UUID) -> tuple[Lesson, Course]:
@@ -69,6 +86,13 @@ async def upload_material(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unsupported material type: {ext or 'unknown'}",
+        )
+    header = await file.read(512)
+    await file.seek(0)
+    if not _matches_material_format(ext, header):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Uploaded file does not match its material format",
         )
 
     from app.core.storage import generate_safe_object_key, get_storage_provider
@@ -153,7 +177,7 @@ def open_material_stream(db: Session, user: User, lesson_id: uuid.UUID, asset_id
     lesson, course = _lesson_course(db, lesson_id)
     asset = _get_asset(db, lesson_id, asset_id)
 
-    # Access: managers always; students need any access to the lesson's course.
+    # Access is determined per lesson, including its payment entitlement.
     is_manager = False
     try:
         ensure_course_manager(user, course)
@@ -163,16 +187,9 @@ def open_material_stream(db: Session, user: User, lesson_id: uuid.UUID, asset_id
     except PermissionError:
         is_manager = False
     if not is_manager:
-        from app.models.course import Enrollment, EnrollmentStatus
+        from app.services.payment_service import can_access_lesson_content
 
-        enrolled = db.scalar(
-            select(Enrollment.id).where(
-                Enrollment.course_id == course.id,
-                Enrollment.student_id == user.id,
-                Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
-            )
-        )
-        if not enrolled and float(course.price_egp or 0) != 0:
+        if not can_access_lesson_content(db, user, lesson_id):
             raise HTTPException(status_code=403, detail="You do not have access to this material")
 
     if not asset.object_key:

@@ -184,8 +184,7 @@ class LessonCreateRequest(BaseModel):
     content: str | None = Field(default=None, max_length=100_000)
     # Deliberately no video_asset_key: native videos are attached only via the
     # authorization-checked upload endpoint, never through lesson creation.
-    # Public embed URLs (YouTube/Drive) entered by the teacher are accepted
-    # through this dedicated, scheme-validated field instead.
+    # Public external links cannot satisfy protected playback requirements.
     external_video_url: str | None = Field(default=None, max_length=2048)
     video_duration_seconds: int | None = Field(default=None, ge=1, le=24 * 60 * 60)
     price_egp: float = Field(default=0, ge=0, le=1_000_000)
@@ -198,9 +197,7 @@ class LessonCreateRequest(BaseModel):
         trimmed = value.strip()
         if not trimmed:
             return None
-        if not (trimmed.startswith("https://") or trimmed.startswith("http://")):
-            raise ValueError("external_video_url must be an http(s) URL")
-        return trimmed
+        raise ValueError("External video links bypass protected playback; upload a video file instead")
 
 
 class LessonMaterialSummary(BaseModel):
@@ -663,4 +660,3 @@ class BootstrapResponse(BaseModel):
     enrolled_course_ids: list[str] = Field(default_factory=list)
     entitlements: list[dict[str, Any]] = Field(default_factory=list)
     settings: dict[str, Any] = Field(default_factory=dict)
-

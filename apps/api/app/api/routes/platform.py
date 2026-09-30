@@ -5,9 +5,10 @@ import mimetypes
 import logging
 import os
 import tempfile
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
-from collections import defaultdict, deque
+from collections import defaultdict
 UTC = timezone.utc
 from typing import Annotated
 
@@ -18,7 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import CurrentUser, OptionalUser, require_roles
+from app.api.dependencies import CurrentUser, OptionalUser, _active_session_family, require_roles
 from app.core.database import get_db
 from app.core.config import get_settings
 from app.core.events import event_broker
@@ -81,7 +82,9 @@ from app.models.platform import RefreshSession, RevokedSession
 VIDEO_TOKEN_TTL_SECONDS = 300
 # A video session is keyed by (account, lesson). Issue a token only while the
 # concurrent-session budget for that pair is not exhausted; return its expiry.
-def _register_video_session(db: Session, user_id: uuid.UUID, lesson_id: uuid.UUID, ttl_seconds: int) -> datetime:
+def _register_video_session(
+    db: Session, user_id: uuid.UUID, lesson_id: uuid.UUID, session_jti: str, ttl_seconds: int
+) -> datetime:
     settings = get_settings()
     max_sessions = settings.video_max_concurrent_sessions
     now = datetime.now(UTC)
@@ -89,37 +92,67 @@ def _register_video_session(db: Session, user_id: uuid.UUID, lesson_id: uuid.UUI
     r = _video_session_redis()
     if r is not None:
         try:
-            # Drop expired entries first so the budget reflects live sessions.
-            r.zremrangebyscore(base_key, "-inf", now.timestamp())
-            if r.zcard(base_key) >= max_sessions:
+            # Atomic check/update: repeated tokens from one live session do
+            # not consume additional device slots, even under concurrency.
+            admitted = r.eval(
+                """
+                redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+                if redis.call('ZSCORE', KEYS[1], ARGV[3]) or
+                   redis.call('ZCARD', KEYS[1]) < tonumber(ARGV[4]) then
+                    redis.call('ZADD', KEYS[1], ARGV[2], ARGV[3])
+                    redis.call('EXPIRE', KEYS[1], ARGV[5])
+                    return 1
+                end
+                return 0
+                """,
+                1, base_key, now.timestamp(), now.timestamp() + ttl_seconds,
+                session_jti, max_sessions, ttl_seconds + 5,
+            )
+            if not admitted:
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     detail="Too many concurrent video sessions for this account.",
                     headers={"Retry-After": "30"},
                 )
-            r.zadd(base_key, {str(uuid.uuid4()): now.timestamp() + ttl_seconds})
-            r.expire(base_key, ttl_seconds + 5)
             return now + timedelta(seconds=ttl_seconds)
         except HTTPException:
             raise
         except Exception:
             logger.warning("Redis unavailable for video session tracking; falling back to memory")
     # Dev/test fallback: best-effort in-process ledger.
-    entries = _memory_video_sessions[base_key]
-    cutoff = now.timestamp()
-    while entries and entries[0] <= cutoff:
-        entries.popleft()
-    if len(entries) >= max_sessions:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many concurrent video sessions for this account.",
-            headers={"Retry-After": "30"},
-        )
-    entries.append(now.timestamp() + ttl_seconds)
+    with _memory_video_sessions_lock:
+        entries = _memory_video_sessions[base_key]
+        for key, expiry in list(entries.items()):
+            if expiry <= now.timestamp():
+                entries.pop(key, None)
+        if session_jti not in entries and len(entries) >= max_sessions:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many concurrent video sessions for this account.",
+                headers={"Retry-After": "30"},
+            )
+        entries[session_jti] = now.timestamp() + ttl_seconds
     return now + timedelta(seconds=ttl_seconds)
 
 
-_memory_video_sessions: dict[str, deque[float]] = defaultdict(deque)
+_memory_video_sessions: dict[str, dict[str, float]] = defaultdict(dict)
+_memory_video_sessions_lock = threading.Lock()
+
+
+def clear_revoked_account_video_slots(user_id: uuid.UUID) -> None:
+    """Only after revoking ALL refresh families; dead devices must not fill the budget."""
+    from app.core.rate_limit import _get_redis_client
+    client = _get_redis_client()
+    if client is not None:
+        try:
+            for key in client.scan_iter(match=f"video-session:{user_id}:*"):
+                client.unlink(key)
+        except Exception:
+            logger.warning("Could not clear revoked video device slots")
+    with _memory_video_sessions_lock:
+        for key in list(_memory_video_sessions):
+            if key.startswith(f"video-session:{user_id}:"):
+                _memory_video_sessions.pop(key, None)
 
 
 def _video_session_redis():
@@ -133,38 +166,54 @@ def _video_session_redis():
         return None
 
 
-def _revoke_video_sessions(db: Session, user_id: uuid.UUID, family_id: uuid.UUID | None) -> None:
-    """Record a deny-until marker that outlives the 5-minute token TTL."""
+def _revoke_video_sessions(
+    db: Session, user_id: uuid.UUID, family_id: uuid.UUID | None, session_jti: str | None = None
+) -> None:
+    """Revoke the logged-out family/session without blocking a fresh login."""
     from app.core.rate_limit import _get_redis_client
 
     now = datetime.now(UTC)
     until = now + timedelta(seconds=VIDEO_TOKEN_TTL_SECONDS + 30)
     r = _get_redis_client()
-    keys = [f"video-deny:{user_id}"]
+    keys = []
     if family_id is not None:
-        keys.append(f"video-deny:{family_id}")
+        keys.append(f"video-deny:family:{family_id}")
+    if session_jti:
+        keys.append(f"video-deny:session:{session_jti}")
     if r is not None:
         try:
             for key in keys:
                 r.set(key, until.isoformat(), ex=VIDEO_TOKEN_TTL_SECONDS + 30)
+            if session_jti:
+                for key in r.scan_iter(match=f"video-session:{user_id}:*"):
+                    r.zrem(key, session_jti)
             return
         except Exception:
             logger.warning("Redis unavailable for video revocation; using memory marker")
     for key in keys:
         _memory_video_deny[key] = until
+    if session_jti:
+        with _memory_video_sessions_lock:
+            for key, entries in _memory_video_sessions.items():
+                if key.startswith(f"video-session:{user_id}:"):
+                    entries.pop(session_jti, None)
 
 
 _memory_video_deny: dict[str, datetime] = {}
 
 
-def _video_denied(db: Session, user_id: uuid.UUID, family_id: uuid.UUID | None) -> bool:
+def _video_denied(
+    db: Session, user_id: uuid.UUID, family_id: uuid.UUID | str | None, session_jti: str | None = None
+) -> bool:
     from app.core.rate_limit import _get_redis_client
 
     now = datetime.now(UTC)
     r = _get_redis_client()
-    keys = [f"video-deny:{user_id}"]
+    keys = []
     if family_id is not None:
-        keys.append(f"video-deny:{family_id}")
+        keys.append(f"video-deny:family:{family_id}")
+    if session_jti:
+        keys.append(f"video-deny:session:{session_jti}")
     if r is not None:
         try:
             for key in keys:
@@ -320,7 +369,8 @@ def _stream_stored_media(request: Request, storage_key: str, filename: str, medi
                     "Content-Disposition": "inline",
                     "Accept-Ranges": "bytes",
                     "Cache-Control": "private, no-cache, no-store",
-                    "Referrer-Policy": "strict-origin-when-cross-origin",
+                    "Referrer-Policy": "no-referrer",
+                    "Cross-Origin-Resource-Policy": "same-origin",
                     "X-Content-Type-Options": "nosniff",
                 },
             )
@@ -339,7 +389,8 @@ def _stream_stored_media(request: Request, storage_key: str, filename: str, medi
         "Accept-Ranges": "bytes",
         "Content-Length": str(length),
         "Cache-Control": "private, no-cache, no-store",
-        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Referrer-Policy": "no-referrer",
+        "Cross-Origin-Resource-Policy": "same-origin",
         "X-Content-Type-Options": "nosniff",
     }
     if byte_range:
@@ -387,6 +438,15 @@ async def upload_lesson_video(
         raise HTTPException(status_code=422, detail="Unsupported video format")
     if file.content_type and not file.content_type.startswith("video/"):
         raise HTTPException(status_code=422, detail="Uploaded file is not a video")
+    signature = await file.read(16)
+    await file.seek(0)
+    valid_container = (
+        signature.startswith(b"\x1a\x45\xdf\xa3")
+        if ext == ".webm"
+        else len(signature) >= 12 and signature[4:8] in {b"ftyp", b"moov"}
+    )
+    if not valid_container:
+        raise HTTPException(status_code=422, detail="Uploaded file does not match its video format")
 
     filename = f"{lesson_id}{ext}"
     temp_file = tempfile.NamedTemporaryFile(prefix="lesson-video-", suffix=ext, delete=False)
@@ -471,24 +531,49 @@ def stream_lesson_video(lesson_id: uuid.UUID, request: Request, user: CurrentUse
             "Content-Disposition": "inline",
             "Accept-Ranges": "bytes",
             "Cache-Control": "private, no-cache, no-store",
-            "Referrer-Policy": "strict-origin-when-cross-origin",
+            "Referrer-Policy": "no-referrer",
+            "Cross-Origin-Resource-Policy": "same-origin",
             "X-Content-Type-Options": "nosniff",
         },
     )
 
 
+def _live_video_cookie(db: Session, request: Request, user: User) -> dict | None:
+    """Validate the cookie itself, even when another Bearer session is present."""
+    from app.core.security import decode_session_token
+
+    raw_cookie = request.cookies.get(get_settings().session_cookie_name)
+    session = decode_session_token(raw_cookie) if raw_cookie else None
+    if not session or not session.get("jti"):
+        return None
+    if (
+        str(session.get("sub")) != str(user.id)
+        or str(session.get("institution_id")) != str(user.institution_id)
+        or session.get("role") != user.role.value
+    ):
+        return None
+    if db.scalar(select(RevokedSession.id).where(RevokedSession.jti == str(session["jti"]))):
+        return None
+    if not _active_session_family(db, session):
+        return None
+    return session
+
+
 @router.post("/lessons/{lesson_id}/video-token")
-def create_lesson_video_token(lesson_id: uuid.UUID, request: Request, user: CurrentUser, db: Db) -> dict:
-    from app.core.security import create_video_token, decode_session_token
+def create_lesson_video_token(lesson_id: uuid.UUID, request: Request, response: Response, user: CurrentUser, db: Db) -> dict:
+    from app.core.security import create_video_token
 
     enforce_rate_limit(request, bucket="lesson-video-token", category="read")
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
     lesson, _ = _require_lesson_access(db, user, lesson_id)
+    if lesson.video_asset_key and lesson.video_asset_key.startswith(("http://", "https://")):
+        raise HTTPException(status_code=404, detail="Protected video not available")
 
-    session_cookie = request.cookies.get(get_settings().session_cookie_name)
-    session_payload = decode_session_token(session_cookie) if session_cookie else None
+    session_payload = _live_video_cookie(db, request, user)
     if not session_payload:
         raise HTTPException(status_code=401, detail="A live session is required for video playback")
-    if _video_denied(db, user.id, session_payload.get("family_id")):
+    if _video_denied(db, user.id, session_payload.get("family_id"), session_payload.get("jti")):
         raise HTTPException(status_code=403, detail="Video access has been revoked")
     session_id = str(session_payload.get("jti") or "")
     if not session_id:
@@ -500,7 +585,7 @@ def create_lesson_video_token(lesson_id: uuid.UUID, request: Request, user: Curr
             family_id = uuid.UUID(str(raw_family))
         except (TypeError, ValueError):
             family_id = None
-    expires_at = _register_video_session(db, user.id, lesson.id, VIDEO_TOKEN_TTL_SECONDS)
+    expires_at = _register_video_session(db, user.id, lesson.id, session_id, VIDEO_TOKEN_TTL_SECONDS)
     token = create_video_token(
         user=user,
         lesson_id=lesson.id,
@@ -522,7 +607,7 @@ def stream_lesson_authenticated_range(
     db: Db,
     token: str | None = None,
 ) -> Response:
-    from app.core.security import decode_session_token, decode_video_token
+    from app.core.security import decode_video_token
 
     enforce_rate_limit(request, bucket="lesson-video-stream", category="read")
     payload = decode_video_token(token) if token else None
@@ -536,18 +621,19 @@ def stream_lesson_authenticated_range(
 
     user_id = uuid.UUID(str(payload["sub"]))
     user = db.get(User, user_id)
-    if user is None:
+    if user is None or not user.is_active or user.deleted_at is not None:
+        raise HTTPException(status_code=403, detail="Invalid or expired video stream token")
+    if payload.get("role") != user.role.value or str(payload.get("institution_id")) != str(user.institution_id):
         raise HTTPException(status_code=403, detail="Invalid or expired video stream token")
 
     # Replay the same authorization the token endpoint enforced at issue time.
-    if _video_denied(db, user.id, payload.get("family_id")):
+    if _video_denied(db, user.id, payload.get("family_id"), nonce):
         raise HTTPException(status_code=403, detail="Video access has been revoked")
     # Strict session binding: the streaming client must present the live
     # session that requested the token (nonce == session jti, same subject).
     # Same-origin <video> requests carry cookies automatically, so browser
     # playback works; link sharing, other accounts, and anonymous replays die.
-    session_cookie = request.cookies.get(get_settings().session_cookie_name)
-    session_payload = decode_session_token(session_cookie) if session_cookie else None
+    session_payload = _live_video_cookie(db, request, user)
     session_ok = bool(
         session_payload
         and str(session_payload.get("sub")) == str(user.id)
@@ -556,7 +642,9 @@ def stream_lesson_authenticated_range(
     if not session_ok:
         raise HTTPException(status_code=403, detail="Video session is no longer active")
 
-    lesson, _ = _lesson_course(db, lesson_id)
+    lesson, _ = _require_lesson_access(db, user, lesson_id)
+    if lesson.video_asset_key and lesson.video_asset_key.startswith(("http://", "https://")):
+        raise HTTPException(status_code=404, detail="Protected video not available")
     if lesson.video_asset_key and not lesson.video_asset_key.startswith("/api/"):
         media_type = mimetypes.guess_type(lesson.video_asset_key)[0] or "video/mp4"
         return _stream_stored_media(request, lesson.video_asset_key, f"lesson-{lesson.id}", media_type)
@@ -567,7 +655,8 @@ def stream_lesson_authenticated_range(
             "Content-Disposition": "inline",
             "Accept-Ranges": "bytes",
             "Cache-Control": "private, no-cache, no-store",
-            "Referrer-Policy": "strict-origin-when-cross-origin",
+            "Referrer-Policy": "no-referrer",
+            "Cross-Origin-Resource-Policy": "same-origin",
             "X-Content-Type-Options": "nosniff",
         },
     )
@@ -747,6 +836,11 @@ def list_questions(
     )
     if course_id:
         query = query.where(Question.course_id == course_id)
+    if user.role == UserRole.TEACHER:
+        managed_courses = select(Course.id).where(Course.teacher_id == user.id)
+        query = query.where(
+            (Question.author_id == user.id) | (Question.course_id.in_(managed_courses))
+        )
     return [
         QuestionResponse.model_validate(item)
         for item in db.scalars(query.order_by(Question.created_at.desc())).all()
@@ -789,7 +883,13 @@ def list_quizzes(
     if course_id:
         query = query.where(Quiz.course_id == course_id)
     if user.role == UserRole.STUDENT:
-        query = query.where(Quiz.status == "published")
+        enrolled_courses = select(Enrollment.course_id).where(
+            Enrollment.student_id == user.id,
+            Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+        )
+        query = query.where(Quiz.status == QuizStatus.PUBLISHED, Quiz.course_id.in_(enrolled_courses))
+    elif user.role == UserRole.TEACHER:
+        query = query.where(Quiz.course_id.in_(select(Course.id).where(Course.teacher_id == user.id)))
     return [
         QuizResponse.model_validate(item)
         for item in db.scalars(query.order_by(Quiz.created_at.desc())).all()
@@ -844,7 +944,18 @@ def list_assignments(
     if course_id:
         query = query.where(Assignment.course_id == course_id)
     if user.role == UserRole.STUDENT:
-        query = query.where(Assignment.status == AssignmentStatus.PUBLISHED)
+        enrolled_courses = select(Enrollment.course_id).where(
+            Enrollment.student_id == user.id,
+            Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+        )
+        query = query.where(
+            Assignment.status == AssignmentStatus.PUBLISHED,
+            Assignment.course_id.in_(enrolled_courses),
+        )
+    elif user.role == UserRole.TEACHER:
+        query = query.where(
+            Assignment.course_id.in_(select(Course.id).where(Course.teacher_id == user.id))
+        )
     return [
         AssignmentResponse.model_validate(item)
         for item in db.scalars(query.order_by(Assignment.created_at.desc())).all()
@@ -925,12 +1036,14 @@ def my_submissions(user: Student, db: Db) -> list[AssignmentSubmissionResponse]:
 
 @router.get("/submissions", response_model=list[AssignmentSubmissionResponse])
 def all_submissions(user: Manager, db: Db) -> list[AssignmentSubmissionResponse]:
-    items = db.scalars(
-        select(AssignmentSubmission)
-        .where(AssignmentSubmission.institution_id == user.institution_id)
-        .order_by(AssignmentSubmission.submitted_at.desc())
-        .limit(500)
-    ).all()
+    query = select(AssignmentSubmission).where(
+        AssignmentSubmission.institution_id == user.institution_id
+    )
+    if user.role == UserRole.TEACHER:
+        query = query.join(Assignment, Assignment.id == AssignmentSubmission.assignment_id).join(
+            Course, Course.id == Assignment.course_id
+        ).where(Course.teacher_id == user.id)
+    items = db.scalars(query.order_by(AssignmentSubmission.submitted_at.desc()).limit(500)).all()
     return _submission_responses(db, list(items))
 
 
@@ -1024,6 +1137,8 @@ def list_notifications(
         query = select(Notification).where(
             Notification.institution_id == user.institution_id,
         )
+        if user.role == UserRole.TEACHER:
+            query = query.where(Notification.recipient_id == user.id)
         if unread_only:
             query = query.where(Notification.read_at.is_(None))
         all_notifs = db.scalars(query.order_by(Notification.created_at.desc()).limit(500)).all()
@@ -1220,6 +1335,8 @@ def analytics(course_id: uuid.UUID, user: Manager, db: Db) -> AnalyticsResponse:
 @router.get("/audit-logs", response_model=list[AuditLogResponse])
 def audit_logs(user: Manager, db: Db, limit: int = 100) -> list[AuditLogResponse]:
     query = select(AuditLog).where(AuditLog.institution_id == user.institution_id)
+    if user.role == UserRole.TEACHER:
+        query = query.where(AuditLog.actor_id == user.id)
     return [
         AuditLogResponse.model_validate(item)
         for item in db.scalars(
@@ -1236,6 +1353,11 @@ def list_users(user: Manager, db: Db, role: UserRole | None = None) -> list[User
     )
     if role:
         query = query.where(User.role == role)
+    if user.role == UserRole.TEACHER:
+        enrolled_students = select(Enrollment.student_id).join(
+            Course, Course.id == Enrollment.course_id
+        ).where(Course.teacher_id == user.id)
+        query = query.where((User.id == user.id) | (User.id.in_(enrolled_students)))
     return [
         UserResponse.model_validate(item)
         for item in db.scalars(query.order_by(User.created_at.desc())).all()
@@ -2318,6 +2440,8 @@ def get_bootstrap_data(
             query = select(Notification).where(
                 Notification.institution_id == user.institution_id,
             )
+            if user.role == UserRole.TEACHER:
+                query = query.where(Notification.recipient_id == user.id)
             all_notifs = db.scalars(query.order_by(Notification.created_at.desc()).limit(50)).all()
             seen: set[tuple[str, str, str, str | None]] = set()
             for n in all_notifs:

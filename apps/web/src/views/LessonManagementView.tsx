@@ -13,7 +13,6 @@ import {
   Video,
   X,
   Search,
-  Globe,
 } from "lucide-react";
 import { Course, CurrentUser, VideoLesson } from "../types/lms";
 import { VideoLessonPage } from "../components/VideoLessonPage";
@@ -99,8 +98,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   const [lessonDescription, setLessonDescription] = useState("");
   const [lessonDuration, setLessonDuration] = useState(45);
   const [lessonPrice, setLessonPrice] = useState<number>(50);
-  const [videoSourceType, setVideoSourceType] = useState<"file" | "url">("file");
-  const [videoExternalUrl, setVideoExternalUrl] = useState("");
   const [selectedVideo, setSelectedVideo] = useState<{ name: string; size: string } | null>(null);
   const [selectedVideoFile, setSelectedVideoFile] = useState<File | null>(null);
   const [attachedFiles, setAttachedFiles] = useState<SelectedMaterialFile[]>([]);
@@ -208,8 +205,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       .then((content) => {
         const mods = (content.modules || []).map((m) => ({ id: m.id, title: m.title }));
         setCourseModules(mods);
-        if (mods.length > 0 && (selectedModuleId === "auto" || !selectedModuleId)) {
-          setSelectedModuleId(mods[0].id);
+        if (mods.length > 0) {
+          setSelectedModuleId((current) => current === "auto" || !current ? mods[0].id : current);
         }
       })
       .catch(() => undefined);
@@ -345,14 +342,14 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       return;
     }
 
-    const hasVideo = videoSourceType === "url" ? Boolean(videoExternalUrl.trim()) : Boolean(selectedVideo);
+    const hasVideo = Boolean(selectedVideo);
     if (!hasVideo && attachedFiles.length === 0) {
-      notify("يجب اختيار ملف فيديو أو إدخال رابط فيديو سحابي أو مذكرة للدرس لإتمام عملية الرفع.");
+      notify("يجب اختيار ملف فيديو أو مذكرة للدرس لإتمام عملية الرفع.");
       return;
     }
 
     // Show Confirmation Dialog on button click for file uploads
-    if (videoSourceType === "file" && selectedVideoFile) {
+    if (selectedVideoFile) {
       const sizeMB = (selectedVideoFile.size / (1024 * 1024)).toFixed(1);
       const confirmed = await confirm({
         title: "تأكيد رفع فيديو الدرس",
@@ -405,7 +402,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       }
 
       const savedTitle = lessonTitle.trim();
-      const externalUrl = videoSourceType === "url" && videoExternalUrl.trim() ? videoExternalUrl.trim() : undefined;
       const lessonContentWithMeta = isRevision
         ? `${lessonDescription.trim()}\n<!--is_revision:true-->`
         : lessonDescription.trim();
@@ -415,11 +411,10 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         kind: "video",
         position: module.lessons.length + 1,
         content: lessonContentWithMeta || (isRevision ? "<!--is_revision:true-->" : undefined),
-        external_video_url: externalUrl,
         video_duration_seconds: lessonDuration * 60,
       });
 
-      if (videoSourceType === "file" && selectedVideoFile) {
+      if (selectedVideoFile) {
         uploadManager.enqueueVideoUpload({
           lessonId: addedLesson.id,
           lessonTitle: savedTitle,
@@ -445,9 +440,9 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         });
       }
 
-      if (videoSourceType === "file" && selectedVideoFile && noteFiles.length > 0) {
+      if (selectedVideoFile && noteFiles.length > 0) {
         notify(`تم إنشاء درس "${savedTitle}" بنجاح! جاري رفع الفيديو والمذكرات الآن في الخلفية إلى السحابة... يمكنك التنقل ومتابعة عملك بحرية.`);
-      } else if (videoSourceType === "file" && selectedVideoFile) {
+      } else if (selectedVideoFile) {
         notify(`تم إنشاء درس "${savedTitle}" بنجاح! جاري رفع الفيديو الآن في الخلفية إلى السحابة... يمكنك التنقل ومتابعة عملك بحرية.`);
       } else if (noteFiles.length > 0) {
         notify(`تم إنشاء درس "${savedTitle}" بنجاح! جاري رفع المذكرات الآن في الخلفية إلى السحابة... يمكنك التنقل ومتابعة عملك بحرية.`);
@@ -470,7 +465,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     setSelectedVideo(null);
     setSelectedVideoFile(null);
     setVideoPreviewUrl(null);
-    setVideoExternalUrl("");
     setAttachedFiles([]);
     setLessonPrice(0);
     setIsRevision(false);
@@ -783,80 +777,16 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
               />
             </div>
 
-            {/* Video File Upload / Cloud Link Box */}
+            {/* Protected video uploads only: external URLs bypass access controls. */}
             <div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
                 <label style={{ fontSize: "12px", fontWeight: 700, color: "var(--text-main)" }}>
                   فيديو الشرح للمقرر:
                 </label>
-                <div style={{ display: "flex", background: "var(--bg-surface-secondary, #f1f5f9)", padding: "2px", borderRadius: "8px", border: "1px solid var(--border-color, #e2e8f0)" }}>
-                  <button
-                    type="button"
-                    onClick={() => setVideoSourceType("file")}
-                    style={{
-                      border: "none",
-                      padding: "4px 8px",
-                      borderRadius: "6px",
-                      fontSize: "11px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      background: videoSourceType === "file" ? "#059669" : "transparent",
-                      color: videoSourceType === "file" ? "#ffffff" : "var(--text-muted)",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "4px",
-                    }}
-                  >
-                    <Video size={12} />
-                    <span>رفع ملف (في الخلفية)</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setVideoSourceType("url")}
-                    style={{
-                      border: "none",
-                      padding: "4px 8px",
-                      borderRadius: "6px",
-                      fontSize: "11px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      background: videoSourceType === "url" ? "#059669" : "transparent",
-                      color: videoSourceType === "url" ? "#ffffff" : "var(--text-muted)",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "4px",
-                    }}
-                  >
-                    <Globe size={12} />
-                    <span>رابط فيديو سحابي</span>
-                  </button>
-                </div>
+                <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>الرفع إلى التخزين الخاص فقط؛ الروابط الخارجية غير محمية.</span>
               </div>
 
-              {videoSourceType === "url" ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                  <input
-                    type="url"
-                    value={videoExternalUrl}
-                    onChange={(e) => setVideoExternalUrl(e.target.value)}
-                    placeholder="ضع رابط الفيديو هنا (يوتيوب أو جوجل درايف أو رابط مباشر)..."
-                    style={{
-                      width: "100%",
-                      padding: "10px 12px",
-                      border: "1px solid var(--border-color-strong, #cbd5e1)",
-                      borderRadius: "8px",
-                      fontSize: "12px",
-                      background: "var(--bg-surface)",
-                      color: "var(--text-main)",
-                      boxSizing: "border-box",
-                    }}
-                  />
-                  <div style={{ padding: "6px 10px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "6px", color: "#166534", fontSize: "11px" }}>
-                    ⚡ <strong>حفظ فوري:</strong> الروابط السحابية تحفظ الدرس فوراً دون استهلاك باقة الإنترنت لديك ودون أي وقت انتظار.
-                  </div>
-                </div>
-              ) : (
-                <>
+              <>
                   <input
                     type="file"
                     ref={videoInputRef}
@@ -925,8 +855,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                       </div>
                     </div>
                   )}
-                </>
-              )}
+              </>
             </div>
 
             {/* Lesson Materials / PDFs Upload Box */}

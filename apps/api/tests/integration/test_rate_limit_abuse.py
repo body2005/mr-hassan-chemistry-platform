@@ -1,32 +1,23 @@
-import os
-
-import pytest
 import requests
-
-
-API_BASE = "http://127.0.0.1:8000/api/v1"
+import os
+from .live_helpers import BASE, clear_auth
 
 
 def test_live_login_rate_limit_returns_retry_after():
-    """Opt-in live-service abuse check; never performs requests at collection."""
-    api_base = os.getenv("LIVE_API_BASE", API_BASE).rstrip("/")
+    clear_auth()
     try:
-        requests.get(f"{api_base.removesuffix('/api/v1')}/health", timeout=2).raise_for_status()
-    except requests.RequestException as exc:
-        pytest.skip(f"Live API is unavailable: {exc}")
-
-    got_429 = False
-    retry_after_val = None
-    for i in range(1, 25):
-        response = requests.post(
-            f"{api_base}/auth/login",
-            json={"email": f"fake_{i}@chemistry.invalid", "password": "wrong"},
-            timeout=5,
-        )
-        if response.status_code == 429:
-            got_429 = True
-            retry_after_val = response.headers.get("Retry-After")
-            break
-
-    assert got_429, "Rate limiter did not return HTTP 429 after 24 invalid logins"
-    assert retry_after_val and int(retry_after_val) > 0
+        with requests.Session() as client:
+            client.verify = os.environ["QA_CA_FILE"]
+            assert client.get(f"{BASE}/health", timeout=5).status_code == 200
+            statuses = []
+            for number in range(24):
+                response = client.post(f"{BASE}/auth/login", json={"email": f"fake_{number}@chemistry.invalid",
+                                       "password": "wrong", "institution_slug": "demo"}, timeout=10)
+                statuses.append(response.status_code)
+                if response.status_code == 429:
+                    assert int(response.headers["Retry-After"]) > 0
+                    break
+            assert 429 in statuses, statuses
+            assert set(statuses).issubset({401, 429}), statuses
+    finally:
+        clear_auth()

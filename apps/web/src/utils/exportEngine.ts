@@ -10,7 +10,7 @@ import {
   AlignmentType,
   BorderStyle,
 } from "docx";
-import * as XLSX from "xlsx";
+import writeExcelFile from "write-excel-file/browser";
 
 export interface ExportDataPayload {
   title: string;
@@ -186,7 +186,7 @@ export async function exportToDocx(payload: ExportDataPayload, filename = "lms_r
  * with native 100% Right-To-Left display (RTL), placing Column A
  * on the far right with "اسم الطالب" as the first column and native Arabic typography.
  */
-export function exportToExcel(payload: ExportDataPayload, filename = "lms_data.xlsx") {
+export async function exportToExcel(payload: ExportDataPayload, filename = "lms_data.xlsx") {
   const dateStr = payload.generatedDate || new Date().toLocaleDateString("ar-EG", {
     year: "numeric",
     month: "long",
@@ -211,23 +211,17 @@ export function exportToExcel(payload: ExportDataPayload, filename = "lms_data.x
     sheetData.push(row.map((cell) => (cell ?? "—")));
   });
 
-  const ws = XLSX.utils.aoa_to_sheet(sheetData);
-  ws["!views"] = [{ RTL: true }];
-  ws["!cols"] = payload.headers.map((h, i) => ({
-    wch: i === 0 ? 25 : Math.max(String(h).length + 6, 16),
-  }));
-
-  const wb = XLSX.utils.book_new();
   const cleanSheetName = (payload.title || "التقرير")
     .replace(/[\\/?*[\]]/g, "")
     .slice(0, 31)
     .trim() || "التقرير";
-  XLSX.utils.book_append_sheet(wb, ws, cleanSheetName);
-
-  const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-  const blob = new Blob([wbout], {
-    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  });
+  const blob = await writeExcelFile(sheetData, {
+    sheet: cleanSheetName,
+    rightToLeft: true,
+    columns: payload.headers.map((h, i) => ({
+      width: i === 0 ? 25 : Math.max(String(h).length + 6, 16),
+    })),
+  }).toBlob();
   const actualFilename = filename.replace(/\.xls[x]?$/, "") + ".xlsx";
   triggerDownload(blob, actualFilename);
 }

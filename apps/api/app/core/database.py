@@ -23,6 +23,7 @@ else:
         pool_timeout=settings.db_pool_timeout_seconds,
         pool_recycle=settings.db_pool_recycle_seconds,
     )
+    engine_options["connect_args"] = {"connect_timeout": 5}
 
 engine = create_engine(database_url, **engine_options)
 

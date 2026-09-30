@@ -68,6 +68,13 @@ class GeneratedQuestion(BaseModel):
     source_block_ids: list[str] | None = None
     source_checksum: str | None = None
     raw_text: str | None = None
+    # Provenance of the question text: 'text_layer' = embedded PDF text,
+    # 'ocr' = recognized from a page image (never silently trusted),
+    # 'unknown' = source did not report provenance (e.g. JSON banks).
+    text_source: Literal["text_layer", "ocr", "unknown"] = "unknown"
+    # Per-question flag: the page image was OCR-backed, so letter-level
+    # damage may exist that the parser cannot self-verify.
+    needs_content_review: bool = False
 
 
 class QuizDraftResponse(BaseModel):
@@ -338,11 +345,21 @@ async def extract_quiz_from_file(
                 needs_ans_rev = False
                 needs_review = False
                 answer_conf = "confirmed"
+            raw_text_source = str(rec.get("text_source") or "unknown")
+            text_source = raw_text_source if raw_text_source in ("text_layer", "ocr") else "unknown"
+            needs_content_rev = bool(rec.get("needs_content_review", False))
+
+            if norm_type == "ESSAY":
+                opts = []
+                confirmed_answer = None
+                needs_ans_rev = False
+                answer_conf = "confirmed"
+                needs_review = needs_content_rev
             else:
                 confirmed_answer = str(rec.get("correct_answer") or "").strip() or None
                 needs_ans_rev = bool(rec.get("needs_answer_review", confirmed_answer is None))
                 answer_conf = "confirmed" if (confirmed_answer and not needs_ans_rev) else "unknown"
-                needs_review = needs_ans_rev or norm_type == "UNKNOWN"
+                needs_review = needs_ans_rev or norm_type == "UNKNOWN" or needs_content_rev
 
             generated_questions.append(
                 GeneratedQuestion(
@@ -364,6 +381,8 @@ async def extract_quiz_from_file(
                     source_block_ids=rec.get("source_block_ids"),
                     source_checksum=checksum,
                     raw_text=rec.get("raw_text"),
+                    text_source=text_source,
+                    needs_content_review=needs_content_rev,
                 )
             )
             q_id += 1

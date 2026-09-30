@@ -31,10 +31,11 @@ CourseManager = Annotated[
 Student = Annotated[User, Depends(require_roles(UserRole.STUDENT))]
 
 
-def _video_playback_fields(lesson) -> tuple[bool, str | None]:
+def _video_playback_fields(lesson, *, allow_external: bool = False) -> tuple[bool, str | None]:
     """Playback info without ever serializing the private storage key.
 
-    Teacher-entered external URLs stay as-is (they are public by nature);
+    Legacy external URLs are visible only to managers for migration; giving
+    them to students would bypass every protected playback control.
     every locally-stored video is only reachable through the token-gated
     stream endpoint, so the client just gets that entry point.
     """
@@ -42,7 +43,7 @@ def _video_playback_fields(lesson) -> tuple[bool, str | None]:
     if not key:
         return False, None
     if key.startswith("http://") or key.startswith("https://"):
-        return True, key
+        return (True, key) if allow_external else (False, None)
     return True, f"/api/v1/lessons/{lesson.id}/video-token"
 
 
@@ -91,7 +92,7 @@ def _safe_course_responses(db: Session, user: User | None, courses: list) -> lis
                     lesson.materials = materials_by_lesson.get(lesson.id, [])
                     orm_lesson = orm_lessons_by_id.get(lesson.id)
                     if orm_lesson is not None:
-                        lesson.has_video, lesson.video_url = _video_playback_fields(orm_lesson)
+                        lesson.has_video, lesson.video_url = _video_playback_fields(orm_lesson, allow_external=True)
         return responses
 
     enrolled_course_ids: set[uuid.UUID] = set()

@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.router import api_router
+from app.core.access_log import RedactAccessTokenFilter
 from app.core.concurrency import concurrency_guard
 from app.core.config import get_settings
 from app.core.database import engine
@@ -19,6 +20,7 @@ from app.core.rate_limit import enforce_rate_limit
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+logging.getLogger("uvicorn.access").addFilter(RedactAccessTokenFilter())
 
 
 @asynccontextmanager
