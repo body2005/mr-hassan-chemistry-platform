@@ -1,7 +1,15 @@
-param([string]$Docker = 'C:\Users\body\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe')
+param(
+    [string]$Docker = 'C:\Users\body\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe',
+    [ValidateSet('chemistryprodlocal','chemistryaudit2')][string]$Project = 'chemistryprodlocal'
+)
 $ErrorActionPreference = 'Stop'
 $taskRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
-$taskQa = Join-Path $taskRoot '.qa/production'
+$folder = if ($Project -eq 'chemistryaudit2') { 'audit2' } else { 'production' }
+$httpsPort = if ($Project -eq 'chemistryaudit2') { 18543 } else { 18443 }
+$httpPort = if ($Project -eq 'chemistryaudit2') { 18580 } else { 18480 }
+$mailPort = if ($Project -eq 'chemistryaudit2') { 18525 } else { 18425 }
+$subnet = if ($Project -eq 'chemistryaudit2') { '172.30.122.0/24' } else { '172.30.121.0/24' }
+$taskQa = Join-Path $taskRoot ".qa/$folder"
 $taskSecrets = Join-Path $taskQa 'secrets'
 New-Item -ItemType Directory -Force -Path $taskSecrets, (Join-Path $taskQa 'backups'), (Join-Path $taskQa 'media') | Out-Null
 foreach ($name in @('postgres_password','app_secret_key','s3_password','smtp_password')) {
@@ -18,16 +26,18 @@ if (!(Test-Path (Join-Path $taskSecrets 'cert.pem'))) {
 }
 $unix = $taskQa.Replace('\','/')
 $contents = @"
-PUBLIC_ORIGIN=https://localhost:18443
+QA_PROJECT=$Project
+QA_MAIL_PORT=$mailPort
+PUBLIC_ORIGIN=https://localhost:$httpsPort
 PUBLIC_HTTP_BIND=127.0.0.1
 PUBLIC_HTTPS_BIND=127.0.0.1
-PUBLIC_HTTP_PORT=18480
-PUBLIC_HTTPS_PORT=18443
+PUBLIC_HTTP_PORT=$httpPort
+PUBLIC_HTTPS_PORT=$httpsPort
 S3_ACCESS_KEY=production-qa-storage
 S3_BUCKET=chemistry-production-qa
 POSTGRES_USER=lms
 POSTGRES_DB=lms
-PRIVATE_SUBNET=172.30.121.0/24
+PRIVATE_SUBNET=$subnet
 BACKUP_DIR=$unix/backups
 QA_ARTIFACT_DIR=$unix
 POSTGRES_PASSWORD_FILE=$unix/secrets/postgres_password
@@ -43,4 +53,4 @@ SMTP_FROM_EMAIL=qa@example.com
 PAYMENT_INSTAPAY_ACCOUNT=qa-synthetic-merchant
 "@
 [IO.File]::WriteAllText((Join-Path $taskQa 'compose.env'), $contents)
-Write-Output 'Generated isolated production QA settings under .qa/production (ignored). No existing secrets overwritten.'
+Write-Output "Generated isolated QA settings under .qa/$folder (ignored). No existing secrets overwritten."

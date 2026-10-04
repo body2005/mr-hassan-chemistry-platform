@@ -271,6 +271,17 @@ class QuizAttempt(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # the student but never surface in teacher-facing listings or analytics.
     is_practice: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
 
+    @property
+    def grading_status(self) -> str:
+        from sqlalchemy import select
+        from sqlalchemy.orm import object_session
+        if self.status == AttemptStatus.IN_PROGRESS:
+            return "not_submitted"
+        session = object_session(self)
+        pending = session.scalar(select(QuizAttemptAnswer.id).where(
+            QuizAttemptAnswer.attempt_id == self.id, QuizAttemptAnswer.graded_at.is_(None)).limit(1)) if session else None
+        return "pending" if pending else "complete"
+
 
 class QuizAttemptAnswer(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "quiz_attempt_answers"
@@ -286,6 +297,7 @@ class QuizAttemptAnswer(UUIDPrimaryKeyMixin, Base):
     )
     answer: Mapped[object | None] = mapped_column(JSON)
     awarded_points: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    feedback: Mapped[str | None] = mapped_column(Text)
     graded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     graded_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
 

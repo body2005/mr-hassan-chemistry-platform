@@ -70,6 +70,15 @@ class PrivateUserResponse(UserResponse):
     pass
 
 
+class ManagedUserResponse(UserResponse):
+    """Assessment summaries restricted to courses visible to this manager."""
+    quiz_attempts_count: int = 0
+    pending_quiz_attempts: int = 0
+    has_completed_exam: bool = False
+    average_quiz_score: float | None = None
+    quiz_success_rate: float | None = None
+
+
 class RegisterRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -170,6 +179,7 @@ class CourseCreateRequest(BaseModel):
     status: CourseStatus = CourseStatus.DRAFT
     teacher_id: uuid.UUID | None = None
     price_egp: float = Field(default=0, ge=0, le=1_000_000)
+    grade_level: GradeLevel | None = None
 
 
 class ModuleCreateRequest(BaseModel):
@@ -254,6 +264,7 @@ class CourseResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     price_egp: float = 0
+    grade_level: str | None = None
     modules: list[ModuleResponse] = []
 
 
@@ -493,6 +504,7 @@ class QuizAttemptResponse(BaseModel):
     score: float | None
     total_points: float | None
     is_practice: bool = False
+    grading_status: str
 
 
 class AssignmentAttemptResponse(BaseModel):
@@ -599,6 +611,11 @@ class GradeSubmissionRequest(BaseModel):
     final_score: float = Field(ge=0, le=100_000)
     teacher_feedback: str | None = Field(default=None, max_length=20_000)
     approve: bool = False
+
+
+class GradeQuizAnswerRequest(BaseModel):
+    awarded_points: float = Field(ge=0, le=100_000, allow_inf_nan=False)
+    feedback: str | None = Field(default=None, max_length=20_000)
 
 
 class CertificateResponse(BaseModel):

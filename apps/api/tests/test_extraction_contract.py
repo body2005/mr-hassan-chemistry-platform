@@ -383,18 +383,42 @@ def test_missing_answers_require_teacher_review(db) -> None:
     assert q["answer_confidence"] == "unknown"
 
 
-def test_ocr_cache_uses_full_file_sha256() -> None:
+def test_ocr_cache_uses_full_file_sha256(tmp_path, monkeypatch) -> None:
     """OCR cache keys depend on full file sha256, page number, language, and parser version."""
     import hashlib
-    from app.services.document_parsers import PARSER_OCR_VERSION
+    from app.services import document_parsers as parser
 
-    b1 = b"%PDF-1.4 file 1 content " + (b"A" * 200000)
-    b2 = b"%PDF-1.4 file 1 content " + (b"B" * 200000)
+    # Identical long prefixes must not cause the second file to reuse OCR.
+    prefix = b"%PDF-1.4 " + (b"A" * 200000)
+    b1, b2 = prefix + b"first", prefix + b"second"
 
     hash1 = hashlib.sha256(b1).hexdigest()
     hash2 = hashlib.sha256(b2).hexdigest()
     assert hash1 != hash2, "Full hashes must differ even if prefixes are identical"
-    assert PARSER_OCR_VERSION == "v3"
+    monkeypatch.setattr(parser, "__file__", str(tmp_path / "app" / "services" / "document_parsers.py"))
+    monkeypatch.setenv("ALLOW_IN_PROCESS_OCR", "false")
+    assert parser.PARSER_OCR_VERSION == "v6-bounded-108dpi-script-confidence"
+
+    def cached(digest, page, lang, version, text):
+        directory = tmp_path / "storage" / "ocr_cache" / digest
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"page_{page}_{lang}_{version}.txt").write_text(text, encoding="utf-8")
+
+    cached(hash1, 1, "ara+eng", parser.PARSER_OCR_VERSION, "first page OCR")
+    assert parser.ocr_pdf_page(file_bytes=b1) == "first page OCR"
+    # A real cache miss fails closed here: OCR is intentionally unavailable.
+    with pytest.raises(RuntimeError, match="disabled"):
+        parser.ocr_pdf_page(file_bytes=b2)
+    cached(hash2, 1, "ara+eng", parser.PARSER_OCR_VERSION, "second file OCR")
+    source = tmp_path / "second.pdf"
+    source.write_bytes(b2)
+    assert parser.ocr_pdf_page(file_path=str(source)) == "second file OCR"
+    for page, lang in [(2, "ara+eng"), (1, "eng")]:
+        with pytest.raises(RuntimeError, match="disabled"):
+            parser.ocr_pdf_page(file_bytes=b1, page_number=page, lang=lang)
+    cached(hash1, 2, "ara+eng", "obsolete-version", "stale OCR must not be used")
+    with pytest.raises(RuntimeError, match="disabled"):
+        parser.ocr_pdf_page(file_bytes=b1, page_number=2)
 
 
 def test_chemistry_16q_fixture_exact_contract(db) -> None:
@@ -697,5 +721,3 @@ def test_magic_byte_rejection(db) -> None:
             payload.get("detail", {}).get("code") if isinstance(payload.get("detail"), dict) else None
         )
         assert code == "CORRUPT_OR_INVALID_FILE", f"Unexpected code for {fname}: {payload}"
-
-

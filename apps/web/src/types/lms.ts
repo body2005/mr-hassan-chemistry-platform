@@ -125,6 +125,7 @@ export interface CourseAssessmentRef {
 }
 
 export interface Course {
+  status?: "draft" | "published" | "archived";
   id: string;
   title: string;
   subject: string;
@@ -205,6 +206,7 @@ export interface StudentRecord {
   createdAt?: string;
   isBlocked?: boolean;
   hasCompletedExam?: boolean;
+  pendingQuizAttempts?: number;
   examMissedDeadline?: boolean;
   watchHistory: StudentVideoWatchLog[];
   customFieldValues: Record<string, unknown>;

@@ -23,7 +23,8 @@ interface QuizSolutionQuestion {
   learning_objective?: string;
   points: number;
   awarded: number;
-  state: "correct" | "wrong" | "skipped";
+  state: "correct" | "wrong" | "skipped" | "pending";
+  feedback?: string | null;
   answered: boolean;
   student_answer: string;
   student_answer_letter?: string | null;
@@ -43,6 +44,7 @@ interface QuizSolutionData {
     duration_seconds: number | null;
   };
   score: number;
+  grading_status?: "pending" | "complete";
   total_points: number;
   summary: {
     correct: number;
@@ -59,155 +61,6 @@ interface ExamGradingModalProps {
   onApproveGrade: (studentId: string, updatedScore: number, teacherNotes?: string) => void;
 }
 
-function createFallbackSolution(student: StudentRecord): QuizSolutionData {
-  const successRate = student.quizSuccessRate ?? 75;
-
-  const sampleBank = [
-    {
-      id: "q1",
-      question_type: "multiple_choice",
-      prompt: "تفاعل برادة الحديد Fe مع حمض الهيدروكلوريك المخفف HCl(dil) ينتج عنه:",
-      points: 20,
-      options: [
-        "كلوريد الحديد (II) وغاز الهيدروجين",
-        "كلوريد الحديد (III) وغاز الهيدروجين",
-        "أكسيد الحديد (II) والماء",
-        "كلوريد الحديد (III) والماء",
-      ],
-      correct_answer: "كلوريد الحديد (II) وغاز الهيدروجين",
-      correct_answer_letter: "A",
-      wrong_answer: "كلوريد الحديد (III) وغاز الهيدروجين",
-      wrong_letter: "B",
-    },
-    {
-      id: "q2",
-      question_type: "multiple_choice",
-      prompt: "العامل المختزل المستخدم في اختزال خام الحديد داخل فرن مدركس هو:",
-      points: 20,
-      options: [
-        "الغاز المائي (خليط من CO و H₂)",
-        "غاز أول أكسيد الكربون CO فقط",
-        "غاز الميثان CH₄ النقي",
-        "فحم الكوك C الصلب",
-      ],
-      correct_answer: "الغاز المائي (خليط من CO و H₂)",
-      correct_answer_letter: "A",
-      wrong_answer: "غاز أول أكسيد الكربون CO فقط",
-      wrong_letter: "B",
-    },
-    {
-      id: "q3",
-      question_type: "multiple_choice",
-      prompt: "الصيغة الكيميائية لخام السيدريت (كربونات الحديد II) هي:",
-      points: 20,
-      options: [
-        "FeCO₃",
-        "Fe₂O₃",
-        "Fe₃O₄",
-        "2Fe₂O₃ · 3H₂O",
-      ],
-      correct_answer: "FeCO₃",
-      correct_answer_letter: "A",
-      wrong_answer: "Fe₂O₃",
-      wrong_letter: "B",
-    },
-    {
-      id: "q4",
-      question_type: "multiple_choice",
-      prompt: "عند تسخين هيدروكسيد الحديد (III) Fe(OH)₃ لدرجة حرارة أعلى من 200°C ينتج:",
-      points: 20,
-      options: [
-        "أكسيد الحديد (III) Fe₂O₃ وبخار الماء",
-        "أكسيد الحديد (II) FeO والماء",
-        "أكسيد الحديد المغناطيسي Fe₃O₄",
-        "فلز الحديد Fe النقي",
-      ],
-      correct_answer: "أكسيد الحديد (III) Fe₂O₃ وبخار الماء",
-      correct_answer_letter: "A",
-      wrong_answer: "أكسيد الحديد المغناطيسي Fe₃O₄",
-      wrong_letter: "C",
-    },
-    {
-      id: "q5",
-      question_type: "multiple_choice",
-      prompt: "أعلى حالة تأكسد شائعة لعنصر المنجنيز ₂₅Mn في مركباته تظهر في مركب:",
-      points: 20,
-      options: [
-        "برمنجانات البوتاسيوم KMnO₄ (+7)",
-        "ثاني أكسيد المنجنيز MnO₂ (+4)",
-        "كبريتات المنجنيز MnSO₄ (+2)",
-        "منجنات البوتاسيوم K₂MnO₄ (+6)",
-      ],
-      correct_answer: "برمنجانات البوتاسيوم KMnO₄ (+7)",
-      correct_answer_letter: "A",
-      wrong_answer: "ثاني أكسيد المنجنيز MnO₂ (+4)",
-      wrong_letter: "B",
-    },
-  ];
-
-  const correctCount = Math.round((successRate / 100) * sampleBank.length);
-
-  const questions: QuizSolutionQuestion[] = sampleBank.map((q, idx) => {
-    const isCorrect = idx < correctCount;
-    const isSkipped = !isCorrect && successRate === 0;
-    const state: "correct" | "wrong" | "skipped" = isCorrect
-      ? "correct"
-      : isSkipped
-      ? "skipped"
-      : "wrong";
-
-    const student_answer = isCorrect
-      ? q.correct_answer
-      : isSkipped
-      ? ""
-      : q.wrong_answer;
-
-    const student_answer_letter = isCorrect
-      ? q.correct_answer_letter
-      : isSkipped
-      ? null
-      : q.wrong_letter;
-
-    return {
-      id: q.id,
-      question_type: q.question_type,
-      prompt: q.prompt,
-      points: q.points,
-      awarded: isCorrect ? q.points : 0,
-      state,
-      answered: !isSkipped,
-      student_answer,
-      student_answer_letter,
-      correct_answer: q.correct_answer,
-      correct_answer_letter: q.correct_answer_letter,
-      options: q.options,
-    };
-  });
-
-  return {
-    student_id: student.id,
-    student_name: student.name,
-    quiz: {
-      id: "quiz-latest",
-      title: `اختبار الكيمياء الدوري — ${student.academicYearLabel}`,
-    },
-    attempt: {
-      id: "att-latest",
-      attempt_number: 1,
-      submitted_at: student.lastActiveDate && student.lastActiveDate !== "—" ? `${student.lastActiveDate} 14:30` : "اليوم",
-      duration_seconds: 1350,
-    },
-    score: successRate,
-    total_points: 100,
-    summary: {
-      correct: correctCount,
-      wrong: sampleBank.length - correctCount,
-      skipped: 0,
-      total: sampleBank.length,
-    },
-    questions,
-  };
-}
 
 function formatDuration(seconds: number | null | undefined): string {
   if (!seconds || seconds <= 0) return "—";
@@ -222,15 +75,18 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
   onClose,
   onApproveGrade,
 }) => {
-  const [score, setScore] = useState<number>(student?.quizSuccessRate ?? 0);
   const [notes, setNotes] = useState<string>("");
   const [solutionData, setSolutionData] = useState<QuizSolutionData | null>(null);
   const [loadingSolution, setLoadingSolution] = useState<boolean>(true);
+  const [gradeError, setGradeError] = useState<string | null>(null);
+  const [savingGrade, setSavingGrade] = useState(false);
+  const [answerGrades, setAnswerGrades] = useState<Record<string, { points: number; feedback: string }>>({});
 
   useEffect(() => {
     if (!student) return;
-    setScore(student.quizSuccessRate ?? 0);
     setNotes("");
+    setGradeError(null);
+    setAnswerGrades({});
     setLoadingSolution(true);
 
     apiRequest<QuizSolutionData>(`/students/${student.id}/quiz-solution`)
@@ -238,11 +94,12 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
         if (data && Array.isArray(data.questions) && data.questions.length > 0) {
           setSolutionData(data);
         } else {
-          setSolutionData(createFallbackSolution(student));
+          setSolutionData(null);
         }
       })
       .catch(() => {
-        setSolutionData(createFallbackSolution(student));
+        setSolutionData(null);
+        setGradeError("تعذر تحميل إجابات الطالب؛ لم يتم عرض إجابات بديلة أو اعتماد درجة.");
       })
       .finally(() => {
         setLoadingSolution(false);
@@ -250,12 +107,41 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
   }, [student]);
 
   if (!student) return null;
+  const awarded = solutionData?.questions.reduce((sum, question) => {
+    const proposed = answerGrades[question.id]?.points;
+    return sum + (Number.isFinite(proposed) ? proposed : question.awarded);
+  }, 0) ?? 0;
+  const score = solutionData && solutionData.total_points > 0 ? awarded / solutionData.total_points * 100 : 0;
 
-  function handleSave() {
-    if (!student) return;
-    const finalScore = Math.max(0, Math.min(100, Math.round(Number(score) || 0)));
-    onApproveGrade(student.id, finalScore, notes);
-    onClose();
+  async function handleSave() {
+    if (!student || !solutionData?.attempt || savingGrade) return;
+    setSavingGrade(true);
+    setGradeError(null);
+    try {
+      for (const [questionId, grade] of Object.entries(answerGrades)) {
+        const question = solutionData.questions.find((q) => q.id === questionId);
+        if (!question || !Number.isFinite(grade.points) || grade.points < 0 || grade.points > question.points) {
+          throw new Error("الدرجة يجب أن تكون بين صفر والحد الأقصى للسؤال.");
+        }
+        await apiRequest(`/quiz-attempts/${solutionData.attempt.id}/answers/${questionId}/grade`, {
+          method: "POST", body: JSON.stringify({ awarded_points: grade.points, feedback: grade.feedback || notes }),
+        });
+      }
+      const updated = await apiRequest<QuizSolutionData>(`/students/${student.id}/quiz-solution?quiz_id=${solutionData.quiz?.id}`);
+      setSolutionData(updated);
+      setAnswerGrades({});
+      if (updated.grading_status === "pending") {
+        setGradeError("حُفظت الدرجات المدخلة. توجد إجابات بانتظار التصحيح؛ لم تُعتمد نتيجة نهائية.");
+        return;
+      }
+      const percent = updated.total_points > 0 ? updated.score / updated.total_points * 100 : 0;
+      onApproveGrade(student.id, percent, notes);
+      onClose();
+    } catch (error) {
+      setGradeError(error instanceof Error ? error.message : "تعذر حفظ التصحيح؛ أعد المحاولة.");
+    } finally {
+      setSavingGrade(false);
+    }
   }
 
   const getStatusText = (val: number) => {
@@ -265,7 +151,9 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
     return { label: "دون المتوسط (يحتاج متابعة)", color: "#dc2626", bg: "rgba(220, 38, 38, 0.12)" };
   };
 
-  const status = getStatusText(score);
+  const status = solutionData?.grading_status === "pending"
+    ? { label: "بانتظار التصحيح — غير نهائية", color: "var(--text-muted)", bg: "var(--bg-surface-secondary)" }
+    : getStatusText(score);
   const optionLetters = ["أ", "ب", "ج", "د", "هـ"];
 
   return (
@@ -441,6 +329,8 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
               )}
             </div>
 
+            {gradeError && <p role="alert">{gradeError}</p>}
+            {solutionData?.grading_status === "pending" && <p>بانتظار التصحيح — الدرجة الحالية غير نهائية.</p>}
             {loadingSolution ? (
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "36px", gap: "10px", color: "var(--text-muted)" }}>
                 <Loader2 size={20} className="animate-spin" />
@@ -489,6 +379,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
                     const isCorrect = q.state === "correct";
                     const isWrong = q.state === "wrong";
                     const isSkipped = q.state === "skipped";
+                    const isPending = q.state === "pending";
 
                     return (
                       <div
@@ -511,6 +402,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
                           </span>
 
                           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                            {isPending && <span>بانتظار التصحيح</span>}
                             {isCorrect && (
                               <span
                                 style={{
@@ -662,14 +554,33 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
                         ) : (
                           /* Open-ended answer presentation */
                           <div style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "12.5px" }}>
-                            <div style={{ padding: "8px 12px", borderRadius: "8px", background: isCorrect ? "rgba(5, 150, 105, 0.08)" : "rgba(220, 38, 38, 0.08)", border: "1px solid var(--border-color)" }}>
+                            <div style={{ padding: "8px 12px", borderRadius: "8px", background: isPending ? "var(--bg-surface-secondary)" : isCorrect ? "rgba(5, 150, 105, 0.08)" : "rgba(220, 38, 38, 0.08)", border: "1px solid var(--border-color)" }}>
                               <strong style={{ color: "var(--text-muted)", display: "block", fontSize: "11px", marginBottom: "2px" }}>إجابة الطالب:</strong>
-                              <span style={{ color: isCorrect ? "#059669" : "#dc2626", fontWeight: 700 }}>{q.student_answer || "— لم يقدم إجابة —"}</span>
+                              <span style={{ color: isPending ? "var(--text-main)" : isCorrect ? "#059669" : "#dc2626", fontWeight: 700 }}>{q.student_answer || "— لم يقدم إجابة —"}</span>
                             </div>
                             <div style={{ padding: "8px 12px", borderRadius: "8px", background: "rgba(5, 150, 105, 0.05)", border: "1px dashed #059669" }}>
                               <strong style={{ color: "#059669", display: "block", fontSize: "11px", marginBottom: "2px" }}>الإجابة النموذجية:</strong>
                               <span style={{ color: "#0f172a", fontWeight: 700 }}>{q.correct_answer}</span>
                             </div>
+                            {(q.question_type === "essay" || q.question_type === "short_answer") && (
+                              <div>
+                                <label>درجة السؤال (من {q.points})
+                                  <input aria-label={`درجة السؤال ${idx + 1}`} type="number" min={0} max={q.points} step="0.5"
+                                    value={answerGrades[q.id]?.points ?? (isPending ? "" : q.awarded)}
+                                    onChange={(e) => setAnswerGrades((old) => ({ ...old, [q.id]: {
+                                      points: e.target.value === "" ? Number.NaN : Number(e.target.value),
+                                      feedback: old[q.id]?.feedback ?? q.feedback ?? "",
+                                    } }))} />
+                                </label>
+                                <label>تعليق المدرس
+                                  <textarea aria-label={`تعليق السؤال ${idx + 1}`} maxLength={20000}
+                                    value={answerGrades[q.id]?.feedback ?? q.feedback ?? ""}
+                                    onChange={(e) => setAnswerGrades((old) => ({ ...old, [q.id]: {
+                                      points: old[q.id]?.points ?? (isPending ? Number.NaN : q.awarded), feedback: e.target.value,
+                                    } }))} />
+                                </label>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -754,7 +665,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
             {/* Score Input Box */}
             <div style={{ marginBottom: "14px" }}>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 800, marginBottom: "6px", color: "var(--text-main)" }}>
-                الدرجة الجديدة للاختبار (من 100):
+                الدرجة المحسوبة من درجات الأسئلة (من 100):
               </label>
               <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                 <input
@@ -762,7 +673,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
                   min={0}
                   max={100}
                   value={score}
-                  onChange={(e) => setScore(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+                  readOnly
                   style={{
                     width: "120px",
                     padding: "10px 14px",
@@ -783,7 +694,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
                     <button
                       key={preset}
                       type="button"
-                      onClick={() => setScore(preset)}
+                      disabled
                       style={{
                         padding: "6px 10px",
                         borderRadius: "6px",
@@ -805,7 +716,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
             {/* Notes input */}
             <div>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "6px", color: "var(--text-muted)" }}>
-                ملاحظات المعلم على الاختبار (اختياري):
+                تعليق افتراضي للأسئلة التي تحفظ درجاتها (اختياري):
               </label>
               <textarea
                 value={notes}
@@ -850,6 +761,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
           <button
             type="button"
             onClick={handleSave}
+            disabled={savingGrade || loadingSolution || !solutionData}
             style={{
               padding: "9px 22px",
               background: "#059669",

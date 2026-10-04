@@ -17,7 +17,7 @@ export const coursesEn = {
   landingNavLibrary: "Library & Summaries",
   landingHeroBadge: "Official Chemistry Learning Platform — Mr. Hassan Shaaban",
   landingHeroTitle: "Your Path to Excellence and Full Marks in Chemistry",
-  landingHeroSubtitle: "In-depth Chemistry lectures, interactive question banks, and dedicated AI-powered study assistance by Mr. Hassan Shaaban.",
+  landingHeroSubtitle: "In-depth Chemistry lectures, interactive question banks, and teacher-led study support by Mr. Hassan Shaaban.",
   landingStartLearningBtn: "Start Learning Now",
   landingExploreCoursesBtn: "Explore Chemistry Lectures",
   landingStatStudents: "Enrolled High-Achieving Students",
@@ -29,7 +29,7 @@ export const coursesEn = {
   landingAboutTeacherBio: "Extensive experience delivering secondary school Chemistry curricula, practical applications, and preparing students for top exam scores.",
   landingTeacherExp1: "Years of excellence mentoring top-ranked secondary graduates in Chemistry",
   landingTeacherExp2: "Author of structured Chemistry study guides and comprehensive question banks",
-  landingTeacherExp3: "AI-assisted rubric grading and diagnostic support for Chemistry students",
+  landingTeacherExp3: "Manual rubric grading and progress tracking for Chemistry students",
   landingFeaturedCoursesTitle: "Accredited Chemistry Curricula",
   landingFeaturedCoursesSubtitle: "Select your secondary grade and study Chemistry with Mr. Hassan Shaaban.",
   landingLibraryTitle: "Digital Library & Chemistry Summaries",
@@ -68,7 +68,7 @@ export const coursesEn = {
   browseCatalogBtn: "Browse Chemistry Courses",
 
   // Video Player & Materials Tabs
-  askAITab: "Ask AI About Lesson",
+  askAITab: "Lesson Resources",
   materialsTab: "Attached Booklets & Files",
   askAIPlaceholder: "",
   videoStreamLoading: "Preparing secure video stream...",

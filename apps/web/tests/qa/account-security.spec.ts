@@ -32,10 +32,39 @@ test("profile changes password and revokes all browser sessions", async ({ page,
     await page.getByRole("button", { name: "Open Menu" }).click();
     await page.locator(".profile-button").click();
     const security = page.getByRole("region", { name: "أمان الحساب" });
-    await security.getByLabel("كلمة المرور الحالية").fill(oldPassword);
-    await security.getByLabel("كلمة المرور الجديدة", { exact: true }).fill(newPassword);
-    await security.getByLabel("تأكيد كلمة المرور الجديدة").fill(newPassword);
+    await page.getByRole('button', { name: 'Toggle Theme' }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await expect(security.locator('input')).toHaveCount(0);
     await security.getByRole("button", { name: "تغيير كلمة المرور" }).click();
+    const wizard = page.getByRole('dialog', { name: 'تغيير كلمة المرور' });
+    await wizard.getByRole('button', { name: 'نسيت كلمة المرور الحالية؟' }).click();
+    await expect(wizard.getByLabel('البريد الإلكتروني')).toHaveValue(email);
+    const reset = page.waitForResponse(r => r.url().endsWith('/auth/password-reset/request'));
+    await wizard.getByRole('button', { name: 'إرسال رابط الاسترجاع' }).click();
+    expect((await reset).status()).toBe(200);
+    await expect(wizard.getByRole('status')).toContainText('إذا كان البريد مرتبطًا بحساب');
+    const mailUrl = process.env.QA_MAILPIT_URL || 'http://127.0.0.1:18525';
+    await expect.poll(async () => {
+      const inbox = await (await page.request.get(`${mailUrl}/api/v1/messages`)).json();
+      return inbox.messages.some((message: { To: { Address: string }[] }) => message.To.some(recipient => recipient.Address === email));
+    }).toBe(true);
+    await wizard.getByRole('button', { name: 'تم', exact: true }).click();
+    await expect(security.getByRole('button', { name: 'تغيير كلمة المرور' })).toBeFocused();
+    await security.getByRole('button', { name: 'تغيير كلمة المرور' }).click();
+    await wizard.getByLabel("كلمة المرور الحالية").fill('Wrong-current-password-2026!');
+    await wizard.getByRole('button', { name: 'متابعة', exact: true }).click();
+    await wizard.getByLabel("كلمة المرور الجديدة", { exact: true }).fill(newPassword);
+    await wizard.getByLabel("تأكيد كلمة المرور الجديدة").fill(newPassword);
+    await expect(wizard.getByLabel('كلمة المرور الجديدة', { exact: true })).toHaveCSS('background-color', 'rgb(30, 41, 59)');
+    await page.screenshot({ path: test.info().outputPath('password-wizard-dark.png') });
+    const rejected = page.waitForResponse(r => r.url().endsWith('/auth/change-password'));
+    await wizard.getByRole("button", { name: "حفظ كلمة المرور الجديدة" }).click();
+    expect((await rejected).status()).toBe(400);
+    await expect(wizard.getByRole('alert')).toBeVisible();
+    await wizard.getByRole('button', { name: 'رجوع', exact: true }).click();
+    await wizard.getByLabel('كلمة المرور الحالية').fill(oldPassword);
+    await wizard.getByRole('button', { name: 'متابعة', exact: true }).click();
+    await wizard.getByRole("button", { name: "حفظ كلمة المرور الجديدة" }).click();
     await expect(page.locator(".sidebar-bottom .profile-button")).toHaveCount(0);
 
     await secondPage.reload();
@@ -50,8 +79,12 @@ test("profile changes password and revokes all browser sessions", async ({ page,
 
     await page.getByRole("button", { name: "Open Menu" }).click();
     await page.locator(".profile-button").click();
-    await page.getByRole("button", { name: "تسجيل الخروج من جميع الأجهزة" }).click();
-    await page.getByRole("button", { name: "إنهاء الجلسات" }).click();
+    await expect(page.getByRole("button", { name: "تسجيل الخروج من جميع الأجهزة" })).toHaveCount(0);
+    // The requested UI removal must not remove the server's revocation control.
+    const csrf = (await page.context().cookies()).find(c => c.name === 'matgar_csrf')?.value || '';
+    const revoked = await page.request.post('/api/v1/auth/revoke-all', { headers: { 'X-CSRF-Token': csrf } });
+    expect(revoked.ok()).toBe(true);
+    await page.reload();
     await expect(page.locator(".sidebar-bottom .profile-button")).toHaveCount(0);
   } finally {
     await secondContext.close();

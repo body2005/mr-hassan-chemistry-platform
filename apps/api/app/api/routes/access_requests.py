@@ -81,6 +81,30 @@ def _build_response(order: PaymentOrder, lesson: Lesson, course: Course, student
     )
 
 
+def _authorized_request(db: Session, user: User, request_id: uuid.UUID, *, reviewing: bool = False):
+    order = db.get(PaymentOrder, request_id)
+    if not order or order.product_type != PaymentProductType.LESSON or not order.product_id:
+        raise HTTPException(404, "Lesson access request not found")
+    owned = user.role == UserRole.STUDENT and order.student_id == user.id and order.institution_id == user.institution_id
+    if not (payment_service.can_review_order(db, user, order) or (owned and not reviewing)):
+        raise HTTPException(404, "Lesson access request not found")
+    if reviewing:
+        db.execute(select(User.id).where(User.id == order.student_id).with_for_update())
+        order = db.scalar(select(PaymentOrder).where(PaymentOrder.id == order.id).with_for_update().execution_options(populate_existing=True))
+    lesson, course = _lesson_and_course(db, order.product_id)
+    student = db.get(User, order.student_id)
+    if not student or course.institution_id != order.institution_id or student.institution_id != order.institution_id:
+        raise HTTPException(404, "Lesson access request not found")
+    return order, lesson, course, student
+
+
+def _reviewer_ids(db: Session, course: Course) -> list[uuid.UUID]:
+    return list(db.scalars(select(User.id).where(
+        User.institution_id == course.institution_id, User.is_active.is_(True), User.deleted_at.is_(None),
+        (User.id == course.teacher_id) | (User.role == UserRole.INSTITUTION_ADMIN),
+    )))
+
+
 @router.post("/{lesson_id}/access-requests", response_model=LessonAccessRequestResponse, status_code=status.HTTP_201_CREATED)
 def request_lesson_access(
     lesson_id: uuid.UUID,
@@ -91,6 +115,9 @@ def request_lesson_access(
     lesson, course = _lesson_and_course(db, lesson_id)
     if course.institution_id != user.institution_id:
         raise HTTPException(status_code=404, detail="Lesson not found")
+    if course.status != CourseStatus.PUBLISHED:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
 
     # If already entitled, return existing access state
     if payment_service.has_lesson_entitlement(db, user, lesson.id) or payment_service.has_course_entitlement(db, user, course.id):
@@ -199,17 +226,7 @@ def get_lesson_access_request(
     user: CurrentUser,
     db: Db,
 ) -> LessonAccessRequestResponse:
-    order = db.get(PaymentOrder, request_id)
-    if not order or order.product_type != PaymentProductType.LESSON or not order.product_id:
-        raise HTTPException(status_code=404, detail="Lesson access request not found")
-
-    if user.role == UserRole.STUDENT and order.student_id != user.id:
-        raise HTTPException(status_code=403, detail="Forbidden")
-
-    lesson, course = _lesson_and_course(db, order.product_id)
-    student = db.get(User, order.student_id)
-    if not student:
-        raise HTTPException(status_code=404, detail="Student not found")
+    order, lesson, course, student = _authorized_request(db, user, request_id)
 
     return _build_response(order, lesson, course, student)
 
@@ -221,24 +238,14 @@ def approve_lesson_access_request(
     user: Reviewer,
     db: Db,
 ) -> LessonAccessRequestResponse:
-    order = db.get(PaymentOrder, request_id)
-    if not order or order.product_type != PaymentProductType.LESSON or not order.product_id:
-        raise HTTPException(status_code=404, detail="Lesson access request not found")
-
-    lesson, course = _lesson_and_course(db, order.product_id)
-    if not payment_service.can_review_order(db, user, order):
-        raise HTTPException(status_code=403, detail="You do not have permission to approve access for this course")
-
-    student = db.get(User, order.student_id)
-    if not student:
-        raise HTTPException(status_code=404, detail="Student not found")
+    order, lesson, course, student = _authorized_request(db, user, request_id, reviewing=True)
 
     # If already approved, return current state
     if order.status == PaymentStatus.PAID:
         return _build_response(order, lesson, course, student)
 
     # Approve and grant access
-    approved_order = payment_service.approve_order(db, user, order, payload.note)
+    approved_order = payment_service.approve_order(db, user, order, payload.note, commit=False)
 
     # Create persistent notification for the student
     student_notif = Notification(
@@ -283,7 +290,7 @@ def approve_lesson_access_request(
         institution_id=order.institution_id,
         event_type="lesson_access_updated",
         data=resp.model_dump(mode="json"),
-        target_roles=["teacher", "institution_admin"],
+        target_user_ids=_reviewer_ids(db, course),
     )
 
     return resp
@@ -296,16 +303,12 @@ def reject_lesson_access_request(
     user: Reviewer,
     db: Db,
 ) -> LessonAccessRequestResponse:
-    order = db.get(PaymentOrder, request_id)
-    if not order or order.product_type != PaymentProductType.LESSON or not order.product_id:
-        raise HTTPException(status_code=404, detail="Lesson access request not found")
-
-    lesson, course = _lesson_and_course(db, order.product_id)
-    if not payment_service.can_review_order(db, user, order):
-        raise HTTPException(status_code=403, detail="You do not have permission to reject access for this course")
+    order, lesson, course, student = _authorized_request(db, user, request_id, reviewing=True)
 
     if order.status == PaymentStatus.PAID:
         raise HTTPException(status_code=409, detail="Already approved requests cannot be rejected")
+    if order.status in {PaymentStatus.REJECTED, PaymentStatus.CANCELLED}:
+        return _build_response(order, lesson, course, student)
 
     student = db.get(User, order.student_id)
     if not student:
@@ -355,7 +358,7 @@ def reject_lesson_access_request(
         institution_id=order.institution_id,
         event_type="lesson_access_updated",
         data=resp.model_dump(mode="json"),
-        target_roles=["teacher", "institution_admin"],
+        target_user_ids=_reviewer_ids(db, course),
     )
 
     return resp

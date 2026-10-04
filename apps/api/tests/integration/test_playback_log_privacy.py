@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 
 import requests
 
-from .live_helpers import BASE, container, session, wait_until
+from .live_helpers import BASE, container, operational_logs, session, wait_until
 
 
 def test_playback_credentials_are_private_during_stream_and_upstream_failure():
@@ -41,9 +41,9 @@ def test_playback_credentials_are_private_during_stream_and_upstream_failure():
             wait_until(recovered, timeout=75)
         response = teacher.get(url, headers={'Range': 'bytes=0-1023'}, timeout=15)
         assert response.status_code == 206
-    time.sleep(.3)  # Allow completed request log writes; no token printed.
     for name in ('api', 'web', 'proxy'):
-        logs = container(name).logs(since=started).decode(errors='replace')
+        evidence = b'token=[REDACTED]' if name == 'api' else b'/stream HTTP/'
+        logs = operational_logs(name, lambda value: evidence in value, since=started).decode(errors='replace')
         assert secret not in logs, f'{name} leaked the playback credential'
         if name == 'api':
             assert 'token=[REDACTED]' in logs

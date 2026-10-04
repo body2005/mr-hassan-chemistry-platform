@@ -1,4 +1,4 @@
-import { apiUrl, invalidateApiCache } from "./apiClient";
+import { ApiClientError, apiRequest, apiUrl, invalidateApiCache } from "./apiClient";
 
 export interface RealtimeMessage<T = unknown> {
   id?: string;
@@ -16,6 +16,7 @@ class RealTimeService {
   private isConnecting = false;
   private listeners = new Map<string, Set<EventCallback>>();
   private active = false;
+  private connectionGeneration = 0;
 
   /**
    * Connect to the SSE endpoint if not already connected.
@@ -26,8 +27,15 @@ class RealTimeService {
 
     this.active = true;
     this.isConnecting = true;
+    void this.openStream(++this.connectionGeneration);
+  }
 
+  private async openStream(generation: number): Promise<void> {
     try {
+      // Cookie-only identity probe shares apiClient's single refresh and CSRF
+      // protection. EventSource cannot send the cached Authorization bearer.
+      await apiRequest("/auth/me", { cookieOnly: true, skipCache: true, timeoutMs: 8000 });
+      if (!this.active || generation !== this.connectionGeneration) return;
       const streamUrl = apiUrl("/realtime/stream");
       const es = new EventSource(streamUrl, { withCredentials: true });
       this.eventSource = es;
@@ -37,6 +45,10 @@ class RealTimeService {
         this.reconnectAttempts = 0;
         console.debug("[RealTime] Connected to event stream");
         this.emit("status", { status: "connected" });
+        // Redis events are hints, not durable history. Recover notifications
+        // missed while offline from the authenticated database-backed route.
+        invalidateApiCache("/notifications");
+        window.dispatchEvent(new CustomEvent("lms_notifications_updated"));
       };
 
       // Listen for named SSE events from the backend
@@ -69,6 +81,12 @@ class RealTimeService {
         this.scheduleReconnect();
       };
     } catch (err) {
+      if (generation !== this.connectionGeneration) return;
+      if (err instanceof ApiClientError && err.status === 401) {
+        this.disconnect();
+        this.emit("status", { status: "disconnected", reason: "authentication_required" });
+        return;
+      }
       console.warn("[RealTime] Failed to instantiate EventSource", err);
       this.cleanupEventSource();
       this.scheduleReconnect();
@@ -80,6 +98,7 @@ class RealTimeService {
    */
   disconnect(): void {
     this.active = false;
+    this.connectionGeneration += 1;
     if (this.reconnectTimer) {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -105,6 +124,11 @@ class RealTimeService {
     if (this.reconnectTimer) return;
 
     this.reconnectAttempts += 1;
+    if (this.reconnectAttempts > 8) {
+      this.active = false;
+      this.emit("status", { status: "disconnected", reason: "retry_limit" });
+      return;
+    }
     // Bounded exponential backoff with randomized jitter to prevent reconnect storms
     const jitter = Math.random() * 800;
     const delayMs = Math.min(25000, 1000 * Math.pow(1.5, Math.min(this.reconnectAttempts, 8)) + jitter);

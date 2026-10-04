@@ -127,7 +127,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
   }, []);
 
   // Strictly enforce role and active uploads: hide widget if no active upload
-  if (role !== "teacher" || activeTasks.length === 0) {
+  if (role !== "teacher" || tasks.length === 0) {
     return null;
   }
 
@@ -496,6 +496,15 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                     >
                       <AlertCircle size={13} />
                       <span>{task.error || "تعذر إكمال الرفع"}</span>
+                      {task.type === "lesson_video" && (
+                        <label>
+                          اختيار نفس الفيديو للاستئناف
+                          <input type="file" accept=".mp4,.m4v,.mov,.webm" aria-label="اختيار الفيديو للاستئناف" onChange={event => {
+                            const file = event.target.files?.[0];
+                            if (file) uploadManager.resumeVideo(task.id, file);
+                          }} />
+                        </label>
+                      )}
                     </div>
                   )}
                 </div>

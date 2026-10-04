@@ -17,12 +17,13 @@ from app.models.course import Course, CourseModule, Lesson
 from app.models.extended import LessonAsset
 from app.models.user import User
 from app.services.extraction_staging import resolve_course_uuid, resolve_lesson_uuid  # re-export convenience
+from app.services.storage_cleanup import compensate_upload, enqueue_cleanup
 
 ALLOWED_MATERIAL_EXT = {
     ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".txt", ".csv",
     ".png", ".jpg", ".jpeg", ".webp", ".zip",
 }
-MAX_MATERIAL_BYTES = 100 * 1024 * 1024  # 100MB per material file
+from app.core.upload_limits import MAX_MATERIAL_BYTES, ensure_staging_capacity
 
 
 def _matches_material_format(ext: str, header: bytes) -> bool:
@@ -105,6 +106,7 @@ async def upload_material(
     digest = hashlib.sha256()
     tmp_dir = os.path.join(os.getenv("STORAGE_DIR", "storage"), "extraction_tmp")
     os.makedirs(tmp_dir, exist_ok=True)
+    ensure_staging_capacity(file.size or MAX_MATERIAL_BYTES, tmp_dir)
     staged = os.path.join(tmp_dir, f"mat_{uuid.uuid4().hex[:12]}_{filename}")
     try:
         with open(staged, "wb") as out:
@@ -116,13 +118,17 @@ async def upload_material(
                 if size > MAX_MATERIAL_BYTES:
                     raise HTTPException(
                         status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                        detail="Material exceeds the 100MB limit",
+                        detail=f"Material exceeds the {MAX_MATERIAL_BYTES}-byte limit (1 GiB)",
                     )
                 digest.update(chunk)
                 out.write(chunk)
         if size == 0:
             raise HTTPException(status_code=400, detail="Empty file")
         storage.save_file(staged, object_key)
+    except BaseException:
+        db.rollback()
+        compensate_upload(db, object_key)
+        raise
     finally:
         if os.path.exists(staged):
             try:
@@ -140,7 +146,12 @@ async def upload_material(
         size_bytes=size,
     )
     db.add(asset)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        compensate_upload(db, object_key)
+        raise
     db.refresh(asset)
     return asset
 
@@ -159,15 +170,7 @@ def delete_material(db: Session, user: User, lesson_id: uuid.UUID, asset_id: uui
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     asset = _get_asset(db, lesson_id, asset_id)
-    try:
-        from app.core.storage import get_storage_provider
-
-        if asset.object_key:
-            storage = get_storage_provider()
-            if storage.exists(asset.object_key):
-                storage.delete(asset.object_key)
-    except Exception:
-        pass
+    enqueue_cleanup(db, asset.object_key)
     db.delete(asset)
     db.commit()
 

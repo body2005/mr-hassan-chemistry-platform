@@ -1,6 +1,10 @@
 # Test-only overlay for the REAL production template. No storage substitution,
 # no exposed database/cache/object-store ports, no disabled TLS verification.
 services:
+  # Reuse the tested snapshot for QA backups instead of rebuilding a checkout
+  # that another agent may still be changing. The drill pins the actual ID.
+  backup-s3:
+    image: ${QA_BACKUP_IMAGE:-${QA_PROJECT:-chemistryprodlocal}-api}
   postgres:
     cpus: 1
     mem_limit: 768m
@@ -37,6 +41,7 @@ services:
     mem_limit: 256m
   mailpit:
     image: axllent/mailpit:v1.31.1@sha256:98b916bd3c8d61f7633a52d3ea2f58d00620cb01ca57ab59edde68c347a95365
+    restart: unless-stopped
     environment:
       MP_SMTP_TLS_CERT: /run/secrets/tls_cert
       MP_SMTP_TLS_KEY: /run/secrets/tls_key
@@ -44,7 +49,7 @@ services:
       MP_SMTP_AUTH_ACCEPT_ANY: "true"
       MP_SMTP_DISABLE_RDNS: "true"
     secrets: [tls_cert, tls_key]
-    ports: ["127.0.0.1:18425:8025"]
+    ports: ["127.0.0.1:${QA_MAIL_PORT:-18425}:8025"]
     networks: [private]
   # Fresh target for disaster-recovery verification; never shares s3data.
   postgres-restore:
@@ -83,7 +88,7 @@ services:
       context: ../apps/api
       dockerfile: ../../infra/Dockerfile.qa
       args:
-        API_TEST_IMAGE: chemistryprodlocal-api
+        API_TEST_IMAGE: ${QA_PROJECT:-chemistryprodlocal}-api
     entrypoint: ["/bin/sh", "/srv/entrypoint-prod.sh"]
     environment:
       APP_ENV: test
@@ -99,13 +104,14 @@ services:
       S3_REGION: us-east-1
       LIVE_API_BASE: https://proxy/api/v1
       QA_CA_FILE: /run/secrets/qa_ca_cert
-      QA_PROJECT: chemistryprodlocal
+      QA_PROJECT: ${QA_PROJECT:-chemistryprodlocal}
       QA_ISOLATED: "true"
       QA_MEDIA_DIR: /qa/media
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       CELERY_VISIBILITY_TIMEOUT: "10"
       REDIS_URL: redis://redis:6379/0
+      QA_UNIT_REDIS_URL: redis://redis:6379/15
     secrets: [postgres_password, app_secret_key, s3_password, smtp_password, qa_ca_cert]
     volumes:
       # Only the disposable test runner has engine access, never the web/API.
@@ -116,9 +122,9 @@ services:
 
 volumes:
   qa_restore_s3:
-    name: chemistryprodlocal_restore_s3_${QA_RESTORE_RUN_ID:-first}
+    name: ${QA_PROJECT:-chemistryprodlocal}_restore_s3_${QA_RESTORE_RUN_ID:-first}
   qa_restore_pg:
-    name: chemistryprodlocal_restore_pg_${QA_RESTORE_RUN_ID:-first}
+    name: ${QA_PROJECT:-chemistryprodlocal}_restore_pg_${QA_RESTORE_RUN_ID:-first}
 secrets:
   qa_ca_cert:
     file: ${TLS_CERT_FILE}

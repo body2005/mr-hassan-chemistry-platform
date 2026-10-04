@@ -86,6 +86,7 @@ def create_course(db: Session, user: User, payload: CourseCreateRequest) -> Cour
         description=payload.description.strip() if payload.description else None,
         status=CourseStatus.DRAFT,
         price_egp=payload.price_egp,
+        grade_level=payload.grade_level.value if payload.grade_level else None,
     )
     db.add(course)
     db.commit()
@@ -110,6 +111,7 @@ def publish_course(db: Session, user: User, course_id: uuid.UUID) -> Course:
 
 
 def enroll(db: Session, user: User, course_id: uuid.UUID) -> Enrollment:
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
     course = db.scalar(
         select(Course).where(
             Course.id == course_id,

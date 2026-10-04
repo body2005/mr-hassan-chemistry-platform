@@ -912,6 +912,41 @@ html.modal-open {
 input, select, textarea {
   color: var(--text-main);
 }
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]), select, textarea {
+  background-color: var(--input-bg);
+  color: var(--input-text);
+  border-color: var(--input-border);
+}
+[data-theme="dark"] { color-scheme: dark; }
+
+.security-primary-button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+  background: #0f766e; color: #fff; border: 1px solid #0f766e;
+  padding: 12px 20px; border-radius: 12px; font: inherit; font-weight: 700; cursor: pointer;
+}
+.security-primary-button:hover { background: #115e59; }
+.security-primary-button:disabled { opacity: .6; cursor: wait; }
+.security-text-button {
+  display: inline-flex; align-items: center; gap: 6px; background: transparent;
+  color: var(--text-main); border: 0; font: inherit; padding: 9px 0; cursor: pointer;
+}
+.password-wizard-overlay {
+  position: fixed; inset: 0; z-index: 10000; background: rgb(2 6 23 / 70%);
+  display: grid; place-items: center; padding: 20px; overflow-y: auto;
+}
+.password-wizard {
+  position: relative; width: min(100%, 460px); max-height: calc(100dvh - 40px); overflow-y: auto;
+  background: var(--bg-surface); color: var(--text-main); padding: 28px;
+  border: 1px solid var(--border-color); border-radius: 24px; box-shadow: 0 24px 80px rgb(0 0 0 / 30%);
+}
+.password-wizard h2 { margin: 16px 0 8px; }
+.password-wizard-close { position: absolute; top: 16px; inset-inline-end: 16px; border: 0; background: transparent; color: var(--text-main); cursor: pointer; padding: 6px; }
+.password-wizard-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 16px; background: rgb(13 148 136 / 15%); color: #0d9488; }
+.password-wizard-description { color: var(--text-muted); line-height: 1.7; margin-bottom: 22px; }
+.password-wizard label { display: block; margin-bottom: 16px; font-weight: 600; }
+.password-wizard input { display: block; width: 100%; padding: 12px 14px; margin-top: 8px; border: 1px solid var(--input-border); border-radius: 10px; font: inherit; }
+.password-wizard-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; margin-top: 18px; }
+.password-wizard-error { padding: 12px; border-radius: 10px; background: rgb(239 68 68 / 12%); color: var(--text-main); border: 1px solid #ef4444; }
 
 input::placeholder, textarea::placeholder {
   color: var(--text-light);
@@ -962,6 +997,11 @@ img, video, canvas, svg {
   gap: 24px;
   align-items: start;
 }
+.notifications-layout-grid > * { min-width: 0; }
+.notification-card { min-width: 0; overflow-wrap: anywhere; }
+.notification-copy { min-width: 0; flex: 1; }
+.notification-message { white-space: pre-wrap; overflow-wrap: anywhere; }
+.notification-message-preview { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 
 .responsive-2col {
   display: grid;

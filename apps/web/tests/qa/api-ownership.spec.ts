@@ -131,7 +131,7 @@ test("manual quiz and assignment lifecycle enforces student and teacher ownershi
     await page.goto("/#submissions");
     await page.getByPlaceholder("بحث باسم الطالب، رقم ولي الأمر، أو البريد الإلكتروني...").fill("student01@demo.com");
     await page.getByRole("button", { name: "معاينة وتعديل درجة", exact: true }).click();
-    await page.locator('.modal-content input[inputmode="numeric"]').fill("80");
+    await page.getByLabel("درجة الواجب").fill("80");
     await page.getByRole("button", { name: "اعتماد وحفظ الدرجة" }).click();
     await expect.poll(async () => {
       const listed = await teacher.context.get("submissions");

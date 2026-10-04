@@ -15,7 +15,7 @@ import { fetchApiBlob } from "../services/apiClient";
 interface AssignmentModalProps {
   submission: AssignmentSubmission | null;
   onClose: () => void;
-  onApproveGrade: (submissionId: string, updatedScore: number, teacherNotes: string) => void;
+  onApproveGrade: (submissionId: string, updatedScore: number, teacherNotes: string) => Promise<void>;
 }
 
 export const AssignmentModal: React.FC<AssignmentModalProps> = ({
@@ -28,10 +28,16 @@ export const AssignmentModal: React.FC<AssignmentModalProps> = ({
   const [showInlinePreview, setShowInlinePreview] = useState(false);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [previewBlobUrl, setPreviewBlobUrl] = useState<string | null>(null);
+  const [teacherNotes, setTeacherNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!submission) return;
     setScore(submission.finalScore);
+    setTeacherNotes(submission.teacherFeedback || "");
+    setSaveError(null);
+    setSaving(false);
     setPreviewError(false);
     setShowInlinePreview(false);
     setLoadingPreview(false);
@@ -72,10 +78,22 @@ export const AssignmentModal: React.FC<AssignmentModalProps> = ({
 
   if (!submission) return null;
 
-  function handleSave() {
-    if (!submission) return;
-    onApproveGrade(submission.id, score, "");
-    onClose();
+  async function handleSave() {
+    if (!submission || saving) return;
+    if (!Number.isFinite(score) || score < 0 || score > submission.maxScore) {
+      setSaveError("الدرجة يجب أن تكون بين صفر والحد الأقصى للواجب.");
+      return;
+    }
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onApproveGrade(submission.id, score, teacherNotes);
+      onClose();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "تعذر حفظ التصحيح. أعد المحاولة.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   const isPdf = Boolean(submission.fileUrl?.toLowerCase().includes(".pdf"));
@@ -453,12 +471,14 @@ export const AssignmentModal: React.FC<AssignmentModalProps> = ({
               </label>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <input
-                  type="text"
-                  inputMode="numeric"
-                  value={score}
+                  type="number"
+                  aria-label="درجة الواجب"
+                  min={0}
+                  max={submission.maxScore}
+                  step="any"
+                  value={Number.isNaN(score) ? "" : score}
                   onChange={(e) => {
-                    const num = parseInt(e.target.value.replace(/\D/g, ""), 10);
-                    setScore(isNaN(num) ? 0 : Math.min(submission.maxScore, Math.max(0, num)));
+                    setScore(e.target.value === "" ? Number.NaN : Number(e.target.value));
                   }}
                   style={{
                     width: "90px",
@@ -479,6 +499,13 @@ export const AssignmentModal: React.FC<AssignmentModalProps> = ({
                 </span>
               </div>
             </div>
+            <label style={{ display: "block", marginTop: "12px" }}>
+              تعليق المدرس
+              <textarea aria-label="تعليق الواجب" maxLength={20000} rows={3}
+                value={teacherNotes} onChange={(e) => setTeacherNotes(e.target.value)}
+                style={{ width: "100%", boxSizing: "border-box" }} />
+            </label>
+            {saveError && <p role="alert">{saveError}</p>}
           </div>
         </div>
 
@@ -499,6 +526,7 @@ export const AssignmentModal: React.FC<AssignmentModalProps> = ({
           <button
             className="btn-primary"
             onClick={handleSave}
+            disabled={saving}
             style={{ padding: "9px 24px", fontSize: "13px", fontWeight: 800, gap: "8px", background: "#059669" }}
           >
             <FileCheck2 size={16} />

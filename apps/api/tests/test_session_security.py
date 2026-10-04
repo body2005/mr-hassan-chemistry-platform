@@ -90,6 +90,11 @@ def test_refresh_rotates_and_replay_revokes_its_family(db) -> None:
     )
     assert race_res.status_code == 200
 
+    # The grace clock is anchored to consumption of the ORIGINAL credential,
+    # not the newest descendant (otherwise later rotations extend replay).
+    db.query(RefreshSession).filter(RefreshSession.token_hash == hash_token(original_refresh)).update(
+        {RefreshSession.revoked_at: datetime.now(UTC) - timedelta(seconds=60)}
+    )
     # Outside the grace window, replaying old token revokes family (theft detection)
     db.query(RefreshSession).filter(RefreshSession.token_hash == hash_token(replacement_refresh)).update(
         {RefreshSession.created_at: datetime.now(UTC) - timedelta(seconds=60)}

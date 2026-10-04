@@ -57,6 +57,7 @@ from app.schemas import (
     CertificateResponse,
     CourseResponse,
     GradeSubmissionRequest,
+    GradeQuizAnswerRequest,
     LessonCreateRequest,
     LessonProgressResponse,
     ModuleCreateRequest,
@@ -65,6 +66,7 @@ from app.schemas import (
     NotificationCreateRequest,
     NotificationResponse,
     PrivateUserResponse,
+    ManagedUserResponse,
     QuestionCreateRequest,
     QuestionResponse,
     QuizAttemptResponse,
@@ -77,6 +79,8 @@ from app.schemas import (
 from app.services import platform_service
 from app.services.audit_service import record_audit
 from app.services.payment_service import can_access_lesson_content
+from app.services.content_access import require_assessment_access
+from app.core.upload_limits import MAX_VIDEO_BYTES, ensure_staging_capacity
 from app.models.platform import RefreshSession, RevokedSession
 
 VIDEO_TOKEN_TTL_SECONDS = 300
@@ -118,7 +122,9 @@ def _register_video_session(
         except HTTPException:
             raise
         except Exception:
-            logger.warning("Redis unavailable for video session tracking; falling back to memory")
+            logger.warning("Redis unavailable for video session tracking")
+    if settings.redis_required or settings.app_env in {"production", "production_like"}:
+        raise HTTPException(503, "Video session service temporarily unavailable", headers={"Retry-After": "2"})
     # Dev/test fallback: best-effort in-process ledger.
     with _memory_video_sessions_lock:
         entries = _memory_video_sessions[base_key]
@@ -449,11 +455,12 @@ async def upload_lesson_video(
         raise HTTPException(status_code=422, detail="Uploaded file does not match its video format")
 
     filename = f"{lesson_id}{ext}"
+    ensure_staging_capacity(file.size or MAX_VIDEO_BYTES)
     temp_file = tempfile.NamedTemporaryFile(prefix="lesson-video-", suffix=ext, delete=False)
     filepath = temp_file.name
     temp_file.close()
 
-    file_size_limit = 500 * 1024 * 1024
+    file_size_limit = MAX_VIDEO_BYTES
     written = 0
     try:
         with open(filepath, "wb") as buffer:
@@ -462,10 +469,10 @@ async def upload_lesson_video(
                 if written > file_size_limit:
                     raise HTTPException(
                         status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                        detail={"code": "FILE_TOO_LARGE", "message": "حجم ملف الفيديو لا يجب أن يتجاوز 500 ميجابايت."},
+                        detail={"code": "FILE_TOO_LARGE", "message": f"حد الفيديو {MAX_VIDEO_BYTES} بايت (5 GiB)."},
                     )
                 buffer.write(chunk)
-    except Exception:
+    except BaseException:
         if os.path.exists(filepath):
             os.remove(filepath)
         raise
@@ -475,10 +482,9 @@ async def upload_lesson_video(
     try:
         stored_path = storage.save_file(filepath, storage_key, file.content_type or mimetypes.guess_type(filename)[0])
     except Exception as exc:
-        try:
-            storage.delete(storage_key)
-        except Exception:
-            logger.exception("Failed to clean up video object after storage failure: %s", storage_key)
+        from app.services.storage_cleanup import compensate_upload
+        db.rollback()
+        compensate_upload(db, storage_key)
         raise HTTPException(status_code=500, detail="Unable to store lesson video") from exc
     finally:
         if os.path.exists(filepath):
@@ -489,22 +495,16 @@ async def upload_lesson_video(
     lesson.video_asset_key = stored_path
     lesson.materialization_status = MaterializationStatus.NOT_INDEXED
     lesson.indexing_error = None
+    from app.services.storage_cleanup import compensate_upload, enqueue_cleanup
+    if previous_asset != stored_path:
+        enqueue_cleanup(db, previous_asset)
     try:
         db.commit()
     except SQLAlchemyError as exc:
         db.rollback()
-        try:
-            storage.delete(stored_path)
-        except Exception:
-            logger.exception("Failed to clean up video object after database failure: %s", stored_path)
+        compensate_upload(db, stored_path)
         raise HTTPException(status_code=500, detail="Unable to save lesson video") from exc
     db.refresh(lesson)
-
-    if previous_asset and previous_asset != stored_path and not previous_asset.startswith("/api/"):
-        try:
-            storage.delete(previous_asset)
-        except Exception:
-            logger.exception("Failed to clean up replaced video object: %s", previous_asset)
 
     return {
         "id": str(lesson.id),
@@ -567,6 +567,8 @@ def create_lesson_video_token(lesson_id: uuid.UUID, request: Request, response: 
     response.headers["Cache-Control"] = "private, no-store"
     response.headers["Referrer-Policy"] = "no-referrer"
     lesson, _ = _require_lesson_access(db, user, lesson_id)
+    if get_settings().video_drm_required:
+        raise HTTPException(503, "Licensed DRM playback is not configured")
     if lesson.video_asset_key and lesson.video_asset_key.startswith(("http://", "https://")):
         raise HTTPException(status_code=404, detail="Protected video not available")
 
@@ -593,22 +595,32 @@ def create_lesson_video_token(lesson_id: uuid.UUID, request: Request, response: 
         nonce=session_id,
         family_id=family_id,
     )
+    from app.models.video_upload import VideoUpload
+    adaptive = db.scalar(select(VideoUpload).where(VideoUpload.lesson_id == lesson.id,
+        VideoUpload.status == "ready").order_by(VideoUpload.created_at.desc()).limit(1))
+    hls = bool(adaptive and lesson.video_asset_key and lesson.video_asset_key.endswith(f"/{adaptive.manifest_key}"))
+    stream_url = (f"/api/v1/lessons/{lesson.id}/hls/{adaptive.id}/master.m3u8?token={token}" if hls
+                  else f"/api/v1/lessons/{lesson.id}/stream?token={token}")
     return {
         "video_token": token,
-        "stream_url": f"/api/v1/lessons/{lesson.id}/stream?token={token}",
+        "stream_url": stream_url,
+        "format": "hls" if hls else "progressive",
         "expires_in": VIDEO_TOKEN_TTL_SECONDS,
     }
 
 
-@router.get("/lessons/{lesson_id}/stream")
-def stream_lesson_authenticated_range(
+def _authorize_video_stream(
     lesson_id: uuid.UUID,
     request: Request,
     db: Db,
     token: str | None = None,
-) -> Response:
+) -> Lesson:
     from app.core.security import decode_video_token
 
+    if get_settings().video_drm_required:
+        # Fail closed for previously issued progressive URLs too. Enabling
+        # the DRM requirement must not leave an unencrypted fallback open.
+        raise HTTPException(503, "DRM playback provider is not configured")
     enforce_rate_limit(request, bucket="lesson-video-stream", category="read")
     payload = decode_video_token(token) if token else None
     if not payload or payload.get("lesson_id") != str(lesson_id):
@@ -645,6 +657,14 @@ def stream_lesson_authenticated_range(
     lesson, _ = _require_lesson_access(db, user, lesson_id)
     if lesson.video_asset_key and lesson.video_asset_key.startswith(("http://", "https://")):
         raise HTTPException(status_code=404, detail="Protected video not available")
+    return lesson
+
+
+@router.get("/lessons/{lesson_id}/stream")
+def stream_lesson_authenticated_range(lesson_id: uuid.UUID, request: Request, db: Db, token: str | None = None) -> Response:
+    lesson = _authorize_video_stream(lesson_id, request, db, token)
+    if lesson.video_asset_key and lesson.video_asset_key.endswith("/master.m3u8"):
+        raise HTTPException(409, "Adaptive video requires HLS playback")
     if lesson.video_asset_key and not lesson.video_asset_key.startswith("/api/"):
         media_type = mimetypes.guess_type(lesson.video_asset_key)[0] or "video/mp4"
         return _stream_stored_media(request, lesson.video_asset_key, f"lesson-{lesson.id}", media_type)
@@ -980,6 +1000,8 @@ def submit_assignment(
     user: Student,
     db: Db,
 ) -> AssignmentSubmissionResponse:
+    if payload.object_key:
+        raise HTTPException(422, "Use the authenticated file-upload endpoint for attachments")
     try:
         submission = platform_service.submit_assignment(db, user, assignment_id, payload)
     except (LookupError, PermissionError, ValueError) as exc:
@@ -1001,6 +1023,7 @@ def list_submissions(
     if assignment is None:
         raise HTTPException(status_code=404, detail="Assignment not found")
     if user.role == UserRole.STUDENT:
+        require_assessment_access(db, user, assignment)
         query = select(AssignmentSubmission).where(
             AssignmentSubmission.assignment_id == assignment_id,
             AssignmentSubmission.student_id == user.id,
@@ -1031,7 +1054,16 @@ def my_submissions(user: Student, db: Db) -> list[AssignmentSubmissionResponse]:
         )
         .order_by(AssignmentSubmission.submitted_at.desc())
     ).all()
-    return _submission_responses(db, list(items))
+    accessible = []
+    for item in items:
+        try:
+            require_assessment_access(db, user, db.get(Assignment, item.assignment_id))
+        except HTTPException as exc:
+            if exc.status_code in {403, 404}:
+                continue
+            raise
+        accessible.append(item)
+    return _submission_responses(db, accessible)
 
 
 @router.get("/submissions", response_model=list[AssignmentSubmissionResponse])
@@ -1345,8 +1377,8 @@ def audit_logs(user: Manager, db: Db, limit: int = 100) -> list[AuditLogResponse
     ]
 
 
-@router.get("/users", response_model=list[UserResponse])
-def list_users(user: Manager, db: Db, role: UserRole | None = None) -> list[UserResponse]:
+@router.get("/users", response_model=list[ManagedUserResponse])
+def list_users(user: Manager, db: Db, role: UserRole | None = None) -> list[ManagedUserResponse]:
     query = select(User).where(
         User.institution_id == user.institution_id,
         User.deleted_at.is_(None),
@@ -1358,10 +1390,39 @@ def list_users(user: Manager, db: Db, role: UserRole | None = None) -> list[User
             Course, Course.id == Enrollment.course_id
         ).where(Course.teacher_id == user.id)
         query = query.where((User.id == user.id) | (User.id.in_(enrolled_students)))
-    return [
-        UserResponse.model_validate(item)
-        for item in db.scalars(query.order_by(User.created_at.desc())).all()
-    ]
+    users = db.scalars(query.order_by(User.created_at.desc())).all()
+    ids = [item.id for item in users]
+    attempts_query = select(QuizAttempt).join(Quiz).join(Course).where(
+        QuizAttempt.student_id.in_(ids),
+        QuizAttempt.institution_id == user.institution_id,
+        QuizAttempt.status == AttemptStatus.SUBMITTED,
+    )
+    if user.role == UserRole.TEACHER:
+        attempts_query = attempts_query.where(Course.teacher_id == user.id)
+    attempts = db.scalars(attempts_query).all()
+    pending_ids = set(db.scalars(select(QuizAttemptAnswer.attempt_id).join(Question).where(
+        QuizAttemptAnswer.attempt_id.in_([attempt.id for attempt in attempts]),
+        QuizAttemptAnswer.graded_at.is_(None),
+        Question.question_type.in_(["essay", "short_answer"]),
+    )).all())
+    by_student = defaultdict(list)
+    for attempt in attempts:
+        by_student[attempt.student_id].append(attempt)
+    result = []
+    for item in users:
+        visible = by_student[item.id]
+        finalized = [attempt for attempt in visible if attempt.id not in pending_ids and attempt.total_points > 0]
+        percent = (sum(float(attempt.score or 0) / float(attempt.total_points) * 100 for attempt in finalized)
+                   / len(finalized)) if finalized else None
+        response = ManagedUserResponse.model_validate(item)
+        result.append(response.model_copy(update={
+            "quiz_attempts_count": len(visible),
+            "has_completed_exam": bool(visible),
+            "pending_quiz_attempts": sum(attempt.id in pending_ids for attempt in visible),
+            "average_quiz_score": percent,
+            "quiz_success_rate": percent,
+        }))
+    return result
 
 
 @router.post("/users/{user_id}/block", response_model=UserResponse)
@@ -1622,10 +1683,7 @@ def _quiz_for_student(db: Session, quiz_id: uuid.UUID, user: CurrentUser) -> Qui
             Quiz.status == QuizStatus.PUBLISHED,
         )
     )
-    if quiz is None:
-        raise HTTPException(status_code=404, detail="Quiz not found")
-    if user.role == UserRole.STUDENT and not _enrolled(db, user, quiz.course_id):
-        raise HTTPException(status_code=403, detail="Not enrolled")
+    require_assessment_access(db, user, quiz)
     return quiz
 
 
@@ -1647,6 +1705,7 @@ def get_quiz_solve_view(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
     )
     if quiz is None:
         raise HTTPException(status_code=404, detail="Quiz not found")
+    require_assessment_access(db, user, quiz, writing=True)
     if user.role == UserRole.STUDENT:
         if not _enrolled(db, user, quiz.course_id):
             raise HTTPException(status_code=403, detail="Not enrolled")
@@ -1732,6 +1791,46 @@ def get_quiz_solve_view(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
     }
 
 
+@router.post("/quiz-attempts/{attempt_id}/answers/{question_id}/grade", response_model=QuizAttemptResponse)
+def grade_quiz_answer(attempt_id: uuid.UUID, question_id: uuid.UUID, payload: GradeQuizAnswerRequest,
+                      user: Manager, db: Db, request: Request):
+    attempt = db.scalar(select(QuizAttempt).where(QuizAttempt.id == attempt_id).with_for_update())
+    if not attempt:
+        raise HTTPException(404, "Attempt not found")
+    quiz = db.get(Quiz, attempt.quiz_id)
+    course = db.get(Course, quiz.course_id) if quiz else None
+    if course is None or (user.role != UserRole.PLATFORM_ADMIN and course.institution_id != user.institution_id):
+        raise HTTPException(404, "Attempt not found")
+    try:
+        platform_service.ensure_course_manager(user, course)
+    except PermissionError as exc:
+        raise HTTPException(404, "Attempt not found") from exc
+    if attempt.status != AttemptStatus.SUBMITTED:
+        raise HTTPException(409, "Only submitted attempts can be graded")
+    row = db.execute(select(QuizAttemptAnswer, QuizQuestion, Question)
+                     .join(Question, Question.id == QuizAttemptAnswer.question_id)
+                     .join(QuizQuestion, (QuizQuestion.question_id == Question.id) & (QuizQuestion.quiz_id == attempt.quiz_id))
+                     .where(QuizAttemptAnswer.attempt_id == attempt.id, Question.id == question_id)).first()
+    if not row:
+        raise HTTPException(404, "Answer not found")
+    answer, link, question = row
+    if question.question_type not in {"essay", "short_answer"}:
+        raise HTTPException(422, "This question is automatically graded")
+    if payload.awarded_points > link.points:
+        raise HTTPException(422, "Grade exceeds the question's points")
+    answer.awarded_points = payload.awarded_points
+    answer.feedback = payload.feedback
+    answer.graded_at = datetime.now(UTC)
+    answer.graded_by = user.id
+    db.flush()
+    attempt.score = db.scalar(select(func.sum(QuizAttemptAnswer.awarded_points)).where(
+        QuizAttemptAnswer.attempt_id == attempt.id, QuizAttemptAnswer.graded_at.is_not(None))) or 0
+    record_audit(db, request, action="quiz_answer_graded", resource_type="quiz_attempt", resource_id=str(attempt.id), actor=user)
+    db.commit()
+    db.refresh(attempt)
+    return attempt
+
+
 @router.get("/quizzes/{quiz_id}/result")
 def get_quiz_result_view(
     quiz_id: uuid.UUID,
@@ -1759,6 +1858,7 @@ def get_quiz_result_view(
         raise HTTPException(status_code=404, detail="Quiz not found")
     if user.role != UserRole.STUDENT:
         raise HTTPException(status_code=403, detail="Student only")
+    require_assessment_access(db, user, quiz)
     if not _enrolled(db, user, quiz.course_id):
         raise HTTPException(status_code=403, detail="Not enrolled")
 
@@ -1809,6 +1909,7 @@ def get_quiz_result_view(
     correct_count = 0
     wrong_count = 0
     skipped_count = 0
+    pending_count = 0
     earned = 0.0
     possible = 0.0
     for qq, question in rows:
@@ -1820,7 +1921,10 @@ def get_quiz_result_view(
         possible += points
         earned += awarded
         answered = bool(given and given_text.strip())
-        if awarded >= points > 0:
+        if attempt.status == AttemptStatus.SUBMITTED and question.question_type in {"essay", "short_answer"} and (given is None or given.graded_at is None):
+            state = "pending"
+            pending_count += 1
+        elif awarded >= points > 0:
             state = "correct"
             correct_count += 1
         elif answered:
@@ -1855,6 +1959,7 @@ def get_quiz_result_view(
                 "learning_objective": question.learning_objective,
                 "points": points,
                 "awarded": awarded,
+                "feedback": given.feedback if given else None,
                 "state": state,
                 "answered": answered,
                 "student_answer": given_text,
@@ -1891,11 +1996,13 @@ def get_quiz_result_view(
             for att in all_attempts
         ],
         "score": float(attempt.score or 0.0),
+        "grading_status": "pending" if pending_count else "complete",
         "total_points": float(attempt.total_points or possible),
         "summary": {
             "correct": correct_count,
             "wrong": wrong_count,
             "skipped": skipped_count,
+            "pending": pending_count,
             "total": len(items),
         },
         "questions": items,
@@ -1921,11 +2028,13 @@ def get_student_quiz_solution(
     if not target_student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    attempt_query = select(QuizAttempt).where(
+    attempt_query = select(QuizAttempt).join(Quiz, Quiz.id == QuizAttempt.quiz_id).join(Course, Course.id == Quiz.course_id).where(
         QuizAttempt.student_id == student_id,
         QuizAttempt.institution_id == user.institution_id,
         QuizAttempt.status.in_([AttemptStatus.SUBMITTED, AttemptStatus.EXPIRED]),
     )
+    if user.role == UserRole.TEACHER:
+        attempt_query = attempt_query.where(Course.teacher_id == user.id)
     if quiz_id is not None:
         attempt_query = attempt_query.where(QuizAttempt.quiz_id == quiz_id)
     attempt = db.scalar(attempt_query.order_by(QuizAttempt.submitted_at.desc()))
@@ -1964,6 +2073,7 @@ def get_student_quiz_solution(
     correct_count = 0
     wrong_count = 0
     skipped_count = 0
+    pending_count = 0
     possible = 0.0
     earned = 0.0
 
@@ -1976,7 +2086,10 @@ def get_student_quiz_solution(
         possible += points
         earned += awarded
         answered = bool(given and given_text.strip())
-        if awarded >= points > 0:
+        if attempt.status == AttemptStatus.SUBMITTED and question.question_type in {"essay", "short_answer"} and (given is None or given.graded_at is None):
+            state = "pending"
+            pending_count += 1
+        elif awarded >= points > 0:
             state = "correct"
             correct_count += 1
         elif answered:
@@ -2014,6 +2127,7 @@ def get_student_quiz_solution(
                 "learning_objective": question.learning_objective,
                 "points": points,
                 "awarded": awarded,
+                "feedback": given.feedback if given else None,
                 "state": state,
                 "answered": answered,
                 "student_answer": given_text,
@@ -2031,6 +2145,7 @@ def get_student_quiz_solution(
     return {
         "student_id": str(student_id),
         "student_name": target_student.display_name,
+        "grading_status": "pending" if pending_count else "complete",
         "quiz": {"id": str(quiz.id), "title": quiz.title},
         "attempt": {
             "id": str(attempt.id),
@@ -2044,6 +2159,7 @@ def get_student_quiz_solution(
             "correct": correct_count,
             "wrong": wrong_count,
             "skipped": skipped_count,
+            "pending": pending_count,
             "total": len(items),
         },
         "questions": items,
@@ -2066,6 +2182,7 @@ def get_quiz_attempts_history(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> 
         raise HTTPException(status_code=404, detail="Quiz not found")
     if user.role != UserRole.STUDENT:
         raise HTTPException(status_code=403, detail="Student only")
+    require_assessment_access(db, user, quiz)
     if not _enrolled(db, user, quiz.course_id):
         raise HTTPException(status_code=403, detail="Not enrolled")
 
@@ -2083,6 +2200,7 @@ def get_quiz_attempts_history(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> 
         {
             "id": str(att.id),
             "attempt_number": att.attempt_number,
+            "grading_status": att.grading_status,
             "is_practice": bool(att.is_practice),
             "score": float(att.score or 0.0),
             "total_points": float(att.total_points or 0.0),
@@ -2107,6 +2225,7 @@ def get_assignment_solve_view(assignment_id: uuid.UUID, user: CurrentUser, db: D
     )
     if assignment is None:
         raise HTTPException(status_code=404, detail="Assignment not found")
+    require_assessment_access(db, user, assignment)
     if user.role == UserRole.STUDENT:
         if not _enrolled(db, user, assignment.course_id):
             raise HTTPException(status_code=403, detail="Not enrolled")
@@ -2167,6 +2286,7 @@ def download_assignment_sheet(assignment_id: uuid.UUID, user: CurrentUser, db: D
     )
     if assignment is None:
         raise HTTPException(status_code=404, detail="Assignment not found")
+    require_assessment_access(db, user, assignment)
     if user.role == UserRole.STUDENT:
         from app.services.platform_service import _enrolled
 
@@ -2221,10 +2341,7 @@ async def upload_assignment_submission_file(
             Assignment.status == AssignmentStatus.PUBLISHED,
         )
     )
-    if assignment is None or not _enrolled(db, user, assignment.course_id):
-        raise HTTPException(status_code=404, detail="Assignment not found")
-    if assignment.lesson_id is not None and not can_access_lesson_content(db, user, assignment.lesson_id):
-        raise HTTPException(status_code=403, detail="Lesson not unlocked")
+    require_assessment_access(db, user, assignment, writing=True)
 
     filename = os.path.basename(file.filename or "submission")
     ext = os.path.splitext(filename)[1].lower()
@@ -2236,6 +2353,11 @@ async def upload_assignment_submission_file(
 
     storage = get_storage_provider()
     object_key = generate_safe_object_key("assignment_submissions", filename)
+    signature = await file.read(16)
+    await file.seek(0)
+    from app.services.lesson_materials import _matches_material_format
+    if not _matches_material_format(ext, signature):
+        raise HTTPException(422, "Uploaded submission does not match its format")
     size = 0
     tmp_dir = os.path.join(os.getenv("STORAGE_DIR", "storage"), "extraction_tmp")
     os.makedirs(tmp_dir, exist_ok=True)
@@ -2255,7 +2377,13 @@ async def upload_assignment_submission_file(
                 out.write(chunk)
         if size == 0:
             raise HTTPException(status_code=400, detail="Empty file")
-        storage.save_file(staged, object_key)
+        try:
+            storage.save_file(staged, object_key)
+        except Exception:
+            from app.services.storage_cleanup import compensate_upload
+            db.rollback()
+            compensate_upload(db, object_key)
+            raise HTTPException(503, "Submission storage temporarily unavailable")
     finally:
         if os.path.exists(staged):
             try:
@@ -2274,13 +2402,15 @@ async def upload_assignment_submission_file(
                 idempotency_key=f"file-{uuid.uuid4().hex[:24]}",
             ),
         )
-    except (LookupError, PermissionError, ValueError) as exc:
+    except (LookupError, PermissionError, ValueError, SQLAlchemyError, HTTPException) as exc:
         # Roll the stored file back if the submission is not acceptable.
-        try:
-            if storage.exists(object_key):
-                storage.delete(object_key)
-        except Exception:  # pragma: no cover
-            pass
+        from app.services.storage_cleanup import compensate_upload
+        db.rollback()
+        compensate_upload(db, object_key)
+        if isinstance(exc, HTTPException):
+            raise
+        if isinstance(exc, SQLAlchemyError):
+            raise HTTPException(500, "Unable to save submission") from exc
         detail = str(exc) or "Submission rejected"
         code = 404 if isinstance(exc, LookupError) else (403 if isinstance(exc, PermissionError) else 422)
         raise HTTPException(status_code=code, detail=detail) from exc
@@ -2288,7 +2418,7 @@ async def upload_assignment_submission_file(
     return {
         "id": str(submission.id),
         "version": submission.version,
-        "object_key": submission.object_key,
+        "has_file": bool(submission.object_key),
         "status": submission.status,
         "submitted_at": submission.submitted_at.isoformat() if submission.submitted_at else None,
     }

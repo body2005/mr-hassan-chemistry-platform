@@ -28,6 +28,7 @@ describe("apiClient request discipline", () => {
   beforeEach(() => {
     vi.resetModules();
     document.cookie = "";
+    localStorage.clear();
   });
 
   afterEach(() => {
@@ -143,5 +144,21 @@ describe("apiClient request discipline", () => {
     const u2 = await apiRequest<{ counter: number }>("/users?role=student", { cacheTtlMs: 60_000 });
     expect(u2.counter).toBe(2);
     expect(calls.filter((c) => c.input.includes("/users?role=student")).length).toBe(2);
+  });
+
+  it("cookie-only probes renew once without using a cached bearer to hide an expired cookie", async () => {
+    localStorage.setItem("lms_session_token", "valid-cached-bearer");
+    let probe = 0;
+    const calls = stubFetch(input => {
+      if (input.endsWith("/auth/refresh")) return new Response(JSON.stringify({ token: "new-bearer" }), { status: 200 });
+      return new Response(JSON.stringify(++probe === 1 ? { detail: "Expired cookie" } : { id: "teacher" }), { status: probe === 1 ? 401 : 200 });
+    });
+    const { apiRequest } = await import("./apiClient");
+    await expect(apiRequest("/auth/me", { cookieOnly: true, skipCache: true })).resolves.toEqual({ id: "teacher" });
+    const probes = calls.filter(c => c.input.endsWith("/auth/me"));
+    expect(probes).toHaveLength(2);
+    for (const call of probes) expect(new Headers(call.init?.headers).has("Authorization")).toBe(false);
+    expect(calls.filter(c => c.input.endsWith("/auth/refresh"))).toHaveLength(1);
+    expect(localStorage.getItem("lms_session_token")).toBe("new-bearer");
   });
 });

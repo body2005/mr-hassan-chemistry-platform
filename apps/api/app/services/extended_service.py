@@ -87,6 +87,10 @@ def create_lesson_asset(
     if course is None or course.institution_id != user.institution_id:
         raise LookupError("Lesson not found")
     _ensure_manager(user)
+    if user.role == UserRole.TEACHER and course.teacher_id != user.id:
+        raise LookupError("Lesson not found")
+    if object_key:
+        raise ValueError("Object keys must be created by the authenticated material-upload endpoint")
     asset = LessonAsset(
         lesson_id=lesson.id,
         institution_id=user.institution_id,
@@ -112,6 +116,11 @@ def list_lesson_assets(db: Session, user: User, lesson_id: uuid.UUID) -> list[Le
     course = db.get(Course, module.course_id) if module else None
     if course is None or course.institution_id != user.institution_id:
         raise LookupError("Lesson not found")
+    from app.services.payment_service import can_access_lesson_content
+    if user.role == UserRole.TEACHER and course.teacher_id != user.id:
+        raise LookupError("Lesson not found")
+    if user.role == UserRole.STUDENT and not can_access_lesson_content(db, user, lesson.id):
+        raise PermissionError("Lesson access required")
     return list(
         db.scalars(select(LessonAsset).where(LessonAsset.lesson_id == lesson.id)).all()
     )
@@ -407,6 +416,7 @@ def compute_student_mastery(db: Session, user: User, student_id: uuid.UUID) -> l
             .where(
                 QuizAttempt.student_id == student_id,
                 QuizAttempt.is_practice.is_(False),
+                QuizAttemptAnswer.graded_at.is_not(None),
                 Question.learning_objective == objective.code,
             )
         ).all()

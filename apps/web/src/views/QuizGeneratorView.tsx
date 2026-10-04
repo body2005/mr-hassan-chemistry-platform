@@ -256,6 +256,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<QuizDraftResponse | null>(() => initialDraft?.draft || null);
   const [approved, setApproved] = useState(false);
+  const [publicationWarning, setPublicationWarning] = useState<string | null>(null);
   const [attemptedSubmit, setAttemptedSubmit] = useState(false);
   const [touchedFields, setTouchedFields] = useState<Record<string, boolean>>({});
 
@@ -834,6 +835,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     }
 
     setIsPublishing(true);
+    setPublicationWarning(null);
     try {
       const yearLabel =
         selectedAcademicYear === "1st_secondary"
@@ -855,7 +857,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
         id: `evt_${assessmentType}_${Date.now()}`,
         academicYear: selectedAcademicYear,
         date: publishStartDate,
-        dayName: `${isQuiz ? "اختبار" : "واجب"}: ${titleToPublish}`,
+        // The event type already identifies quiz/assignment. Adding a prefix
+        // would overflow the API's 200-character limit for a valid title.
+        dayName: titleToPublish,
         time: publishStartTime,
         contentType: assessmentType,
         isPublishedToStudents: showOnStudentCalendar,
@@ -865,14 +869,13 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
         closeDeadline: `${closeDeadlineDate} ${closeDeadlineTime}`,
       };
 
-      await calendarService.saveCalendarEvent(newCalendarEvent);
-
-      // 2. Send Scheduled / Instant Notification to Students
-      if (sendScheduledNotification) {
-        const newNotif: NotificationItem = {
+      const newNotif: NotificationItem = {
           id: `notif_${assessmentType}_${Date.now()}`,
-          title: `${isQuiz ? "اختبار جديد" : "واجب منزلي جديد"}: ${titleToPublish}`,
-          message: "",
+          // Notification titles have their own 200-character API limit. Keep
+          // the full assessment title in the body, without overflowing on the
+          // prefix when the teacher uses the maximum valid title length.
+          title: `${isQuiz ? "اختبار جديد" : "واجب منزلي جديد"}: ${titleToPublish}`.slice(0, 200),
+          message: `تم نشر ${isQuiz ? "اختبار" : "واجب"} «${titleToPublish}». ${isQuiz ? `مدة الحل: ${durationNum} دقيقة. ` : ""}آخر موعد: ${closeDeadlineDate} ${closeDeadlineTime}.`,
           type: assessmentType,
           targetYear: selectedAcademicYear,
           createdAt: "الآن",
@@ -880,10 +883,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
           actionTab: "MyCourses",
           quizDurationMinutes: durationNum,
           quizCloseDeadline: `${closeDeadlineDate} ${closeDeadlineTime}`,
-        };
-
-        await notificationService.saveNotification(newNotif);
-      }
+      };
 
       // 3. Publish to the SERVER (real, student-visible) — questions, quiz/assignment,
       // then publish. Requires a selected course and a lesson to attach to.
@@ -943,13 +943,25 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
         selectedLessonIds,
       });
 
+      setPublicationWarning("تم نشر المحتوى؛ جارٍ تحديث التقويم والإشعار...");
       setApproved(true);
       setShowPublishConfirmModal(false);
       localStorage.removeItem(quizDraftStorageKey);
       setHasRestoredDraft(false);
+      // Publish the actual assessment BEFORE announcing it. An ancillary
+      // notification/calendar failure must not cause duplicate publication on
+      // retry or falsely claim that the already-published assessment failed.
+      const ancillary = await Promise.allSettled([
+        calendarService.saveCalendarEvent(newCalendarEvent),
+        ...(sendScheduledNotification ? [notificationService.saveNotification(newNotif)] : []),
+      ]);
+      const warning = ancillary.some(result => result.status === "rejected")
+        ? "تم نشر المحتوى، لكن تعذر إكمال التقويم أو الإشعار. لا تعِد نشره؛ راجع صفحة الإشعارات."
+        : null;
+      setPublicationWarning(warning);
       toast({
-        message: `تم اعتماد ونشر ${isQuiz ? "الاختبار" : "الواجب"} وإدراجه في سجل الاختبارات المرفوعة وجدول الطلاب بنجاح!`,
-        tone: "success",
+        message: warning || `تم اعتماد ونشر ${isQuiz ? "الاختبار" : "الواجب"} وإدراجه في سجل الاختبارات المرفوعة وجدول الطلاب بنجاح!`,
+        tone: warning ? "warning" : "success",
       });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "حدث خطأ أثناء حفظ ونشر الاختبار.");
@@ -1779,7 +1791,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                 <div style={{ padding: "12px 16px", background: "#dcfce7", color: "#166534", borderRadius: "10px", fontSize: "13px", fontWeight: 700, marginBottom: "16px", border: "1px solid #86efac", display: "flex", alignItems: "center", gap: "8px" }}>
                   <CheckSquare size={18} />
                   <span>
-                    تم حفظ ونشر {assessmentType === "quiz" ? "الاختبار" : "الواجب المنزلي"} بنجاح وتثبيت موعده في التقويم ({showOnStudentCalendar ? "معروض في جدول الطلاب" : "في جدول المعلم فقط"}) {sendScheduledNotification && "وإرسال إشعار فوري لطلاب هذا الصف!"}
+                    {publicationWarning || <>تم حفظ ونشر {assessmentType === "quiz" ? "الاختبار" : "الواجب المنزلي"} بنجاح وتثبيت موعده في التقويم ({showOnStudentCalendar ? "معروض في جدول الطلاب" : "في جدول المعلم فقط"}) {sendScheduledNotification && "وإرسال إشعار فوري لطلاب هذا الصف!"}</>}
                   </span>
                 </div>
               )}

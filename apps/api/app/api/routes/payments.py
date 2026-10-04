@@ -23,6 +23,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.events import event_broker
 from app.core.storage import generate_safe_object_key, get_storage_provider
+from app.services.storage_cleanup import compensate_upload, enqueue_cleanup
 from app.models.payment import (
     PaymentMethod,
     PaymentOrder,
@@ -157,12 +158,13 @@ async def upload_payment_receipt(
     payer_reference: str | None = Form(default=None),
     receipt: UploadFile = File(...),
 ) -> dict[str, Any]:
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
     order = db.scalar(
         select(PaymentOrder).where(
             PaymentOrder.id == order_id,
             PaymentOrder.student_id == user.id,
             PaymentOrder.institution_id == user.institution_id,
-        )
+        ).with_for_update().execution_options(populate_existing=True)
     )
     if not order:
         raise HTTPException(status_code=404, detail="Payment order not found")
@@ -206,11 +208,9 @@ async def upload_payment_receipt(
     try:
         stored_path = storage.save_file(destination, storage_key, receipt.content_type or mimetypes.guess_type(storage_key)[0])
     except Exception as exc:
-        try:
-            storage.delete(storage_key)
-        except Exception:
-            logger.exception("Failed to clean up receipt object after storage failure: %s", storage_key)
-        raise HTTPException(status_code=500, detail="Unable to store payment receipt") from exc
+        db.rollback()
+        compensate_upload(db, storage_key)
+        raise HTTPException(status_code=503, detail="Unable to store payment receipt") from exc
     finally:
         if os.path.exists(destination):
             os.remove(destination)
@@ -218,6 +218,8 @@ async def upload_payment_receipt(
     order.receipt_path = stored_path
     order.payer_reference = (payer_reference or order.payer_reference or "").strip()[:160] or None
     order.status = PaymentStatus.UNDER_REVIEW
+    if previous_path and previous_path != stored_path:
+        enqueue_cleanup(db, previous_path)
 
     # Dispatch notification to teachers/reviewers
     try:
@@ -227,6 +229,8 @@ async def upload_payment_receipt(
                 User.role.in_([UserRole.TEACHER, UserRole.INSTITUTION_ADMIN, UserRole.PLATFORM_ADMIN]),
             )
         ).all()
+        teachers = [teacher for teacher in teachers if teacher.is_active and not teacher.deleted_at
+                    and payment_service.can_review_order(db, teacher, order)]
         student_name = order.student.display_name if order.student else "طالب"
         for teacher in teachers:
             db.add(
@@ -246,17 +250,9 @@ async def upload_payment_receipt(
         db.commit()
     except SQLAlchemyError as exc:
         db.rollback()
-        try:
-            storage.delete(stored_path)
-        except Exception:
-            logger.exception("Failed to clean up receipt object after database failure: %s", stored_path)
+        compensate_upload(db, stored_path)
         raise HTTPException(status_code=500, detail="Unable to save payment receipt") from exc
     db.refresh(order)
-    if previous_path and previous_path != stored_path:
-        try:
-            storage.delete(previous_path)
-        except Exception:
-            logger.exception("Failed to clean up replaced receipt object: %s", previous_path)
 
     order_resp = _order_response(order)
     try:
@@ -347,9 +343,13 @@ def approve_payment_order(
     db: Db,
 ) -> dict[str, Any]:
     order = db.get(PaymentOrder, order_id)
-    if not order:
+    if not order or not payment_service.can_review_order(db, user, order):
         raise HTTPException(status_code=404, detail="Payment order not found")
-    approved_order = payment_service.approve_order(db, user, order, payload.note)
+    db.execute(select(User.id).where(User.id == order.student_id).with_for_update())
+    order = db.scalar(select(PaymentOrder).where(PaymentOrder.id == order.id).with_for_update().execution_options(populate_existing=True))
+    if order.status == PaymentStatus.PAID:
+        return _order_response(order)
+    approved_order = payment_service.approve_order(db, user, order, payload.note, commit=False)
 
     try:
         student_notif = Notification(
@@ -363,7 +363,9 @@ def approve_payment_order(
         db.add(student_notif)
         db.commit()
     except Exception:
-        logger.exception("Failed to dispatch payment approval notification")
+        logger.warning("Payment approval transaction failed")
+        db.rollback()
+        raise HTTPException(500, "Unable to save payment approval")
 
     order_resp = _order_response(approved_order)
     try:
@@ -412,8 +414,12 @@ def reject_payment_order(
     order = db.get(PaymentOrder, order_id)
     if not order or not payment_service.can_review_order(db, user, order):
         raise HTTPException(status_code=404, detail="Payment order not found")
+    db.execute(select(User.id).where(User.id == order.student_id).with_for_update())
+    order = db.scalar(select(PaymentOrder).where(PaymentOrder.id == order.id).with_for_update().execution_options(populate_existing=True))
     if order.status == PaymentStatus.PAID:
         raise HTTPException(status_code=409, detail="Paid orders cannot be rejected")
+    if order.status in {PaymentStatus.REJECTED, PaymentStatus.CANCELLED}:
+        return _order_response(order)
     order.status = PaymentStatus.REJECTED
     order.reviewed_by = user.id
     order.reviewed_at = datetime.now(timezone.utc)

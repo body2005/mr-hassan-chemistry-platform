@@ -93,7 +93,7 @@ def authenticate(db: Session, payload: LoginRequest) -> User | None:
             User.institution_id == institution.id,
             (User.email == raw_ident) | (User.username == raw_ident),
             User.deleted_at.is_(None),
-        )
+        ).with_for_update()
     )
 
     if user is None or not user.is_active:
@@ -104,16 +104,16 @@ def authenticate(db: Session, payload: LoginRequest) -> User | None:
         return None
 
     user.last_login_at = datetime.now(UTC)
-    db.commit()
-    db.refresh(user)
+    db.flush()
     return user
 
 
 def change_password(db: Session, user: User, payload: ChangePasswordRequest) -> None:
+    user = db.scalar(select(User).where(User.id == user.id).with_for_update().execution_options(populate_existing=True))
     if not verify_password(payload.current_password, user.password_hash):
         raise ValueError("Current password is incorrect")
     user.password_hash = hash_password(payload.new_password)
-    db.commit()
+    db.flush()
 
 
 def request_password_reset(db: Session, email: str, institution_slug: str) -> str | None:
@@ -147,11 +147,13 @@ def request_password_reset(db: Session, email: str, institution_slug: str) -> st
 
 
 def reset_password(db: Session, payload: PasswordResetConfirm) -> None:
+    owner_id = db.scalar(select(PasswordResetToken.user_id).where(PasswordResetToken.token_hash == hash_token(payload.token)))
+    user = db.scalar(select(User).where(User.id == owner_id).with_for_update().execution_options(populate_existing=True))
     token = db.scalar(
         select(PasswordResetToken).where(
             PasswordResetToken.token_hash == hash_token(payload.token),
             PasswordResetToken.used_at.is_(None),
-        )
+        ).with_for_update().execution_options(populate_existing=True)
     )
     now = datetime.now(UTC)
     # SQLite drops timezone metadata for DateTime columns; PostgreSQL keeps it.
@@ -160,8 +162,10 @@ def reset_password(db: Session, payload: PasswordResetConfirm) -> None:
         expires_at = expires_at.replace(tzinfo=UTC)
     if token is None or expires_at is None or expires_at <= now:
         raise ValueError("Reset token is invalid or expired")
+    if user is None or not user.is_active or user.deleted_at is not None:
+        raise ValueError("Reset token is invalid or expired")
 
-    token.user.password_hash = hash_password(payload.new_password)
+    user.password_hash = hash_password(payload.new_password)
     token.used_at = now
     # A recovered account must not retain sessions created with the old secret.
     from app.models.platform import RefreshSession

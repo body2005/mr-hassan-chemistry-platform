@@ -1,0 +1,32 @@
+# Disposable QA only: actual API + worker use BOTH restored PostgreSQL and S3.
+# Writers were frozen before the snapshot. Do not use this overlay on a server.
+services:
+  api:
+    environment:
+      QA_ISOLATED: "true"
+      QA_PROJECT: ${QA_PROJECT:?isolated project required}
+      S3_ENDPOINT_URL: http://s3-restore:8333
+    volumes: [./qa:/qa-tools:ro]
+    command: ["python", "/qa-tools/use-restored-db.py", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+  worker:
+    environment:
+      QA_ISOLATED: "true"
+      QA_PROJECT: ${QA_PROJECT:?isolated project required}
+      S3_ENDPOINT_URL: http://s3-restore:8333
+    volumes: [./qa:/qa-tools:ro]
+    command: ["python", "/qa-tools/use-restored-db.py", "celery", "-A", "app.tasks.celery_app.celery_app", "worker", "--loglevel=info", "--concurrency=1", "-Q", "notifications,reports,analytics", "-I", "tests.integration.worker_probe"]
+  qa-tests:
+    environment:
+      S3_ENDPOINT_URL: http://s3-restore:8333
+      PYTHONPATH: /srv
+    volumes: [./qa:/qa-tools:ro]
+  video-worker:
+    environment:
+      QA_ISOLATED: "true"
+      QA_PROJECT: ${QA_PROJECT:?isolated project required}
+      S3_ENDPOINT_URL: http://s3-restore:8333
+    volumes: [./qa:/qa-tools:ro]
+    command: ["python", "/qa-tools/use-restored-db.py", "python", "-m", "scripts.video_worker"]
+  upload-gateway:
+    environment:
+      VIDEO_S3_HOST: s3-restore

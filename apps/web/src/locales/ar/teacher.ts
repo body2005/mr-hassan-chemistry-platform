@@ -11,7 +11,7 @@ export const teacherAr = {
   // Lesson Management & Upload
   uploadLessonBadge: "إدارة المحتوى وتوقعات الصعوبة",
   uploadLessonTitle: "إدارة ورفع دروس الكيمياء وتوقعات صعوبة المنهج",
-  uploadLessonSubtitle: "ارفع فيديوهات شروحات الكيمياء والمذكرات، وتعرف على توقعات الذكاء الاصطناعي لأصعب أجزاء المنهج ونسب تعثر الطلاب.",
+  uploadLessonSubtitle: "ارفع فيديوهات شروحات الكيمياء والمذكرات، وراجع إحصاءات إكمال الدروس ونتائج الاختبارات المحسوبة.",
   metricEngagement: "١. نسبة متابعة الطلاب:",
   metricStruggle: "٢. توقع الدرس الأصعب ونسبة التعثر:",
   metricMisconception: "٣. نسبة عدم الفهم المتوقعة:",
@@ -29,7 +29,7 @@ export const teacherAr = {
 
   // Quiz & Assignment Generator
   quizGenTitle: "صانع الاختبارات والواجبات الذكية",
-  quizGenSubtitle: "أنشئ بنوك أسئلة واختبارات مع تصحيح ذكي وتوليد نماذج الإجابة",
+  quizGenSubtitle: "أنشئ بنوك أسئلة واختبارات مع تصحيح يدوي وتوليد نماذج الإجابة",
   saveDraft: "حفظ المسودة",
   publishQuiz: "نشر الاختبار",
   draftSavedSuccess: "تم حفظ مسودة الاختبار بنجاح",

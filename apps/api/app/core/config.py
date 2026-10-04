@@ -84,6 +84,20 @@ class Settings(BaseSettings):
     rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
     # Max simultaneous video playback sessions per (account, lesson) pair.
     video_max_concurrent_sessions: int = Field(default=2, ge=1, le=10)
+    video_direct_upload_enabled: bool = False
+    video_upload_public_endpoint: str | None = None
+    video_drm_required: bool = False
+
+    @model_validator(mode="after")
+    def validate_video_upload_endpoint(self) -> "Settings":
+        from urllib.parse import urlsplit
+        if self.video_direct_upload_enabled:
+            endpoint = urlsplit(self.video_upload_public_endpoint or "")
+            if endpoint.scheme != "https" or not endpoint.netloc or endpoint.path not in {"", "/"} or endpoint.query or endpoint.fragment or endpoint.username:
+                raise ValueError("Direct video uploads require an HTTPS origin without a path or credentials")
+            if self.storage_backend.lower() not in {"s3", "r2", "minio"}:
+                raise ValueError("Direct video uploads require object storage")
+        return self
 
     @property
     def secure_cookies(self) -> bool:

@@ -16,7 +16,7 @@ import {
 import { AssignmentSubmission, CustomColumn, StudentRecord } from "../types/lms";
 import { submissionService, userService } from "../services/lmsService";
 import type { ApiManagedUser } from "../services/lmsService";
-import { getCachedData } from "../services/apiClient";
+import { getCachedData, invalidateApiCache } from "../services/apiClient";
 import { AssignmentModal } from "../components/AssignmentModal";
 import { ExamGradingModal } from "../components/ExamGradingModal";
 import { CustomColumnModal } from "../components/CustomColumnModal";
@@ -62,6 +62,7 @@ function mapApiStudentToRecord(item: ApiManagedUser): StudentRecord {
       (typeof item.average_quiz_score === "number" && item.average_quiz_score > 0) ||
       Boolean(item.has_completed_exam)
     ),
+    pendingQuizAttempts: item.pending_quiz_attempts ?? 0,
     studentPhone: item.student_phone || item.phone || "—",
     governorate: item.governorate || "—",
     schoolName: item.school_name || "—",
@@ -211,23 +212,19 @@ export const SubmissionsView: React.FC = () => {
         message: error instanceof Error ? error.message : "تعذر اعتماد الدرجة",
         tone: "danger",
       });
+      throw error;
     }
   }
 
-  function handleApproveExamGrade(studentId: string, updatedExamScore: number) {
-    setStudents((prev) =>
-      prev.map((s) => {
-        if (s.id !== studentId) return s;
-        const newQuizScore = Math.max(0, Math.min(100, Math.round(updatedExamScore)));
-        const newTotal = Math.round((newQuizScore + s.homeworkSuccessRate) / 2);
-        return {
-          ...s,
-          quizSuccessRate: newQuizScore,
-          averageQuizScore: newQuizScore,
-          totalOverallGrade: newTotal,
-        };
-      })
-    );
+  async function handleApproveExamGrade(_studentId: string, updatedExamScore: number) {
+    invalidateApiCache("/users");
+    try {
+      const updated = await userService.getStudents();
+      setStudents(updated.map(mapApiStudentToRecord));
+    } catch {
+      toast({ message: "حُفظ التصحيح، لكن تعذر تحديث الإحصاءات. أعد تحميل الصفحة.", tone: "danger" });
+      return;
+    }
     toast({
       message: `تم حفظ واعتماد درجة الامتحان بنجاح (${Math.round(updatedExamScore)}%)`,
       tone: "success",
@@ -827,8 +824,8 @@ export const SubmissionsView: React.FC = () => {
                       </strong>
                     </td>
                     <td style={{ textAlign: "center" }}>
-                      <strong style={{ fontSize: "14px", color: student.quizSuccessRate >= 70 ? "#059669" : "#ef4444", fontVariantNumeric: "tabular-nums" }}>
-                        {student.quizSuccessRate}%
+                      <strong style={{ fontSize: "14px", color: student.pendingQuizAttempts ? "var(--text-muted)" : student.quizSuccessRate >= 70 ? "#059669" : "#ef4444", fontVariantNumeric: "tabular-nums" }}>
+                        {student.pendingQuizAttempts ? "بانتظار التصحيح" : `${student.quizSuccessRate}%`}
                       </strong>
                     </td>
                     <td style={{ textAlign: "center" }}>

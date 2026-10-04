@@ -1,6 +1,6 @@
 # Production Docker: SeaweedFS/S3 operator runbook
 
-This is a reviewed deployment candidate, not external deployment approval. Current results are in [QA_PRODUCTION_STORAGE_2026-09-30.md](QA_PRODUCTION_STORAGE_2026-09-30.md). No real server, public certificate, real merchant payment or external email delivery has been tested.
+This is a deployment candidate, not external deployment approval. The September report is historical; use [QA_AUDIT_2026-10-03.md](QA_AUDIT_2026-10-03.md) for current code/image checks and open gates. No real server, public certificate, real merchant payment or external email delivery has been tested.
 
 ## Production settings
 
@@ -26,13 +26,21 @@ Windows prerequisites: Docker Desktop Linux Engine, PowerShell 7, Node/npm, Git 
 
 ```powershell
 ./scripts/qa/run-production.ps1 -Stage All
+# Independent second QA project, without deleting an existing project's data:
+./scripts/qa/run-production.ps1 -Project chemistryaudit2 -Stage All
 ```
 
 This builds the REAL `infra/docker-compose.yml` plus `infra/qa/production.override.yml` as `chemistryprodlocal`, with fresh synthetic data, loopback HTTPS 18443, HTTP 18480 and Mailpit 18425. It generates a 14-day local test certificate. Python clients and SMTP explicitly trust that certificate; only Playwright's explicit local-test setting accepts the self-signed certificate. Production SMTP verification remains enabled and cannot be disabled by production settings.
 
 The overlay adds resource limits, disposable test tooling, and a QA-only Celery recovery probe. It does NOT substitute the production store or expose PG/Redis/S3. Only the QA runner gets the Docker socket to inject failures into the exact isolated project. Do not mount that socket in app containers or use this harness against real data.
 
-Stages `Prepare`, `Storage`, `Tests`, `Load`, `Scan` can be rerun individually, with prerequisites already created. The API and browser suites run sequentially. Redis rate counters are isolated BETWEEN test cases; the real limits remain on WITHIN each case. The storage drill uses actual logout/revoke-all rather than changing limits. Failed gates throw and stop; no stage pushes, merges or publishes. Review commands-<stage>.json, api-tests.xml, browser-tests.xml, load.json and scout-*.sarif. These artifacts can contain synthetic user data; do not share generated secret files.
+The second project uses `.qa/audit2`, HTTPS 18543, HTTP 18580 and Mailpit 18525. Both projects use the same production template and pinned store. Do not copy a QA overlay to a public server. The local self-signed certificate explains Chrome's warning; it is not evidence that authenticated API mutations should return 401/422. Never disable browser security globally to use this harness.
+
+Stages `Prepare`, `Storage`, `Tests`, `Load`, `Dependencies`, `Scan`, `Extract` can be rerun individually, with prerequisites already created. API and browser suites run sequentially. Only shared-IP auth counters are cleared BETWEEN serial cases in the allowlisted QA project; user rate windows, video/session ledgers and admission limits are not erased. Reused demo users wait for their actual auth window to expire; publication tests provision a distinct synthetic teacher per case. The real limits remain active WITHIN each case. Cleanup uses actual logout/revoke-all rather than changing limits. Failed gates throw and stop; no stage pushes, merges or publishes. Review commands-<stage>.json, api-unit-tests.xml, api-integration-tests.xml, browser-tests.xml, load.json, scout-*.sarif and extract-fidelity.json. These artifacts can contain synthetic user data; do not share generated secret files.
+
+The in-process SQLite test app uses `QA_UNIT_REDIS_URL` (DB15); fixture maintenance never clears the actual HTTPS app's Redis DB0. A live regression preserves a unique sentinel in DB0 across unit resets. Keep these URLs distinct. This separation changes test tooling only, not production rate limits.
+
+`Dependencies` creates a clean temporary virtualenv, installs the project, builds its wheel and compares every active runtime requirement against the exact version lock, installed distribution and wheel metadata. Dev transitive dependencies are not fully locked; this is not hash-verified reproducibility. `Extract` compares blind inputs against separately transcribed question stems and ordered options, not merely counts/types. It fails on textual discrepancies even if the structural tests pass. Do not replace this gate with a weaker test or silently repair text from the expected reference.
 
 Legacy `infra/qa/compose.yml` preserves the earlier HTTP-only test harness, not the production evaluation. The older mixed-load smoke script is historical; use the longer new `scripts/qa/run-production.ps1 -Stage Load`.
 

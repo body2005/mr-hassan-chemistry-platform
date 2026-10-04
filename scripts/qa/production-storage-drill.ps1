@@ -1,8 +1,10 @@
-param([string]$Docker = 'C:\Users\body\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe')
+param([string]$Docker = 'C:\Users\body\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe',
+      [ValidateSet('chemistryprodlocal','chemistryaudit2')][string]$Project = 'chemistryprodlocal')
 $ErrorActionPreference = 'Stop'
 $taskRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 Set-Location $taskRoot
-$compose = @('compose','--env-file','.qa/production/compose.env','-p','chemistryprodlocal','-f','infra/docker-compose.yml','-f','infra/qa/production.override.yml')
+$folder = if ($Project -eq 'chemistryaudit2') { 'audit2' } else { 'production' }
+$compose = @('compose','--env-file',".qa/$folder/compose.env",'-p',$Project,'-f','infra/docker-compose.yml','-f','infra/qa/production.override.yml')
 function Invoke-QaCompose([string[]]$Arguments) {
     & $Docker @compose @Arguments
     if ($LASTEXITCODE -ne 0) { throw "QA Compose failed (exit $LASTEXITCODE): $Arguments" }
@@ -38,20 +40,20 @@ try {
     Invoke-QaCompose @('run','--rm','--no-deps','backup-postgres')
     Invoke-QaCompose @('run','--rm','--no-deps','--build','backup-s3')
     Invoke-QaCompose @('run','--rm','--no-deps','--build','backup-videos')
-    $snapshot = Get-ChildItem -LiteralPath '.qa/production/backups/s3' -Directory | Sort-Object Name | Select-Object -Last 1
+    $snapshot = Get-ChildItem -LiteralPath ".qa/$folder/backups/s3" -Directory | Sort-Object Name | Select-Object -Last 1
     if (!$snapshot -or !(Test-Path (Join-Path $snapshot.FullName 'manifest.json'))) { throw 'No completed snapshot found' }
     # Same bucket NAME on a completely NEW server/volume: stored s3:// paths
     # remain valid. Distinct volume names make the drill repeatable safely.
     $bucket = 'chemistry-production-qa'
     $env:QA_RESTORE_RUN_ID = $snapshot.Name.ToLowerInvariant()
-    $dump = Get-ChildItem -LiteralPath '.qa/production/backups' -Filter 'postgres-*.dump' | Sort-Object Name | Select-Object -Last 1
+    $dump = Get-ChildItem -LiteralPath ".qa/$folder/backups" -Filter 'postgres-*.dump' | Sort-Object Name | Select-Object -Last 1
     Invoke-QaCompose @('up','-d','--wait','--wait-timeout','90','s3-restore','postgres-restore')
     Invoke-QaCompose @('run','--rm','--no-deps','-e','S3_ENDPOINT_URL=http://s3-restore:8333','-e',"S3_BUCKET=$bucket",'qa-tests','python','scripts/s3_snapshot.py','restore','--snapshot',"/qa/backups/s3/$($snapshot.Name)")
     # No clean/drop flags; a used restore target must be reviewed, not overwritten.
     Invoke-QaCompose @('exec','-T','postgres-restore','pg_restore','--exit-on-error','--no-owner','--no-privileges','-U','lms','-d','restored',"/backups/$($dump.Name)")
     Invoke-QaCompose @('run','--rm','--no-deps','qa-tests','python','-m','scripts.verify_db_restore')
     Invoke-QaCompose @('up','-d','--no-deps','--wait','--wait-timeout','160','worker')
-    $restoreOverlay = Join-Path $taskRoot '.qa/production/restore-app.override.yml'
+    $restoreOverlay = Join-Path $taskRoot ".qa/$folder/restore-app.override.yml"
     [IO.File]::WriteAllText($restoreOverlay, "services:`n  api:`n    environment:`n      S3_ENDPOINT_URL: http://s3-restore:8333`n")
     & $Docker @compose -f $restoreOverlay up -d --no-deps --force-recreate api
     if ($LASTEXITCODE -ne 0) { throw 'Could not test API on restored storage' }

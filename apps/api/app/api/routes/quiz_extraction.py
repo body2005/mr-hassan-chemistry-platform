@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import re
 import uuid
@@ -293,7 +294,11 @@ async def extract_quiz_from_file(
                     logger.warning("Standard parse failed for text/csv %s, falling back to line reader: %s", filename, exc)
                     return []
 
-        extracted_candidates = await anyio.to_thread.run_sync(_run_sync_extraction)
+        from app.services.extraction_limits import ExtractionLimitError
+        try:
+            extracted_candidates = await anyio.to_thread.run_sync(_run_sync_extraction)
+        except (ExtractionLimitError, ValueError) as exc:
+            raise HTTPException(422, detail={"code": "EXTRACTION_RESOURCE_OR_FORMAT_LIMIT", "message": str(exc)}) from exc
 
         # Safe text-only fallback: STRICTLY for plain text documents (TXT, CSV), NEVER for binary PDFs
         is_plain_text_doc = extension in {".txt", ".text", ".csv", ".tsv"}
@@ -308,7 +313,10 @@ async def extract_quiz_from_file(
         seen_questions: set[str] = set()
         for rec in extracted_candidates:
             question_text = str(rec.get("question_text") or "").strip()
-            fingerprint = re.sub(r"\s+", "", question_text).lower()
+            # A shared introduction does not make two questions identical.
+            identity = [question_text, rec.get("canonical_type") or rec.get("question_type"),
+                        rec.get("options") or []]
+            fingerprint = json.dumps(identity, ensure_ascii=False, sort_keys=True)
             if not question_text or fingerprint in seen_questions:
                 continue
             seen_questions.add(fingerprint)
@@ -407,7 +415,7 @@ async def extract_quiz_from_file(
             description=f"تم استخراج {len(generated_questions)} سؤالاً تلقائياً من ملف ({filename}).",
             total_points=total_points,
             questions=generated_questions,
-            is_complete=True,
+            is_complete=not any(q.needs_content_review for q in generated_questions),
             requires_teacher_approval=True,
             cached=False,
             metadata={

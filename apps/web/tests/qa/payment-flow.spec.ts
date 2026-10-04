@@ -91,7 +91,9 @@ test("receipt review grants only the paying student access and sends notificatio
     await expect(row).toBeVisible();
     await row.getByRole("button", { name: "تفعيل" }).click();
     await page.getByRole("dialog", { name: "تأكيد استلام المبلغ" }).getByRole("button", { name: "تفعيل الآن" }).click();
-    await expect(row.getByText("paid")).toBeVisible();
+    // Substring matching also matches "QA Paid Lesson" before approval commits.
+    // Wait for the actual state, not the product title, before checking access.
+    await expect(row.getByText("paid", { exact: true })).toBeVisible();
     expect((await (await teacher.get(`payments/orders/${order.id}`)).json()).status).toBe("paid");
     expect((await student.get(download)).status()).toBe(200);
     expect((await otherStudent.get(download)).status()).toBe(403);

@@ -104,7 +104,8 @@ def test_video_stream_requires_a_scoped_token_and_supports_ranges(db, monkeypatc
     token_response = client.post(f"/api/v1/lessons/{lesson.id}/video-token", headers=csrf_headers)
     assert token_response.status_code == 200
     payload = token_response.json()
-    assert set(payload) == {"video_token", "stream_url", "expires_in"}
+    assert set(payload) == {"video_token", "stream_url", "expires_in", "format"}
+    assert payload["format"] == "progressive"
     assert "manifest" not in payload
 
     # Range streaming works with the SAME session that requested the token:

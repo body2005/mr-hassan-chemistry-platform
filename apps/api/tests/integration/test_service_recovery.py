@@ -47,12 +47,19 @@ def test_service_failure_and_recovery(service):
             elapsed = time.monotonic() - start
         finally:
             target.start()
+            recovery_evidence = {}
             def recovered():
                 try:
-                    return teacher.get(f"{BASE}/ready", timeout=6).status_code == 200
-                except requests.RequestException:
+                    probe = teacher.get(f"{BASE}/ready", timeout=6)
+                    recovery_evidence.update(status=probe.status_code, body=probe.json())
+                    return probe.status_code == 200 and probe.json().get('status') == 'ready'
+                except (requests.RequestException, ValueError) as exc:
+                    recovery_evidence.update(status=type(exc).__name__)
                     return False
-            wait_until(recovered, 75)
+            try:
+                wait_until(recovered, 75)
+            finally:
+                print(json.dumps({'service': service, 'last_readiness': recovery_evidence}))
         response = teacher.get(f"{BASE}/courses", timeout=15)
         assert response.status_code == 200
         assert {item["id"] for item in response.json()["items"]} == course_ids

@@ -177,7 +177,6 @@ def login(payload: LoginRequest, response: Response, db: Db, request: Request) -
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     record_audit(db, request, action="login", resource_type="session", actor=user)
-    db.commit()
     result = _auth_response(user, uuid.uuid4(), db, response, request)
     db.commit()
     return result
@@ -196,17 +195,27 @@ def refresh(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh session is missing")
 
     now = datetime.now(UTC)
+    token_hash = hash_token(refresh_cookie)
+    owner_id = db.query(RefreshSession.user_id).filter(RefreshSession.token_hash == token_hash).scalar()
+    # Stable lock order for refresh/password/reset/revoke: user, then token.
+    user = db.query(User).filter(User.id == owner_id).with_for_update().populate_existing().one_or_none()
     # Lock the consumed row.  On PostgreSQL this makes two simultaneous
     # refreshes deterministic: one rotates it and the other observes replay.
     session = (
         db.query(RefreshSession)
-        .filter(RefreshSession.token_hash == hash_token(refresh_cookie))
+        .filter(RefreshSession.token_hash == token_hash)
         .with_for_update()
+        .populate_existing()
         .one_or_none()
     )
     if session is None:
         _clear_auth_cookies(response, request)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh session is invalid")
+    if user is None or not user.is_active or user.deleted_at is not None or _as_utc(session.expires_at) <= now:
+        session.revoked_at = now
+        db.commit()
+        _clear_auth_cookies(response, request)
+        raise HTTPException(status_code=401, detail="Refresh session is invalid or expired")
     if session.revoked_at is not None:
         if session.replaced_by:
             # Grace window: a rotated token replayed seconds later is the
@@ -220,16 +229,17 @@ def refresh(
                 .filter(
                     RefreshSession.family_id == session.family_id,
                     RefreshSession.revoked_at.is_(None),
+                    RefreshSession.expires_at > now,
                     RefreshSession.created_at >= grace_cutoff,
                 )
                 .order_by(RefreshSession.created_at.desc())
                 .first()
             )
-            if successor is not None:
-                user = db.get(User, session.user_id)
+            if successor is not None and _as_utc(session.revoked_at) >= grace_cutoff:
+                result = _auth_response(user, session.family_id, db, response, request)
                 record_audit(db, request, action="session_refreshed", resource_type="session", actor=user)
                 db.commit()
-                return _auth_response(user, session.family_id, db, response, request)
+                return result
             db.query(RefreshSession).filter(
                 RefreshSession.family_id == session.family_id,
                 RefreshSession.revoked_at.is_(None),
@@ -275,15 +285,14 @@ def logout(
     if payload:
         try:
             user_id = uuid.UUID(str(payload["sub"]))
-            user = db.get(User, user_id)
+            user = db.query(User).filter(User.id == user_id).with_for_update().populate_existing().one_or_none()
             if user:
-                db.add(
-                    RevokedSession(
+                if not db.query(RevokedSession.id).filter(RevokedSession.jti == str(payload["jti"])).first():
+                    db.add(RevokedSession(
                         jti=str(payload["jti"]),
                         user_id=user.id,
                         expires_at=datetime.fromtimestamp(float(payload["exp"]), UTC),
-                    )
-                )
+                    ))
                 family_id = payload.get("family_id")
                 if family_id:
                     db.query(RefreshSession).filter(
@@ -333,6 +342,7 @@ def change_password(
 
 @router.post("/revoke-all", status_code=status.HTTP_204_NO_CONTENT)
 def revoke_all_sessions(user: CurrentUser, db: Db, request: Request) -> None:
+    db.query(User).filter(User.id == user.id).with_for_update().populate_existing().one()
     now = datetime.now(UTC)
     db.query(RefreshSession).filter(
         RefreshSession.user_id == user.id,

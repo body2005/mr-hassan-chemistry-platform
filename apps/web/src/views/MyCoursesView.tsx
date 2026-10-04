@@ -66,7 +66,8 @@ export type QuizResultPage = {
   }>;
   score: number;
   total_points: number;
-  summary: { correct: number; wrong: number; skipped: number; total: number };
+  grading_status?: "pending" | "complete";
+  summary: { correct: number; wrong: number; skipped: number; pending?: number; total: number };
   questions: Array<{
     id: string;
     question_type: string;
@@ -74,7 +75,8 @@ export type QuizResultPage = {
     learning_objective: string | null;
     points: number;
     awarded: number;
-    state: "correct" | "wrong" | "skipped";
+    state: "correct" | "wrong" | "skipped" | "pending";
+    feedback?: string | null;
     answered: boolean;
     student_answer: string;
     student_answer_letter: number | null;
@@ -332,7 +334,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   const [serverQuizQuestionIndex, setServerQuizQuestionIndex] = useState(0);
   const [serverQuizFlagged, setServerQuizFlagged] = useState<Record<string, boolean>>({});
   const [serverQuizSubmitting, setServerQuizSubmitting] = useState(false);
-  const [serverQuizResult, setServerQuizResult] = useState<{ attemptId?: string; score: number; total: number; attemptNumber: number } | null>(null);
+  const [serverQuizResult, setServerQuizResult] = useState<{ attemptId?: string; score: number; total: number; attemptNumber: number; gradingStatus?: string } | null>(null);
   const [showQuizSubmitConfirm, setShowQuizSubmitConfirm] = useState(false);
   // Full graded result (standalone result page)
   const [quizResultPage, setQuizResultPage] = useState<QuizResultPage | null>(null);
@@ -674,7 +676,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         const created = await apiRequest<{ id: string }>(`/quizzes/${serverQuiz.quizId}/attempts`, { method: "POST" });
         attemptId = created.id;
       }
-      await apiRequest<{ score: number | null; total_points: number | null; attempt_number: number }>(`/quiz-attempts/${attemptId}/submit`, {
+      await apiRequest<{ score: number | null; total_points: number | null; attempt_number: number; grading_status: string }>(`/quiz-attempts/${attemptId}/submit`, {
         method: "POST",
         body: JSON.stringify({
           submission_key: `web-${attemptId}`.slice(0, 60),
@@ -689,6 +691,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           score: submitted.score ?? 0,
           total: submitted.total_points ?? serverQuiz.totalPoints,
           attemptNumber: submitted.attempt_number,
+          gradingStatus: submitted.grading_status,
         });
         setShowQuizSubmitConfirm(false);
       });
@@ -2643,7 +2646,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
                       <Sparkles size={28} style={{ color: "#059669" }} />
                       <div>
-                        <strong style={{ fontSize: "16px", color: "var(--text-main)", display: "block" }}>تم تسليم الاختبار وتصحيحه فورياً</strong>
+                          <strong style={{ fontSize: "16px", color: "var(--text-main)", display: "block" }}>{serverQuizResult.gradingStatus === "pending" ? "تم تسليم الاختبار — بانتظار التصحيح اليدوي" : "تم تسليم الاختبار وتصحيحه فورياً"}</strong>
                         <span style={{ fontSize: "12.5px", color: "var(--text-muted)" }}>
                           {serverQuizAttempt?.isPractice
                             ? `المحاولة رقم ${serverQuizResult.attemptNumber} — تدريبية: ظهرت لك فقط ولن تصل للمعلم أو كشف الدرجات.`
@@ -2652,7 +2655,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       </div>
                     </div>
                     <div style={{ fontSize: "26px", fontWeight: 900, color: "#059669" }}>
-                      {serverQuizResult.score} / {serverQuizResult.total} درجة
+                      {serverQuizResult.gradingStatus === "pending" ? "بانتظار التصحيح — الدرجة الحالية غير نهائية" : `${serverQuizResult.score} / ${serverQuizResult.total} درجة`}
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", marginTop: "16px" }}>
@@ -3059,11 +3062,12 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         const filtered = quizResultPage
           ? quizResultPage.questions.filter((q) => quizResultFilter === "all" || q.state === quizResultFilter)
           : [];
-        const stateLabel: Record<string, string> = { correct: "إجابة صحيحة", wrong: "إجابة خاطئة", skipped: "لم تُجب" };
+        const stateLabel: Record<string, string> = { correct: "إجابة صحيحة", wrong: "إجابة خاطئة", skipped: "لم تُجب", pending: "بانتظار التصحيح" };
         const stateColor: Record<string, { bg: string; fg: string; border: string }> = {
           correct: { bg: "rgba(5, 150, 105, 0.15)", fg: "#10b981", border: "rgba(5, 150, 105, 0.35)" },
           wrong: { bg: "rgba(220, 38, 38, 0.15)", fg: "#f87171", border: "rgba(220, 38, 38, 0.35)" },
           skipped: { bg: "var(--bg-surface-secondary)", fg: "var(--text-muted)", border: "var(--border-color)" },
+          pending: { bg: "var(--bg-surface-secondary)", fg: "var(--text-main)", border: "var(--border-color)" },
         };
         return (
           <div dir="rtl" style={{ position: "fixed", inset: 0, backgroundColor: "var(--bg-primary, #f8fafc)", zIndex: 100000, overflowY: "auto" }}>
@@ -3280,13 +3284,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                             />
                           </svg>
                           <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-                            <strong style={{ fontSize: "24px", fontWeight: 900, color: "var(--text-main)" }}>{percent}%</strong>
+                            <strong style={{ fontSize: "24px", fontWeight: 900, color: "var(--text-main)" }}>{quizResultPage.grading_status === "pending" ? "بانتظار التصحيح" : `${percent}%`}</strong>
                             <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>
                               {quizResultPage.score.toLocaleString("ar-EG")} / {quizResultPage.total_points.toLocaleString("ar-EG")} درجة
                             </span>
                           </div>
                         </div>
-                        <span style={{ fontSize: "12.5px", fontWeight: 900, color: "#059669", background: "var(--bg-accent)", border: "1px solid var(--border-accent)", padding: "5px 14px", borderRadius: "999px" }}>ممتاز — {rankLabel.split("—")[1]?.trim() || rankLabel}</span>
+                        <span style={{ fontSize: "12.5px", fontWeight: 900, color: "#059669", background: "var(--bg-accent)", border: "1px solid var(--border-accent)", padding: "5px 14px", borderRadius: "999px" }}>{quizResultPage.grading_status === "pending" ? "الدرجة الحالية غير نهائية" : rankLabel}</span>
                         {quizResultPage.attempt.is_practice && (
                           <span style={{ fontSize: "11px", fontWeight: 800, color: "#92400e", background: "#fef3c7", padding: "3px 10px", borderRadius: "8px" }}>محاولة تدريبية — لن تصل للمعلم</span>
                         )}
@@ -3429,7 +3433,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                                 </div>
                               ) : (
                                 <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: q.learning_objective ? "12px" : 0 }}>
-                                  <div style={{ padding: "12px 14px", borderRadius: "11px", background: q.state === "correct" ? "rgba(5, 150, 105, 0.12)" : "rgba(220, 38, 38, 0.12)", border: q.state === "correct" ? "1px solid rgba(5, 150, 105, 0.3)" : "1px solid rgba(220, 38, 38, 0.3)" }}>
+                                  <div style={{ padding: "12px 14px", borderRadius: "11px", background: c.bg, border: `1px solid ${c.border}` }}>
                                     <small style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "4px" }}>إجابتك:</small>
                                     <span style={{ fontSize: "13.5px", color: "var(--text-main)", fontWeight: 700 }}>{q.student_answer || "— لم تُجب —"}</span>
                                   </div>
@@ -3440,6 +3444,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                                 </div>
                               )}
 
+                              {q.feedback && <p style={{ color: "var(--text-main)" }}>تعليق المدرس: {q.feedback}</p>}
                               {q.learning_objective && (
                                 <div style={{ padding: "11px 14px", borderRadius: "11px", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text-muted)", fontWeight: 700 }}>
                                   <HelpCircle size={14} style={{ color: "#059669", flexShrink: 0 }} />
@@ -4148,7 +4153,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     {/* AI Explanation after submit */}
                     {quizSubmitted && (
                       <div style={{ marginTop: "12px", padding: "10px", background: "var(--bg-surface)", border: "1px dashed var(--border-color)", borderRadius: "8px", fontSize: "12px", color: "var(--text-muted)" }}>
-                        <strong style={{ display: "block", marginBottom: "4px" }}>تفسير الذكاء الاصطناعي:</strong>
+                        <strong style={{ display: "block", marginBottom: "4px" }}>تفسير الإجابة:</strong>
                         <FormulaRenderer text={q.explanation} />
                       </div>
                     )}

@@ -14,6 +14,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.events import event_broker
+from app.services.content_access import require_assessment_access
+from app.services.storage_cleanup import enqueue_cleanup
 from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus, Lesson
 from app.models.platform import (
     Assignment,
@@ -153,16 +155,18 @@ def delete_lesson(db: Session, user: User, module_id: uuid.UUID, lesson_id: uuid
         raise LookupError("Course not found")
     ensure_course_manager(user, course)
 
-    # 1. Clean up associated video file if stored locally
-    if lesson.video_asset_key and lesson.video_asset_key.startswith("/static/uploads/"):
-        filename = os.path.basename(lesson.video_asset_key)
-        upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "uploads")
-        filepath = os.path.join(upload_dir, filename)
-        if os.path.exists(filepath):
-            try:
-                os.remove(filepath)
-            except Exception:
-                pass
+    # Outbox intents and relational deletion commit together. A rollback must
+    # leave the original video/material bytes intact.
+    enqueue_cleanup(db, lesson.video_asset_key)
+    from app.models.video_upload import VideoUpload
+    for upload in db.scalars(select(VideoUpload).where(VideoUpload.lesson_id == lesson.id)):
+        for key in upload.outputs:
+            enqueue_cleanup(db, key)
+        # Keep the durable record for the worker's multipart abort sweep. This
+        # also works in SQLite unit tests without database FK cascades.
+        upload.lesson_id = None
+    for asset in db.scalars(select(LessonAsset).where(LessonAsset.lesson_id == lesson.id)):
+        enqueue_cleanup(db, asset.object_key)
 
     # 2. Clean up all child relational entities
     db.query(TranscriptSegment).filter(TranscriptSegment.lesson_id == lesson_id).delete()
@@ -294,6 +298,9 @@ def publish_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> Quiz:
 
 
 def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
+    # A stable student row serializes attempt numbering without locking every
+    # student's access to the same quiz. Locks last until the final commit.
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
     quiz = db.scalar(
         select(Quiz).where(
             Quiz.id == quiz_id,
@@ -301,8 +308,7 @@ def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
             Quiz.status == QuizStatus.PUBLISHED,
         )
     )
-    if quiz is None or not _enrolled(db, user, quiz.course_id):
-        raise LookupError("Quiz not found")
+    require_assessment_access(db, user, quiz, writing=True)
     now = datetime.now(UTC)
     if _as_utc(quiz.starts_at) and _as_utc(quiz.starts_at) > now:
         raise PermissionError("Quiz is not open yet")
@@ -318,7 +324,7 @@ def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
     if active:
         if _as_utc(active.expires_at) and _as_utc(active.expires_at) <= now:
             active.status = AttemptStatus.EXPIRED
-            db.commit()
+            db.flush()
         else:
             return active
     attempt_number = (
@@ -371,13 +377,14 @@ def submit_quiz(
     )
     if attempt is None:
         raise LookupError("Attempt not found")
-    if attempt.status != AttemptStatus.IN_PROGRESS:
-        return attempt
     now = datetime.now(UTC)
-    if _as_utc(attempt.expires_at) and _as_utc(attempt.expires_at) <= now:
+    if attempt.status == AttemptStatus.IN_PROGRESS and _as_utc(attempt.expires_at) and _as_utc(attempt.expires_at) <= now:
         attempt.status = AttemptStatus.EXPIRED
         db.commit()
         raise PermissionError("Attempt has expired")
+    require_assessment_access(db, user, db.get(Quiz, attempt.quiz_id), writing=True)
+    if attempt.status != AttemptStatus.IN_PROGRESS:
+        return attempt
     quiz_questions = list(
         db.scalars(select(QuizQuestion).where(QuizQuestion.quiz_id == attempt.quiz_id)).all()
     )
@@ -397,7 +404,7 @@ def submit_quiz(
             continue
         awarded = (
             points
-            if input_answer and _answers_equal(input_answer.answer, question.correct_answer)
+            if question.question_type not in {"essay", "short_answer"} and input_answer and _answers_equal(input_answer.answer, question.correct_answer)
             else 0.0
         )
         if question.question_type not in {"essay", "short_answer"}:
@@ -460,6 +467,7 @@ def publish_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> Ass
 
 
 def start_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> AssignmentAttempt:
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
     assignment = db.scalar(
         select(Assignment).where(
             Assignment.id == assignment_id,
@@ -467,8 +475,7 @@ def start_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> Assig
             Assignment.status == AssignmentStatus.PUBLISHED,
         )
     )
-    if assignment is None or not _enrolled(db, user, assignment.course_id):
-        raise LookupError("Assignment not found")
+    require_assessment_access(db, user, assignment, writing=True)
     now = datetime.now(UTC)
     if _as_utc(assignment.due_at) and _as_utc(assignment.due_at) <= now:
         raise PermissionError("Assignment is closed")
@@ -482,7 +489,7 @@ def start_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> Assig
     if active:
         if _as_utc(active.expires_at) and _as_utc(active.expires_at) <= now:
             active.status = AssignmentAttemptStatus.EXPIRED
-            db.commit()
+            db.flush()
         else:
             return active
     attempt_number = (
@@ -512,6 +519,7 @@ def start_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> Assig
 def submit_assignment(
     db: Session, user: User, assignment_id: uuid.UUID, payload: AssignmentSubmissionCreateRequest
 ) -> AssignmentSubmission:
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
     assignment = db.scalar(
         select(Assignment).where(
             Assignment.id == assignment_id,
@@ -519,8 +527,7 @@ def submit_assignment(
             Assignment.status == AssignmentStatus.PUBLISHED,
         )
     )
-    if assignment is None or not _enrolled(db, user, assignment.course_id):
-        raise LookupError("Assignment not found")
+    require_assessment_access(db, user, assignment, writing=True)
     now = datetime.now(UTC)
     active_attempt = db.scalar(
         select(AssignmentAttempt).where(

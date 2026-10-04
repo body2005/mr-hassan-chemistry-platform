@@ -1,11 +1,16 @@
-FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+FROM python:3.12.15-slim-trixie@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# pyexpat is bundled into CPython; upgrading the OS libexpat alone does not
+# repair it. Verify the official stable security release before installing.
+RUN python -c "import pyexpat; assert pyexpat.version_info >= (2, 8, 5), pyexpat.EXPAT_VERSION"
+
 WORKDIR /srv
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
     openssl \
     libssl3t64 \
     build-essential \
@@ -17,15 +22,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY requirements.txt requirements.lock ./
 RUN python -m pip install --no-cache-dir --upgrade pip==26.2.1 \
     && python -m pip install --no-cache-dir -r requirements.txt \
     && python -m pip uninstall -y pip \
     && apt-get purge -y --auto-remove build-essential perl \
     && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libssl3t64)" ge '3.5.7-1~deb13u3' \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libpcre2-8-0)" ge '10.46-1~deb13u3' \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
+RUN chmod 755 scripts/tesseract_limited.py
+ENV TESSERACT_CMD=/srv/scripts/tesseract_limited.py OMP_THREAD_LIMIT=1
 
 # Run migrations, then start (command overridden by compose)
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

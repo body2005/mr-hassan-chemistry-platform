@@ -4,7 +4,7 @@ export const paymentsEn = {
   navPaymentManagement: "Payment Management",
   navPaymentManagementSub: "Student Billing & Subscriptions",
   paymentTitle: "Chemistry Plans & Subscriptions",
-  paymentSubtitle: "Subscribe to chemistry modules to access exclusive video lectures and the smart AI tutor",
+  paymentSubtitle: "Subscribe to chemistry modules to access exclusive video lectures and the lesson materials",
   activeSubscriptions: "Active Subscriptions",
   availablePlans: "Available Plans",
   pricePerLesson: "{price} EGP / lesson",

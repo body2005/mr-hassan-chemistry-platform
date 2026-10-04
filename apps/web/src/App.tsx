@@ -106,6 +106,9 @@ function App() {
   const { lang, toggleLang: handleToggleLang } = useTranslation();
 
   const [courses, setCourses] = useState<Course[]>(() => courseService.getCachedCourses());
+  // Cached identity does not imply that this user's course catalog is loaded.
+  // Keep teacher mutations unavailable until the matching bootstrap arrives.
+  const [courseScopeReady, setCourseScopeReady] = useState<string | null>(null);
   const [enrolledCourseIds, setEnrolledCourseIds] = useState<string[]>([]);
   const [entitlements, setEntitlements] = useState<StudentEntitlement[]>([]);
   const [checkoutTarget, setCheckoutTarget] = useState<PaymentTarget | null>(null);
@@ -136,6 +139,7 @@ function App() {
           setRetryAttempt(0);
           setNotifications(bootstrap.notifications);
           setCourses(bootstrap.courses);
+          setCourseScopeReady(bootstrap.user.id);
           if (bootstrap.user.role === "student") {
             setEnrolledCourseIds(bootstrap.enrolledCourseIds);
             setEntitlements(bootstrap.entitlements);
@@ -168,6 +172,7 @@ function App() {
           }
         } else {
           setCurrentUser(null);
+          setCourseScopeReady(null);
           setAuthStatus("unauthenticated");
           setRetryAttempt(0);
         }
@@ -701,7 +706,9 @@ function App() {
           )}
 
           {activeTab === "QuizGen" && currentUser.role !== "student" && (
-            <QuizGeneratorView courses={courses} currentUser={currentUser} />
+            courseScopeReady === currentUser.id
+              ? <QuizGeneratorView courses={courses} currentUser={currentUser} />
+              : <div className="page-container" role="status">{lang === 'ar' ? 'جارٍ تحميل المقررات قبل فتح محرر النشر…' : 'Loading courses before opening the publisher…'}</div>
           )}
 
           {activeTab === "Submissions" && currentUser.role !== "student" && <SubmissionsView />}

@@ -25,6 +25,7 @@ import { apiRequest, apiUrl } from "../services/apiClient";
 import { VideoTelemetryTracker } from "../services/videoTelemetry";
 import { lessonAccessService } from "../services/paymentService";
 import { useToast } from "./ToastProvider";
+import Hls from "hls.js";
 
 export interface VideoLessonPageProps {
   lesson: VideoLesson;
@@ -122,6 +123,8 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   const playbackRenewingRef = useRef(false);
   const lastPlaybackRenewalRef = useRef(0);
   const pendingPlaybackResumeRef = useRef<{ time: number; playing: boolean } | null>(null);
+  const hlsRef = useRef<Hls | null>(null);
+  const [qualityOptions, setQualityOptions] = useState<string[]>(["الأصلية"]);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -129,7 +132,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showControls, setShowControls] = useState(true);
-  const [selectedQuality, setSelectedQuality] = useState("1080p");
+  const [selectedQuality, setSelectedQuality] = useState("الأصلية");
   const [showQualityMenu, setShowQualityMenu] = useState(false);
   // Wide/theater mode: video fills the entire viewport instead of the column.
   const [isWide, setIsWide] = useState(false);
@@ -201,6 +204,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     setPlaybackError(null);
 
     if (!lesson.videoUrl && !lesson.requiresProtectedPlayback) {
+      setPlaybackError("لا يوجد فيديو جاهز لهذا الدرس بعد. إذا كنت قد رفعته، تحقق من اكتمال الرفع والمعالجة في إدارة الدروس ثم حدّث الصفحة.");
       return () => {
         disposed = true;
       };
@@ -229,6 +233,67 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
       disposed = true;
     };
   }, [lesson.id, lesson.videoUrl, lesson.requiresProtectedPlayback]);
+
+  useEffect(() => {
+    const video = videoElementRef.current;
+    if (!video || !playbackUrl) return;
+    if (!playbackUrl.includes("/hls/")) {
+      video.src = playbackUrl;
+      setQualityOptions(["الأصلية"]);
+      setSelectedQuality("الأصلية");
+      return;
+    }
+    if (!Hls.isSupported()) {
+      if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = playbackUrl;
+        setQualityOptions(["تلقائي"]);
+        setSelectedQuality("تلقائي");
+      } else setPlaybackError("المتصفح لا يدعم البث التكيفي؛ جرّب متصفحًا حديثًا.");
+      return;
+    }
+    const hls = new Hls({
+      maxBufferLength: 30,
+      maxMaxBufferLength: 60,
+      // Stop rather than creating a request storm (including HTTP 429).
+      manifestLoadPolicy: { default: { maxTimeToFirstByteMs: 10000, maxLoadTimeMs: 20000, timeoutRetry: null, errorRetry: null } },
+      playlistLoadPolicy: { default: { maxTimeToFirstByteMs: 10000, maxLoadTimeMs: 20000, timeoutRetry: null, errorRetry: null } },
+      fragLoadPolicy: { default: { maxTimeToFirstByteMs: 10000, maxLoadTimeMs: 30000, timeoutRetry: null, errorRetry: null } },
+    });
+    hlsRef.current = hls;
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      setQualityOptions(["تلقائي", ...hls.levels.map(level => `${level.height}p`)]);
+      setSelectedQuality("تلقائي");
+    });
+    hls.on(Hls.Events.ERROR, (_event, data) => {
+      if (data.fatal || [401, 403, 429].includes(data.response?.code || 0)) {
+        hls.stopLoad();
+        setPlaybackError("توقف البث؛ تحقق من اتصالك أو صلاحية الجلسة ثم أعد المحاولة.");
+      }
+    });
+    hls.attachMedia(video);
+    hls.loadSource(playbackUrl);
+    return () => { hls.destroy(); hlsRef.current = null; };
+  }, [playbackUrl]);
+
+  useEffect(() => {
+    if (!playbackUrl.includes("/hls/") || !lesson.requiresProtectedPlayback) return;
+    let disposed = false;
+    // Renew before expiry without erasing playback position. Finite timer,
+    // failures stop here; no automatic 401/429 renewal/retry loop.
+    const timer = window.setTimeout(() => {
+      const player = videoElementRef.current;
+      void apiRequest<{ stream_url: string }>(`/lessons/${lesson.id}/video-token`, { method: "POST" }).then(({ stream_url }) => {
+        if (disposed) return;
+        pendingPlaybackResumeRef.current = { time: player?.currentTime || 0, playing: Boolean(player && !player.paused) };
+        setPlaybackUrl(apiUrl(stream_url));
+      }).catch(() => {
+        if (disposed) return;
+        hlsRef.current?.stopLoad();
+        setPlaybackError("تعذر تجديد جلسة الفيديو؛ أعد المحاولة بعد التحقق من الاتصال.");
+      });
+    }, 240_000);
+    return () => { disposed = true; window.clearTimeout(timer); };
+  }, [playbackUrl, lesson.id, lesson.requiresProtectedPlayback]);
 
   const [isAccessRequested, setIsAccessRequested] = useState(false);
   const [isSubmittingAccessRequest, setIsSubmittingAccessRequest] = useState(false);
@@ -936,7 +1001,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                 <>
                   <video
                     ref={videoElementRef}
-                    src={playbackUrl}
+                    src={playbackUrl.includes("/hls/") ? undefined : playbackUrl}
                     onTimeUpdate={handleTimeUpdate}
                     onEnded={handleEnded}
                     onLoadedMetadata={handleLoadedMetadata}
@@ -1303,12 +1368,13 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                               <span style={{ fontSize: "10px", color: "#94a3b8", padding: "2px 8px", fontWeight: 700 }}>
                                 جودة الفيديو:
                               </span>
-                              {["1080p", "720p", "480p", "360p"].map((q) => (
+                              {qualityOptions.map((q) => (
                                 <button
                                   key={q}
                                   type="button"
                                   onClick={() => {
                                     setSelectedQuality(q);
+                                    if (hlsRef.current) hlsRef.current.currentLevel = q === "تلقائي" ? -1 : hlsRef.current.levels.findIndex(level => `${level.height}p` === q);
                                     setShowQualityMenu(false);
                                   }}
                                   style={{
@@ -1403,7 +1469,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                   <span style={{ fontSize: "13px", opacity: 0.8 }}>
                     {playbackError || "جاري إعداد مشغل الفيديو التفاعلي..."}
                   </span>
-                  {playbackError && currentUser?.role === "student" && (
+                  {playbackError && lesson.requiresProtectedPlayback && currentUser?.role === "student" && (
                     <div style={{ marginTop: "16px" }}>
                       {isAccessRequested ? (
                         <span

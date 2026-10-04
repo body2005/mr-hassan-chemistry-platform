@@ -8,7 +8,7 @@ export const authEn = {
   welcomeBack: "Welcome back to your Chemistry portal",
   welcomeDesc: "Sign in to access your Chemistry video lectures, submit assignments, and track your progress with Mr. Hassan Shaaban.",
   joinUs: "Start your journey to excellence in Chemistry with Mr. Hassan Shaaban",
-  joinDesc: "Create your student account to get instant access to lectures and AI-assisted homework grading.",
+  joinDesc: "Create your student account to get instant access to lectures and teacher-reviewed homework.",
   signInTab: "Sign In",
   registerTab: "Register",
   haveAccount: "Already have an account? Sign in here",

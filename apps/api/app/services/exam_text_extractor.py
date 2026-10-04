@@ -939,8 +939,10 @@ class ExamQuestionSegmenter:
         }
         # 'I' (uppercase) is the OCR/RTL form of the first option key next to
         # 'i': '(I) النواة' == '(أ) النواة'.
-        OPT_PATTERN = re.compile(r"^[\(\[]?\s*([أبجدA-Da-diI])\s*[\)\]\.\:\-\/]\s*(.*)$")
-        OPT_SUFFIX_PATTERN = re.compile(r"^(.*?)\s*[\(\[]\s*([أبجدA-Da-diI])\s*[\)\]][\.\:\-]?$")
+        # Numeric keys are options only when parenthesized. Bare '1.' must
+        # continue to open a question, not be swallowed as an option.
+        OPT_PATTERN = re.compile(r"^(?![1-4]\s*[\)\]\.\:\-\/])[\(\[]?\s*([أبجدA-Da-diI1-4])\s*[\)\]\.\:\-\/]\s*(.*)$")
+        OPT_SUFFIX_PATTERN = re.compile(r"^(.*?)\s*[\(\[]\s*([أبجدA-Da-diI1-4])\s*[\)\]][\.\:\-]?$")
         ANS_PATTERN = re.compile(
             r"^(?:الإجاب[ةه](?:\s+الصحيح[ةه])?|الجواب(?:\s+الصحيح)?|الحل(?:\s+الصحيح)?|فكرة\s+الحل|Answer|Key)\s*[\:\.\-\/]?\s*(.*)$",
             re.IGNORECASE,
@@ -983,6 +985,9 @@ class ExamQuestionSegmenter:
         ]
 
         for line in lines:
+            # OCR can mirror a parenthesized option label in RTL text.
+            # Restore brackets only; keep its key and source option text.
+            line = re.sub(r"^[\)\]]\s*([أبجدA-Da-diI1-4])\s*[\(\[]", r"(\1)", line)
             # 1. Section Header check
             is_section_header = False
             # The generic subject-banner shape ('أحياء: ...') never
@@ -1248,6 +1253,4 @@ def segment_exam_document(
         q["id"] = idx
 
     return candidates
-
-
 

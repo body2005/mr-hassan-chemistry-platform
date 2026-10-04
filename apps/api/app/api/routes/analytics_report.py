@@ -12,7 +12,7 @@ from app.api.dependencies import CurrentUser, require_roles
 from app.core.database import get_db
 from app.core.rate_limit import enforce_rate_limit
 from app.models.course import Course, CourseModule, Lesson
-from app.models.platform import Assignment, AssignmentSubmission, Quiz, QuizAttempt
+from app.models.platform import Assignment, AssignmentSubmission, Quiz, QuizAttempt, QuizAttemptAnswer
 from app.models.progress import LessonProgress
 from app.models.user import User, UserRole
 
@@ -62,6 +62,8 @@ async def get_analytics_summary(
         select(QuizAttempt).where(
             QuizAttempt.institution_id == user.institution_id,
             QuizAttempt.is_practice.is_(False),
+            ~select(QuizAttemptAnswer.id).where(QuizAttemptAnswer.attempt_id == QuizAttempt.id,
+                                               QuizAttemptAnswer.graded_at.is_(None)).exists(),
         )
     ).scalars().all()
     if attempts:

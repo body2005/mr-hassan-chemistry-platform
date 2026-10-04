@@ -12,6 +12,7 @@ import {
   setCachedData,
 } from "./apiClient";
 import type { StudentEntitlement } from "./paymentService";
+import { assessmentTimestamp, assessmentWindow } from "./assessmentSchedule";
 /**
  * ============================================================================
  * MATGAR LMS - UNIFIED DATA ACCESS LAYER (DAL)
@@ -69,6 +70,7 @@ type ApiUser = {
 };
 
 type ApiCourse = {
+  grade_level?: "SECONDARY_1" | "SECONDARY_2" | "SECONDARY_3" | null;
   id: string;
   institution_id: string;
   teacher_id: string;
@@ -215,6 +217,13 @@ function mapApiUser(user: ApiUser): CurrentUser {
 }
 
 function mapApiCourse(course: ApiCourse): Course {
+  const courseGrades = {
+    SECONDARY_1: { value: "1st_secondary", label: "الصف الأول الثانوي" },
+    SECONDARY_2: { value: "2nd_secondary", label: "الصف الثاني الثانوي" },
+    SECONDARY_3: { value: "3rd_secondary", label: "الصف الثالث الثانوي" },
+  } as const;
+  const grade = course.grade_level ? courseGrades[course.grade_level] : undefined;
+  const academicYear = grade?.value || (course.code.startsWith("2ND_SECONDARY-") ? "2nd_secondary" : course.code.startsWith("3RD_SECONDARY-") ? "3rd_secondary" : "1st_secondary");
   const lessons = course.modules
     .slice()
     .sort((a, b) => a.position - b.position)
@@ -234,7 +243,7 @@ function mapApiCourse(course: ApiCourse): Course {
             unitTitle: module.title,
             isRevision,
             courseId: course.id,
-            academicYear: "1st_secondary" as const,
+            academicYear,
             title: lesson.title,
             description: (lesson.content || "").replace("<!--is_revision:true-->", "").trim(),
             durationMinutes: Math.ceil((lesson.video_duration_seconds || 0) / 60),
@@ -268,8 +277,9 @@ function mapApiCourse(course: ApiCourse): Course {
     id: course.id,
     title: course.title,
     subject: course.code,
-    academicYear: "1st_secondary",
-    academicYearLabel: "الصف الأول الثانوي",
+    academicYear,
+    academicYearLabel: grade?.label || (academicYear === "2nd_secondary" ? "الصف الثاني الثانوي" : academicYear === "3rd_secondary" ? "الصف الثالث الثانوي" : "الصف الأول الثانوي"),
+    status: course.status,
     teacherName: "",
     teacherTitle: "",
     description: course.description || "",
@@ -908,6 +918,18 @@ function parseScheduleClock(value: string): string {
 // ============================================================================
 let composedCoursesInFlight: Promise<Course[]> | null = null;
 
+async function validateAssessmentScope(payload: { course_id: string; title: string; lesson_id?: string; module_id?: string }) {
+  if (payload.title.trim().length < 2 || payload.title.length > 200) {
+    throw new Error('اسم النشاط يجب أن يحتوي على حرفين إلى 200 حرف.');
+  }
+  if (!payload.lesson_id && !payload.module_id) return;
+  const course = await apiRequest<ApiCourse>(`/courses/${payload.course_id}`, { skipCache: true });
+  const modules = payload.module_id ? course.modules.filter(module => module.id === payload.module_id) : course.modules;
+  if (!modules.length || (payload.lesson_id && !modules.some(module => module.lessons.some(lesson => lesson.id === payload.lesson_id)))) {
+    throw new Error('الدرس المرتبط بالمسودة لم يعد موجودًا في هذا المقرر. اختر الدرس من القائمة مجددًا قبل النشر.');
+  }
+}
+
 export const courseService = {
   async getCourses(options?: { skipCache?: boolean }): Promise<Course[]> {
     const composedKey = "composed:/courses";
@@ -984,7 +1006,7 @@ export const courseService = {
     return res;
   },
 
-  async createCourse(payload: { code: string; title: string; description?: string; price_egp?: number }): Promise<ApiCourse> {
+  async createCourse(payload: { code: string; title: string; description?: string; price_egp?: number; grade_level?: "SECONDARY_1" | "SECONDARY_2" | "SECONDARY_3" }): Promise<ApiCourse> {
     const res = await apiRequest<ApiCourse>("/courses", { method: "POST", body: JSON.stringify(payload) });
     invalidateApiCache("/courses");
     return res;
@@ -992,6 +1014,11 @@ export const courseService = {
 
   async getCourseContent(courseId: string): Promise<ApiCourse> {
     return apiRequest<ApiCourse>(`/courses/${courseId}`, { cacheTtlMs: 60_000 });
+  },
+
+  async publishCourse(courseId: string): Promise<void> {
+    await apiRequest(`/courses/${courseId}/publish`, { method: "POST" });
+    invalidateApiCache("/courses");
   },
 
   async getMappedCourseContent(courseId: string): Promise<Course> {
@@ -1074,6 +1101,9 @@ export const courseService = {
       points?: number;
     }>;
   }): Promise<{ quiz_id: string }> {
+    // Validate before creating questions: malformed schedules must not leave orphans.
+    const schedule = assessmentWindow(payload.starts_at, payload.ends_at);
+    await validateAssessmentScope(payload);
     const questionIds: string[] = [];
     for (const q of payload.questions) {
       const created = await apiRequest<{ id: string }>("/questions", {
@@ -1097,8 +1127,8 @@ export const courseService = {
         module_id: payload.module_id || null,
         lesson_id: payload.lesson_id || null,
         duration_seconds: payload.duration_minutes ? payload.duration_minutes * 60 : null,
-        starts_at: payload.starts_at || null,
-        ends_at: payload.ends_at || null,
+        starts_at: schedule.startsAt,
+        ends_at: schedule.endsAt,
         question_ids: questionIds,
       }),
     });
@@ -1119,13 +1149,15 @@ export const courseService = {
     due_at?: string | null;
     max_score?: number;
   }): Promise<{ assignment_id: string }> {
+    const dueAt = assessmentTimestamp(payload.due_at, 'التسليم');
+    await validateAssessmentScope(payload);
     const created = await apiRequest<{ id: string }>("/assignments", {
       method: "POST",
       body: JSON.stringify({
         course_id: payload.course_id,
         assignment_title: payload.title,
         prompt: payload.prompt || payload.title,
-        due_at: payload.due_at || null,
+        due_at: dueAt,
         max_score: payload.max_score ?? 100,
         module_id: payload.module_id || null,
         lesson_id: payload.lesson_id || null,
@@ -1253,13 +1285,14 @@ export type ApiManagedUser = Pick<
   phone?: string | null;
   overall_attendance_ratio?: number;
   assignment_submission_ratio?: number;
-  average_quiz_score?: number;
+  average_quiz_score?: number | null;
   homework_success_rate?: number;
-  quiz_success_rate?: number;
+  quiz_success_rate?: number | null;
   total_overall_grade?: number;
   last_active_date?: string | null;
   quizzes_taken?: number;
   quiz_attempts_count?: number;
+  pending_quiz_attempts?: number;
   has_completed_exam?: boolean;
   exam_missed_deadline?: boolean;
 };

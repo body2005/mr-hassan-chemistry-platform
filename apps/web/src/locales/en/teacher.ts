@@ -11,7 +11,7 @@ export const teacherEn = {
   // Lesson Management & Upload
   uploadLessonBadge: "Content Management & Difficulty Forecast",
   uploadLessonTitle: "Chemistry Lesson Management & Difficulty Forecasting",
-  uploadLessonSubtitle: "Upload Chemistry explanation videos and worksheets, and review AI predictions on difficulty and struggle rates.",
+  uploadLessonSubtitle: "Upload Chemistry explanation videos and worksheets, and review calculated completion and performance statistics.",
   metricEngagement: "1. Student Engagement Rate:",
   metricStruggle: "2. Hardest Lesson & Expected Struggle:",
   metricMisconception: "3. Predicted Misconception Rate:",
@@ -29,7 +29,7 @@ export const teacherEn = {
 
   // Quiz & Assignment Generator
   quizGenTitle: "Smart Quiz & Assignment Studio",
-  quizGenSubtitle: "Author question banks and assessments with AI rubrics and model answers",
+  quizGenSubtitle: "Author question banks and assessments with manual rubrics and reviewed model answers",
   saveDraft: "Save Draft",
   publishQuiz: "Publish Assessment",
   draftSavedSuccess: "Assessment draft saved successfully",
@@ -56,7 +56,7 @@ export const teacherEn = {
   studentNameCol: "Student Name",
   nationalIdCol: "National ID",
   statusCol: "Progress Status",
-  actionsCol: "Actions & AI Grading",
+  actionsCol: "Actions & Manual Grading",
   lastActiveCol: "Last Active",
   belowThresholdAlert: "Below Minimum Threshold",
   stableStatus: "Regular & Stable",

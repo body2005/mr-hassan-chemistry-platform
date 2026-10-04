@@ -165,6 +165,7 @@ def create_order(
     payer_reference: str | None,
     student_note: str | None,
 ) -> PaymentOrder:
+    db.execute(select(User.id).where(User.id == student.id).with_for_update())
     product_name, amount = resolve_product(db, student, product_type, product_id)
     if amount <= 0:
         raise HTTPException(status_code=409, detail="This item is free and does not require payment")
@@ -235,9 +236,11 @@ def can_review_order(db: Session, reviewer: User, order: PaymentOrder) -> bool:
     return bool(course and course.teacher_id == reviewer.id)
 
 
-def approve_order(db: Session, reviewer: User, order: PaymentOrder, note: str | None) -> PaymentOrder:
+def approve_order(db: Session, reviewer: User, order: PaymentOrder, note: str | None, *, commit: bool = True) -> PaymentOrder:
     if not can_review_order(db, reviewer, order):
         raise HTTPException(status_code=404, detail="Payment order not found")
+    db.execute(select(User.id).where(User.id == order.student_id).with_for_update())
+    order = db.scalar(select(PaymentOrder).where(PaymentOrder.id == order.id).with_for_update().execution_options(populate_existing=True))
     if order.status == PaymentStatus.PAID:
         return order
     if order.status in {PaymentStatus.REJECTED, PaymentStatus.CANCELLED}:
@@ -304,6 +307,9 @@ def approve_order(db: Session, reviewer: User, order: PaymentOrder, note: str | 
     order.reviewed_by = reviewer.id
     order.reviewed_at = now
     order.review_note = (note or "").strip()[:4000] or None
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     db.refresh(order)
     return order

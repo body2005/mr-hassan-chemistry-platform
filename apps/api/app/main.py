@@ -1,4 +1,6 @@
 import os
+import asyncio
+from contextlib import suppress
 import re
 import secrets
 import time
@@ -12,10 +14,11 @@ from fastapi.responses import JSONResponse
 
 from app.api.router import api_router
 from app.core.access_log import RedactAccessTokenFilter
-from app.core.concurrency import concurrency_guard
+from app.core.concurrency import AdmissionMiddleware
 from app.core.config import get_settings
 from app.core.database import engine
 from app.core.metrics import record_request
+from app.core.upload_limits import UploadBudgetMiddleware
 from app.core.rate_limit import enforce_rate_limit
 
 settings = get_settings()
@@ -26,12 +29,23 @@ logging.getLogger("uvicorn.access").addFilter(RedactAccessTokenFilter())
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """Application lifespan (indexing recovery removed with the Knowledge Center)."""
-    yield
+    from app.services.storage_cleanup import cleanup_loop
+    from app.core.events import event_broker
+    await event_broker.start()
+    cleanup_task = asyncio.create_task(cleanup_loop()) if settings.app_env == "production" else None
+    try:
+        yield
+    finally:
+        await event_broker.stop()
+        if cleanup_task:
+            cleanup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await cleanup_task
 
 
 app = FastAPI(
     title=settings.app_name,
-    summary="LMS and AI services for Learning Website",
+    summary="Learning management and local document extraction",
     version="0.1.0",
     docs_url="/docs" if settings.app_env != "production" else None,
     redoc_url=None,
@@ -141,13 +155,19 @@ async def security_middleware(request, call_next):
     has_bearer_auth = authorization.lower().startswith("bearer ") and bool(
         authorization[7:].strip()
     )
+    # Cookie-only endpoints never use Authorization. Protected endpoints use
+    # Bearer exclusively when present and reject it instead of falling back.
+    cookie_auth_endpoint = request.url.path in {
+        f"{settings.api_v1_prefix}/auth/logout",
+        f"{settings.api_v1_prefix}/auth/refresh",
+    }
     if (
         unsafe_method
         and (
             request.cookies.get(settings.session_cookie_name)
             or request.cookies.get(settings.refresh_cookie_name)
         )
-        and not has_bearer_auth
+        and (cookie_auth_endpoint or not has_bearer_auth)
         and request.url.path not in csrf_exempt_paths
     ):
         csrf_cookie = request.cookies.get(settings.csrf_cookie_name)
@@ -165,10 +185,8 @@ async def security_middleware(request, call_next):
 
     request.state.request_id = request_id
     started = time.perf_counter()
-    is_heavy = getattr(request.state, "category", "") in {"heavy_query", "upload", "quiz_extraction"}
     try:
-        async with concurrency_guard(request, is_heavy=is_heavy):
-            response = await call_next(request)
+        response = await call_next(request)
     except HTTPException as exc:
         res = JSONResponse(
             status_code=exc.status_code,
@@ -212,6 +230,8 @@ async def security_middleware(request, call_next):
 # Register CORS after the custom middleware so it is the outermost layer.  It
 # must be the single source of CORS headers; manually writing a wildcard
 # Access-Control-Allow-Headers breaks credentialed Authorization preflights.
+app.add_middleware(AdmissionMiddleware, classify=classify_rate_limit_category)
+app.add_middleware(UploadBudgetMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,

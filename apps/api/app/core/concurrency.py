@@ -12,6 +12,7 @@ from fastapi import HTTPException, Request, status
 
 from app.core.rate_limit import resolve_client_ip
 from app.core.security import decode_session_token
+from app.core.leases import ResourceLease
 
 logger = logging.getLogger(__name__)
 
@@ -58,11 +59,23 @@ async def concurrency_guard(
     is_heavy: bool = False,
 ) -> AsyncGenerator[None, None]:
     """Admission control context manager rejecting excess concurrent work before execution."""
-    if os.getenv("DISABLE_RATE_LIMITING", "").lower() in {"1", "true", "yes"}:
+    if os.getenv("APP_ENV") == "test" and os.getenv("DISABLE_RATE_LIMITING", "").lower() in {"1", "true", "yes"}:
         yield
         return
 
     key = _resolve_concurrency_key(request)
+    resources = [(f"admission:client:{key}", MAX_CONCURRENT_PER_CLIENT)]
+    if is_heavy:
+        resources += [(f"admission:heavy:{key}", MAX_CONCURRENT_HEAVY_PER_CLIENT),
+                      ("admission:heavy:global", MAX_GLOBAL_HEAVY)]
+    lease = ResourceLease(resources, global_index=3 if is_heavy else None)
+    distributed = await lease.acquire()
+    if distributed:
+        try:
+            yield
+        finally:
+            await lease.release()
+        return
 
     with _lock:
         current_client_total = _active_per_client[key]
@@ -115,3 +128,27 @@ def get_concurrency_stats() -> dict[str, int]:
             "total_in_flight": sum(_active_per_client.values()),
             "global_heavy_count": _global_heavy_count,
         }
+
+
+class AdmissionMiddleware:
+    """Pure ASGI: reservation lasts through the final byte/disconnect, not headers."""
+    def __init__(self, app, classify):
+        self.app = app
+        self.classify = classify
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] == "OPTIONS":
+            return await self.app(scope, receive, send)
+        request = Request(scope)
+        category = self.classify(scope["method"], scope["path"])
+        guard = concurrency_guard(request, is_heavy=category in {"heavy_query", "upload", "quiz_extraction"})
+        try:
+            await guard.__aenter__()
+        except HTTPException as exc:
+            from fastapi.responses import JSONResponse
+            response = JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
+            return await response(scope, receive, send)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            await guard.__aexit__(None, None, None)

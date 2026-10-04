@@ -239,6 +239,11 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   function handleVideoChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (file.size > 5 * 1024 ** 3) {
+      notify("حد الفيديو 5 GiB (5,368,709,120 بايت).");
+      e.target.value = "";
+      return;
+    }
 
     setSelectedVideoFile(file);
     const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
@@ -264,6 +269,11 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   function handleMaterialsChange(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
     if (files && files.length > 0) {
+      if (Array.from(files).some((file) => file.size > 1024 ** 3)) {
+        notify("حد كل مادة درس 1 GiB (1,073,741,824 بايت).");
+        e.target.value = "";
+        return;
+      }
       const newMaterials: SelectedMaterialFile[] = Array.from(files).map((f) => {
         const sizeMB = (f.size / (1024 * 1024)).toFixed(1);
         const ext = f.name.split(".").pop()?.toLowerCase();
@@ -372,18 +382,25 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
 
     setIsUploading(true);
     try {
-      let course = activeCourse;
+      // A reload can show the form before the parent's course fetch finishes.
+      // Never interpret that transient empty/stale prop as "create a course".
+      // Resolve this mutation against a fresh server list, not cached UI state.
+      const currentCourses = await courseService.getCourses({ skipCache: true });
+      setCourses(currentCourses);
+      onCoursesChanged(currentCourses);
+      let course = currentCourses.find((item) => item.academicYear === selectedYear);
       if (!course) {
         const teacherSubject = currentUser.role === "student" ? "" : currentUser.subject;
-        await courseService.createCourse({
+        const createdCourse = await courseService.createCourse({
           code: `${selectedYear}-${Date.now()}`.slice(0, 40),
           title: `مقرر ${teacherSubject || "المادة الدراسية"}: ${yearLabel}`,
           description: `المقرر الدراسي لمادة ${teacherSubject || "المادة"} لطلاب ${yearLabel}.`,
+          grade_level: selectedGradeLevel,
         });
         const refreshed = await courseService.getCourses();
         setCourses(refreshed);
         onCoursesChanged(refreshed);
-        course = refreshed[refreshed.length - 1];
+        course = refreshed.find(item => item.id === createdCourse.id);
       }
       if (!course) throw new Error("تعذر إنشاء المقرر");
       const content = await courseService.getCourseContent(course.id);
@@ -408,10 +425,11 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
 
       const addedLesson = await courseService.addLesson(module.id, {
         title: savedTitle,
-        kind: "video",
+        kind: selectedVideoFile ? "video" : "article",
         position: module.lessons.length + 1,
         content: lessonContentWithMeta || (isRevision ? "<!--is_revision:true-->" : undefined),
-        video_duration_seconds: lessonDuration * 60,
+        video_duration_seconds: selectedVideoFile ? lessonDuration * 60 : undefined,
+        price_egp: lessonPrice,
       });
 
       if (selectedVideoFile) {
@@ -956,6 +974,20 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
             <h3 style={{ margin: 0, fontSize: "17px", fontWeight: 800, color: "var(--text-main, #0f172a)" }}>
               الدروس المرفوعة ({activeLessons.length} دروس)
             </h3>
+
+            {activeCourse?.status === "draft" && (
+              <button type="button" className="btn-primary" onClick={async () => {
+                try {
+                  await courseService.publishCourse(activeCourse.id);
+                  const updated = await courseService.getCourses({ skipCache: true });
+                  setCourses(updated);
+                  onCoursesChanged(updated);
+                  notify("تم نشر المقرر للطلاب بنجاح. يلزم اكتمال رفع الملفات قبل تشغيلها.");
+                } catch (error) {
+                  notify(error instanceof Error ? error.message : "تعذر نشر المقرر");
+                }
+              }}>نشر المقرر للطلاب</button>
+            )}
 
             {activeLessons.length > 0 && (
               <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>

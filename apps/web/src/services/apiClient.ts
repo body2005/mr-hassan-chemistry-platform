@@ -59,6 +59,8 @@ export interface ApiRequestInit extends RequestInit {
   cacheTtlMs?: number;
   skipCache?: boolean;
   cacheKey?: string;
+  /** EventSource sends cookies only; never let a valid bearer mask an expired cookie. */
+  cookieOnly?: boolean;
 }
 
 interface CacheEntry<T> {
@@ -247,8 +249,9 @@ async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retrie
   delete requestInit.cacheTtlMs;
   delete requestInit.skipCache;
   delete requestInit.cacheKey;
+  delete requestInit.cookieOnly;
   const headers = new Headers(requestInit.headers);
-  const token = authToken();
+  const token = init.cookieOnly ? undefined : authToken();
   if (token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
   }
@@ -343,7 +346,7 @@ export async function apiRequest<T>(path: string, init: ApiRequestInit = {}, ret
   }
 
   const normalizedUrl = apiUrl(path);
-  const cacheKey = init.cacheKey || `${method}:${normalizedUrl}`;
+  const cacheKey = init.cacheKey || `${method}:${normalizedUrl}${init.cookieOnly ? ':cookie-only' : ''}`;
   const effectiveTtl = typeof init.cacheTtlMs === "number" ? init.cacheTtlMs : 15_000;
 
   // 1. Check client-side TTL cache

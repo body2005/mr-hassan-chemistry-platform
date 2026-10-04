@@ -26,8 +26,8 @@ class LiveSession(requests.Session):
 
 
 def isolated():
-    if os.getenv("QA_ISOLATED") != "true" or os.getenv("QA_PROJECT") != "chemistryprodlocal":
-        raise RuntimeError("Live integration requires the isolated chemistryprodlocal project")
+    if os.getenv("QA_ISOLATED") != "true" or os.getenv("QA_PROJECT") not in {"chemistryprodlocal", "chemistryaudit2"}:
+        raise RuntimeError("Live integration requires an explicitly allowlisted isolated QA project")
 
 
 def session(email="teacher@demo.com", password="qa-teacher-pass"):
@@ -45,6 +45,16 @@ def session(email="teacher@demo.com", password="qa-teacher-pass"):
 def clear_auth():
     isolated()
     store = redis.Redis.from_url(os.environ["REDIS_URL"])
+    # Shared demo users keep their real rolling limits. Wait between cases;
+    # never clear user keys to compensate for the harness reusing identities.
+    script = """local ms=0; for _,k in ipairs(redis.call('KEYS','rate-limit:auth:*')) do
+      if not string.find(k,':ip:',1,true) and redis.call('ZCARD',k)>=8 then
+        ms=math.max(ms,redis.call('PTTL',k)) end end; return ms"""
+    delay_ms = int(store.eval(script, 0))
+    if delay_ms > 65000:
+        raise RuntimeError("Unexpected live QA auth window; do not bypass it")
+    if delay_ms > 0:
+        time.sleep((delay_ms + 100) / 1000)
     keys = list(store.scan_iter("rate-limit:auth:ip:*"))
     if keys:
         store.unlink(*keys)
@@ -53,9 +63,34 @@ def clear_auth():
 def container(service):
     isolated()
     found = docker.from_env().containers.list(all=True, filters={"label": [
-        "com.docker.compose.project=chemistryprodlocal", f"com.docker.compose.service={service}"]})
+        f"com.docker.compose.project={os.environ['QA_PROJECT']}", f"com.docker.compose.service={service}"]})
     assert len(found) == 1, f"Expected one isolated {service} container, got {len(found)}"
     return found[0]
+
+
+def operational_logs(service, predicate, *, since=None, timeout=10):
+    """Wait for Docker's asynchronously collected logs, not just HTTP success.
+
+    Positive evidence is still required. Keep the original since boundary and
+    never print raw logs (which a broken app could populate with credentials).
+    """
+    target = container(service)
+    deadline = time.monotonic() + timeout
+    logs = b""
+    while True:
+        options = {"stdout": True, "stderr": True}
+        if since is not None:
+            options["since"] = since
+        else:
+            options["tail"] = 5000
+        # Drain the finite response; follow=False is essential. This does NOT
+        # repair a corrupt daemon JSON log file: missing evidence must fail.
+        logs = b''.join(target.logs(stream=True, follow=False, **options))
+        if predicate(logs):
+            return logs
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"Missing {service} operational log evidence after {timeout}s; bytes={len(logs)}")
+        time.sleep(0.2)
 
 
 def pg_engine():
@@ -78,6 +113,9 @@ def lesson(teacher, kind="article", price=0):
                                                                  "position": 1, "price_egp": price}, timeout=15)
     assert response.status_code == 201, response.text
     result = response.json()
+    # LessonResponse deliberately does not expose module_id. Retain the
+    # module we created for the actual manager delete route in test cleanup.
+    result["module_id"] = module["id"]
     assert teacher.post(f"{BASE}/courses/{course['id']}/publish", timeout=15).status_code == 200
     return course, result
 

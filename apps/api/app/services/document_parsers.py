@@ -24,6 +24,8 @@ from typing import Any
 from PIL import Image, ImageOps
 
 from app.core.errors import OperationCancelledError
+from app.services.extraction_limits import (ExtractionLimitError, MAX_PAGES, MAX_RENDER_SIDE,
+    MAX_RENDER_PIXELS, OCR_TIMEOUT_SECONDS, check_archive, check_image, ocr_slot, render_scale)
 
 logger = logging.getLogger(__name__)
 
@@ -1417,7 +1419,7 @@ def _assemble_rtl_lines_from_fitz(fitz_page: Any) -> list[str]:
     return out
 
 
-PARSER_OCR_VERSION = "v3"
+PARSER_OCR_VERSION = "v6-bounded-108dpi-script-confidence"
 _OCR_SEMAPHORE = threading.Semaphore(int(os.getenv("OCR_CONCURRENCY_LIMIT", "2")))
 
 
@@ -1501,7 +1503,7 @@ def ocr_pdf_page(file_bytes: bytes | None = None, page_number: int = 1, lang: st
     if os.getenv("ALLOW_IN_PROCESS_OCR", "true").strip().lower() in ("false", "0", "no"):
         raise RuntimeError("In-process OCR is disabled by configuration (ALLOW_IN_PROCESS_OCR=false).")
 
-    with _OCR_SEMAPHORE:
+    with _OCR_SEMAPHORE, ocr_slot():
         pdf = None
         try:
             import pypdfium2 as pdfium
@@ -1519,15 +1521,22 @@ def ocr_pdf_page(file_bytes: bytes | None = None, page_number: int = 1, lang: st
             if page_number < 1 or page_number > len(pdf):
                 return ""
             page = pdf[page_number - 1]
-            # Render at scale 1.5 (~150 DPI) with grayscale conversion to optimize memory
-            pil_image = page.render(scale=1.5).to_pil()
+            # Upscaling beyond native scan detail can damage Arabic OCR.
+            # Target 108 DPI, reduced BEFORE allocation to the pixel budget.
+            width, height = page.get_size()
+            scale = render_scale(width, height, desired=1.5)
+            bitmap = page.render(scale=scale)
+            pil_image = bitmap.to_pil()
             gray_image = pil_image.convert("L")
             try:
-                ocr_text = pytesseract.image_to_string(gray_image, lang=lang)
+                from app.services.ocr_quality import recognize
+                ocr_text = recognize(gray_image, lang=lang)
             finally:
                 try:
                     gray_image.close()
                     pil_image.close()
+                    bitmap.close()
+                    page.close()
                 except Exception:
                     pass
             cleaned = clean_arabic_ocr_text(ocr_text or "")
@@ -1544,9 +1553,13 @@ def ocr_pdf_page(file_bytes: bytes | None = None, page_number: int = 1, lang: st
                     pass
 
             return cleaned
+        except ExtractionLimitError:
+            raise
+        except RuntimeError as exc:
+            raise ExtractionLimitError("OCR timed out or failed; extraction is incomplete") from exc
         except Exception:
             logger.warning(f"OCR fallback failed on page {page_number}")
-            return ""
+            raise ExtractionLimitError("OCR failed; extraction is incomplete")
         finally:
             if pdfium_doc is None and pdf is not None and hasattr(pdf, "close"):
                 try:
@@ -1580,6 +1593,19 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
             pdfium_shared = pdfium.PdfDocument(file_path)
         elif file_bytes:
             pdfium_shared = pdfium.PdfDocument(file_bytes)
+        if pdfium_shared is not None:
+            if len(pdfium_shared) > MAX_PAGES:
+                raise ExtractionLimitError(f"PDF exceeds the {MAX_PAGES}-page extraction limit")
+            for index in range(len(pdfium_shared)):
+                safe_page = pdfium_shared[index]
+                try:
+                    render_scale(*safe_page.get_size())
+                finally:
+                    safe_page.close()
+    except ExtractionLimitError:
+        if pdfium_shared is not None:
+            pdfium_shared.close()
+        raise
     except Exception:
         pass
 
@@ -1596,6 +1622,8 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
     try:
         with pdfplumber.open(pdf_source) as pdf:
             total_pages = len(pdf.pages)
+            if total_pages > MAX_PAGES:
+                raise ExtractionLimitError(f"PDF exceeds the {MAX_PAGES}-page extraction limit")
             parsed_doc.total_pages = total_pages
             
             for p_idx, page in enumerate(pdf.pages, start=1):
@@ -1876,6 +1904,7 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
 def parse_docx_document(file_source: bytes | str, filename: str) -> ParsedDocument:
     """Parses a Word DOCX document, preserving headings, paragraphs, lists, tables, and images."""
     import docx
+    check_archive(file_source)
 
     doc = docx.Document(io.BytesIO(file_source) if isinstance(file_source, bytes) else file_source)
     parsed_doc = ParsedDocument(
@@ -2013,6 +2042,7 @@ def parse_pptx_document(file_source: bytes | str, filename: str) -> ParsedDocume
     """Parses a PowerPoint PPTX presentation, preserving slides, titles, notes, and diagrams."""
     import pptx
 
+    check_archive(file_source)
     prs = pptx.Presentation(io.BytesIO(file_source) if isinstance(file_source, bytes) else file_source)
     parsed_doc = ParsedDocument(
         title=os.path.splitext(filename)[0],
@@ -2168,6 +2198,11 @@ def parse_image_asset(file_source: bytes | str, filename: str) -> ParsedDocument
     else:
         file_bytes = file_source
         img = Image.open(io.BytesIO(file_bytes))
+    try:
+        check_image(img)
+        width, height = img.size
+    finally:
+        img.close()
     parsed_doc = ParsedDocument(
         title=os.path.splitext(filename)[0],
         doc_type="image",
@@ -2181,8 +2216,8 @@ def parse_image_asset(file_source: bytes | str, filename: str) -> ParsedDocument
         asset_kind="figure",
         caption=f"شكل توضيحي: {parsed_doc.title}",
         image_bytes=file_bytes,
-        width=img.width,
-        height=img.height,
+        width=width,
+        height=height,
         checksum=hashlib.sha256(file_bytes).hexdigest() if file_bytes else str(uuid.uuid4().hex[:16]),
         ocr_text=image_ocr or None,
         ocr_engine=ocr_engine,
@@ -2276,47 +2311,39 @@ def parse_assessment_bank(file_bytes: bytes, filename: str) -> list[ParsedAssess
 
 
 def ocr_image_bytes(image_bytes: bytes, lang: str = "ara+eng") -> tuple[str, str | None]:
-    """Read Arabic/English text from a source image without changing the original."""
+    """Bounded local OCR; resource failures never masquerade as empty success."""
     if not image_bytes:
         return "", None
-
-    if os.getenv("PADDLE_OCR_ENABLED", "").lower() in {"1", "true", "yes"}:
-        try:
-            from paddleocr import PaddleOCR  # type: ignore[import-not-found]
-
-            ocr = PaddleOCR(lang="arabic", use_doc_orientation_classify=False, use_doc_unwarping=False)
-            result = ocr.predict(io.BytesIO(image_bytes))
-            lines: list[str] = []
-            for page in result or []:
-                payload = page.json if hasattr(page, "json") else page
-                for text in (payload.get("rec_texts", []) if isinstance(payload, dict) else []):
-                    if text:
-                        lines.append(str(text))
-            extracted = clean_arabic_ocr_text("\n".join(lines))
-            if extracted:
-                return extracted, "paddleocr-arabic"
-        except Exception:
-            logger.debug("PaddleOCR image extraction unavailable; using Tesseract fallback")
-
-    # Quiz/assignment extraction is now the ONLY consumer of OCR, and it runs
-    # synchronously per single page/image inside the API process. The old
-    # blanket production ban made every scanned upload fail with 422. Allow
-    # in-process OCR for single-page requests, keep it configurable off.
     if os.getenv("ALLOW_IN_PROCESS_OCR", "true").strip().lower() in ("false", "0", "no"):
-        raise RuntimeError("In-process OCR is disabled by configuration (ALLOW_IN_PROCESS_OCR=false).")
+        raise ExtractionLimitError("OCR is disabled by configuration")
+    import pytesseract
+    from app.core.config import get_tesseract_cmd
 
-    try:
-        import pytesseract
-        from app.core.config import get_tesseract_cmd
-
-        get_tesseract_cmd()
-        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        image = ImageOps.autocontrast(ImageOps.grayscale(image))
-        extracted = pytesseract.image_to_string(image, lang=lang, config="--psm 6")
-        return clean_arabic_ocr_text(extracted), "tesseract-ara+eng"
-    except Exception:
-        logger.debug("Image OCR skipped because no OCR engine is configured")
-        return "", None
+    get_tesseract_cmd()
+    with _OCR_SEMAPHORE, ocr_slot():
+        try:
+            with Image.open(io.BytesIO(image_bytes)) as source:
+                check_image(source)
+                source.thumbnail((MAX_RENDER_SIDE, MAX_RENDER_SIDE))
+                # Bound area as well as the longest side before converting.
+                scale = min(1.0, (MAX_RENDER_PIXELS / (source.width * source.height)) ** 0.5)
+                if scale < 1:
+                    source.thumbnail((max(1, int(source.width * scale)), max(1, int(source.height * scale))))
+                gray = ImageOps.grayscale(source)
+                try:
+                    image = ImageOps.autocontrast(gray)
+                    try:
+                        from app.services.ocr_quality import recognize
+                        text = recognize(image, lang=lang)
+                    finally:
+                        image.close()
+                finally:
+                    gray.close()
+            return clean_arabic_ocr_text(text), "tesseract-ara+eng"
+        except ExtractionLimitError:
+            raise
+        except Exception as exc:
+            raise ExtractionLimitError("Image OCR failed or timed out; extraction is incomplete") from exc
 
 
 def extract_pdf_page_images(
