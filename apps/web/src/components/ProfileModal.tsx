@@ -50,7 +50,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             </div>
             <div>
               <span style={{ fontSize: "11px", fontWeight: 800, color: "var(--text-main)", background: "var(--bg-accent)", padding: "2px 8px", borderRadius: "6px" }}>
-                {isStudent ? "الملف التعريفي للطالب" : "الملف التعريفي للمعلم المعتمد"}
+                {isStudent ? "الملف التعريفي للطالب" : "الملف التعريفي للمعلم"}
               </span>
               <h2 style={{ margin: "4px 0 2px", fontSize: "18px", color: "var(--text-main)" }}>{user.name}</h2>
               <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>{user.email}</span>
@@ -135,17 +135,17 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               <div style={{ background: "var(--bg-accent)", padding: "12px", borderRadius: "10px", border: "1px solid var(--border-color)", textAlign: "center" }}>
                 <Video size={18} style={{ color: "#059669", margin: "0 auto 4px" }} />
                 <span style={{ fontSize: "11px", color: "var(--text-muted)", display: "block" }}>الفيديوهات المرفوعة</span>
-                <strong style={{ fontSize: "18px", color: "var(--text-main)" }}>{teacher.uploadedVideosCount} فيديو</strong>
+                <strong style={{ fontSize: "18px", color: "var(--text-main)" }}>{teacher.uploadedVideosCount ?? "—"} فيديو</strong>
               </div>
               <div style={{ background: "var(--bg-accent)", padding: "12px", borderRadius: "10px", border: "1px solid var(--border-color)", textAlign: "center" }}>
                 <Users size={18} style={{ color: "#059669", margin: "0 auto 4px" }} />
                 <span style={{ fontSize: "11px", color: "var(--text-muted)", display: "block" }}>الطلاب المسجلون</span>
-                <strong style={{ fontSize: "18px", color: "var(--text-main)" }}>{teacher.enrolledStudentsCount} طالب</strong>
+                <strong style={{ fontSize: "18px", color: "var(--text-main)" }}>{teacher.enrolledStudentsCount ?? "—"} طالب</strong>
               </div>
               <div style={{ background: "var(--bg-accent)", padding: "12px", borderRadius: "10px", border: "1px solid var(--border-color)", textAlign: "center" }}>
                 <ShieldCheck size={18} style={{ color: "#059669", margin: "0 auto 4px" }} />
                 <span style={{ fontSize: "11px", color: "var(--text-muted)", display: "block" }}>حالة العقد</span>
-                <strong style={{ fontSize: "12px", color: "var(--text-main)" }}>معتمد وموثق</strong>
+                <strong style={{ fontSize: "12px", color: "var(--text-main)" }}>لا تتوفر حالة اعتماد موثوقة</strong>
               </div>
             </div>
 

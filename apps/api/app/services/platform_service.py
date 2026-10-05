@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 import os
 import secrets
 import uuid
@@ -52,6 +54,7 @@ from app.schemas import (
     QuizAnswerInput,
     QuizAttemptSubmitRequest,
     QuizCreateRequest,
+    QuizPublishRequest,
 )
 
 
@@ -229,6 +232,74 @@ def _validate_assessment_scope(db: Session, course, module_id: uuid.UUID | None,
         if module is None or module.course_id != course.id:
             raise ValueError("Lesson does not belong to this course")
     return module_id, lesson_id
+
+
+def publish_quiz_atomic(db: Session, user: User, payload: QuizPublishRequest) -> Quiz:
+    """Validate the complete draft before writing; retry is serialized per author.
+
+    A stable user lock and a DB unique key cover concurrent HTTP retries. A
+    reused key with different content is rejected rather than silently accepted.
+    """
+    course = course_for_user(db, user, payload.course_id)
+    ensure_course_manager(user, course)
+    module_id, lesson_id = _validate_assessment_scope(db, course, payload.module_id, payload.lesson_id)
+    if payload.question_ids:
+        raise ValueError("Atomic publication accepts inline questions only")
+    if payload.starts_at and payload.ends_at and _as_utc(payload.starts_at) >= _as_utc(payload.ends_at):
+        raise ValueError("Quiz end must be after its start")
+    for question in payload.questions:
+        if len(question.prompt.strip()) < 2 or question.learning_objective == "محتوى غير مفهرس":
+            raise ValueError("Invalid question content")
+        if question.course_id not in (None, course.id):
+            raise ValueError("Question belongs to another course")
+        kind = question.question_type.strip().lower()
+        if kind not in {'mcq', 'multiple_choice', 'true_false', 'essay', 'short_answer', 'fill_in_blank', 'ordering', 'matching'}:
+            raise ValueError('Unsupported question type; review the draft before publication')
+        if kind in {'mcq', 'multiple_choice'}:
+            if not question.options or len(question.options) < 2:
+                raise ValueError('Multiple-choice questions require at least two options')
+            keys = []
+            for option in question.options:
+                if isinstance(option, str):
+                    if not option.strip():
+                        raise ValueError('An option is empty')
+                elif isinstance(option, dict) and isinstance(option.get('text'), str) and option['text'].strip() and option.get('key'):
+                    keys.append(str(option['key']))
+                else:
+                    raise ValueError('Invalid question option')
+            if len(keys) != len(set(keys)):
+                raise ValueError('Option keys must be unique')
+    digest = hashlib.sha256(json.dumps(payload.model_dump(mode="json", exclude={"idempotency_key"}),
+                                       sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
+    existing = db.scalar(select(Quiz).where(Quiz.creator_id == user.id, Quiz.publication_key == payload.idempotency_key))
+    if existing:
+        if existing.publication_hash != digest:
+            raise ValueError("Publication key already used for a different draft")
+        return existing
+    quiz = Quiz(institution_id=course.institution_id, course_id=course.id, creator_id=user.id,
+                title=payload.title.strip(), duration_seconds=payload.duration_seconds,
+                starts_at=payload.starts_at, ends_at=payload.ends_at, module_id=module_id, lesson_id=lesson_id,
+                randomize_questions=payload.randomize_questions, attempts_allowed=payload.attempts_allowed,
+                status=QuizStatus.PUBLISHED, published_at=datetime.now(UTC),
+                publication_key=payload.idempotency_key, publication_hash=digest)
+    try:
+        db.add(quiz)
+        db.flush()
+        for position, item in enumerate(payload.questions, 1):
+            question = Question(institution_id=course.institution_id, author_id=user.id, course_id=course.id,
+                                question_type=item.question_type.strip().lower(), prompt=item.prompt.strip(),
+                                options=item.options, correct_answer=item.correct_answer, points=item.points,
+                                learning_objective=item.learning_objective)
+            db.add(question)
+            db.flush()
+            db.add(QuizQuestion(quiz_id=quiz.id, question_id=question.id, position=position, points=item.points))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    db.refresh(quiz)
+    return quiz
 
 
 def create_quiz(db: Session, user: User, payload: QuizCreateRequest) -> Quiz:
@@ -431,12 +502,15 @@ def create_assignment(db: Session, user: User, payload: AssignmentCreateRequest)
     course = course_for_user(db, user, payload.course_id)
     ensure_course_manager(user, course)
     module_id, lesson_id = _validate_assessment_scope(db, course, payload.module_id, payload.lesson_id)
+    if payload.starts_at and payload.due_at and _as_utc(payload.starts_at) >= _as_utc(payload.due_at):
+        raise ValueError("Assignment deadline must be after its start")
     assignment = Assignment(
         institution_id=course.institution_id,
         course_id=course.id,
         creator_id=user.id,
         title=payload.title.strip(),
         prompt=payload.prompt.strip(),
+        starts_at=payload.starts_at,
         due_at=payload.due_at,
         max_score=payload.max_score,
         module_id=module_id,
@@ -787,11 +861,32 @@ def broadcast_notification(
         User.is_active.is_(True),
         User.deleted_at.is_(None),
     )
+    if payload.course_id:
+        course = course_for_user(db, user, payload.course_id)
+        ensure_course_manager(user, course)
+    if user.role == UserRole.TEACHER:
+        # Teachers may message their own students, not every account in the
+        # institution. Include the author as a receipt for their own UI.
+        managed = select(Course.id).where(Course.teacher_id == user.id, Course.institution_id == user.institution_id)
+        if payload.course_id:
+            managed = managed.where(Course.id == payload.course_id)
+        audience = select(Enrollment.student_id).where(Enrollment.course_id.in_(managed),
+                      Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]))
+        query = query.where((User.id.in_(audience) & (User.role == UserRole.STUDENT)) | (User.id == user.id))
+    elif payload.course_id:
+        audience = select(Enrollment.student_id).where(Enrollment.course_id == payload.course_id,
+                      Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]))
+        query = query.where(User.id.in_(audience) | (User.id == user.id))
+    if payload.target_grade:
+        query = query.where((User.grade_level == payload.target_grade) | (User.id == user.id))
+    # Serialize deduplication, including concurrent retries. Scope keys to the
+    # sender so one teacher cannot collide with another teacher's notification.
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
     recipients = list(db.scalars(query).all())
     notifications: list[Notification] = []
     new_notifications: list[Notification] = []
     for recipient in recipients:
-        dedup_key = f"{payload.dedup_key}:{recipient.id}" if payload.dedup_key else None
+        dedup_key = hashlib.sha256(f"{user.id}:{payload.dedup_key}:{recipient.id}".encode()).hexdigest() if payload.dedup_key else None
         existing = None
         if dedup_key:
             existing = db.scalar(
@@ -845,9 +940,19 @@ def create_calendar_event(
     if payload.course_id:
         course = course_for_user(db, user, payload.course_id)
         ensure_course_manager(user, course)
+    digest = hashlib.sha256(json.dumps(payload.model_dump(mode="json", exclude={"idempotency_key"}), sort_keys=True).encode()).hexdigest()
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
+    if payload.idempotency_key:
+        existing = db.scalar(select(CalendarEvent).where(CalendarEvent.creator_id == user.id, CalendarEvent.request_key == payload.idempotency_key))
+        if existing:
+            if existing.request_hash != digest:
+                raise ValueError("Calendar key already used for another event")
+            return existing
     event = CalendarEvent(
         institution_id=user.institution_id,
         creator_id=user.id,
+        request_key=payload.idempotency_key,
+        request_hash=digest,
         course_id=payload.course_id,
         title=payload.title.strip(),
         description=payload.description,

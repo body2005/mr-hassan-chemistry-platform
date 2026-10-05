@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import secrets
+import io
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 UTC = timezone.utc
 from typing import Annotated
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status, UploadFile, File
+from fastapi.responses import StreamingResponse
+from sqlalchemy import select, func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -40,6 +43,76 @@ from app.services.audit_service import record_audit
 router = APIRouter(prefix="/auth")
 Db = Annotated[Session, Depends(get_db)]
 logger = logging.getLogger(__name__)
+
+
+@router.post("/avatar", response_model=PrivateUserResponse)
+async def upload_avatar(request: Request, user: CurrentUser, db: Db, file: UploadFile = File(...)):
+    from PIL import Image, UnidentifiedImageError
+    from app.core.storage import get_storage_provider
+    from app.services.storage_cleanup import enqueue_cleanup, compensate_upload
+
+    enforce_rate_limit(request, bucket="avatar", limit=10, window_seconds=60)
+    raw = await file.read(2 * 1024 * 1024 + 1)
+    if len(raw) > 2 * 1024 * 1024:
+        raise HTTPException(413, "Avatar limit is 2 MiB")
+    try:
+        image = Image.open(io.BytesIO(raw))
+        if image.format not in {"PNG", "JPEG", "WEBP"} or image.width * image.height > 4_000_000:
+            raise ValueError("Unsupported image")
+        image.load()
+        image = image.convert("RGB")
+        image.thumbnail((512, 512))
+        output = io.BytesIO()
+        image.save(output, format="PNG")
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+        raise HTTPException(422, "Upload a valid PNG, JPEG or WebP image") from exc
+    storage = get_storage_provider()
+    key = f"avatars/{user.id}/{uuid.uuid4()}.png"
+    storage.save_bytes(output.getvalue(), key, "image/png")
+    try:
+        # Serialize replacement so concurrent uploads clean up the preceding
+        # version, not an unrelated resource or the winning current avatar.
+        locked = db.scalar(select(User).where(User.id == user.id).with_for_update().execution_options(populate_existing=True))
+        enqueue_cleanup(db, locked.avatar_key)
+        locked.avatar_key = key
+        db.commit()
+        db.refresh(locked)
+    except Exception:
+        db.rollback()
+        compensate_upload(db, key)
+        raise
+    return PrivateUserResponse.model_validate(locked)
+
+
+@router.get("/avatar")
+def read_avatar(user: CurrentUser):
+    from app.core.storage import get_storage_provider
+    if not user.avatar_key:
+        raise HTTPException(404, "No avatar")
+    return StreamingResponse(get_storage_provider().open_stream(user.avatar_key), media_type="image/png",
+                             headers={"Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff"})
+
+
+@router.get("/profile-summary")
+def profile_summary(user: CurrentUser, db: Db):
+    from app.models.user import UserRole
+    from app.models.course import Course, CourseModule, Lesson, Enrollment, EnrollmentStatus
+    from app.models.progress import LessonProgress
+    if user.role == UserRole.STUDENT:
+        rows = db.execute(select(LessonProgress, Lesson.title).join(Lesson, Lesson.id == LessonProgress.lesson_id)
+                          .where(LessonProgress.student_id == user.id, LessonProgress.institution_id == user.institution_id)).all()
+        return {"progress": [{"lesson_id": str(p.lesson_id), "title": title, "completion_percent": p.completion_percent} for p, title in rows]}
+    managed = select(Course.id).where(Course.institution_id == user.institution_id)
+    if user.role == UserRole.TEACHER:
+        managed = managed.where(Course.teacher_id == user.id)
+    # Unique active/completed students across owned courses, not enrollments.
+    students = db.scalar(select(func.count(func.distinct(Enrollment.student_id))).join(User, User.id == Enrollment.student_id)
+                         .where(Enrollment.course_id.in_(managed), Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+                                User.is_active.is_(True), User.deleted_at.is_(None))) or 0
+    # Count lessons with a stored ready video, not pending upload jobs.
+    videos = db.scalar(select(func.count(Lesson.id)).join(CourseModule, CourseModule.id == Lesson.module_id)
+                       .where(CourseModule.course_id.in_(managed), Lesson.kind == "video", Lesson.video_asset_key.is_not(None))) or 0
+    return {"enrolled_students_count": students, "uploaded_videos_count": videos}
 
 
 def _cookie_options(request: Request | None = None) -> tuple[str, bool]:
@@ -317,8 +390,13 @@ def logout(
 
 
 @router.get("/me", response_model=PrivateUserResponse)
-def current_user(user: CurrentUser) -> PrivateUserResponse:
-    return PrivateUserResponse.model_validate(user)
+def current_user(user: CurrentUser, db: Db) -> PrivateUserResponse:
+    response = PrivateUserResponse.model_validate(user)
+    if user.role.value != "student":
+        counts = profile_summary(user, db)
+        response.uploaded_videos_count = counts["uploaded_videos_count"]
+        response.enrolled_students_count = counts["enrolled_students_count"]
+    return response
 
 
 @router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)

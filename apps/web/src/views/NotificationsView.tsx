@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Bell,
   Calendar,
@@ -27,7 +27,7 @@ interface NotificationsViewProps {
   notifications: NotificationItem[];
   onMarkNotificationRead: (id: string) => void;
   onNavigateToTab: (tab: NavTab) => void;
-  onAddNotification?: (notif: NotificationItem) => void;
+  onAddNotification?: (notif: NotificationItem) => Promise<void>;
   currentUser: CurrentUser;
   lang?: string;
 }
@@ -303,13 +303,22 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   const [broadcastType, setBroadcastType] = useState<"system" | "assignment" | "quiz" | "warning">("system");
   const [broadcastDueDate, setBroadcastDueDate] = useState("");
   const [broadcastActionTab, setBroadcastActionTab] = useState<string>("MyCourses");
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const requestRef = useRef({signature: '', id: '', notificationId: ''});
+  const broadcastRef = useRef({signature: '', id: ''});
 
   async function handleSendBroadcast(e: React.FormEvent) {
     e.preventDefault();
     if (!broadcastTitle.trim() || !broadcastMessage.trim()) return;
+    if (saving) return;
+    setSaving(true);
+    setSaveError(null);
+    const signature = JSON.stringify([broadcastTitle, broadcastMessage, broadcastTargetGrade, broadcastType, broadcastDueDate, broadcastActionTab]);
+    if (broadcastRef.current.signature !== signature) broadcastRef.current = {signature, id: `notif_${crypto.randomUUID()}`};
 
     const newNotif: NotificationItem = {
-      id: `notif_${Date.now()}`,
+      id: broadcastRef.current.id,
       title: broadcastTitle.trim(),
       message: broadcastMessage.trim(),
       type: broadcastType,
@@ -320,15 +329,17 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       actionTab: broadcastActionTab,
     };
 
-    if (onAddNotification) onAddNotification(newNotif);
-    else await notificationService.saveNotification(newNotif);
-
-    setIsBroadcastModalOpen(false);
-    setBroadcastTitle("");
-    setBroadcastMessage("");
-    setBroadcastDueDate("");
-    setScheduleSavedMsg(true);
-    setTimeout(() => setScheduleSavedMsg(false), 3000);
+    try {
+      if (onAddNotification) await onAddNotification(newNotif);
+      else setActiveNotifications(await notificationService.saveNotification(newNotif));
+      setIsBroadcastModalOpen(false);
+      setBroadcastTitle("");
+      setBroadcastMessage("");
+      setBroadcastDueDate("");
+      broadcastRef.current = {signature: '', id: ''};
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'تعذر إرسال الإشعار. احتفظنا بالمسودة؛ أعد المحاولة.');
+    } finally { setSaving(false); }
   }
 
   const gradeSchedule = schedules.find((s) => s.academicYear === selectedGrade);
@@ -357,9 +368,14 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   void toggleScheduleDay;
 
   async function handleSaveWizardSchedule() {
+    if (saving) return;
+    setSaving(true);
+    setSaveError(null);
+    const signature = JSON.stringify([selectedGrade, wizardState]);
+    if (requestRef.current.signature !== signature) requestRef.current = {signature, id: wizardState.editingEventId || `evt_${crypto.randomUUID()}`, notificationId: `notif_sched_${crypto.randomUUID()}`};
     const fullTimeStr = `${wizardState.timeHour} ${wizardState.timePeriod}`;
     const newEvent: CalendarScheduleEvent = {
-      id: wizardState.editingEventId || `evt_${Date.now()}`,
+      id: requestRef.current.id,
       academicYear: selectedGrade,
       date: wizardState.selectedDate,
       dayName: wizardState.dayTitle.trim() || `${getArabicDayName(new Date(wizardState.selectedDate))} - موعد إرسال`,
@@ -374,60 +390,27 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       publishStartTime: wizardState.isScheduledNotif ? `${wizardState.scheduledNotifHour} ${wizardState.scheduledNotifPeriod}` : undefined,
     };
 
-    // 1. INSTANT OPTIMISTIC UI UPDATE (ZERO LAG)
-    setWizardState((prev) => ({ ...prev, isOpen: false }));
-    setSelectedDayDate(wizardState.selectedDate);
-    setScheduleSavedMsg(true);
-    setTimeout(() => setScheduleSavedMsg(false), 3000);
-
-    setCalendarEvents((prev) => {
-      const normDate = (newEvent.date || "").split("T")[0];
-      const idx = prev.findIndex((e) => (e.date || "").split("T")[0] === normDate && e.academicYear === selectedGrade);
-      const updated = idx >= 0 ? [...prev.slice(0, idx), newEvent, ...prev.slice(idx + 1)] : [...prev, newEvent];
-      try {
-        localStorage.setItem("lms_calendar_events_cache", JSON.stringify(updated));
-      } catch {
-        // The server event remains saved even if local caching is unavailable.
-      }
-      return updated;
-    });
-
-    if (wizardState.isRecurringWeekly) {
-      const dayName = getArabicDayName(new Date(wizardState.selectedDate));
-      setSchedules((prev) => {
-        const updated = prev.map((s) => {
-          if (s.academicYear === selectedGrade) {
-            const days = s.days.includes(dayName) ? s.days : [...s.days, dayName];
-            return { ...s, days, time: fullTimeStr };
-          }
-          return s;
-        });
-        void calendarService.saveNotificationSchedules(updated);
-        return updated;
-      });
-    }
-
     // Build the notification createdAt — either scheduled ISO date or "الآن"
     let notifCreatedAt = "الآن";
     if (wizardState.isScheduledNotif && wizardState.scheduledNotifDate) {
       const schedDate = wizardState.scheduledNotifDate;
       const schedHour = wizardState.scheduledNotifHour || "06:00";
       const schedPeriod = wizardState.scheduledNotifPeriod || "م";
-      const [hh] = schedHour.split(":");
+      const [hh, mm = '00'] = schedHour.split(":");
       let hour24 = parseInt(hh, 10) || 6;
       if (schedPeriod === "م" && hour24 < 12) hour24 += 12;
       if (schedPeriod === "ص" && hour24 === 12) hour24 = 0;
-      notifCreatedAt = `${schedDate}T${String(hour24).padStart(2, "0")}:00:00`;
+      notifCreatedAt = new Date(`${schedDate}T${String(hour24).padStart(2, "0")}:${mm}:00`).toISOString();
     }
 
     let autoNotif: NotificationItem | undefined = undefined;
     if (wizardState.isPublishedToStudents) {
       // If teacher wrote a custom message, use it; otherwise title only (no day/time in body)
-      const notifMessage = wizardState.customMessage?.trim() || "";
+      const notifMessage = wizardState.customMessage?.trim() || `${newEvent.dayName} — ${newEvent.date} ${newEvent.time}`;
 
       autoNotif = {
-        id: `notif_sched_${newEvent.id}`,
-        title: `${wizardState.contentType === "quiz" ? "موعد اختبار بالجدول" : wizardState.contentType === "general" ? "تنبيه عام بالجدول" : "موعد جديد بالجدول"}: ${newEvent.dayName}`,
+        id: requestRef.current.notificationId,
+        title: `${wizardState.contentType === "quiz" ? "موعد اختبار بالجدول" : wizardState.contentType === "general" ? "تنبيه عام بالجدول" : "موعد جديد بالجدول"}: ${newEvent.dayName}`.slice(0, 200),
         message: notifMessage,
         type: wizardState.contentType === "quiz" ? "quiz" : wizardState.contentType === "assignment" ? "assignment" : wizardState.contentType === "general" ? "warning" : "system",
         targetYear: selectedGrade,
@@ -437,34 +420,34 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
         quizDurationMinutes: wizardState.contentType === "quiz" ? wizardState.quizDurationMinutes : undefined,
       };
 
-      setActiveNotifications((prev) => deduplicateNotifications([autoNotif!, ...prev]));
-      if (onAddNotification) {
-        onAddNotification(autoNotif);
-      }
     }
 
-    // 2. PARALLEL BACKGROUND SERVER SYNC
-    void (async () => {
-      try {
-        const [serverEvents, serverNotifs] = await Promise.all([
-          calendarService.saveCalendarEvent(newEvent),
-          wizardState.isPublishedToStudents && autoNotif ? notificationService.saveNotification(autoNotif) : Promise.resolve(undefined),
-        ]);
-        if (Array.isArray(serverEvents) && serverEvents.length > 0) {
-          setCalendarEvents(serverEvents);
-        }
-        if (Array.isArray(serverNotifs) && serverNotifs.length > 0) {
-          setActiveNotifications((prev) => deduplicateNotifications([...serverNotifs, ...prev]));
-        }
-        window.dispatchEvent(new Event("lms_schedule_updated"));
-      } catch (err) {
-        console.error("Background sync failed:", err);
+    let eventSaved = false;
+    try {
+      setCalendarEvents(await calendarService.saveCalendarEvent(newEvent));
+      eventSaved = true;
+      if (autoNotif) {
+        if (onAddNotification) await onAddNotification(autoNotif);
+        else setActiveNotifications(await notificationService.saveNotification(autoNotif));
       }
-    })();
+      if (wizardState.isRecurringWeekly) {
+        const day = getArabicDayName(new Date(wizardState.selectedDate));
+        const updated = schedules.map(s => s.academicYear === selectedGrade ? {...s, days: [...new Set([...s.days, day])], time: fullTimeStr} : s);
+        await calendarService.saveNotificationSchedules(updated);
+        setSchedules(updated);
+      }
+      setWizardState(prev => ({...prev, isOpen: false}));
+      setSelectedDayDate(wizardState.selectedDate);
+      setScheduleSavedMsg(true);
+      setTimeout(() => setScheduleSavedMsg(false), 3000);
+      window.dispatchEvent(new Event('lms_schedule_updated'));
+    } catch (err) {
+      setSaveError(`${eventSaved ? 'حُفظ الموعد، لكن تعذر إرسال الإشعار أو تحديث التكرار؛ أعد المحاولة دون تكرار الموعد. ' : 'تعذر تأكيد حفظ الموعد؛ المدخلات محفوظة وإعادة المحاولة لا تكرره. '}${err instanceof Error ? err.message : ''}`);
+    } finally { setSaving(false); }
   }
 
   async function handleCancelSchedule(dateStr: string) {
-    if (!isTeacher) return;
+    if (!isTeacher || saving) return;
 
     const normTargetDate = (dateStr || "").split("T")[0];
     const targetEvent = calendarEvents.find(
@@ -473,31 +456,10 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
     const dayName = getArabicDayName(new Date(dateStr));
     const eventTitle = targetEvent?.dayName || `${dayName} - موعد مجدول`;
 
-    // 1. INSTANT OPTIMISTIC UI
-    setWizardState((prev) => ({ ...prev, isOpen: false }));
-    setSelectedDayDate(dateStr);
-    setScheduleSavedMsg(true);
-    setTimeout(() => setScheduleSavedMsg(false), 3000);
-
-    setCalendarEvents((prev) => {
-      const updated = prev.map((e) => {
-        if ((e.date || "").split("T")[0] === normTargetDate && (e.academicYear === selectedGrade || e.academicYear === "all")) {
-          return { ...e, isCancelled: true };
-        }
-        return e;
-      });
-      try {
-        localStorage.setItem("lms_calendar_events_cache", JSON.stringify(updated));
-      } catch {
-        // The cancellation remains in memory if local caching is unavailable.
-      }
-      return updated;
-    });
-
     const cancelNotif: NotificationItem = {
-      id: `notif_cancel_${Date.now()}`,
-      title: `تنبيه: تم إلغاء موعد (${eventTitle})`,
-      message: "",
+      id: `cancel_${targetEvent?.id || `${selectedGrade}_${normTargetDate}`}`,
+      title: `تنبيه: تم إلغاء موعد (${eventTitle})`.slice(0, 200),
+      message: "تم إلغاء الموعد المجدول؛ راجع الجدول لمعرفة المواعيد المتاحة.",
       type: "warning",
       targetYear: selectedGrade,
       createdAt: "الآن",
@@ -505,27 +467,22 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       actionTab: "Notifications",
     };
 
-    setActiveNotifications((prev) => deduplicateNotifications([cancelNotif, ...prev]));
-    if (onAddNotification) {
-      onAddNotification(cancelNotif);
-    }
-
-    // 2. PARALLEL BACKGROUND SERVER SYNC
-    void (async () => {
-      try {
-        const [updatedEvents, updatedNotifs] = await Promise.all([
-          calendarService.cancelCalendarEvent(dateStr, selectedGrade),
-          notificationService.saveNotification(cancelNotif),
-        ]);
-        if (Array.isArray(updatedEvents)) setCalendarEvents(updatedEvents);
-        if (Array.isArray(updatedNotifs) && updatedNotifs.length > 0) {
-          setActiveNotifications((prev) => deduplicateNotifications([...updatedNotifs, ...prev]));
-        }
-        window.dispatchEvent(new Event("lms_schedule_updated"));
-      } catch (err) {
-        console.error("Cancel schedule background sync failed:", err);
-      }
-    })();
+    setSaving(true);
+    setSaveError("");
+    let cancelled = false;
+    try {
+      setCalendarEvents(await calendarService.cancelCalendarEvent(dateStr, selectedGrade));
+      cancelled = true;
+      if (onAddNotification) await onAddNotification(cancelNotif);
+      else setActiveNotifications(await notificationService.saveNotification(cancelNotif));
+      setWizardState(prev => ({...prev, isOpen: false}));
+      setSelectedDayDate(dateStr);
+      setScheduleSavedMsg(true);
+      setTimeout(() => setScheduleSavedMsg(false), 3000);
+      window.dispatchEvent(new Event("lms_schedule_updated"));
+    } catch (err) {
+      setSaveError(`${cancelled ? 'أُلغي الموعد، لكن تعذر إرسال الإشعار؛ أعد المحاولة دون تكرار الإلغاء. ' : 'تعذر تأكيد إلغاء الموعد؛ أعد المحاولة. '}${err instanceof Error ? err.message : ''}`);
+    } finally { setSaving(false); }
   }
 
   function handleActionClick(n: NotificationItem) {
@@ -1609,6 +1566,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
             onClick={(e) => e.stopPropagation()}
           >
             {/* Wizard Top Bar */}
+            {saveError && <p role="alert" style={{color: '#dc2626'}}>{saveError}</p>}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", borderBottom: "1px solid var(--border-color)", paddingBottom: "12px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                 <div style={{ width: "32px", height: "32px", borderRadius: "8px", background: "#059669", color: "#ffffff", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -2235,6 +2193,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
             </div>
 
             <form onSubmit={handleSendBroadcast} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+              {saveError && <p role="alert" style={{color: '#dc2626'}}>{saveError}</p>}
               <div>
                 <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
                   الصف الدراسي المستهدف:

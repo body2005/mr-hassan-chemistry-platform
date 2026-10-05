@@ -1,0 +1,7 @@
+# Disposable QA experiment, NEVER an application/production dependency.
+ARG QA_IMAGE=chemistryaudit2-qa-tests
+FROM ${QA_IMAGE}
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0t64 \
+    && rm -rf /var/lib/apt/lists/*

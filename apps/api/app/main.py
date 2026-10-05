@@ -70,6 +70,14 @@ def classify_rate_limit_category(method: str, path: str) -> str:
     normalized_path = path.rstrip("/")
     api_prefix = settings.api_v1_prefix
 
+    # Profile and avatar reads are not credential operations. Charging every
+    # reload/image request to the login budget can block a legitimate logout
+    # or re-login. Keep the existing read budget and ALL credential mutation
+    # limits; only these authenticated read-only routes change category.
+    if normalized_method in {"GET", "HEAD"} and normalized_path in {
+        f"{api_prefix}/auth/me", f"{api_prefix}/auth/profile-summary", f"{api_prefix}/auth/avatar",
+    }:
+        return "read"
     if normalized_path.startswith(f"{api_prefix}/auth/"):
         return "auth"
     if (

@@ -67,7 +67,9 @@ class UserResponse(BaseModel):
 
 class PrivateUserResponse(UserResponse):
     """Returned to the authenticated account owner and administrators during auth flows."""
-    pass
+    avatar_url: str | None = None
+    uploaded_videos_count: int | None = None
+    enrolled_students_count: int | None = None
 
 
 class ManagedUserResponse(UserResponse):
@@ -378,6 +380,8 @@ class NotificationCreateRequest(BaseModel):
 
 
 class NotificationBroadcastRequest(BaseModel):
+    target_grade: str | None = Field(default=None, pattern="^SECONDARY_[123]$")
+    course_id: uuid.UUID | None = None
     kind: str = Field(min_length=2, max_length=40)
     title: str = Field(min_length=2, max_length=200)
     message: str = Field(min_length=1, max_length=10_000)
@@ -387,6 +391,7 @@ class NotificationBroadcastRequest(BaseModel):
 
 
 class CalendarEventCreateRequest(BaseModel):
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=100)
     course_id: uuid.UUID | None = None
     title: str = Field(min_length=2, max_length=200)
     description: str | None = Field(default=None, max_length=10_000)
@@ -464,6 +469,11 @@ class QuizCreateRequest(BaseModel):
         return data
 
 
+class QuizPublishRequest(QuizCreateRequest):
+    questions: list[QuestionCreateRequest] = Field(min_length=1, max_length=200)
+    idempotency_key: str = Field(min_length=8, max_length=100)
+
+
 class QuizResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -535,6 +545,7 @@ class AssignmentCreateRequest(BaseModel):
     title: str = Field(default="", max_length=200)
     assignment_title: str | None = Field(default=None, max_length=200)
     prompt: str = Field(min_length=2, max_length=20_000)
+    starts_at: datetime | None = None
     due_at: datetime | None = None
     # Attach the assignment to a unit and optionally to one lesson.
     module_id: uuid.UUID | None = None
@@ -563,6 +574,7 @@ class AssignmentResponse(BaseModel):
     title: str
     assignment_title: str | None = None
     prompt: str
+    starts_at: datetime | None = None
     due_at: datetime | None
     max_score: float
     status: AssignmentStatus

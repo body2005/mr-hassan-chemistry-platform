@@ -21,10 +21,11 @@ def main():
     arg.add_argument("--language", default="ara+eng")
     arg.add_argument("--model-dir", type=Path)
     arg.add_argument("--native-pdf", action="store_true", help="QA only: OCR original full-page raster")
+    arg.add_argument('--preprocess', choices=('none', 'contrast', 'threshold'), default='none')
     arg.add_argument("--psm", type=int, choices=(3, 4, 6, 11), default=3)
     arg.add_argument("--output", type=Path, required=True)
     args = arg.parse_args()
-    if not 1.5 <= args.scale <= 3.0:
+    if not 1.0 <= args.scale <= 3.0:
         raise ValueError("Candidate scale must remain within render budgets")
     if args.model_dir:
         os.environ["TESSDATA_PREFIX"] = str(args.model_dir)
@@ -38,10 +39,18 @@ def main():
     # Process-local overrides only. The shared API containers are untouched.
     pytesseract.image_to_string = candidate
     def candidate_data(image, **kwargs):
+        transformed = None
+        if args.preprocess != 'none':
+            from PIL import ImageOps
+            transformed = ImageOps.autocontrast(image) if args.preprocess == 'contrast' else image.point(lambda value: 255 if value > 160 else 0)
         if args.language != "ara+eng":
             kwargs["lang"] = args.language
         kwargs["config"] = re.sub(r"--psm\s+\d+", f"--oem 1 --psm {args.psm}", kwargs.get("config", "--psm 3"))
-        return original_data(image, **kwargs)
+        try:
+            return original_data(transformed if transformed is not None else image, **kwargs)
+        finally:
+            if transformed is not None:
+                transformed.close()
     pytesseract.image_to_data = candidate_data
     parsing.render_scale = lambda width, height, desired=3.0: original_scale(width, height, args.scale)
     if args.native_pdf:

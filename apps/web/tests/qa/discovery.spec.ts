@@ -13,7 +13,10 @@ function pdfText(pdf: Buffer) {
   { input: pdf, encoding: 'utf8', timeout: 10_000, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
 }
 async function signIn(page: Page, email: string, password: string) {
-  await page.goto(`${base}/#auth`);
+  // Use the actual guest sign-in control, including after a real logout.
+  // A hash alone is not the modal's public navigation contract.
+  await page.goto(base);
+  await page.getByRole('button', {name: 'تسجيل الدخول', exact: true}).click();
   const form = page.locator('form').first();
   await form.locator('input[type="text"]').fill(email);
   await form.locator('input[type="password"]').fill(password);
@@ -27,6 +30,7 @@ async function teacher(page: Page) {
     `${project}-api-1`, 'sh', '/srv/entrypoint-prod.sh', 'python', '-m', 'scripts.seed_qa_teacher'], { encoding: 'utf8', timeout: 20_000 });
   const identity = JSON.parse(output.trim());
   await signIn(page, identity.email, identity.password);
+  return identity;
 }
 async function post(page: Page, path: string, data: unknown, status = 201) {
   const csrf = (await page.context().cookies()).find(c => c.name === 'matgar_csrf')?.value || '';
@@ -135,7 +139,9 @@ test('failed quiz publishing is atomic and retry does not duplicate questions', 
   await prepareDraft(page, lesson.id, 'quiz', [{ id: 'valid', question_text: 'Explain conservation of mass.', question_type: 'essay', points: 5 },
     { id: 'invalid', question_text: 'x', question_type: 'essay', points: 5 }]);
   const outcomes: number[] = [];
-  page.on('response', r => { if (r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/v1/questions') outcomes.push(r.status()); });
+  // Publication is now one HTTP transaction; the same invariant remains:
+  // rejected drafts and retries must create no question/quiz records.
+  page.on('response', r => { if (r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/v1/quizzes/publish-draft') outcomes.push(r.status()); });
   await publish(page, 'quiz');
   await expect.poll(() => outcomes.includes(422)).toBe(true);
   const questions = await (await page.request.get(`${base}/api/v1/questions?course_id=${course.id}`)).json();
@@ -145,7 +151,7 @@ test('failed quiz publishing is atomic and retry does not duplicate questions', 
   // A failed publication leaves the confirmation modal open; retry the
   // visible confirmation instead of clicking the obscured page underneath.
   await page.getByRole('button', { name: 'تأكيد الرفع والنشر الآن' }).click();
-  await expect.poll(() => outcomes.length).toBe(4);
+  await expect.poll(() => outcomes.length).toBe(2);
   const afterRetry = await (await page.request.get(`${base}/api/v1/questions?course_id=${course.id}`)).json();
   console.log(JSON.stringify({ case: 'partial-quiz-retry', statuses: outcomes, orphan_count: afterRetry.length }));
   expect(afterRetry).toHaveLength(0);
@@ -222,7 +228,7 @@ for (const failure of ['empty notification body', 'calendar outage'] as const) {
 for (const role of ['teacher', 'student']) {
   test(`${role} profile avatar survives its automatic reload`, async ({ page, browser }) => {
     const learner = role === 'student' ? await student(browser) : null;
-    if (!learner) await teacher(page);
+    const author = !learner ? await teacher(page) : null;
     const target = learner?.page || page;
     try {
       await target.goto(`${base}/#profile`);
@@ -233,7 +239,20 @@ for (const role of ['teacher', 'student']) {
       await expect(target.locator('.profile-button')).toHaveCount(1);
       await expect(target.getByRole('heading', { name: 'الملف التعريفي للحساب' })).toBeVisible();
       await target.screenshot({ path: test.info().outputPath(`avatar-${role}.png`), fullPage: true });
-      await expect(target.locator('main img[src^="data:image/"]')).toHaveCount(1);
+      const me = await (await target.request.get(`${base}/api/v1/auth/me`)).json();
+      expect(me.avatar_url, 'Server must persist an authenticated avatar URL').toMatch(/^\/api\/v1\/auth\/avatar/);
+      await expect(target.locator('main img[src^="/api/v1/auth/avatar"]')).toHaveCount(1);
+      const image = await target.request.get(`${base}${me.avatar_url}`);
+      expect(image.status()).toBe(200);
+      expect(image.headers()['content-type']).toContain('image/png');
+      await target.reload();
+      await expect(target.locator('main img[src^="/api/v1/auth/avatar"]')).toHaveCount(1);
+      const csrf = (await target.context().cookies()).find(c => c.name === 'matgar_csrf')!.value;
+      expect((await target.request.post(`${base}/api/v1/auth/logout`, {headers: {'X-CSRF-Token': csrf}})).status()).toBe(204);
+      await target.reload();
+      await signIn(target, me.email, author?.password || 'qa-discovery-only-pass');
+      await target.goto(`${base}/#profile`);
+      await expect(target.locator('main img[src^="/api/v1/auth/avatar"]')).toHaveCount(1);
     } finally { if (learner) await learner.close(); }
   });
 }
@@ -246,8 +265,86 @@ test('teacher can select both courses when they share the same grade', async ({ 
   await page.reload();
   await page.getByRole('button', { name: 'الصف الثاني الثانوي', exact: true }).click();
   await page.screenshot({ path: test.info().outputPath('same-grade-courses.png'), fullPage: true });
-  await expect.soft(page.getByText(a.lesson.title, { exact: true })).toBeVisible({ timeout: 2000 });
-  await expect(page.getByText(b.lesson.title, { exact: true })).toBeVisible({ timeout: 2000 });
+  // The product requires a course selector, not simultaneous concatenation.
+  await page.getByLabel('اختر المقرر').selectOption(a.course.id);
+  await expect(page.getByText(a.lesson.title, { exact: true })).toBeVisible();
+  await page.getByLabel('اختر المقرر').selectOption(b.course.id);
+  await expect(page.getByText(b.lesson.title, { exact: true })).toBeVisible();
+});
+
+for (const kind of ['quiz', 'assignment']) {
+  test(`${kind} persists the explicitly selected second course and lesson after reload`, async ({page}) => {
+    await teacher(page);
+    const a = await courseWithLesson(page, 'A');
+    const b = await courseWithLesson(page, 'B');
+    await prepareDraft(page, a.lesson.id, kind, [{id: 'essay', question_text: 'Explain a source of energy.', question_type: 'essay', points: 7}]);
+    await page.getByLabel('اختر المقرر').selectOption(b.course.id);
+    const lessonSelect = page.locator(`select:has(option[value="${b.lesson.id}"])`);
+    await lessonSelect.selectOption(b.lesson.id);
+    await expect.poll(async () => page.evaluate(() => {
+      const key = Object.keys(localStorage).find(key => key.startsWith('lms_quiz_maker_unuploaded_draft_v2:'));
+      return key ? JSON.parse(localStorage.getItem(key)!).selectedCourseId : null;
+    })).toBe(b.course.id);
+    await page.reload();
+    await expect(page.getByLabel('اختر المقرر')).toHaveValue(b.course.id);
+    await expect(lessonSelect).toHaveValue(b.lesson.id);
+    const endpoint = kind === 'quiz' ? '/quizzes/publish-draft' : '/assignments';
+    const saved = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1${endpoint}` && response.request().method() === 'POST');
+    await publish(page, kind);
+    const response = await saved;
+    expect(response.status(), await response.text()).toBe(201);
+    const item = await response.json();
+    // These resources expose collection/solve routes, not GET /{id}.
+    // Read the saved record independently from the supported collection API.
+    const collection = kind === 'quiz' ? 'quizzes' : 'assignments';
+    const records = await page.request.get(`${base}/api/v1/${collection}?course_id=${b.course.id}`);
+    expect(records.status(), await records.text()).toBe(200);
+    const persisted = (await records.json()).find((record: {id: string}) => record.id === item.id);
+    expect(persisted, 'Published assessment must exist in the stored course collection').toBeDefined();
+    expect(persisted.course_id).toBe(b.course.id);
+    expect(persisted.lesson_id).toBe(b.lesson.id);
+    const wrongCourse = await (await page.request.get(`${base}/api/v1/${kind === 'quiz' ? 'quizzes' : 'assignments'}?course_id=${a.course.id}`)).json();
+    expect(wrongCourse).toHaveLength(0);
+  });
+}
+
+test('quiz publication retries after a lost response reuse the saved quiz and question records', async ({page}) => {
+  await teacher(page);
+  const {course, lesson} = await courseWithLesson(page);
+  const title = await prepareDraft(page, lesson.id, 'quiz', [{id: 'essay', question_text: 'Explain the energy conversion.', question_type: 'essay', points: 5}]);
+  let dropped = false;
+  await page.route('**/api/v1/quizzes/publish-draft', async route => {
+    if (!dropped) { dropped = true; await route.fetch(); await route.abort('failed'); }
+    else await route.continue();
+  });
+  await publish(page, 'quiz');
+  await expect(page.getByRole('button', {name: 'تأكيد الرفع والنشر الآن'})).toBeEnabled();
+  await expect(page.getByRole('alert').last()).toBeVisible();
+  await page.getByRole('button', {name: 'تأكيد الرفع والنشر الآن'}).click();
+  await expect.poll(async () => (await (await page.request.get(`${base}/api/v1/quizzes?course_id=${course.id}`)).json()).filter((quiz: {title: string}) => quiz.title === title).length).toBe(1);
+  await expect(page.getByRole('button', {name: 'تأكيد الرفع والنشر الآن'})).toHaveCount(0);
+  expect(await (await page.request.get(`${base}/api/v1/questions?course_id=${course.id}`)).json()).toHaveLength(1);
+});
+
+test('saved calendar plus failed notification keeps a truthful draft and retry creates one of each', async ({page}) => {
+  await teacher(page);
+  await page.goto(`${base}/#notifications`);
+  await page.getByRole('button', {name: 'إضافة موعد جديد', exact: true}).click();
+  const title = `QA Partial Calendar ${Date.now()}`;
+  await page.getByPlaceholder('مثال: الثلاثاء - المحاضرة الأسبوعية').fill(title);
+  await page.getByRole('button', {name: 'التالي: تحديد التوقيت', exact: true}).click();
+  await page.getByRole('button', {name: /التالي:.*مراجعة/}).click();
+  let fail = true;
+  await page.route('**/api/v1/notifications/broadcast', route => fail ? route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({detail: 'QA partial send outage'})}) : route.continue());
+  await page.getByRole('button', {name: 'تأكيد وحفظ الموعد في الجدول', exact: true}).click();
+  await expect(page.getByRole('alert')).toContainText('حُفظ الموعد');
+  fail = false;
+  await page.getByRole('button', {name: 'تأكيد وحفظ الموعد في الجدول', exact: true}).click();
+  await expect(page.getByRole('button', {name: 'تأكيد وحفظ الموعد في الجدول', exact: true})).toHaveCount(0);
+  const events = await (await page.request.get(`${base}/api/v1/calendar`)).json();
+  expect(events.filter((event: {title: string}) => event.title === title)).toHaveLength(1);
+  const notifications = await (await page.request.get(`${base}/api/v1/notifications`)).json();
+  expect(notifications.filter((item: {title: string}) => item.title.includes(title))).toHaveLength(1);
 });
 
 test('new teacher does not show a fabricated verified identity', async ({ page }) => {

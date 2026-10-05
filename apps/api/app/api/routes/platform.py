@@ -72,6 +72,7 @@ from app.schemas import (
     QuizAttemptResponse,
     QuizAttemptSubmitRequest,
     QuizCreateRequest,
+    QuizPublishRequest,
     QuizResponse,
     UserResponse,
 )
@@ -482,9 +483,19 @@ async def upload_lesson_video(
     try:
         stored_path = storage.save_file(filepath, storage_key, file.content_type or mimetypes.guess_type(filename)[0])
     except Exception as exc:
+        # Safe operational evidence: do not log exception messages, which may
+        # contain signed object URLs or credentials from a storage SDK.
+        logging.getLogger(__name__).error(
+            "Video storage upload failed: lesson_id=%s bytes=%s error_type=%s",
+            lesson_id, written, type(exc).__name__,
+        )
         from app.services.storage_cleanup import compensate_upload
         db.rollback()
         compensate_upload(db, storage_key)
+        from boto3.exceptions import S3UploadFailedError
+        from botocore.exceptions import BotoCoreError, ClientError
+        if isinstance(exc, (S3UploadFailedError, BotoCoreError, ClientError)):
+            raise HTTPException(status_code=503, detail="Video storage temporarily unavailable; retry the upload") from exc
         raise HTTPException(status_code=500, detail="Unable to store lesson video") from exc
     finally:
         if os.path.exists(filepath):
@@ -865,6 +876,17 @@ def list_questions(
         QuestionResponse.model_validate(item)
         for item in db.scalars(query.order_by(Question.created_at.desc())).all()
     ]
+
+
+@router.post("/quizzes/publish-draft", response_model=QuizResponse, status_code=201)
+def publish_quiz_draft(payload: QuizPublishRequest,
+                       user: Manager, db: Db) -> QuizResponse:
+    try:
+        quiz = platform_service.publish_quiz_atomic(db, user, payload)
+    except (LookupError, PermissionError, ValueError) as exc:
+        db.rollback()
+        raise _bad_request(exc) from exc
+    return QuizResponse.model_validate(quiz)
 
 
 @router.post("/quizzes", response_model=QuizResponse, status_code=201)

@@ -76,6 +76,12 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    avatar_key: Mapped[str | None] = mapped_column(String(512))
+
+    @property
+    def avatar_url(self) -> str | None:
+        # Same-origin, authenticated endpoint; never expose a storage key.
+        return f"/api/v1/auth/avatar?v={self.updated_at.isoformat()}" if self.avatar_key else None
 
     institution = relationship("Institution", back_populates="users")
     taught_courses = relationship("Course", back_populates="teacher")

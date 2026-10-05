@@ -60,7 +60,7 @@ for (const scenario of [
     const calendars: number[] = [];
     const assessmentWrites: string[] = [];
     page.on('request', request => {
-      if (request.method() === 'POST' && /\/api\/v1\/(questions|quizzes|assignments)$/.test(new URL(request.url()).pathname)) assessmentWrites.push(new URL(request.url()).pathname);
+      if (request.method() === 'POST' && /\/api\/v1\/(questions|quizzes(?:\/publish-draft)?|assignments)$/.test(new URL(request.url()).pathname)) assessmentWrites.push(new URL(request.url()).pathname);
     });
     page.on("response", response => {
       if (new URL(response.url()).pathname.endsWith("/notifications/broadcast")) broadcasts.push(response.status());

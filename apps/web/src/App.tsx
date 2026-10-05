@@ -436,8 +436,8 @@ function App() {
     void notificationService.markAsRead(id).then(setNotifications).catch(() => undefined);
   }
 
-  function handleAddNotification(notif: NotificationItem) {
-    void notificationService.saveNotification(notif).then(setNotifications).catch(() => undefined);
+  async function handleAddNotification(notif: NotificationItem): Promise<void> {
+    setNotifications(await notificationService.saveNotification(notif));
   }
 
   function handleSelectNotification(notif: NotificationItem) {

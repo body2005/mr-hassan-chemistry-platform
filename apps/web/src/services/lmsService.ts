@@ -12,7 +12,7 @@ import {
   setCachedData,
 } from "./apiClient";
 import type { StudentEntitlement } from "./paymentService";
-import { assessmentTimestamp, assessmentWindow } from "./assessmentSchedule";
+import { assessmentWindow } from "./assessmentSchedule";
 /**
  * ============================================================================
  * MATGAR LMS - UNIFIED DATA ACCESS LAYER (DAL)
@@ -51,6 +51,9 @@ export const STORAGE_KEYS = {
 } as const;
 
 type ApiUser = {
+  avatar_url?: string | null;
+  uploaded_videos_count?: number | null;
+  enrolled_students_count?: number | null;
   id: string;
   institution_id: string;
   username: string;
@@ -184,6 +187,7 @@ function mapApiUser(user: ApiUser): CurrentUser {
     email: user.email,
     nationalId: user.national_id || "",
     joinedDate: user.created_at.slice(0, 10),
+    avatarUrl: user.avatar_url || undefined,
   };
   if (user.role === "student") {
     const grade = user.grade_level ? gradeMap[user.grade_level] : undefined;
@@ -211,8 +215,8 @@ function mapApiUser(user: ApiUser): CurrentUser {
     teachingYearLabel: "جميع الصفوف الثانوية",
     subject: "",
     contractAgreed: false,
-    uploadedVideosCount: 0,
-    enrolledStudentsCount: 0,
+    uploadedVideosCount: user.uploaded_videos_count ?? undefined,
+    enrolledStudentsCount: user.enrolled_students_count ?? undefined,
   };
 }
 
@@ -799,6 +803,7 @@ export const notificationService = {
         kind: item.type,
         title: item.title,
         message: item.message,
+        target_grade: item.targetYear && item.targetYear !== 'all' ? ({'1st_secondary': 'SECONDARY_1', '2nd_secondary': 'SECONDARY_2', '3rd_secondary': 'SECONDARY_3'} as const)[item.targetYear] : null,
         action_url: item.targetYear ? `${actionUrl || "#Notifications"}?grade=${item.targetYear}` : actionUrl,
         dedup_key: item.id,
         scheduled_for: item.createdAt.includes("T") ? item.createdAt : undefined,
@@ -849,6 +854,7 @@ export const calendarService = {
       customMessage: event.customMessage,
     };
     const payload = {
+      idempotency_key: event.id.startsWith('evt_') ? event.id : undefined,
       title: event.dayName,
       description: JSON.stringify(metaPayload),
       event_type: event.contentType,
@@ -1086,6 +1092,7 @@ export const courseService = {
 
   /** Publish a real quiz to the server: questions -> quiz -> publish. */
   async publishQuizToServer(payload: {
+    idempotency_key: string;
     course_id: string;
     module_id?: string;
     lesson_id?: string;
@@ -1104,22 +1111,7 @@ export const courseService = {
     // Validate before creating questions: malformed schedules must not leave orphans.
     const schedule = assessmentWindow(payload.starts_at, payload.ends_at);
     await validateAssessmentScope(payload);
-    const questionIds: string[] = [];
-    for (const q of payload.questions) {
-      const created = await apiRequest<{ id: string }>("/questions", {
-        method: "POST",
-        body: JSON.stringify({
-          course_id: payload.course_id,
-          question_type: q.question_type,
-          prompt: q.question_text,
-          options: q.options ?? null,
-          correct_answer: q.correct_answer ?? null,
-          points: q.points ?? 1,
-        }),
-      });
-      questionIds.push(created.id);
-    }
-    const quiz = await apiRequest<{ id: string }>("/quizzes", {
+    const quiz = await apiRequest<{ id: string }>("/quizzes/publish-draft", {
       method: "POST",
       body: JSON.stringify({
         course_id: payload.course_id,
@@ -1129,11 +1121,11 @@ export const courseService = {
         duration_seconds: payload.duration_minutes ? payload.duration_minutes * 60 : null,
         starts_at: schedule.startsAt,
         ends_at: schedule.endsAt,
-        question_ids: questionIds,
+        idempotency_key: payload.idempotency_key,
+        questions: payload.questions.map(q => ({ question_type: q.question_type,
+          prompt: q.question_text, options: q.options ?? null, correct_answer: q.correct_answer ?? null,
+          points: q.points ?? 1 })),
       }),
-    });
-    await apiRequest(`/quizzes/${quiz.id}/publish`, {
-      method: "POST",
     });
     invalidateApiCache("/courses");
     return { quiz_id: quiz.id };
@@ -1146,10 +1138,11 @@ export const courseService = {
     lesson_id?: string;
     title: string;
     prompt: string;
+    starts_at?: string | null;
     due_at?: string | null;
     max_score?: number;
   }): Promise<{ assignment_id: string }> {
-    const dueAt = assessmentTimestamp(payload.due_at, 'التسليم');
+    const schedule = assessmentWindow(payload.starts_at, payload.due_at);
     await validateAssessmentScope(payload);
     const created = await apiRequest<{ id: string }>("/assignments", {
       method: "POST",
@@ -1157,7 +1150,8 @@ export const courseService = {
         course_id: payload.course_id,
         assignment_title: payload.title,
         prompt: payload.prompt || payload.title,
-        due_at: dueAt,
+        starts_at: schedule.startsAt,
+        due_at: schedule.endsAt,
         max_score: payload.max_score ?? 100,
         module_id: payload.module_id || null,
         lesson_id: payload.lesson_id || null,
@@ -1298,6 +1292,15 @@ export type ApiManagedUser = Pick<
 };
 
 export const userService = {
+  async uploadAvatar(file: File): Promise<void> {
+    const data = new FormData();
+    data.append('file', file);
+    await apiRequest('/auth/avatar', {method: 'POST', body: data});
+    invalidateApiCache('/auth');
+  },
+  async getProfileSummary(): Promise<{enrolled_students_count?: number; uploaded_videos_count?: number; progress?: Array<{lesson_id: string; title: string; completion_percent: number}>}> {
+    return apiRequest('/auth/profile-summary');
+  },
   async getStudents(): Promise<ApiManagedUser[]> {
     const res = await apiRequest<ApiManagedUser[]>("/users?role=student", { cacheTtlMs: 60_000 });
     return Array.isArray(res) ? res : [];

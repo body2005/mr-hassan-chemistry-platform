@@ -10,6 +10,18 @@ from app.core.config import get_settings
 from app.main import classify_rate_limit_category
 
 
+@pytest.mark.parametrize('path', ['/api/v1/auth/me', '/api/v1/auth/profile-summary', '/api/v1/auth/avatar'])
+@pytest.mark.parametrize('method', ['GET', 'HEAD'])
+def test_profile_reads_do_not_consume_credential_mutation_budget(method, path):
+    assert classify_rate_limit_category(method, path) == 'read'
+
+
+@pytest.mark.parametrize('path', ['/api/v1/auth/login', '/api/v1/auth/refresh', '/api/v1/auth/logout',
+                                  '/api/v1/auth/change-password', '/api/v1/auth/password-reset/request'])
+def test_credential_mutations_keep_the_real_auth_budget(path):
+    assert classify_rate_limit_category('POST', path) == 'auth'
+
+
 @pytest.mark.parametrize(
     ("method", "path", "expected"),
     [

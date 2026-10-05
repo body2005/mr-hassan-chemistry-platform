@@ -64,6 +64,14 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const student = isStudent ? (user as StudentProfile) : null;
   const teacher = !isStudent ? (user as TeacherProfile) : null;
   const t = translations[lang];
+  const [summary, setSummary] = useState<Awaited<ReturnType<typeof userService.getProfileSummary>> | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    userService.getProfileSummary().then(result => {if (active) setSummary(result);})
+      .catch(() => {if (active) setProfileError('تعذر تحميل إحصاءات الحساب؛ أعد المحاولة.');});
+    return () => {active = false;};
+  }, [user.id]);
 
   // Teacher Student Management State (حظر وحذف الطلاب)
   const [registeredStudents, setRegisteredStudents] = useState<ManagedStudentItem[]>([]);
@@ -172,6 +180,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       : "";
 
   return (
+    <>
+    {profileError && <p role="alert" style={{color: '#dc2626'}}>{profileError}</p>}
     <div className="page-container">
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "28px", flexWrap: "wrap", gap: "16px" }}>
@@ -277,15 +287,13 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 id="avatar-upload"
                 type="file"
                 accept="image/*"
-                onChange={(e) => {
+                onChange={async (e) => {
                   const file = e.target.files?.[0];
                   if (file) {
-                    const reader = new FileReader();
-                    reader.onload = (ev) => {
-                      user.avatarUrl = ev.target?.result as string;
+                    try {
+                      await userService.uploadAvatar(file);
                       window.location.reload();
-                    };
-                    reader.readAsDataURL(file);
+                    } catch (err) { setProfileError(err instanceof Error ? err.message : 'تعذر حفظ الصورة'); }
                   }
                 }}
                 style={{ display: "none" }}
@@ -348,41 +356,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               </h3>
 
               <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: "var(--bg-surface)", borderRadius: "10px", border: "1px solid var(--border-color)" }}>
-                  <div>
-                    <strong style={{ display: "block", fontSize: "14px", color: "var(--text-main)" }}>
-                      {lang === "ar" ? "الدرس 1: مدخل إلى الكيمياء وأدوات القياس المعملي" : "Lesson 1: Intro to Chemistry & Lab Measurement"}
-                    </strong>
-                    <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>{lang === "ar" ? "الكيمياء • حسن شعبان" : "Chemistry • Mr. Hassan Shaaban"}</span>
-                  </div>
-                  <span style={{ fontSize: "12px", fontWeight: 800, padding: "4px 10px", borderRadius: "6px", background: "#dcfce7", color: "#166534" }}>
-                    100% {t.completedBadge}
-                  </span>
-                </div>
-
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: "var(--bg-surface)", borderRadius: "10px", border: "1px solid var(--border-color)" }}>
-                  <div>
-                    <strong style={{ display: "block", fontSize: "14px", color: "var(--text-main)" }}>
-                      {lang === "ar" ? "الدرس 2: الجدول الدوري وخواص العناصر" : "Lesson 2: Periodic Table & Elemental Properties"}
-                    </strong>
-                    <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>{lang === "ar" ? "الكيمياء • حسن شعبان" : "Chemistry • Mr. Hassan Shaaban"}</span>
-                  </div>
-                  <span style={{ fontSize: "12px", fontWeight: 800, padding: "4px 10px", borderRadius: "6px", background: "#dcfce7", color: "#166534" }}>
-                    92% {t.completedBadge}
-                  </span>
-                </div>
-
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: "var(--bg-surface)", borderRadius: "10px", border: "1px solid var(--border-color)" }}>
-                  <div>
-                    <strong style={{ display: "block", fontSize: "14px", color: "var(--text-main)" }}>
-                      {lang === "ar" ? "الدرس 3: الروابط الكيميائية والحساب الكيميائي" : "Lesson 3: Chemical Bonds & Stoichiometry"}
-                    </strong>
-                    <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>{lang === "ar" ? "الكيمياء • حسن شعبان" : "Chemistry • Mr. Hassan Shaaban"}</span>
-                  </div>
-                  <span style={{ fontSize: "12px", fontWeight: 800, padding: "4px 10px", borderRadius: "6px", background: "#fef3c7", color: "#854d0e" }}>
-                    60%
-                  </span>
-                </div>
+                {!summary ? <p>{lang === 'ar' ? 'جارٍ تحميل التقدم الحقيقي…' : 'Loading progress…'}</p> : !summary.progress?.length ?
+                  <p>{lang === 'ar' ? 'لا يوجد سجل مشاهدة بعد.' : 'No watch history yet.'}</p> : summary.progress.map(item =>
+                  <div key={item.lesson_id} style={{display: 'flex', justifyContent: 'space-between', padding: '12px', background: 'var(--bg-surface)', borderRadius: '10px'}}>
+                    <strong>{item.title}</strong><span>{Math.round(item.completion_percent)}%</span>
+                  </div>)}
               </div>
             </div>
           </div>
@@ -398,11 +376,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               </div>
               <div style={{ background: "var(--bg-surface-secondary)", padding: "16px", borderRadius: "12px", border: "1px solid var(--border-color)" }}>
                 <span style={{ fontSize: "12px", color: "var(--text-muted)", display: "block" }}>{lang === "ar" ? "الفيديوهات المرفوعة" : "Uploaded Videos"}</span>
-                <strong style={{ fontSize: "18px", color: "#059669", display: "block", marginTop: "2px" }}>{teacher.uploadedVideosCount}</strong>
+                <strong style={{ fontSize: "18px", color: "#059669", display: "block", marginTop: "2px" }}>{summary?.uploaded_videos_count ?? '—'}</strong>
               </div>
               <div style={{ background: "var(--bg-surface-secondary)", padding: "16px", borderRadius: "12px", border: "1px solid var(--border-color)" }}>
                 <span style={{ fontSize: "12px", color: "var(--text-muted)", display: "block" }}>{lang === "ar" ? "الطلاب المسجلون" : "Enrolled Students"}</span>
-                <strong style={{ fontSize: "18px", color: "#2563eb", display: "block", marginTop: "2px" }}>{teacher.enrolledStudentsCount}</strong>
+                <strong style={{ fontSize: "18px", color: "#2563eb", display: "block", marginTop: "2px" }}>{summary?.enrolled_students_count ?? '—'}</strong>
               </div>
             </div>
 
@@ -412,8 +390,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               </strong>
               <p style={{ margin: 0, fontSize: "13px", color: "var(--text-muted)" }}>
                 {lang === "ar"
-                  ? "تم التحقق من بطاقة الرقم القومي واعتماد عقد التدريس والسياسات التربوية للمنصة بنجاح"
-                  : "National ID verified and certified teacher contract approved for official curriculum delivery"}
+                  ? "لا توجد حالة توثيق معتمدة متاحة لهذا الحساب."
+                  : "No verified accreditation status is available for this account."}
               </p>
             </div>
 
@@ -798,5 +776,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         }}
       />
     </div>
+    </>
   );
 };

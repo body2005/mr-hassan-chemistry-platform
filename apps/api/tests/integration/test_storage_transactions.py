@@ -98,7 +98,15 @@ def test_delete_commits_retry_intents_during_real_s3_outage(real_storage):
             assert len(jobs) == 2 and all(job.attempts > 0 for job in jobs)
     finally:
         target.start()
-        wait_until(lambda: provider.exists(keys[0]), 60)
+        # Probe the bucket, not an object whose committed deletion a real
+        # cleanup worker may already have completed during recovery.
+        def bucket_recovered():
+            try:
+                provider._get_client().head_bucket(Bucket=provider.bucket_name)
+                return True
+            except Exception:
+                return False
+        wait_until(bucket_recovered, 60)
     with Session(engine) as db:
         # The production cleanup loop is still running. Claim rows before
         # changing retry_at; otherwise it can legitimately delete a row

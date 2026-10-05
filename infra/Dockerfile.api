@@ -20,6 +20,7 @@ RUN apt-get update && apt-get upgrade -y \
     tesseract-ocr-ara \
     tesseract-ocr-eng \
     fonts-noto-core \
+    fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt requirements.lock ./

@@ -41,6 +41,55 @@ def recover_scripts(base, alternative):
     return base
 
 
+def restore_placeholders(base, alternative):
+    """Restore only dotted blanks actually recognized in the same image.
+
+    Never substitute a word, value, formula, or answer. Dots with no matching
+    word are retained and later attached to their physical text baseline.
+    """
+    for source in alternative:
+        if not re.fullmatch(r'\.{3,}', source['text']):
+            continue
+        matches = [word for word in base if overlap(word, source) >= .4]
+        if not matches:
+            base.append(dict(source))
+        elif len(matches) == 1:
+            word = matches[0]
+            if re.fullmatch(r'\.{3,}[\u0621-\u065f]?', word['text']) and float(word['conf']) < 40:
+                word['text'] = source['text']
+    return base
+
+
+def assemble_lines(words):
+    groups = OrderedDict()
+    for word in words:
+        key = (word['block_num'], word['par_num'], word['line_num'])
+        groups.setdefault(key, []).append(word)
+    # OCR may put a dotted answer space in a paragraph of its own. Attach
+    # only pure dotted groups to one unambiguous overlapping Arabic baseline.
+    for key, symbols in list(groups.items()):
+        if not all(re.fullmatch(r'\.{3,}', word['text']) for word in symbols):
+            continue
+        top = min(word['top'] for word in symbols)
+        bottom = max(word['top'] + word['height'] for word in symbols)
+        candidates = []
+        for other_key, line in groups.items():
+            if key == other_key or not any(re.search(r'[\u0621-\u064a]', w['text']) for w in line):
+                continue
+            line_top = min(w['top'] for w in line)
+            line_bottom = max(w['top'] + w['height'] for w in line)
+            if min(bottom, line_bottom) - max(top, line_top) >= min(bottom-top, line_bottom-line_top) * .5:
+                candidates.append(other_key)
+        if len(candidates) == 1:
+            target = groups[candidates[0]]
+            for symbol in symbols:
+                # Retain existing word ordering, including embedded science.
+                position = next((i for i, word in enumerate(target) if word['left'] < symbol['left']), len(target))
+                target.insert(position, symbol)
+            del groups[key]
+    return '\n'.join(' '.join(word['text'] for word in line) for line in groups.values())
+
+
 def recognize(image, lang="ara+eng"):
     deadline = time.monotonic() + OCR_TIMEOUT_SECONDS
     data = pytesseract.image_to_data(image, lang=lang, config="--psm 3", timeout=OCR_TIMEOUT_SECONDS,
@@ -63,8 +112,13 @@ def recognize(image, lang="ara+eng"):
         if len(alternative) > 5000:
             raise ExtractionLimitError("OCR word count exceeds bounded processing limits")
         words = recover_scripts(words, alternative)
-    lines = OrderedDict()
-    for word in words:
-        group = (word["block_num"], word["par_num"], word["line_num"])
-        lines.setdefault(group, []).append(word["text"])
-    return "\n".join(" ".join(line) for line in lines.values())
+    if 'ara' in lang and arabic > latin * 2:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ExtractionLimitError('OCR time budget exhausted')
+        alternate = tokens(pytesseract.image_to_data(image, lang=lang, config='--psm 6', timeout=remaining,
+                                                    output_type=pytesseract.Output.DICT))
+        if len(alternate) > 5000:
+            raise ExtractionLimitError('OCR word count exceeds bounded processing limits')
+        words = restore_placeholders(words, alternate)
+    return assemble_lines(words)

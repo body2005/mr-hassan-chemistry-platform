@@ -88,6 +88,9 @@ if ($Stage -in @('Tests','Browser','All')) {
     $env:QA_DOCKER = $Docker
     $env:QA_MEDIA_DIR = Join-Path $taskRoot ".qa/$folder/media"
     $env:QA_VIDEO_FILE = Join-Path $env:QA_MEDIA_DIR 'video.webm'
+    # Match the production Docker build, not a developer's .env.local API URL.
+    # This also makes served-asset/source hash verification meaningful.
+    $env:VITE_API_URL = '/api/v1'
     $env:PLAYWRIGHT_JUNIT_OUTPUT_FILE = Join-Path $taskRoot ".qa/$folder/video-browser-$Stage-$runId.xml"
     $env:QA_PLAYWRIGHT_OUTPUT = Join-Path $taskRoot (".qa/$folder/video-results-" + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss'))
     Push-Location (Join-Path $taskRoot 'apps/web')

@@ -35,8 +35,8 @@ export interface TeacherProfile {
   subject: string;
   contractAgreed: boolean;
   contractAgreedAt?: string;
-  uploadedVideosCount: number;
-  enrolledStudentsCount: number;
+  uploadedVideosCount?: number;
+  enrolledStudentsCount?: number;
   avatarUrl?: string;
   joinedDate: string;
 }

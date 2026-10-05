@@ -79,6 +79,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   const quizDraftStorageKey = getQuizDraftStorageKey(currentUser.id);
   const initialDraftRef = useRef(getInitialQuizDraft(currentUser.id));
   const initialDraft = initialDraftRef.current;
+  const [publicationKey, setPublicationKey] = useState<string>(() => initialDraft?.publicationKey || crypto.randomUUID());
 
   const [hasRestoredDraft, setHasRestoredDraft] = useState<boolean>(() => !!initialDraft);
 
@@ -111,7 +112,10 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   const [selectedAcademicYear, setSelectedAcademicYear] = useState<"1st_secondary" | "2nd_secondary" | "3rd_secondary">(
     () => initialDraft?.selectedAcademicYear || "1st_secondary"
   );
-  const currentCourse = courses.find((c) => c.academicYear === selectedAcademicYear);
+  const [selectedCourseId, setSelectedCourseId] = useState<string>(() => initialDraft?.selectedCourseId || '');
+  const gradeCourses = courses.filter(c => c.academicYear === selectedAcademicYear);
+  const currentCourse = gradeCourses.find(c => c.id === selectedCourseId) ||
+    gradeCourses.find(c => c.lessons.some(l => initialDraft?.selectedLessonIds?.includes(l.id))) || gradeCourses[0];
   const courseLessons = useMemo(() => currentCourse?.lessons || [], [currentCourse]);
 
   // Selected Lesson IDs - Required, empty by default
@@ -301,9 +305,11 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     }
 
     const payload = {
+      publicationKey,
       title: quizTitle,
       questions,
       selectedAcademicYear,
+      selectedCourseId: currentCourse?.id,
       selectedLessonIds,
       assessmentType,
       quizDurationMinutes,
@@ -332,6 +338,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     quizTitle,
     questions,
     selectedAcademicYear,
+    currentCourse?.id,
     selectedLessonIds,
     assessmentType,
     quizDurationMinutes,
@@ -346,12 +353,14 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     extractedAt,
     draft,
     quizDraftStorageKey,
+    publicationKey,
   ]);
 
   function handleResetNewQuiz() {
     if (window.confirm("هل أنت متأكد من رغبتك في مسح مسودة هذا الاختبار الحالية والبدء باختبار جديد من البداية؟")) {
       localStorage.removeItem(quizDraftStorageKey);
       setDraft(null);
+      setPublicationKey(crypto.randomUUID());
       setQuizTitle("");
       setSelectedLessonIds([]);
       setQuizDurationMinutes("");
@@ -896,8 +905,11 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       }
       const startIso = publishStartDate && publishStartTime ? `${publishStartDate}T${publishStartTime}:00` : null;
       const endIso = closeDeadlineDate && closeDeadlineTime ? `${closeDeadlineDate}T${closeDeadlineTime}:00` : null;
+      const publicationDigest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({titleToPublish, currentQuestions, scopeLessonId, startIso, endIso, quizDurationMinutes})));
+      const retryKey = `${publicationKey}-${Array.from(new Uint8Array(publicationDigest).slice(0, 16), b => b.toString(16).padStart(2, '0')).join('')}`;
       if (isQuiz) {
         await courseService.publishQuizToServer({
+          idempotency_key: retryKey,
           course_id: currentCourse.id,
           lesson_id: scopeLessonId,
           title: titleToPublish,
@@ -917,7 +929,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
           course_id: currentCourse.id,
           lesson_id: scopeLessonId,
           title: titleToPublish,
-          prompt: currentQuestions.map((q) => q.question_text).join("\n\n"),
+          prompt: currentQuestions.map((q, index) => `${index + 1}. ${q.question_text}${q.options?.length ? '\n' + q.options.map(option => `(${option.key}) ${option.text}`).join('\n') : ''}`).join("\n\n"),
+          max_score: totalPointsCount,
+          starts_at: startIso,
           due_at: endIso,
         });
       }
@@ -1199,6 +1213,11 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                 </button>
               ))}
             </div>
+            {gradeCourses.length > 0 && <label style={{display: 'block', marginTop: '12px'}}>المقرر الدراسي
+              <select aria-label="اختر المقرر" value={currentCourse?.id || ''} onChange={e => {setSelectedCourseId(e.target.value); setSelectedLessonIds([]);}}>
+                {gradeCourses.map(course => <option key={course.id} value={course.id}>{course.title}</option>)}
+              </select>
+            </label>}
 
 
           </div>
@@ -1598,7 +1617,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
 
         {/* Right Column: Questions Canvas (Extraction Review or Manual Builder) */}
         <div style={{ background: "var(--bg-surface, #ffffff)", border: "1px solid var(--border-color, #e2e8f0)", borderRadius: "16px", padding: "24px" }}>
-          {error && (
+      {error && !showPublishConfirmModal && (
             <div style={{ padding: "14px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "10px", color: "#991b1b", fontSize: "13px", display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px" }}>
               <AlertCircle size={18} /> {error}
             </div>
@@ -2671,6 +2690,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
               </div>
 
               {/* Summary Card */}
+              {error && <p role="alert" style={{color: 'var(--danger, #dc2626)', margin: '12px 0'}}>{error}</p>}
               <div
                 style={{
                   background: "var(--bg-surface-secondary, #f8fafc)",

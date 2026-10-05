@@ -1419,7 +1419,7 @@ def _assemble_rtl_lines_from_fitz(fitz_page: Any) -> list[str]:
     return out
 
 
-PARSER_OCR_VERSION = "v6-bounded-108dpi-script-confidence"
+PARSER_OCR_VERSION = "v7-bounded-108dpi-source-placeholders"
 _OCR_SEMAPHORE = threading.Semaphore(int(os.getenv("OCR_CONCURRENCY_LIMIT", "2")))
 
 

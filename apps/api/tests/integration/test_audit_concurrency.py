@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.security import hash_password
 from app.models.course import Enrollment
 from app.models.payment import PaymentOrder, StudentEntitlement
-from app.models.platform import AssignmentAttempt, QuizAttempt, QuizAttemptAnswer
+from app.models.platform import AssignmentAttempt, QuizAttempt, QuizAttemptAnswer, Quiz, Question, QuizQuestion, CalendarEvent
 from app.models.user import User, UserRole
 from app.services.auth_service import request_password_reset
 from .live_helpers import BASE, clear_auth, lesson, pg_engine, session
@@ -83,6 +83,38 @@ def test_concurrent_quiz_submissions_no_duplicate_answers():
         assert [r.json()['score'] for _, r in responses] == [5, 5]
         with Session(engine) as db:
             assert db.scalar(select(func.count()).select_from(QuizAttemptAnswer).where(QuizAttemptAnswer.attempt_id == uuid.UUID(attempt))) == 1
+        for client, _ in responses: client.close()
+    engine.dispose()
+
+
+def test_concurrent_atomic_publication_and_calendar_retry():
+    clear_auth(); engine = pg_engine()
+    with session() as teacher:
+        course, item = lesson(teacher)
+        payload = {'course_id': course['id'], 'lesson_id': item['id'], 'title': 'Atomic concurrency quiz',
+                   'idempotency_key': uuid.uuid4().hex, 'questions': [
+                       {'prompt': 'First question from author', 'question_type': 'essay', 'points': 7},
+                       {'prompt': 'Second question from author', 'question_type': 'essay', 'points': 3}]}
+        responses = overlap(teacher, [('POST', '/quizzes/publish-draft', payload)] * 3)
+        assert [r.status_code for _, r in responses] == [201] * 3
+        ids = [r.json()['id'] for _, r in responses]
+        assert len(set(ids)) == 1
+        with Session(engine) as db:
+            assert db.scalar(select(func.count()).select_from(Quiz).where(Quiz.course_id == uuid.UUID(course['id']))) == 1
+            assert db.scalar(select(func.count()).select_from(Question).where(Question.course_id == uuid.UUID(course['id']))) == 2
+            assert db.scalar(select(func.count()).select_from(QuizQuestion).where(QuizQuestion.quiz_id == uuid.UUID(ids[0]))) == 2
+        for client, _ in responses: client.close()
+        payload['idempotency_key'] = uuid.uuid4().hex
+        payload['questions'][1]['prompt'] = 'x'
+        rejected = overlap(teacher, [('POST', '/quizzes/publish-draft', payload)] * 2)
+        assert [r.status_code for _, r in rejected] == [422] * 2
+        for client, _ in rejected: client.close()
+        calendar = {'title': 'Concurrent class', 'event_type': 'lesson', 'starts_at': '2026-11-04T12:00:00Z', 'idempotency_key': uuid.uuid4().hex}
+        responses = overlap(teacher, [('POST', '/calendar', calendar)] * 3)
+        assert [r.status_code for _, r in responses] == [201] * 3
+        assert len({r.json()['id'] for _, r in responses}) == 1
+        with Session(engine) as db:
+            assert db.scalar(select(func.count()).select_from(CalendarEvent).where(CalendarEvent.request_key == calendar['idempotency_key'])) == 1
         for client, _ in responses: client.close()
     engine.dispose()
 

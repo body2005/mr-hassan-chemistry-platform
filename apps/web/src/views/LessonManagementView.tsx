@@ -81,6 +81,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   const confirm = useConfirm();
   const { toast, notify } = useWizardToast();
   const [selectedYear, setSelectedYear] = useState<"1st_secondary" | "2nd_secondary" | "3rd_secondary">("1st_secondary");
+  const [selectedCourseId, setSelectedCourseId] = useState('');
   const selectedGradeLevel = selectedYear === "1st_secondary"
     ? "SECONDARY_1"
     : selectedYear === "2nd_secondary"
@@ -187,7 +188,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   const videoInputRef = useRef<HTMLInputElement>(null);
   const materialsInputRef = useRef<HTMLInputElement>(null);
 
-  const activeCourse = courses.find((c) => c.academicYear === selectedYear);
+  const gradeCourses = courses.filter(c => c.academicYear === selectedYear);
+  const activeCourse = gradeCourses.find(c => c.id === selectedCourseId) || gradeCourses[0];
   // Reverse order so the latest uploaded video/lesson is always displayed at the top
   const activeLessons: VideoLesson[] = React.useMemo(() => {
     if (!activeCourse?.lessons) return [];
@@ -388,7 +390,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       const currentCourses = await courseService.getCourses({ skipCache: true });
       setCourses(currentCourses);
       onCoursesChanged(currentCourses);
-      let course = currentCourses.find((item) => item.academicYear === selectedYear);
+      let course = currentCourses.find(item => item.id === activeCourse?.id && item.academicYear === selectedYear);
+      if (!course && currentCourses.some(item => item.academicYear === selectedYear)) throw new Error('المقرر المحدد غير متاح؛ أعد اختيار المقرر.');
       if (!course) {
         const teacherSubject = currentUser.role === "student" ? "" : currentUser.subject;
         const createdCourse = await courseService.createCourse({
@@ -655,6 +658,11 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       </div>
 
       {/* Main 2-Column Layout: Lesson Upload Form + Per-Lesson Detailed Archive */}
+      {gradeCourses.length > 0 && <label style={{display: 'block', marginBottom: '16px'}}>المقرر الدراسي
+        <select aria-label="اختر المقرر" value={activeCourse?.id || ''} onChange={e => {setSelectedCourseId(e.target.value); setSelectedModuleId('');}}>
+          {gradeCourses.map(course => <option key={course.id} value={course.id}>{course.title}</option>)}
+        </select>
+      </label>}
       <div className="responsive-split-grid">
         {/* Upload Form */}
         <div style={{ background: "var(--bg-surface, #ffffff)", border: "1px solid var(--border-color, #e2e8f0)", borderRadius: "16px", padding: "20px" }}>

@@ -147,6 +147,9 @@ class Notification(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class CalendarEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "calendar_events"
+    __table_args__ = (UniqueConstraint("creator_id", "request_key", name="uq_calendar_request"),)
+    request_key: Mapped[str | None] = mapped_column(String(100))
+    request_hash: Mapped[str | None] = mapped_column(String(64))
 
     institution_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=False
@@ -191,6 +194,10 @@ class Question(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class Quiz(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "quizzes"
+    __table_args__ = (UniqueConstraint("creator_id", "publication_key", name="uq_quiz_publication"),)
+
+    publication_key: Mapped[str | None] = mapped_column(String(100))
+    publication_hash: Mapped[str | None] = mapped_column(String(64))
 
     institution_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=False
@@ -316,6 +323,7 @@ class Assignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     max_score: Mapped[float] = mapped_column(Float, default=100.0, nullable=False)
     status: Mapped[AssignmentStatus] = mapped_column(

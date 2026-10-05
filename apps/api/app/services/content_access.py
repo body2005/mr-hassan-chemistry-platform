@@ -43,9 +43,15 @@ def require_assessment_access(
         raise HTTPException(403, "Not enrolled")
     if assessment.lesson_id is not None and not can_access_lesson_content(db, user, assessment.lesson_id):
         raise HTTPException(403, "Lesson not unlocked")
+    # Question sheets are content, not results: a future assignment is sealed
+    # even for reads. Legacy assignments without starts_at remain accessible.
+    if isinstance(assessment, Assignment) and assessment.starts_at:
+        start = assessment.starts_at
+        if (start.replace(tzinfo=timezone.utc) if start.tzinfo is None else start) > datetime.now(timezone.utc):
+            raise HTTPException(403, "Assessment is not open yet")
     if writing:
         now = datetime.now(timezone.utc)
-        start = assessment.starts_at if isinstance(assessment, Quiz) else None
+        start = assessment.starts_at
         end = assessment.ends_at if isinstance(assessment, Quiz) else assessment.due_at
         def utc(value):
             return value.replace(tzinfo=timezone.utc) if value and value.tzinfo is None else value
