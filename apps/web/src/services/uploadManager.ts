@@ -10,7 +10,8 @@
  */
 
 import { courseService } from "./lmsService";
-import { ApiClientError, apiRequest, uploadWithProgress } from "./apiClient";
+import { ApiClientError, apiRequest, uploadWithProgress, getApiAuthScope, getApiAuthGeneration,
+  invalidateApiCache, isSessionKnownInvalid } from "./apiClient";
 import { validateLessonUpload } from "./uploadLimits";
 import { putVideoPart, videoFingerprint, waitForVideo, type VideoUploadSession } from "./directVideoUpload";
 
@@ -42,6 +43,7 @@ export interface UploadTask {
   videoUploadId?: string;
   videoRequestKey?: string;
   videoFingerprint?: string;
+  ownerScope?: string;
 }
 
 interface ServerMaterial {
@@ -61,11 +63,79 @@ export function formatFileSize(bytes: number): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
-class UploadManager {
+export class UploadManager {
   private tasks: UploadTask[] = [];
   private listeners: Set<(tasks: UploadTask[]) => void> = new Set();
   private maxConcurrent = 2;
   private isProcessingQueue = false;
+  private running = new Set<string>();
+
+  private owns(task: UploadTask): boolean {
+    return !!task.ownerScope && task.ownerScope === getApiAuthScope() && task.ownerScope !== 'anonymous';
+  }
+
+  public pauseOtherAccounts(): void {
+    for (const task of this.tasks) {
+      if (this.owns(task) || !['uploading', 'queued', 'processing'].includes(task.status)) continue;
+      task.xhr?.abort();
+      task.status = 'error';
+      task.error = 'توقفت المتابعة لتغيير جلسة الدخول؛ الملف المحفوظ على السيرفر لا يُحذف.';
+    }
+    this.notify(); this.persistTasks();
+  }
+
+  /** Reconcile stored jobs only after login. Legacy jobs bind only after the
+   * server's owner check succeeds; no byte upload or terminal retry is automatic. */
+  public async reconcileVideos(): Promise<void> {
+    const scope = getApiAuthScope();
+    const generation = getApiAuthGeneration();
+    if (scope === 'anonymous' || isSessionKnownInvalid()) return;
+    for (const task of this.tasks) {
+      if (!task.videoUploadId || task.status === 'completed' || task.status === 'cancelled' || this.running.has(task.id)
+        || (task.ownerScope && task.ownerScope !== scope)) continue;
+      if (generation !== getApiAuthGeneration() || isSessionKnownInvalid()) return;
+      this.running.add(task.id);
+      let handedOff = false;
+      try {
+        const session = await apiRequest<VideoUploadSession>(`/video-uploads/${task.videoUploadId}`, { cacheTtlMs: 0 });
+        if (generation !== getApiAuthGeneration() || !this.tasks.includes(task)) continue;
+        task.ownerScope = scope;
+        if (session.status === 'ready') this.completeVideo(task);
+        else if (['queued', 'processing', 'completing'].includes(session.status)) {
+          this.running.delete(task.id);
+          handedOff = true;
+          void this.startVideoUpload(task);
+        } else {
+          task.status = 'error';
+          task.error = ['creating', 'uploading'].includes(session.status)
+            ? 'اختر نفس ملف الفيديو لاستكمال الأجزاء الناقصة.'
+            : `تعذر تجهيز الفيديو: ${session.error_code || session.status}`;
+          this.notify(); this.persistTasks();
+        }
+      } catch (error) {
+        if (generation !== getApiAuthGeneration() || isSessionKnownInvalid()) return;
+        if (this.owns(task)) {
+          task.status = 'error'; task.error = (error as Error).message;
+          this.notify(); this.persistTasks();
+        }
+        // An inaccessible legacy job is neither displayed nor reassigned.
+      } finally {
+        // startVideoUpload owns its own running marker after taking over.
+        if (!handedOff) this.running.delete(task.id);
+      }
+    }
+    this.processQueue();
+  }
+
+  private completeVideo(task: UploadTask): void {
+    task.status = 'completed'; task.progress = 100; task.uploadPercent = 100;
+    task.statusDetail = 'الفيديو جاهز للمشاهدة.';
+    task.completedAt = Date.now(); task.error = undefined;
+    invalidateApiCache('/courses');
+    this.notify(); this.persistTasks();
+    task.onSuccess?.();
+    window.dispatchEvent(new CustomEvent('lms_courses_updated'));
+  }
 
   constructor() {
     this.tasks = this.loadTasksFromStorage();
@@ -79,7 +149,7 @@ class UploadManager {
         // (uploading / queued). Once status === 'processing' the bytes are
         // already safely stored server-side.
         const hasInFlightTransfer = this.tasks.some(
-          (t) => t.status === "uploading" || t.status === "queued"
+          (t) => this.owns(t) && (t.status === "uploading" || t.status === "queued")
         );
         if (hasInFlightTransfer) {
           const warningMessage = "⚠️ تنبيه: هناك ملفات قيد نقل البيانات عبر الشبكة للمنصة. إذا أغلقت الصفحة الآن قبل اكتمال شريط النقل 100% قد ينقطع نقل الملف.";
@@ -180,6 +250,7 @@ class UploadManager {
       : `رفع دفعة مستندات (${count} ${count === 1 ? "ملف" : "ملفات"})`;
     const task: UploadTask = {
       id: taskId,
+      ownerScope: getApiAuthScope(),
       title: taskTitle,
       fileName: params.files[0]?.name + (count > 1 ? ` (+${count - 1} ملفات أخرى)` : ""),
       fileSizeBytes: totalBytes,
@@ -217,6 +288,7 @@ class UploadManager {
     const taskId = `vid_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const task: UploadTask = {
       id: taskId,
+      ownerScope: getApiAuthScope(),
       title: `فيديو درس: ${params.lessonTitle}`,
       fileName: params.file.name,
       fileSizeBytes: params.file.size,
@@ -244,10 +316,10 @@ class UploadManager {
     this.isProcessingQueue = true;
 
     try {
-      const activeCount = this.tasks.filter((t) => t.status === "uploading" || t.status === "processing").length;
+      const activeCount = this.tasks.filter((t) => this.owns(t) && (t.status === "uploading" || t.status === "processing")).length;
       if (activeCount >= this.maxConcurrent) return;
 
-      const nextTask = this.tasks.find((t) => t.status === "queued");
+      const nextTask = this.tasks.find((t) => this.owns(t) && t.status === "queued" && !this.running.has(t.id));
       if (!nextTask) return;
 
       if (nextTask.type === "lesson_video" && (nextTask.file || nextTask.videoUploadId) && nextTask.lessonId) {
@@ -261,6 +333,10 @@ class UploadManager {
   }
 
   private async startVideoUpload(task: UploadTask) {
+    if (!this.owns(task) || this.running.has(task.id)) return;
+    this.running.add(task.id);
+    const generation = getApiAuthGeneration();
+    const active = () => this.owns(task) && generation === getApiAuthGeneration() && this.tasks.includes(task) && task.status !== 'cancelled';
     task.status = "uploading";
     task.progress = 1;
     this.notify();
@@ -268,17 +344,17 @@ class UploadManager {
 
     try {
       await apiRequest("/auth/me", { cacheTtlMs: 0 });
-      if (!this.tasks.includes(task)) return;
+      if (!active()) return;
       const capabilities = await apiRequest<{ direct_upload: boolean }>("/video-upload-capabilities", { cacheTtlMs: 0 });
-      if (!this.tasks.includes(task)) return;
+      if (!active()) return;
       if (capabilities.direct_upload || task.videoUploadId) {
-        await this.startDirectVideoUpload(task);
+        await this.startDirectVideoUpload(task, active);
       } else {
         await courseService.uploadLessonVideo(
         task.lessonId!,
         task.file!,
         (percent) => {
-          task.progress = Math.max(1, Math.min(99, percent));
+          task.progress = Math.max(1, Math.min(100, percent));
           task.uploadPercent = Math.max(task.uploadPercent, Math.min(100, percent));
           if (percent >= 100) {
             task.status = "processing";
@@ -291,19 +367,9 @@ class UploadManager {
         }
         );
       }
-      if (!this.tasks.includes(task)) return;
-
-      task.status = "completed";
-      task.progress = 100;
-      task.uploadPercent = 100;
-      task.completedAt = Date.now();
-      task.error = undefined;
-      this.notify();
-      this.persistTasks();
-
-      task.onSuccess?.();
+      if (!active()) return;
+      this.completeVideo(task);
       if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("lms_courses_updated"));
         window.dispatchEvent(
           new CustomEvent("lms_toast_notification", {
             detail: {
@@ -314,9 +380,11 @@ class UploadManager {
         );
       }
     } catch (err: unknown) {
-      if ((task.status as string) !== "cancelled") {
+      if (active()) {
         task.status = "error";
-        task.error = (err as Error)?.message || "تعذر إكمال رفع الفيديو. تأكد من سرعة الاتصال بالإنترنت.";
+        task.error = err instanceof ApiClientError && err.status === 401
+          ? 'انتهت جلسة الدخول. سجّل الدخول مجددًا لمتابعة المعالجة دون إعادة رفع الفيديو.'
+          : (err as Error)?.message || "تعذر إكمال رفع الفيديو. تأكد من سرعة الاتصال بالإنترنت.";
         this.notify();
         this.persistTasks();
         if (typeof window !== "undefined") {
@@ -331,25 +399,33 @@ class UploadManager {
         }
       }
     } finally {
+      this.running.delete(task.id);
+      if (generation !== getApiAuthGeneration() && !['completed', 'cancelled'].includes(task.status)) {
+        task.status = 'error';
+        task.error = 'توقفت المتابعة لتغيير جلسة الدخول؛ الملف المحفوظ على السيرفر لا يُحذف.';
+        this.notify(); this.persistTasks();
+        if (this.owns(task) && !isSessionKnownInvalid()) void this.reconcileVideos();
+      }
       this.processQueue();
     }
   }
 
-  private async startDirectVideoUpload(task: UploadTask): Promise<void> {
-    const active = () => this.tasks.includes(task) && task.status !== "cancelled";
+  private async startDirectVideoUpload(task: UploadTask, active: () => boolean): Promise<void> {
     let session: VideoUploadSession;
     if (task.videoUploadId) {
       session = await apiRequest<VideoUploadSession>(`/video-uploads/${task.videoUploadId}`, { cacheTtlMs: 0 });
+      if (!active()) return;
       if (["failed", "expired", "cancelled"].includes(session.status) && task.file) {
         // An explicit retry starts a new intent only for a terminal session.
         // Incomplete/processing sessions ALWAYS resume the existing intent.
         task.videoUploadId = undefined;
         task.videoRequestKey = undefined;
-        return this.startDirectVideoUpload(task);
+        return this.startDirectVideoUpload(task, active);
       }
     } else {
       if (!task.file) throw new Error("اختر ملف الفيديو مرة أخرى.");
       task.videoFingerprint = await videoFingerprint(task.file);
+      if (!active()) return;
       task.videoRequestKey ??= crypto.randomUUID();
       this.persistTasks();
       session = await apiRequest<VideoUploadSession>(`/lessons/${task.lessonId}/video-uploads`, { method: "POST", body: JSON.stringify({
@@ -375,7 +451,8 @@ class UploadManager {
         await putVideoPart(signed.url, part, bytes => {
           task.loadedBytes = loaded + bytes;
           task.uploadPercent = Math.round(task.loadedBytes / session.size_bytes * 100);
-          task.progress = Math.min(99, task.uploadPercent);
+          if (!active()) return;
+          task.progress = task.uploadPercent;
           this.notify();
         }, xhr => { task.xhr = xhr; });
         loaded += part.size;
@@ -387,17 +464,23 @@ class UploadManager {
       session = await apiRequest<VideoUploadSession>(`/video-uploads/${session.id}/complete`, { method: "POST" });
     }
     task.status = "processing";
+    task.progress = 100;
     task.uploadPercent = 100;
     task.statusDetail = "تم حفظ الفيديو؛ جارٍ التحقق وتجهيز جودات البث.";
     this.notify();
     this.persistTasks();
     await waitForVideo(session.id, active, current => {
-      task.statusDetail = current.status === "ready" ? "الفيديو جاهز للمشاهدة." : "جارٍ تجهيز الفيديو في معالج منفصل.";
+      if (!active()) return;
+      task.statusDetail = current.status === "ready" ? "الفيديو جاهز للمشاهدة."
+        : current.status === 'queued' ? 'اكتمل نقل الملف؛ في انتظار معالج الفيديو.' : 'اكتمل نقل الملف؛ جارٍ تجهيز جودات الفيديو.';
       this.notify();
     });
   }
 
   private async startMaterialBatchUpload(task: UploadTask) {
+    const generation = getApiAuthGeneration();
+    const active = () => this.owns(task) && generation === getApiAuthGeneration() && this.tasks.includes(task) && task.status !== 'cancelled';
+    if (!active()) return;
     if (!task.lessonId) {
       task.status = "error";
       task.error = "لا يمكن رفع المذكرات بدون تحديد الدرس.";
@@ -419,7 +502,7 @@ class UploadManager {
         // Renew once BEFORE transferring bytes. Never blindly replay a large
         // multipart upload after a 401 or re-upload completed files forever.
         await apiRequest("/auth/me", { cacheTtlMs: 0 });
-        if (!this.tasks.includes(task)) return;
+        if (!active()) return;
         task.statusDetail = `جاري رفع: ${file.name}`;
         task.progress = Math.max(1, Math.round((uploadedCount / files.length) * 100));
         this.notify();
@@ -431,6 +514,7 @@ class UploadManager {
           `/lessons/${task.lessonId}/materials`,
           formData,
           (percent, loaded) => {
+            if (!active()) return;
             const perFileShare = 100 / files.length;
             const overall = uploadedCount * perFileShare + (percent / 100) * perFileShare;
             task.progress = Math.max(1, Math.min(99, Math.round(overall)));
@@ -447,9 +531,9 @@ class UploadManager {
         );
 
         uploadedCount += 1;
-        if ((task.status as string) === "cancelled") return;
+        if (!active()) return;
       } catch (err: unknown) {
-        if ((task.status as string) === "cancelled") return;
+        if (!active()) return;
         task.status = "error";
         const detail = err instanceof ApiClientError ? err.message : (err as Error)?.message;
         task.error = detail || "تعذر رفع الملفات. تأكد من سرعة الاتصال وحجم الملفات.";
@@ -465,6 +549,7 @@ class UploadManager {
     task.uploadPercent = 100;
     task.completedAt = Date.now();
     task.files = undefined;
+    invalidateApiCache('/courses');
     this.notify();
     this.persistTasks();
 
@@ -487,7 +572,7 @@ class UploadManager {
 
   public cancelUpload(taskId: string) {
     const task = this.tasks.find((t) => t.id === taskId);
-    if (!task) return;
+    if (!task || !this.owns(task)) return;
     task.status = "cancelled";
     if (task.videoUploadId) {
       void apiRequest(`/video-uploads/${task.videoUploadId}`, { method: "DELETE" }).catch(() => {
@@ -524,7 +609,7 @@ class UploadManager {
 
   public retryUpload(taskId: string) {
     const task = this.tasks.find((t) => t.id === taskId);
-    if (!task) return;
+    if (!task || !this.owns(task) || this.running.has(task.id)) return;
     if (!task.file && !task.files?.length && !task.videoUploadId) {
       task.error = "اختر الملف مجددًا قبل إعادة المحاولة.";
       this.notify();
@@ -542,20 +627,20 @@ class UploadManager {
 
   public resumeVideo(taskId: string, file: File) {
     const task = this.tasks.find(t => t.id === taskId && t.type === "lesson_video");
-    if (!task) return;
+    if (!task || !this.owns(task)) return;
     validateLessonUpload(file, "video");
     task.file = file;
     this.retryUpload(taskId);
   }
 
   public clearTask(taskId: string) {
-    this.tasks = this.tasks.filter((t) => t.id !== taskId);
+    this.tasks = this.tasks.filter((t) => t.id !== taskId || !this.owns(t));
     this.notify();
     this.persistTasks();
   }
 
   public clearCompleted() {
-    this.tasks = this.tasks.filter((t) => t.status === "uploading" || t.status === "queued" || t.status === "processing");
+    this.tasks = this.tasks.filter((t) => !this.owns(t) || t.status === "uploading" || t.status === "queued" || t.status === "processing");
     this.notify();
     this.persistTasks();
   }

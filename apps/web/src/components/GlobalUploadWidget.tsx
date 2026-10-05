@@ -91,23 +91,35 @@ export const CircularProgress: React.FC<CircularProgressProps> = ({
 };
 
 interface GlobalUploadWidgetProps {
-  currentUser?: { role?: string } | null;
+  currentUser?: { id?: string; role?: string } | null;
   menuOpen?: boolean;
 }
 
 export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentUser, menuOpen = false }) => {
-  const [tasks, setTasks] = useState<UploadTask[]>([]);
+  const [allTasks, setTasks] = useState<UploadTask[]>([]);
+  // Filter at render time too: an account switch must not expose the old
+  // account's filenames for even one frame before the subscription effect runs.
+  const tasks = allTasks.filter(task => !!currentUser?.id && task.ownerScope === currentUser.id);
   const [isExpanded, setIsExpanded] = useState(false);
 
   // Strictly enforce role: Upload widget is exclusively for teachers
   const role = currentUser?.role;
 
   useEffect(() => {
+    uploadManager.pauseOtherAccounts();
     const unsubscribe = uploadManager.subscribe((newTasks) => {
       setTasks(newTasks);
     });
-    return () => unsubscribe();
-  }, []);
+    if (currentUser?.id && role === 'teacher') void uploadManager.reconcileVideos();
+    // A cached profile may mount before /bootstrap establishes the API scope.
+    // The user ID can stay identical, so a props-only effect misses this transition.
+    const onScope = () => {
+      uploadManager.pauseOtherAccounts();
+      if (role === 'teacher') void uploadManager.reconcileVideos();
+    };
+    window.addEventListener('lms_auth_scope_updated', onScope);
+    return () => { unsubscribe(); window.removeEventListener('lms_auth_scope_updated', onScope); };
+  }, [currentUser?.id, role]);
 
   const activeTasks = tasks.filter(
     (t) => t.status === "uploading" || t.status === "queued" || t.status === "processing"
@@ -453,7 +465,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                       >
                         <span>
                           {isProcessing
-                            ? "جاري المعالجة بالسيرفر..."
+                            ? task.statusDetail || "اكتمل نقل الملف؛ جارٍ تجهيز الفيديو."
                             : (() => {
                                 const totalMB = ((task.fileSizeBytes || 0) / (1024 * 1024)).toFixed(1);
                                 const loadedBytes = task.loadedBytes ?? ((task.fileSizeBytes || 0) * (task.progress || 0)) / 100;
@@ -461,7 +473,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                                 return `جاري رفع الملفات: MB ${loadedMB} من MB ${totalMB}`;
                               })()}
                         </span>
-                        <strong style={{ color: isProcessing ? "#0284c7" : "#059669" }}>{task.progress}%</strong>
+                        <strong style={{ color: isProcessing ? "#0284c7" : "#059669", whiteSpace: 'nowrap' }}>{isProcessing ? 'الرفع 100%' : `${task.progress}%`}</strong>
                       </div>
                     </div>
                   )}

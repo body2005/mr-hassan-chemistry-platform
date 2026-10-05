@@ -30,6 +30,9 @@ import { formatChemicalFormula } from "../utils/formulaUtils";
 import { quizHistoryService, PublishedQuizRecord } from "../services/quizHistoryService";
 import { QuizHistorySection } from "../components/QuizHistorySection";
 import { contentReviewFingerprint, hasContentReview, requiresContentReview } from "../services/quizContentReview";
+import { canonicalQuestionType } from "../services/questionType";
+import { clockLabel } from "../services/clockField";
+import { TimeField } from "../components/TimeField";
 
 const QUIZ_DRAFT_STORAGE_KEY_PREFIX = "lms_quiz_maker_unuploaded_draft_v2";
 
@@ -152,14 +155,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
 
 
   function normalizeQuestionType(t?: string): "multiple_choice" | "true_false" | "essay" | "fill_in_blank" | "unknown" {
-    if (!t) return "multiple_choice";
-    const upper = t.toUpperCase();
-    if (upper === "MCQ" || upper === "MULTIPLE_CHOICE") return "multiple_choice";
-    if (upper === "TRUE_FALSE" || upper === "TRUEFALSE") return "true_false";
-    if (upper === "ESSAY") return "essay";
-    if (upper === "FILL_BLANK" || upper === "FILL_IN_BLANK") return "fill_in_blank";
-    if (upper === "UNKNOWN") return "unknown";
-    return "multiple_choice";
+    const type = canonicalQuestionType(t);
+    return type === 'short_answer' || type === 'ordering' || type === 'matching' ? 'unknown' : type;
   }
 
   function getQuestionTypeLabel(t?: string): { code: string; label: string; bg: string; color: string } {
@@ -1491,7 +1488,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
               <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
                 {assessmentType === "quiz" ? "موعد النشر وبدء الإتاحة:" : "موعد نشر الواجب:"}
               </label>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "6px" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "8px" }}>
                 <input
                   type="date"
                   required
@@ -1502,36 +1499,19 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                     width: "100%",
                     boxSizing: "border-box",
                     minWidth: 0,
-                    padding: "7px 10px",
+                    padding: "10px 12px",
                     border: publishStartHasError && !publishStartDate ? "1.5px solid #ef4444" : "1px solid var(--border-color-strong)",
                     boxShadow: publishStartHasError && !publishStartDate ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
                     borderRadius: "6px",
-                    fontSize: "12px",
+                    fontSize: "18px",
+                    minHeight: 48,
+                    fontWeight: 700,
                     background: "var(--bg-surface)",
                     color: "var(--text-main)",
                   }}
                 />
-                <input
-                  type="text"
-                  required
-                  value={publishStartTime}
-                  onChange={(e) => setPublishStartTime(e.target.value)}
-                  onBlur={() => markTouched("publishStart")}
-                  placeholder="مثال: 06:00 م"
-                  style={{
-                    width: "100%",
-                    boxSizing: "border-box",
-                    minWidth: 0,
-                    padding: "7px 10px",
-                    border: publishStartHasError && !publishStartTime.trim() ? "1.5px solid #ef4444" : "1px solid var(--border-color-strong)",
-                    boxShadow: publishStartHasError && !publishStartTime.trim() ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
-                    borderRadius: "6px",
-                    fontSize: "12px",
-                    background: "var(--bg-surface)",
-                    color: "var(--text-main)",
-                    textAlign: "center",
-                  }}
-                />
+                <TimeField label="بداية الإتاحة" value={publishStartTime} onChange={setPublishStartTime}
+                  onBlur={() => markTouched("publishStart")} error={publishStartHasError && !publishStartTime.trim()} />
               </div>
               {publishStartHasError && (
                 <div style={{ display: "flex", alignItems: "center", gap: "5px", marginTop: "5px", color: "#ef4444", fontSize: "11.5px", fontWeight: 700 }}>
@@ -1546,7 +1526,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
               <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
                 {assessmentType === "quiz" ? "موعد انتهاء الإتاحة وإغلاق الاختبار:" : "آخر موعد لتسليم الواجب:"}
               </label>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "6px" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "8px" }}>
                 <input
                   type="date"
                   required
@@ -1557,36 +1537,19 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                     width: "100%",
                     boxSizing: "border-box",
                     minWidth: 0,
-                    padding: "7px 10px",
+                    padding: "10px 12px",
                     border: closeDeadlineHasError && !closeDeadlineDate ? "1.5px solid #ef4444" : "1px solid var(--border-color-strong)",
                     boxShadow: closeDeadlineHasError && !closeDeadlineDate ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
                     borderRadius: "6px",
-                    fontSize: "12px",
+                    fontSize: "18px",
+                    minHeight: 48,
+                    fontWeight: 700,
                     background: "var(--bg-surface)",
                     color: "var(--text-main)",
                   }}
                 />
-                <input
-                  type="text"
-                  required
-                  value={closeDeadlineTime}
-                  onChange={(e) => setCloseDeadlineTime(e.target.value)}
-                  onBlur={() => markTouched("closeDeadline")}
-                  placeholder="مثال: 11:59 م"
-                  style={{
-                    width: "100%",
-                    boxSizing: "border-box",
-                    minWidth: 0,
-                    padding: "7px 10px",
-                    border: closeDeadlineHasError && !closeDeadlineTime.trim() ? "1.5px solid #ef4444" : "1px solid var(--border-color-strong)",
-                    boxShadow: closeDeadlineHasError && !closeDeadlineTime.trim() ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
-                    borderRadius: "6px",
-                    fontSize: "12px",
-                    background: "var(--bg-surface)",
-                    color: "var(--text-main)",
-                    textAlign: "center",
-                  }}
-                />
+                <TimeField label="نهاية الإتاحة" value={closeDeadlineTime} onChange={setCloseDeadlineTime}
+                  onBlur={() => markTouched("closeDeadline")} error={closeDeadlineHasError && !closeDeadlineTime.trim()} />
               </div>
               {closeDeadlineHasError && (
                 <div style={{ display: "flex", alignItems: "center", gap: "5px", marginTop: "5px", color: "#ef4444", fontSize: "11.5px", fontWeight: 700 }}>
@@ -2762,15 +2725,15 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
 
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ color: "var(--text-muted, #64748b)", fontWeight: 600 }}>موعد البدء والنشر:</span>
-                  <span style={{ color: "var(--text-main, #0f172a)", fontWeight: 600 }}>
-                    {publishStartDate} ({publishStartTime})
+                  <span dir="ltr" style={{ color: "var(--text-main, #0f172a)", fontWeight: 700, fontSize: 18 }}>
+                    {publishStartDate} ({clockLabel(publishStartTime)})
                   </span>
                 </div>
 
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ color: "var(--text-muted, #64748b)", fontWeight: 600 }}>{assessmentType === "quiz" ? "موعد الإغلاق" : "آخر موعد للتسليم"}:</span>
-                  <span style={{ color: "#dc2626", fontWeight: 700 }}>
-                    {closeDeadlineDate} ({closeDeadlineTime})
+                  <span dir="ltr" style={{ color: "#dc2626", fontWeight: 700, fontSize: 18 }}>
+                    {closeDeadlineDate} ({clockLabel(closeDeadlineTime)})
                   </span>
                 </div>
 

@@ -25,6 +25,42 @@ function stubFetch(handler: (input: string, init?: RequestInit) => Response | Pr
 }
 
 describe("apiClient request discipline", () => {
+  it('cancels queued catalog reads when logout begins, before waiting for server revocation', async () => {
+    const releases: Array<() => void> = [];
+    let finishLogout: () => void = () => {};
+    const calls = stubFetch(input => input.endsWith('/auth/logout')
+      ? new Promise<Response>(resolve => { finishLogout = () => resolve(new Response(null, { status: 204 })); })
+      : new Promise<Response>(resolve => releases.push(() => resolve(new Response('{}', { status: 200 })))));
+    const { apiRequest, setApiAuthScope } = await import('./apiClient');
+    const { authService } = await import('./lmsService');
+    setApiAuthScope('student-a'); localStorage.setItem('lms_session_token', 'qa-token');
+    const reads = Array.from({ length: 20 }, (_, id) => apiRequest(`/courses/${id}/assessments`).catch(e => e.code));
+    await vi.waitFor(() => expect(releases).toHaveLength(4));
+    const logout = authService.logout();
+    await vi.waitFor(() => expect(calls.some(c => c.input.endsWith('/auth/logout'))).toBe(true));
+    releases.splice(0).forEach(release => release());
+    // Drain the old queue while logout is still waiting on the real server.
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const leaked = calls.filter(c => c.input.includes('/courses/')).length;
+    finishLogout(); await logout;
+    releases.splice(0).forEach(release => release());
+    await Promise.all(reads);
+    expect(leaked).toBe(4);
+    expect(calls.filter(c => c.input.includes('/courses/'))).toHaveLength(4);
+  });
+  it('stops protected identity/progress probes after a proven expired session, and permits login', async () => {
+    const calls = stubFetch(input => new Response('{}', { status: input.endsWith('/auth/login') ? 200 : 401 }));
+    const { apiRequest } = await import('./apiClient');
+    await expect(apiRequest('/auth/me', { cacheTtlMs: 0 })).rejects.toMatchObject({ status: 401 });
+    const baseline = calls.length;
+    for (const path of ['/auth/me', '/progress/me', '/auth/me', '/progress/me']) {
+      await expect(apiRequest(path, { cacheTtlMs: 0 })).rejects.toMatchObject({ status: 401 });
+    }
+    expect(calls).toHaveLength(baseline);
+    await apiRequest('/auth/login', { method: 'POST', body: '{}' });
+    await expect(apiRequest('/progress/me', { cacheTtlMs: 0 })).rejects.toMatchObject({ status: 401 });
+    expect(calls.length).toBeGreaterThan(baseline + 1);
+  });
   beforeEach(() => {
     vi.resetModules();
     document.cookie = "";

@@ -11,9 +11,12 @@ import {
   invalidateApiCache,
   getCachedData,
   setCachedData,
+  authToken,
+  beginBrowserLogout,
 } from "./apiClient";
 import type { StudentEntitlement } from "./paymentService";
 import { assessmentWindow } from "./assessmentSchedule";
+import { canonicalQuestionType } from "./questionType";
 /**
  * ============================================================================
  * MATGAR LMS - UNIFIED DATA ACCESS LAYER (DAL)
@@ -742,20 +745,28 @@ export const authService = {
   },
 
   async logout(): Promise<void> {
-    try {
-      await apiRequest<void>("/auth/logout", { method: "POST" });
-    } catch {
-      // Logout is local-first so an unavailable server cannot trap the user in the UI.
-    }
-    setApiAuthScope("anonymous");
+    const token = authToken();
+    // Fence queued/in-flight reads before the server can revoke the cookie.
+    // Waiting until after POST lets queued private requests start with a dead
+    // session, producing 401s and racing a subsequent login.
+    beginBrowserLogout();
+    const logoutGeneration = getApiAuthGeneration();
     clearApiCache();
     if (typeof localStorage !== "undefined") {
       localStorage.removeItem("lms_session_token");
       localStorage.removeItem("lms_cached_user");
       localStorage.setItem("lms_active_tab", "Landing");
     }
-    if (typeof window !== "undefined") {
-      markBrowserSessionActive(false);
+    try {
+      await apiRequest<void>("/auth/logout", { method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+    } catch {
+      // Local-first logout remains available during an outage. Do not clear
+      // another account's state when this old request eventually returns.
+    }
+    if (logoutGeneration === getApiAuthGeneration() && typeof window !== "undefined") {
+      // Keep the existing logout action pending until the response settles:
+      // a late cookie-clearing response must not race a new UI login.
       window.location.hash = "";
       window.dispatchEvent(new Event("lms_user_updated"));
     }
@@ -1115,6 +1126,12 @@ export const courseService = {
   }): Promise<{ quiz_id: string }> {
     // Validate before creating questions: malformed schedules must not leave orphans.
     const schedule = assessmentWindow(payload.starts_at, payload.ends_at);
+    const questions = payload.questions.map(q => {
+      const type = canonicalQuestionType(q.question_type);
+      if (type === 'unknown') throw new Error('نوع سؤال غير مدعوم؛ راجع نوع السؤال قبل النشر.');
+      return { question_type: type, prompt: q.question_text, options: q.options ?? null,
+        correct_answer: q.correct_answer ?? null, points: q.points ?? 1 };
+    });
     await validateAssessmentScope(payload);
     const quiz = await apiRequest<{ id: string }>("/quizzes/publish-draft", {
       method: "POST",
@@ -1127,9 +1144,7 @@ export const courseService = {
         starts_at: schedule.startsAt,
         ends_at: schedule.endsAt,
         idempotency_key: payload.idempotency_key,
-        questions: payload.questions.map(q => ({ question_type: q.question_type,
-          prompt: q.question_text, options: q.options ?? null, correct_answer: q.correct_answer ?? null,
-          points: q.points ?? 1 })),
+        questions,
       }),
     });
     invalidateApiCache("/courses");

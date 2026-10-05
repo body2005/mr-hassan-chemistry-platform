@@ -5,6 +5,7 @@
 import type { Browser, Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import { expect, test } from './qaTest';
 
 const base = process.env.QA_BASE_URL || 'https://localhost:18543';
@@ -84,6 +85,88 @@ async function publish(page: Page, kind: string) {
 }
 const mcq: DraftQuestion = { id: 'q1', question_text: 'Choose the mass unit.', question_type: 'multiple_choice', points: 7,
   options: [{ key: 'A', text: 'kilogram QA option', is_correct: true }, { key: 'B', text: 'second QA option', is_correct: false }] };
+
+test('reviewed FILL_BLANK Extract question publishes through the teacher interface', async ({ page }) => {
+  await teacher(page);
+  const { lesson } = await courseWithLesson(page, 'fill blank');
+  const title = await prepareDraft(page, lesson.id, 'quiz', [{ id: 'fill', question_type: 'FILL_BLANK',
+    question_text: 'The SI unit of mass is ____.', points: 2 }]);
+  const created = page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/v1/quizzes/publish-draft');
+  await publish(page, 'quiz');
+  const response = await created;
+  expect(response.status(), await response.text()).toBe(201);
+  const record = await response.json();
+  const quizResponse = await page.request.get(`${base}/api/v1/quizzes/${record.id}/solve`);
+  expect(quizResponse.status()).toBe(200);
+  const quiz = await quizResponse.json();
+  expect(quiz.questions[0].question_type).toBe('fill_in_blank');
+  expect(record.title).toBe(title);
+});
+
+test('teacher edits segmented Arabic time manually and with options, and publishes the same enlarged dates', async ({ page }) => {
+  await teacher(page);
+  const { lesson } = await courseWithLesson(page, 'clock');
+  await prepareDraft(page, lesson.id, 'quiz', [{ id: 'essay', question_type: 'essay', question_text: 'Explain mass.', points: 2 }]);
+  await page.getByRole('combobox', { name: 'ساعة بداية الإتاحة', exact: true }).fill('٠٣');
+  await page.getByRole('combobox', { name: 'دقيقة بداية الإتاحة', exact: true }).fill('٣٠');
+  await page.getByLabel('فترة بداية الإتاحة', { exact: true }).selectOption('م');
+  await page.getByRole('combobox', { name: 'ساعة نهاية الإتاحة', exact: true }).click();
+  await page.getByRole('listbox', { name: 'اختيارات الساعة نهاية الإتاحة' }).getByRole('option', { name: '08', exact: true }).click();
+  await page.getByRole('combobox', { name: 'دقيقة نهاية الإتاحة', exact: true }).click();
+  await page.getByRole('listbox', { name: 'اختيارات الدقيقة نهاية الإتاحة' }).getByRole('option', { name: '45', exact: true }).click();
+  await page.getByLabel('فترة نهاية الإتاحة', { exact: true }).selectOption('م');
+  expect(await page.locator('input[type="date"]').first().evaluate(el => parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(18);
+  await page.screenshot({ path: test.info().outputPath('segmented-clock-desktop.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('combobox', { name: 'ساعة نهاية الإتاحة', exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: test.info().outputPath('segmented-clock-mobile.png'), fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  const created = page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/v1/quizzes/publish-draft');
+  await publish(page, 'quiz');
+  const response = await created;
+  expect(response.status(), await response.text()).toBe(201);
+  const body = response.request().postDataJSON();
+  // API timestamps are UTC; assert the entered clock in the browser's actual
+  // timezone instead of assuming Cairo's current UTC offset is zero.
+  const clocks = await page.evaluate(({ start, end }) => {
+    const clock = (iso: string) => { const date = new Date(iso); return [date.getHours(), date.getMinutes()]; };
+    return [clock(start), clock(end)];
+  }, { start: body.starts_at, end: body.ends_at });
+  expect(clocks).toEqual([[15, 30], [20, 45]]);
+});
+
+test('ready video job recovers automatically after teacher reload without a repeated upload', async ({ page, playwright }) => {
+  test.setTimeout(180_000);
+  await teacher(page);
+  const { course, lesson } = await courseWithLesson(page, 'resume ready video');
+  const media = readFileSync(process.env.QA_VIDEO_FILE || '../../.qa/audit2/media/video.webm');
+  const session = await post(page, `lessons/${lesson.id}/video-uploads`, { filename: 'qa-resume.webm', content_type: 'video/webm',
+    size_bytes: media.length, fingerprint: createHash('sha256').update(media).digest('hex'), request_key: randomUUID() });
+  const direct = await playwright.request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === 'true' });
+  try {
+    for (let number = 1; number <= Math.ceil(media.length / session.part_bytes); number++) {
+      const signed = await post(page, `video-uploads/${session.id}/parts/${number}`, {}, 200);
+      expect((await direct.put(signed.url, { data: media.subarray((number - 1) * session.part_bytes,
+        (number - 1) * session.part_bytes + signed.size_bytes) })).status()).toBe(200);
+    }
+  } finally { await direct.dispose(); }
+  await post(page, `video-uploads/${session.id}/complete`, {}, 202);
+  await expect.poll(async () => (await (await page.request.get(`${base}/api/v1/video-uploads/${session.id}`)).json()).status,
+    { timeout: 120_000, intervals: [1000, 3000] }).toBe('ready');
+  const me = await (await page.request.get(`${base}/api/v1/auth/me`)).json();
+  await page.evaluate(({ task }) => localStorage.setItem('lms_global_upload_tasks_v3', JSON.stringify([task])), { task: {
+    id: 'qa-reload-task', ownerScope: me.id, title: 'QA resume completed video', fileName: 'qa-resume.webm', type: 'lesson_video',
+    lessonId: lesson.id, courseId: course.id, videoUploadId: session.id, fileSizeBytes: media.length, formattedSize: 'QA file',
+    status: 'processing', progress: 99, uploadPercent: 100, createdAt: Date.now() } });
+  const repeatedWrites: string[] = [];
+  page.on('request', r => { if (r.method() !== 'GET' && /\/api\/v1\/(video-uploads|lessons\/.*\/video-uploads)/.test(r.url())) repeatedWrites.push(r.url()); });
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('lms_global_upload_tasks_v3') || '[]')[0]?.status),
+    { timeout: 15_000 }).toBe('completed');
+  expect(repeatedWrites).toEqual([]);
+  await page.screenshot({ path: test.info().outputPath('video-reconciled-ready.png'), fullPage: true });
+});
 
 for (const kind of ['quiz', 'assignment']) {
   test(`${kind} cannot publish OCR content until source review, including after edits and reload`, async ({ page }) => {

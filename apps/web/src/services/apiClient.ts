@@ -75,6 +75,7 @@ let currentAuthScope = "anonymous";
 let authScopeEpoch = 0;
 let activeCourseReads = 0;
 const queuedCourseReads: Array<() => void> = [];
+const activeRequestControllers = new Set<AbortController>();
 
 function drainCourseReads(): void {
   while (activeCourseReads < 4 && queuedCourseReads.length) queuedCourseReads.shift()!();
@@ -97,12 +98,14 @@ function boundedCourseRead<T>(run: () => Promise<T>, epoch: number, signal?: Abo
   });
 }
 
-export function setApiAuthScope(scope: string): void {
+export function setApiAuthScope(scope: string, forceNewGeneration = false): void {
   const normalized = scope || "anonymous";
-  if (currentAuthScope !== normalized) {
+  if (currentAuthScope !== normalized || forceNewGeneration) {
     currentAuthScope = normalized;
     authScopeEpoch++;
+    for (const controller of activeRequestControllers) controller.abort();
     clearApiCache();
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event('lms_auth_scope_updated'));
   }
 }
 
@@ -112,6 +115,14 @@ export function getApiAuthScope(): string {
 
 export function getApiAuthGeneration(): number {
   return authScopeEpoch;
+}
+
+/** Stop old-account work BEFORE sending logout. The logout request itself
+ * still uses the captured credentials and must revoke the server session. */
+export function beginBrowserLogout(): void {
+  sessionKnownInvalid = true;
+  browserSessionActive = false;
+  setApiAuthScope('anonymous', true);
 }
 
 export function clearApiCache(): void {
@@ -187,10 +198,15 @@ export async function fetchApiBlob(path: string, retriedAfterRefresh = false): P
   const token = authToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
   let response: Response;
+  const controller = new AbortController();
+  activeRequestControllers.add(controller);
   try {
-    response = await fetch(apiUrl(path), { headers, credentials: "include" });
+    response = await fetch(apiUrl(path), { headers, credentials: "include", signal: controller.signal });
   } catch (error) {
+    if (requestEpoch !== authScopeEpoch) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0, { cause: error });
     throw new ApiClientError("NETWORK_ERROR", "Unable to reach the API", 0, { cause: error });
+  } finally {
+    activeRequestControllers.delete(controller);
   }
   if (requestEpoch !== authScopeEpoch) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
   if (!response.ok) {
@@ -217,6 +233,7 @@ function clearStaleSession(path: string): void {
   const normalized = path.replace(/^\/api\/v1/, "");
   if (["/auth/login", "/auth/register", "/auth/refresh"].includes(normalized)) return;
   sessionKnownInvalid = true;
+  setApiAuthScope('anonymous');
   if (typeof localStorage !== "undefined") {
     localStorage.removeItem("lms_session_token");
     localStorage.removeItem("lms_cached_user");
@@ -313,6 +330,7 @@ async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retrie
   }
 
   let response: Response;
+  activeRequestControllers.add(controller);
   try {
     response = await fetch(apiUrl(path), {
       ...requestInit,
@@ -321,7 +339,7 @@ async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retrie
       signal: controller.signal,
     });
   } catch (error) {
-    if (requestInit.signal?.aborted) {
+    if (requestInit.signal?.aborted || requestEpoch !== authScopeEpoch) {
       // Caller-initiated cancellation (component unmount / page change).
       // Never label this as a timeout so callers cannot mistake it for a
       // failure and retry it.
@@ -332,6 +350,7 @@ async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retrie
     }
     throw new ApiClientError("NETWORK_ERROR", "Unable to reach the API", 0, { cause: error });
   } finally {
+    activeRequestControllers.delete(controller);
     if (timer !== undefined) window.clearTimeout(timer);
   }
 
@@ -379,6 +398,12 @@ async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retrie
 }
 
 export async function apiRequest<T>(path: string, init: ApiRequestInit = {}, retriedAfterRefresh = false): Promise<T> {
+  // A proven expired session cannot recover through repeated private probes.
+  // Public browsing and an explicit login remain available; server protection
+  // and rate limits are unchanged.
+  if (sessionKnownInvalid && /^\/(?:auth\/me|progress\/me|video-uploads)(?:[/?]|$)/.test(path.replace(/^\/api\/v1/, ''))) {
+    throw new ApiClientError('SESSION_EXPIRED', 'انتهت جلسة الدخول. سجّل الدخول مجددًا للمتابعة.', 401);
+  }
   const method = (init.method || "GET").toUpperCase();
   const isSafeMethod = method === "GET" || method === "HEAD";
 
