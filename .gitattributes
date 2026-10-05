@@ -1,0 +1,3 @@
+# Container build/security scripts must stay executable by POSIX sh after a
+# Windows clone. Do not normalize unrelated project files.
+*.sh text eol=lf

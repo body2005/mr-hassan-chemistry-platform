@@ -5,7 +5,8 @@ Set-Location $taskRoot
 $manifestCode=@'
 import hashlib,json,pathlib
 root=pathlib.Path('/srv')
-files=[*root.joinpath('app').rglob('*.py'),root/'scripts/video_worker.py',root/'entrypoint-prod.sh']
+files=[*root.joinpath('app').rglob('*.py'),*root.joinpath('scripts').rglob('*.py'),
+       *root.joinpath('scripts').rglob('*.sh'),root/'entrypoint-prod.sh',root/'requirements.txt',root/'requirements.lock']
 print(json.dumps({str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for p in files}))
 '@
 $results=[System.Collections.Generic.List[object]]::new()
@@ -23,7 +24,7 @@ foreach($service in @('api','video-worker')){
             $mismatch.Add($relative)
         }
     }
-    $hostSources=@(rg --files apps/api/app -g '*.py')
+    $hostSources=@(rg --files apps/api/app apps/api/scripts -g '*.py' -g '*.sh')
     foreach($file in $hostSources){
         $relative=$file.Replace('\','/').Substring('apps/api/'.Length)
         if(!$manifest.ContainsKey($relative)){$mismatch.Add("missing-in-runtime:$relative")}

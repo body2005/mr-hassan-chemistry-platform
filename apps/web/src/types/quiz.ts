@@ -49,6 +49,9 @@ export interface GeneratedQuestion {
   source_block_ids?: string[] | null;
   source_checksum?: string | null;
   raw_text?: string | null;
+  text_source?: "text_layer" | "ocr" | "unknown";
+  needs_content_review?: boolean;
+  content_review_fingerprint?: string;
 }
 
 export interface QuizDraftResponse {

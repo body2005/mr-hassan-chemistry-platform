@@ -397,9 +397,9 @@ def test_ocr_cache_uses_full_file_sha256(tmp_path, monkeypatch) -> None:
     assert hash1 != hash2, "Full hashes must differ even if prefixes are identical"
     monkeypatch.setattr(parser, "__file__", str(tmp_path / "app" / "services" / "document_parsers.py"))
     monkeypatch.setenv("ALLOW_IN_PROCESS_OCR", "false")
-    # Source-placeholder restoration changes OCR output; the version bump
-    # deliberately prevents reuse of old, incomplete cached text.
-    assert parser.PARSER_OCR_VERSION == "v7-bounded-108dpi-source-placeholders"
+    # Removing dictionary substitutions changes OCR output; the version bump
+    # prevents reuse of old cached text that translated source words.
+    assert parser.PARSER_OCR_VERSION == "v8-source-words-no-translation"
 
     def cached(digest, page, lang, version, text):
         directory = tmp_path / "storage" / "ocr_cache" / digest

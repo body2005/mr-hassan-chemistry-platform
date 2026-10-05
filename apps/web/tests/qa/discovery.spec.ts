@@ -4,6 +4,7 @@
  */
 import type { Browser, Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { expect, test } from './qaTest';
 
 const base = process.env.QA_BASE_URL || 'https://localhost:18543';
@@ -83,6 +84,57 @@ async function publish(page: Page, kind: string) {
 }
 const mcq: DraftQuestion = { id: 'q1', question_text: 'Choose the mass unit.', question_type: 'multiple_choice', points: 7,
   options: [{ key: 'A', text: 'kilogram QA option', is_correct: true }, { key: 'B', text: 'second QA option', is_correct: false }] };
+
+for (const kind of ['quiz', 'assignment']) {
+  test(`${kind} cannot publish OCR content until source review, including after edits and reload`, async ({ page }) => {
+    test.setTimeout(120_000);
+    await teacher(page);
+    const { course, lesson } = await courseWithLesson(page, 'OCR review');
+    const csrf = (await page.context().cookies()).find(c => c.name === 'matgar_csrf')?.value || '';
+    // Real raster, real local OCR endpoint; no mocked extracted text.
+    const extracted = await page.request.post(`${base}/api/v1/quiz/extract-from-file`, {
+      headers: { 'X-CSRF-Token': csrf }, multipart: { course_id: course.id, lesson_id: lesson.id, target_type: kind,
+        file: { name: '05_biology_first_page.png', mimeType: 'image/png',
+          buffer: readFileSync('../api/tests/fixtures/blind_inputs/05_biology_first_page.png') } }, timeout: 60_000,
+    });
+    expect(extracted.status(), await extracted.text()).toBe(200);
+    const source = await extracted.json();
+    expect(source.questions).toHaveLength(5);
+    expect(source.questions.every((q: { needs_content_review: boolean }) => q.needs_content_review)).toBe(true);
+    const questions = source.questions.map((q: DraftQuestion) => ({ ...q, id: String(q.id), points: 2,
+      needs_points_assignment: false, needs_answer_review: false,
+      correct_answer: q.question_type === 'true_false' || q.question_type === 'TRUE_FALSE' ? 'صح' : null,
+      options: q.options?.map((o, i) => ({ ...o, is_correct: i === 0 })) }));
+    const title = await prepareDraft(page, lesson.id, kind, questions);
+    const writes: string[] = [];
+    page.on('request', r => { if (r.method() === 'POST' && /\/api\/v1\/(quizzes\/publish-draft|assignments)$/.test(new URL(r.url()).pathname)) writes.push(r.url()); });
+    const publishButton = page.getByRole('button', { name: `حفظ ونشر ${kind === 'quiz' ? 'الاختبار' : 'الواجب'} للطلاب`, exact: true }).first();
+    await publishButton.click();
+    await expect(page.getByRole('button', { name: 'تأكيد الرفع والنشر الآن' })).toHaveCount(0);
+    expect(writes).toHaveLength(0);
+    const reviews = page.getByRole('checkbox', { name: /مراجعة نص السؤال .* مع المصدر/ });
+    await expect(reviews).toHaveCount(5);
+    for (let i = 0; i < 5; i++) await reviews.nth(i).check();
+    await page.reload();
+    for (let i = 0; i < 5; i++) await expect(reviews.nth(i)).toBeChecked();
+    const card = page.getByTestId('question-card-1');
+    await card.getByRole('button', { name: 'تعديل', exact: true }).click();
+    await card.locator('[contenteditable="true"]').first().fill(`${questions[0].question_text} (مراجعة QA).`);
+    await card.getByRole('button', { name: 'حفظ التعديل', exact: true }).click();
+    await expect(reviews.first()).not.toBeChecked();
+    await publishButton.click();
+    await expect(page.getByRole('button', { name: 'تأكيد الرفع والنشر الآن' })).toHaveCount(0);
+    expect(writes).toHaveLength(0);
+    await reviews.first().check();
+    await page.screenshot({ path: test.info().outputPath(`ocr-review-${kind}.png`), fullPage: true });
+    await publish(page, kind);
+    await expect.poll(() => writes.length).toBe(1);
+    await expect.poll(async () => {
+      const assessments = await (await page.request.get(`${base}/api/v1/courses/${course.id}/assessments`)).json();
+      return (kind === 'quiz' ? assessments.quizzes : assessments.assignments).filter((a: { title: string }) => a.title === title).length;
+    }).toBe(1);
+  });
+}
 
 for (const check of ['options', 'score', 'future start'] as const) {
   test(`assignment preserves ${check} from teacher to student`, async ({ page, browser }) => {

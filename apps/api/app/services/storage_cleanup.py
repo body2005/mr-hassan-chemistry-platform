@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
-from app.core.storage import LocalStorageProvider, get_storage_provider
+from app.core.storage import LocalStorageProvider, S3StorageProvider, get_storage_provider
 from app.models.storage_cleanup import StorageCleanup
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,11 @@ def _delete(key: str) -> None:
         key = os.path.basename(key)
     else:
         storage = get_storage_provider()
+    if isinstance(storage, S3StorageProvider):
+        # SDK aborts may fail during an outage. A missing completed object
+        # does not mean no multipart bytes exist: retire them before acking
+        # the durable intent. Storage errors keep the job pending.
+        storage.abort_incomplete_uploads(key)
     if storage.exists(key) and not storage.delete(key):
         raise RuntimeError("Storage deletion was not acknowledged")
 

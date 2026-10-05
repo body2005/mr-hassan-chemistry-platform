@@ -36,6 +36,95 @@ describe("apiClient request discipline", () => {
     vi.useRealTimers();
   });
 
+  it("bounds course hydration without blocking identity or playback mutations", async () => {
+    let active = 0, peak = 0;
+    const releases: Array<() => void> = [];
+    const calls = stubFetch(input => {
+      if (input.includes('/courses/')) return new Promise<Response>(resolve => {
+        peak = Math.max(peak, ++active);
+        releases.push(() => { active--; resolve(new Response('{}', { status: 200 })); });
+      });
+      return new Response('{}', { status: 200 });
+    });
+    const { apiRequest } = await import('./apiClient');
+    const hydration = Array.from({ length: 80 }, (_, id) => apiRequest(`/courses/${id}/assessments`));
+    await vi.waitFor(() => expect(active).toBeGreaterThan(0));
+    expect(peak).toBeLessThanOrEqual(4);
+    await apiRequest('/auth/me');
+    await apiRequest('/lessons/test/video-token', { method: 'POST' });
+    expect(calls.filter(c => !c.input.includes('/courses/'))).toHaveLength(2);
+    for (let batch = 0; batch < 80; batch++) {
+      releases.splice(0).forEach(release => release());
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    await Promise.all(hydration);
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(calls.filter(c => c.input.includes('/courses/'))).toHaveLength(80);
+  });
+
+  it("does not deduplicate or cache a former account's in-flight response for the next account", async () => {
+    let finishOld: (value: Response) => void = () => {};
+    let count = 0;
+    const calls = stubFetch(() => ++count === 1 ? new Promise<Response>(resolve => { finishOld = resolve; })
+      : new Response(JSON.stringify({ owner: 'student-b' }), { status: 200 }));
+    const { apiRequest, setApiAuthScope } = await import('./apiClient');
+    setApiAuthScope('student-a');
+    const old = apiRequest('/courses/one/assessments').catch(error => error.code);
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    setApiAuthScope('student-b');
+    await expect(apiRequest('/courses/one/assessments')).resolves.toEqual({ owner: 'student-b' });
+    finishOld(new Response(JSON.stringify({ owner: 'student-a' }), { status: 200 }));
+    expect(await old).toBe('REQUEST_CANCELLED');
+    await expect(apiRequest('/courses/one/assessments')).resolves.toEqual({ owner: 'student-b' });
+    expect(calls).toHaveLength(2);
+  });
+
+  it("does not let a former account's late refresh overwrite or revoke the next session", async () => {
+    let finishRefresh: (value: Response) => void = () => {};
+    const calls = stubFetch(input => input.endsWith('/auth/refresh')
+      ? new Promise<Response>(resolve => { finishRefresh = resolve; })
+      : new Response('{}', { status: 401 }));
+    const { apiRequest, setApiAuthScope, isSessionKnownInvalid } = await import('./apiClient');
+    setApiAuthScope('student-a');
+    const old = apiRequest('/users/profile').catch(error => error.code);
+    await vi.waitFor(() => expect(calls.filter(c => c.input.endsWith('/auth/refresh'))).toHaveLength(1));
+    setApiAuthScope('student-b');
+    localStorage.setItem('lms_session_token', 'student-b-token');
+    finishRefresh(new Response(JSON.stringify({ token: 'student-a-token' }), { status: 200 }));
+    expect(await old).toBe('REQUEST_CANCELLED');
+    expect(localStorage.getItem('lms_session_token')).toBe('student-b-token');
+    expect(isSessionKnownInvalid()).toBe(false);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("rejects an old account's late file response after switching accounts", async () => {
+    let finish: (value: Response) => void = () => {};
+    stubFetch(() => new Promise<Response>(resolve => { finish = resolve; }));
+    const { fetchApiBlob, setApiAuthScope } = await import('./apiClient');
+    setApiAuthScope('student-a');
+    const file = fetchApiBlob('/assignments/one/sheet').catch(error => error.code);
+    setApiAuthScope('student-b');
+    finish(new Response('student-a-file', { status: 200 }));
+    expect(await file).toBe('REQUEST_CANCELLED');
+  });
+
+  it("does not repopulate composed course cache after an old-account enrichment fails", async () => {
+    let finish: (value: Response) => void = () => {};
+    const calls = stubFetch(input => input.includes('/assessments')
+      ? new Promise<Response>(resolve => { finish = resolve; })
+      : new Response(JSON.stringify({ items: [{ id: 'teacher-a-course', code: 'QA', title: 'Private A',
+        status: 'draft', modules: [], grade_level: 'SECONDARY_1' }] }), { status: 200 }));
+    const { setApiAuthScope } = await import('./apiClient');
+    const { courseService } = await import('./lmsService');
+    setApiAuthScope('teacher-a');
+    await courseService.getCourses();
+    await vi.waitFor(() => expect(calls.some(c => c.input.includes('/assessments'))).toBe(true));
+    setApiAuthScope('student-b');
+    finish(new Response(JSON.stringify({ quizzes: [], assignments: [] }), { status: 200 }));
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(courseService.getCachedCourses()).toEqual([]);
+  });
+
   it("does not re-probe /auth/me once the session is known invalid", async () => {
     const calls = stubFetch(() => new Response(JSON.stringify({ detail: "Authentication required" }), { status: 401 }));
 

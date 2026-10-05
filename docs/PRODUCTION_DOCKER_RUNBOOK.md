@@ -79,3 +79,25 @@ After restoration the drill waits for the worker's Docker health check and polls
 ## Old MinIO data
 
 Do not mount MinIO data directories into SeaweedFS. Preserve old volumes read-only. If actual old objects exist, bring up the compatible old MinIO version with its credentials in an isolated network, use this provider-neutral snapshot tool against its S3 API, and restore to a fresh SeaweedFS bucket. Verify object listing, SHA-256, metadata and private access before changing the application endpoint. Keep old data until migration approval. No actual MinIO data migration is claimed by the synthetic local drill.
+# Native media/XML maintenance and multipart cleanup (5 October 2026)
+
+The API builds stable upstream Expat 2.8.5 on the pinned stable Debian base;
+the encoder builds signed stable FFmpeg 7.1.5 without external SVG/cJSON,
+network or real-device integration. These are transparent LOCAL Debian-format
+packages, not official Debian security binaries. See
+`apps/api/scripts/build_native_expat.sh` and `build_native_ffmpeg.sh` for pinned
+source hashes, signer, build options and license/provenance. Compiler/dev tools
+stay in build stages. Keep corresponding source/build instructions available
+when distributing the GPL FFmpeg binary. Track upstream AND stable Debian
+security updates; rebuild/retest/re-scan before adopting either. Do not forge a
+Debian revision or suppress findings to make a scanner accept a local build.
+
+The application deletion outbox now also retires incomplete multipart uploads
+for the EXACT stored key. An external S3 policy needs
+`s3:ListBucketMultipartUploads` on the application's bucket and
+`s3:AbortMultipartUpload` on its object prefix, alongside existing object
+permissions. Restrict credentials to that bucket/prefix; no anonymous access.
+Permission or storage errors leave the durable job pending for bounded retry.
+Do not run a blanket prefix abort against active uploads. SeaweedFS is the
+storage tested locally; these external IAM policies are a configuration
+requirement, not a claim that an AWS account was tested.

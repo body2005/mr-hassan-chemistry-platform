@@ -1,0 +1,48 @@
+#!/bin/sh
+# Same stable Debian base; FFmpeg 7.1 security maintenance release, no
+# network/device/SVG/JSON-Patch integration. Retain native media codecs/HLS.
+set -eu
+cd /build
+curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+  -o ffmpeg.tar.xz https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz
+printf '%s  ffmpeg.tar.xz\n' 'de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f' | sha256sum -c -
+curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+  -o ffmpeg.tar.xz.asc https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz.asc
+curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+  -o release-key.asc https://ffmpeg.org/ffmpeg-devel.asc
+export GNUPGHOME=/build/keyring
+mkdir -m 700 "$GNUPGHOME"
+gpg --batch --import release-key.asc
+gpg --batch --status-fd 1 --verify ffmpeg.tar.xz.asc ffmpeg.tar.xz > signature-status.txt
+grep -q '^\[GNUPG:\] VALIDSIG FCF986EA15E6E293A5644F10B4322F04D67658D8 ' signature-status.txt
+tar -xf ffmpeg.tar.xz
+cd ffmpeg-7.1.5
+./configure --prefix=/usr --disable-autodetect --disable-network --disable-devices --enable-indev=lavfi \
+  --disable-doc --disable-debug --disable-ffplay --disable-shared --enable-static \
+  --enable-gpl --enable-libx264
+make -j2
+# Exercise real encoding, decoding and the exact production filters/muxer.
+./ffmpeg -v error -f lavfi -i testsrc2=size=320x240:rate=30 -f lavfi -i sine=frequency=440 \
+  -t 2 -vf scale=-2:240,setsar=1 -c:v libx264 -threads 2 -pix_fmt yuv420p \
+  -c:a aac -ac 2 -f hls -hls_playlist_type vod /build/smoke.m3u8
+./ffmpeg -v error -i /build/smoke.m3u8 -f null -
+./ffprobe -v error -show_entries stream=codec_name -of json /build/smoke.m3u8
+package=/build/package
+mkdir -p "$package/DEBIAN" "$package/usr/bin" "$package/usr/share/doc/ffmpeg"
+install -m 755 ffmpeg ffprobe "$package/usr/bin/"
+cp COPYING.GPLv2 "$package/usr/share/doc/ffmpeg/copyright"
+printf '%s\n' \
+  'Upstream: https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz' \
+  'Source-SHA256: de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f' \
+  'Signer: FCF986EA15E6E293A5644F10B4322F04D67658D8' \
+  'GPLv2 build. Full corresponding source is the pinned upstream archive;' \
+  'configuration/build instructions are scripts/build_native_ffmpeg.sh.' \
+  'Local package, not an official Debian binary.' \
+  > "$package/usr/share/doc/ffmpeg/chemistry-source.txt"
+printf '%s\n' 'Package: ffmpeg' 'Source: ffmpeg' \
+  'Version: 7:7.1.5-0chemistry1' "Architecture: $(dpkg --print-architecture)" \
+  'Section: video' 'Priority: optional' 'Maintainer: Chemistry Platform maintainers' \
+  'Depends: libc6 (>= 2.41), libx264-164' \
+  'Description: Restricted stable FFmpeg build for Chemistry Platform encoder' \
+  > "$package/DEBIAN/control"
+dpkg-deb --root-owner-group --build "$package" /build/ffmpeg.deb

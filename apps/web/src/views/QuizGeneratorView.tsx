@@ -29,6 +29,7 @@ import { RichFormulaEditor } from "../components/RichFormulaEditor";
 import { formatChemicalFormula } from "../utils/formulaUtils";
 import { quizHistoryService, PublishedQuizRecord } from "../services/quizHistoryService";
 import { QuizHistorySection } from "../components/QuizHistorySection";
+import { contentReviewFingerprint, hasContentReview, requiresContentReview } from "../services/quizContentReview";
 
 const QUIZ_DRAFT_STORAGE_KEY_PREFIX = "lms_quiz_maker_unuploaded_draft_v2";
 
@@ -426,15 +427,17 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       }
 
       setDraft(resp);
-      setQuestions(resp.questions || []);
+      setQuestions((resp.questions || []).map(q => ({ ...q, content_review_fingerprint: undefined })));
       setExtractedFileName(file.name);
       setExtractedFileFingerprint(fingerprint || null);
       setExtractedAt(new Date().toISOString());
       setApproved(false);
 
       toast({
-        message: `تم استخراج ${resp.questions.length} سؤال بنجاح من ملف "${file.name}"!`,
-        tone: "success",
+        message: resp.questions.some(requiresContentReview)
+          ? `تم استخراج ${resp.questions.length} سؤال كمسودة. راجع النص والاختيارات مع الملف الأصلي قبل النشر.`
+          : `تم استخراج ${resp.questions.length} سؤال من ملف "${file.name}". راجع المسودة قبل النشر.`,
+        tone: resp.questions.some(requiresContentReview) ? "warning" : "success",
       });
     } catch (err: unknown) {
       if (extractionRequestRef.current !== requestNumber) return;
@@ -753,6 +756,14 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       return;
     }
 
+    const pendingContent = currentQuestions.filter(q => !hasContentReview(q)).length;
+    if (pendingContent > 0) {
+      const msg = `يلزم مراجعة نص ${pendingContent} سؤال واختياراته مع الملف الأصلي قبل النشر.`;
+      setError(msg);
+      toast({ message: msg, tone: "warning" });
+      return;
+    }
+
     // Unknown Types Validation
     const unknownTypeCount = currentQuestions.filter(
       (q) => normalizeQuestionType(q.question_type) === "unknown"
@@ -794,6 +805,12 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   async function handleConfirmPublish() {
     const currentQuestions = activeQuestionsList();
     const isQuiz = assessmentType === "quiz";
+
+    if (currentQuestions.some(q => !hasContentReview(q))) {
+      setError("تغيّر نص أو اختيارات سؤال يحتاج مراجعة. راجعه مع الملف الأصلي قبل النشر.");
+      setShowPublishConfirmModal(false);
+      return;
+    }
 
     if (!quizTitle.trim()) {
       setError(`يرجى إدخال اسم ${isQuiz ? "الاختبار" : "الواجب"} (يلزم ادخاله).`);
@@ -1802,7 +1819,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
               {draft && draft.is_complete === false && (
                 <div style={{ padding: "12px 16px", background: "rgb(15, 118, 110)", border: "1px solid rgb(15, 118, 110)", borderRadius: "10px", color: "#ffffff", fontSize: "12.5px", display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px" }}>
                   <AlertCircle size={18} style={{ flexShrink: 0, color: "#99f6e4" }} />
-                  <span>تنبيه: تعذر استخراج كامل العدد المتوقع من الأسئلة من الملف، وتم إدراج كافة الأسئلة الموثوقة المتاحة بدقة.</span>
+                  <span>هذه مسودة تحتاج مراجعة الملف الأصلي: قراءة الصور قد تُسقط حروفًا أو رموزًا، وقد تكون بعض الأسئلة ناقصة. اكتمال العدد لا يثبت دقة النص.</span>
                 </div>
               )}
 
@@ -1849,6 +1866,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                   return (
                     <div
                       key={q.id}
+                      data-testid={`question-card-${q.id}`}
                       style={{
                         border: isEditing ? "2px solid #059669" : "1px solid var(--border-color)",
                         borderRadius: "14px",
@@ -2096,6 +2114,24 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                             </button>
                           </div>
                         </div>
+                      )}
+
+                      {requiresContentReview(q) && (
+                        <label style={{ display: "flex", gap: "10px", alignItems: "flex-start", padding: "12px",
+                          marginBottom: "12px", borderRadius: "8px", border: "1px solid var(--border-color)",
+                          background: "var(--bg-surface-secondary)", color: "var(--text-main)", lineHeight: "1.7" }}>
+                          <input type="checkbox" aria-label={`مراجعة نص السؤال ${qIdx + 1} مع المصدر`}
+                            checked={hasContentReview(q)} onChange={e => {
+                              const checked = e.target.checked;
+                              setActiveQuestionsList(prev => prev.map(item => item.id === q.id ? { ...item,
+                                content_review_fingerprint: checked ? contentReviewFingerprint(item) : undefined } : item));
+                            }} />
+                          <span>قارنت نص السؤال والاختيارات بالملف الأصلي{q.source_page ? ` — صفحة ${q.source_page}` : ""}.
+                            <small style={{ display: "block", color: "var(--text-muted)" }}>
+                              قراءة الصور قد تُسقط حروفًا أو رموزًا. صحّح النص أولًا؛ أي تعديل للنص أو الاختيارات يلغي هذا التأكيد.
+                            </small>
+                          </span>
+                        </label>
                       )}
 
                       {/* Question Text */}

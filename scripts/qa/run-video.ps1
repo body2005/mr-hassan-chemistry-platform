@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('Build','Tests','Integration','Browser','Recovery','Assets','Load','Scan','All')][string]$Stage = 'All',
+    [ValidateSet('Build','Backend','Tests','Integration','Browser','Recovery','Assets','Load','Scan','All')][string]$Stage = 'All',
     [ValidateSet('chemistryprodlocal','chemistryaudit2')][string]$Project = 'chemistryaudit2',
     [switch]$ApproveScout,
     [string]$Docker = 'C:\Users\body\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe'
@@ -35,9 +35,18 @@ if ($Stage -eq 'Scan') {
     if (!$ApproveScout) { throw 'Docker Scout shares image/SBOM package metadata externally. Obtain approval, then pass -ApproveScout.' }
     $scanFailed = $false
     foreach ($image in @('api','video-worker')) {
-        & $Docker scout cves "local://$Project-$image" --only-severity critical,high --format sarif --output ".qa/$folder/scout-video-$image-$runId.sarif" --exit-code
+        $target = "$Project-$image-1"
+        $owner = & $Docker inspect $target --format '{{index .Config.Labels "com.docker.compose.project"}}/{{index .Config.Labels "com.docker.compose.service"}}'
+        if ($LASTEXITCODE -ne 0 -or $owner -ne "$Project/$image") { throw 'Scan target is not the expected isolated runtime' }
+        $runtimeImage = & $Docker inspect $target --format '{{.Image}}'
+        if ($LASTEXITCODE -ne 0 -or $runtimeImage -notmatch '^sha256:[a-f0-9]{64}$') { throw 'Could not identify the actual tested image' }
+        & $Docker image inspect $runtimeImage --format '{{.Id}}' | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Runtime image manifest is no longer inspectable. Recreate from the intended built image, retest, then scan; do not substitute a mutable tag.' }
+        # A new BuildKit attestation/tag can differ while Compose retains the
+        # same payload container. Scan its actual identity, not a mutable tag.
+        & $Docker scout cves "local://$runtimeImage" --only-severity critical,high --format sarif --output ".qa/$folder/scout-video-$image-$runId.sarif" --exit-code
         $code = $LASTEXITCODE
-        $results.Add(@{command="Docker Scout $image (critical/high gate)"; exit_code=$code; utc=[DateTime]::UtcNow.ToString('o')})
+        $results.Add(@{command="Docker Scout $image $runtimeImage (critical/high gate)"; exit_code=$code; utc=[DateTime]::UtcNow.ToString('o')})
         Save-Results
         if ($code -ne 0) { $scanFailed = $true }
     }
@@ -64,7 +73,10 @@ if ($Stage -in @('Build','All')) {
     Invoke-Step 'video worker / QA build' $Docker ($compose + @('build','video-worker','qa-tests'))
     Invoke-Step 'local video pipeline startup' $Docker ($compose + @('up','-d','--no-build','--wait','--wait-timeout','160','migration','s3-init','api','worker','web','proxy','video-worker','upload-gateway'))
 }
-if ($Stage -in @('Tests','All')) {
+if ($Stage -in @('Backend','Tests','All')) {
+    foreach ($nativeService in @('api','video-worker')) {
+        Invoke-Step "native Expat UTF-16 security regression ($nativeService)" $Docker ($compose + @('exec','-T',$nativeService,'python','-m','scripts.verify_native_expat'))
+    }
     Invoke-Step 'API unit and protection tests' $Docker ($compose + @('run','--rm','--no-deps','-e','STORAGE_DIR=/tmp/qa-storage','qa-tests','python','-m','pytest','tests','--ignore=tests/integration','-q','--junitxml=/qa/api-unit-video.xml'))
     Invoke-Step 'real PostgreSQL/S3 missing multipart recovery' $Docker ($compose + @('run','--rm','--no-deps','-e','PYTHONPATH=/srv','-v',"${taskRoot}/infra/qa:/qa-tools:ro",'qa-tests','python','/qa-tools/test-lost-multipart.py'))
 }

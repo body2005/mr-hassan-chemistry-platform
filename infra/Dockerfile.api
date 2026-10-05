@@ -1,3 +1,10 @@
+FROM python:3.12.15-slim-trixie@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016 AS native-security-build
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl ca-certificates xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY scripts/build_native_expat.sh /build/build_native_expat.sh
+RUN sh /build/build_native_expat.sh
+
 FROM python:3.12.15-slim-trixie@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -24,6 +31,8 @@ RUN apt-get update && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt requirements.lock ./
+COPY --from=native-security-build /build/libexpat1.deb /tmp/libexpat1.deb
+RUN dpkg -i /tmp/libexpat1.deb && ldconfig && rm /tmp/libexpat1.deb
 RUN python -m pip install --no-cache-dir --upgrade pip==26.2.1 \
     && python -m pip install --no-cache-dir -r requirements.txt \
     && python -m pip uninstall -y pip \
@@ -33,6 +42,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip==26.2.1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
+RUN python -m scripts.verify_native_expat
 RUN chmod 755 scripts/tesseract_limited.py
 ENV TESSERACT_CMD=/srv/scripts/tesseract_limited.py OMP_THREAD_LIMIT=1
 

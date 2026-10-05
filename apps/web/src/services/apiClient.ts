@@ -72,17 +72,46 @@ interface CacheEntry<T> {
 const apiCache = new Map<string, CacheEntry<unknown>>();
 const inFlightRequests = new Map<string, Promise<unknown>>();
 let currentAuthScope = "anonymous";
+let authScopeEpoch = 0;
+let activeCourseReads = 0;
+const queuedCourseReads: Array<() => void> = [];
+
+function drainCourseReads(): void {
+  while (activeCourseReads < 4 && queuedCourseReads.length) queuedCourseReads.shift()!();
+}
+
+function boundedCourseRead<T>(run: () => Promise<T>, epoch: number, signal?: AbortSignal | null): Promise<T> {
+  // Catalog hydration must leave capacity for video-token, auth and foreground
+  // calls. This is not a retry policy and does not change server rate limits.
+  return new Promise<T>((resolve, reject) => {
+    queuedCourseReads.push(() => {
+      activeCourseReads++;
+      Promise.resolve().then(() => {
+        if (epoch !== authScopeEpoch || signal?.aborted) {
+          throw new ApiClientError('REQUEST_CANCELLED', 'Request cancelled', 0);
+        }
+        return run();
+      }).then(resolve, reject).finally(() => { activeCourseReads--; drainCourseReads(); });
+    });
+    drainCourseReads();
+  });
+}
 
 export function setApiAuthScope(scope: string): void {
   const normalized = scope || "anonymous";
   if (currentAuthScope !== normalized) {
     currentAuthScope = normalized;
+    authScopeEpoch++;
     clearApiCache();
   }
 }
 
 export function getApiAuthScope(): string {
   return currentAuthScope;
+}
+
+export function getApiAuthGeneration(): number {
+  return authScopeEpoch;
 }
 
 export function clearApiCache(): void {
@@ -153,6 +182,7 @@ function autoInvalidateOnMutation(path: string): void {
 }
 
 export async function fetchApiBlob(path: string, retriedAfterRefresh = false): Promise<Blob> {
+  const requestEpoch = authScopeEpoch;
   const headers = new Headers();
   const token = authToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
@@ -162,14 +192,19 @@ export async function fetchApiBlob(path: string, retriedAfterRefresh = false): P
   } catch (error) {
     throw new ApiClientError("NETWORK_ERROR", "Unable to reach the API", 0, { cause: error });
   }
+  if (requestEpoch !== authScopeEpoch) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
   if (!response.ok) {
-    if (response.status === 401 && !retriedAfterRefresh && !isAuthPath(path) && await refreshSession()) {
-      return fetchApiBlob(path, true);
+    if (response.status === 401 && !retriedAfterRefresh && !isAuthPath(path)) {
+      const refreshed = await refreshSession();
+      if (requestEpoch !== authScopeEpoch) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
+      if (refreshed) return fetchApiBlob(path, true);
     }
     if (response.status === 401) clearStaleSession(path);
     throw new ApiClientError(`HTTP_${response.status}`, `Request failed (${response.status})`, response.status);
   }
-  return response.blob();
+  const blob = await response.blob();
+  if (requestEpoch !== authScopeEpoch) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
+  return blob;
 }
 
 function csrfToken(): string | undefined {
@@ -205,6 +240,7 @@ async function refreshSession(): Promise<boolean> {
   // A refresh that just failed means the session is genuinely gone; do not
   // hammer the endpoint once per subsequent 401 (storm guard).
   if (Date.now() - lastFailedRefreshAt < 10_000) return false;
+  const refreshEpoch = authScopeEpoch;
   refreshInFlight = (async () => {
     const headers = new Headers();
     const csrf = csrfToken();
@@ -217,12 +253,14 @@ async function refreshSession(): Promise<boolean> {
         headers,
         credentials: "include",
       });
+      if (refreshEpoch !== authScopeEpoch) return false;
       if (!response.ok) {
         lastFailedRefreshAt = Date.now();
         return false;
       }
       try {
         const body = await response.json();
+        if (refreshEpoch !== authScopeEpoch) return false;
         if (body?.token && typeof localStorage !== "undefined") {
           localStorage.setItem("lms_session_token", body.token);
         }
@@ -243,6 +281,7 @@ async function refreshSession(): Promise<boolean> {
 }
 
 async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retriedAfterRefresh = false): Promise<T> {
+  const requestEpoch = authScopeEpoch;
   const timeoutMs = init.timeoutMs ?? 30_000;
   const requestInit = { ...init };
   delete requestInit.timeoutMs;
@@ -296,6 +335,7 @@ async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retrie
     if (timer !== undefined) window.clearTimeout(timer);
   }
 
+  if (requestEpoch !== authScopeEpoch) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
     let code = `HTTP_${response.status}`;
@@ -313,8 +353,11 @@ async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retrie
     } catch {
       // Keep status-derived error if the body is not JSON.
     }
-    if (response.status === 401 && !retriedAfterRefresh && !isAuthPath(path) && await refreshSession()) {
-      return executeRequest<T>(path, init, true);
+    if (requestEpoch !== authScopeEpoch) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
+    if (response.status === 401 && !retriedAfterRefresh && !isAuthPath(path)) {
+      const refreshed = await refreshSession();
+      if (requestEpoch !== authScopeEpoch) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
+      if (refreshed) return executeRequest<T>(path, init, true);
     }
     if (response.status === 401) clearStaleSession(path);
     throw new ApiClientError(code, message, response.status);
@@ -326,6 +369,7 @@ async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retrie
   }
   if (response.status === 204) return undefined as T;
   const json = (await response.json()) as T;
+  if (requestEpoch !== authScopeEpoch) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
   if (json && typeof json === "object" && "token" in json && typeof json.token === "string" && json.token) {
     if (typeof localStorage !== "undefined") {
       localStorage.setItem("lms_session_token", json.token);
@@ -347,6 +391,9 @@ export async function apiRequest<T>(path: string, init: ApiRequestInit = {}, ret
 
   const normalizedUrl = apiUrl(path);
   const cacheKey = init.cacheKey || `${method}:${normalizedUrl}${init.cookieOnly ? ':cookie-only' : ''}`;
+  const requestEpoch = authScopeEpoch;
+  const requestScope = currentAuthScope;
+  const inFlightKey = `${requestEpoch}:${cacheKey}`;
   const effectiveTtl = typeof init.cacheTtlMs === "number" ? init.cacheTtlMs : 15_000;
 
   // 1. Check client-side TTL cache
@@ -359,7 +406,7 @@ export async function apiRequest<T>(path: string, init: ApiRequestInit = {}, ret
 
   // 2. Check in-flight request deduplication
   if (!init.skipCache) {
-    const inFlight = inFlightRequests.get(cacheKey);
+    const inFlight = inFlightRequests.get(inFlightKey);
     if (inFlight) {
       if (init.signal) {
         if (init.signal.aborted) {
@@ -384,23 +431,26 @@ export async function apiRequest<T>(path: string, init: ApiRequestInit = {}, ret
   }
 
   // 3. Initiate new request and share its promise while in-flight
-  const requestPromise = executeRequest<T>(path, init, retriedAfterRefresh)
+  const execute = () => executeRequest<T>(path, init, retriedAfterRefresh);
+  const isCourseHydration = method === 'GET' && /^\/courses\/[^/?]+(?:\/assessments)?(?:\?|$)/.test(path);
+  const requestPromise = (isCourseHydration ? boundedCourseRead(execute, requestEpoch, init.signal) : execute())
     .then((result) => {
+      if (requestEpoch !== authScopeEpoch) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
       if (!init.skipCache && effectiveTtl > 0) {
         apiCache.set(cacheKey, {
           data: result,
           expiresAt: Date.now() + effectiveTtl,
-          authScope: currentAuthScope,
+          authScope: requestScope,
         });
       }
       return result;
     })
     .finally(() => {
-      inFlightRequests.delete(cacheKey);
+      if (inFlightRequests.get(inFlightKey) === requestPromise) inFlightRequests.delete(inFlightKey);
     });
 
   if (!init.skipCache) {
-    inFlightRequests.set(cacheKey, requestPromise);
+    inFlightRequests.set(inFlightKey, requestPromise);
   }
 
   return requestPromise;

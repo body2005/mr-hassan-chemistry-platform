@@ -22,6 +22,42 @@ from app.services import lesson_materials, platform_service, storage_cleanup
 from .live_helpers import BASE, clear_auth, container, lesson, pg_engine, session, wait_until
 
 
+def test_cleanup_removes_incomplete_multipart_but_preserves_prefix_neighbour(real_storage):
+    """A 404 HEAD is not proof that a failed SDK multipart left no bytes."""
+    engine, provider, item, _ = real_storage
+    key = f"lesson_videos/{item['id']}/{uuid.uuid4().hex}.webm"
+    neighbour = key + '.different-upload'
+    client = provider._get_client()
+    allocations = {}
+    try:
+        for name in (key, neighbour):
+            identity = client.create_multipart_upload(Bucket=provider.bucket_name, Key=name)['UploadId']
+            allocations[name] = identity
+            client.upload_part(Bucket=provider.bucket_name, Key=name, UploadId=identity,
+                               PartNumber=1, Body=b'QA incomplete upload\n' * (300_000))
+        assert not provider.exists(key)
+        with Session(engine) as db:
+            db.add(StorageCleanup(object_key=f's3://{provider.bucket_name}/{key}'))
+            db.commit()
+        storage_cleanup.drain_cleanup()
+        def uploads():
+            return {upload['Key'] for page in client.get_paginator('list_multipart_uploads').paginate(
+                Bucket=provider.bucket_name, Prefix=key) for upload in page.get('Uploads', [])}
+        remaining = uploads()
+        assert key not in remaining, 'Incomplete upload remained after its deletion intent was acknowledged'
+        assert neighbour in remaining, 'Prefix neighbour is a different live upload and must survive'
+        with Session(engine) as db:
+            assert not db.scalars(select(StorageCleanup).where(StorageCleanup.object_key == f's3://{provider.bucket_name}/{key}')).all()
+    finally:
+        from botocore.exceptions import ClientError
+        for name, identity in allocations.items():
+            try:
+                client.abort_multipart_upload(Bucket=provider.bucket_name, Key=name, UploadId=identity)
+            except ClientError as exc:
+                if exc.response['Error']['Code'] != 'NoSuchUpload':
+                    raise
+
+
 @pytest.fixture
 def real_storage(monkeypatch):
     engine = pg_engine()

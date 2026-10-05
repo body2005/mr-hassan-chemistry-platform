@@ -321,6 +321,31 @@ class S3StorageProvider(BaseStorageProvider):
         except Exception:
             return False
 
+    def abort_incomplete_uploads(self, storage_key: str) -> int:
+        """Abort allocations for an EXACT retired object, never a prefix sweep.
+
+        HEAD/DELETE do not remove multipart parts. SDK abort can itself fail
+        during an outage; the durable deletion outbox must retry this step.
+        Only call after a persisted deletion intent, not for a live upload.
+        """
+        from botocore.exceptions import ClientError
+        key = storage_key.removeprefix(f"s3://{self.bucket_name}/")
+        client = self._get_client()
+        aborted = 0
+        for page in client.get_paginator("list_multipart_uploads").paginate(Bucket=self.bucket_name, Prefix=key):
+            for upload in page.get("Uploads", []):
+                if upload["Key"] != key:
+                    continue
+                if aborted >= 100:
+                    raise RuntimeError("Multipart cleanup batch budget exhausted")
+                try:
+                    client.abort_multipart_upload(Bucket=self.bucket_name, Key=key, UploadId=upload["UploadId"])
+                except ClientError as exc:
+                    if str(exc.response.get("Error", {}).get("Code")) not in {"NoSuchUpload", "404"}:
+                        raise
+                aborted += 1
+        return aborted
+
     def generate_presigned_url(self, storage_key: str, expires_in: int = 300) -> str | None:
         """Generates a private, short-lived (default 5 minutes) signed URL for viewing/downloading."""
         client = self._get_client()

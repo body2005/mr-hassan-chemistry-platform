@@ -245,27 +245,6 @@ def is_text_garbled(text: str) -> bool:
 
 BIDI_CHARS_RE = re.compile(r'[\u200e\u200f\u202a-\u202e\u2066-\u2069]')
 
-OCR_ARABIC_CONFUSIONS = [
-    # Tesseract ara+eng glyph confusions inside Arabic context
-    (r'(^|[\u0600-\u06FF\s])of(?=[\u0600-\u06FF\s]|$)', r'\g<1>أو'),
-    (r'(^|[\u0600-\u06FF\s])ale(?=[\u0600-\u06FF\s]|$)', r'\g<1>علم'),
-    (r'(^|[\u0600-\u06FF\s])Jol(?=[\u0600-\u06FF\s]|$)', r'\g<1>أول'),
-    (r'(^|[\u0600-\u06FF\s])wi(?=[\u0600-\u06FF\s]|$)', r'\g<1>أو'),
-    (r'(^|[\u0600-\u06FF\s])to(?=[\u0600-\u06FF\s]|$)', r'\g<1>إلى'),
-    (r'(^|[\u0600-\u06FF\s])in(?=[\u0600-\u06FF\s]|$)', r'\g<1>في'),
-    (r'(^|[\u0600-\u06FF\s])and(?=[\u0600-\u06FF\s]|$)', r'\g<1>و'),
-    (r'(^|[\u0600-\u06FF\s])fae(?=[\u0600-\u06FF\s]|$)', r'\g<1>فهي'),
-    (r'(^|[\u0600-\u06FF\s])bol(?=[\u0600-\u06FF\s]|$)', r'\g<1>بل'),
-    (r'(^|[\u0600-\u06FF\s])Bale(?=[\u0600-\u06FF\s]|$)', r'\g<1>حادة'),
-    (r'(^|[\u0600-\u06FF\s])Cob(?=[\u0600-\u06FF\s]|$)', r'\g<1>فوق'),
-    (r'(^|[\u0600-\u06FF\s])dab Fi(?=[\u0600-\u06FF\s]|$)', r'\g<1>في هذا'),
-    (r'(^|[\u0600-\u06FF\s])أنحديد(?=[\u0600-\u06FF\s]|$)', r'\g<1>الحديد'),
-    (r'(^|[\u0600-\u06FF\s])انحديد(?=[\u0600-\u06FF\s]|$)', r'\g<1>الحديد'),
-    (r'(^|[\u0600-\u06FF\s])الأومنيوم(?=[\u0600-\u06FF\s]|$)', r'\g<1>الألومنيوم'),
-    (r'(^|[\u0600-\u06FF\s])أومنيوم(?=[\u0600-\u06FF\s]|$)', r'\g<1>ألومنيوم'),
-]
-
-
 def is_reversed_arabic_token(w: str) -> bool:
     w = w.strip('.,()!?[]:"\'')
     if not w or len(w) < 2:
@@ -419,23 +398,19 @@ def normalize_arabic_presentation_forms(text: str) -> str:
     # 4. Filter button leftovers (e.g. "btn-primary", "click here to submit", UI button leftovers)
     normalized = re.sub(r'\b(?:btn|btn-[a-z0-9_\-]+|button-text|submit-btn)\b', ' ', normalized, flags=re.IGNORECASE)
 
-    # 5. Fix common chemistry OCR and typographical errors
-    normalized = re.sub(r'\bالأومنيوم\b', 'الألومنيوم', normalized)
-    normalized = re.sub(r'\bأومنيوم\b', 'ألومنيوم', normalized)
-
     return normalized
 
 
 def clean_arabic_ocr_text(text: str) -> str:
-    """Cleans OCR artifacts, normalizes presentation forms, removes rogue Unicode BiDi isolation marks, and context-aware fixes for Tesseract confusions."""
+    """Normalize layout/Unicode without translating or guessing source words.
+
+    A Latin word near Arabic may be intentional bilingual content. Spelling
+    substitutions require visual evidence or an explicit teacher edit, not a
+    dictionary keyed only by surrounding language.
+    """
     if not text:
         return ""
     cleaned = normalize_arabic_presentation_forms(text)
-    # Only apply Arabic substitutions if text has an Arabic context to avoid corrupting English words (e.g. 'of', 'in', 'to')
-    has_arabic = bool(re.search(r'[\u0600-\u06FF]', cleaned))
-    if has_arabic:
-        for pat, rep in OCR_ARABIC_CONFUSIONS:
-            cleaned = re.sub(pat, rep, cleaned)
     cleaned = re.sub(r'[ \t]+', ' ', cleaned)
     return cleaned.strip()
 
@@ -463,7 +438,10 @@ def clean_chemical_formula_text(text: str) -> str:
     # 3. Mathematical and chemical operators
     s = s.replace(r"\cdot", "·").replace(r"\times", "×")
     s = s.replace(r"^\circ", "°").replace(r"\circ", "°")
-    s = re.sub(r"\\Delta\s*H\b|Delta\s*H\b|\\Delta\b", "ΔH", s)
+    # Render the symbol; do not turn entropy/temperature or a bare delta into
+    # enthalpy. Only the explicitly written H belongs in the result.
+    s = re.sub(r"\\Delta\s*H\b|Delta\s*H\b", "ΔH", s)
+    s = re.sub(r"\\Delta\b", "Δ", s)
     s = re.sub(r"\bquad\s*,\s*quad\b", ", ", s)
     s = re.sub(r"\bquad\b", " ", s)
     s = re.sub(r"\\[,;:]", " ", s)
@@ -1419,7 +1397,7 @@ def _assemble_rtl_lines_from_fitz(fitz_page: Any) -> list[str]:
     return out
 
 
-PARSER_OCR_VERSION = "v7-bounded-108dpi-source-placeholders"
+PARSER_OCR_VERSION = "v8-source-words-no-translation"
 _OCR_SEMAPHORE = threading.Semaphore(int(os.getenv("OCR_CONCURRENCY_LIMIT", "2")))
 
 

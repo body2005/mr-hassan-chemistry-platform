@@ -6,6 +6,7 @@ import {
   markBrowserSessionActive,
   isSessionKnownInvalid,
   setApiAuthScope,
+  getApiAuthGeneration,
   clearApiCache,
   invalidateApiCache,
   getCachedData,
@@ -922,7 +923,7 @@ function parseScheduleClock(value: string): string {
 // ============================================================================
 // 4. COURSES & ENROLLMENT SERVICE
 // ============================================================================
-let composedCoursesInFlight: Promise<Course[]> | null = null;
+let composedCoursesInFlight: { generation: number; promise: Promise<Course[]> } | null = null;
 
 async function validateAssessmentScope(payload: { course_id: string; title: string; lesson_id?: string; module_id?: string }) {
   if (payload.title.trim().length < 2 || payload.title.length > 200) {
@@ -939,10 +940,11 @@ async function validateAssessmentScope(payload: { course_id: string; title: stri
 export const courseService = {
   async getCourses(options?: { skipCache?: boolean }): Promise<Course[]> {
     const composedKey = "composed:/courses";
+    const generation = getApiAuthGeneration();
     if (!options?.skipCache) {
       const cached = getCachedData<Course[]>(composedKey);
       if (cached) return cached;
-      if (composedCoursesInFlight) return composedCoursesInFlight;
+      if (composedCoursesInFlight?.generation === generation) return composedCoursesInFlight.promise;
     }
 
     const fetchPromise = (async () => {
@@ -951,6 +953,7 @@ export const courseService = {
         skipCache: options?.skipCache,
       });
       const courses = Array.isArray(result.items) ? result.items.map(mapApiCourse) : [];
+      if (generation !== getApiAuthGeneration()) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
       setCachedData(composedKey, courses, 60_000);
 
       // Asynchronously enrich courses with assessments in the background without blocking the course list
@@ -963,17 +966,19 @@ export const courseService = {
           }
         }),
       ).then(() => {
-        setCachedData(composedKey, courses, 60_000);
+        // Rejected old-account requests must not repopulate a new account's
+        // separate composed cache through this background catch/then path.
+        if (generation === getApiAuthGeneration()) setCachedData(composedKey, courses, 60_000);
       });
 
       return courses;
     })();
 
-    composedCoursesInFlight = fetchPromise.finally(() => {
-      composedCoursesInFlight = null;
+    const shared: Promise<Course[]> = fetchPromise.finally(() => {
+      if (composedCoursesInFlight?.promise === shared) composedCoursesInFlight = null;
     });
-
-    return composedCoursesInFlight;
+    composedCoursesInFlight = { generation, promise: shared };
+    return shared;
   },
 
   getCachedCourses(): Course[] {

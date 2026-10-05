@@ -17,6 +17,8 @@ Set `$qaPython` to that Python executable. Do not put credentials in this file.
    synthetic IDs and private file hashes, not user content to publish.
 4. Run `./scripts/qa/run-video.ps1 -Stage Tests` for backend unit/security,
    missing-multipart recovery and publication/playback tests.
+   `-Stage Backend` runs the same backend/native/storage checks without the
+   overlapping focused browser subset when ALL Browser will be run afterwards.
 5. Run `./scripts/qa/run-video.ps1 -Stage Integration` for ALL live PostgreSQL,
    concurrency, storage transactions, SSE, byte-boundaries and fault cases.
 6. Set `$env:QA_PYTHON=$qaPython` and run
@@ -39,19 +41,44 @@ Set `$qaPython` to that Python executable. Do not put credentials in this file.
 10. With explicit approval to share image package/SBOM metadata, run
     `./scripts/qa/run-video.ps1 -Stage Scan -ApproveScout`. Nonzero is a real
     open security gate, not a reason to suppress CVEs.
+    The scan resolves the actual Compose container image ID and verifies its
+    project/service ownership. It does not assume a newly tagged build is the
+    running payload (BuildKit attestations can change the tag manifest).
 
 NEVER overlap Browser, Integration, Recovery, Load or restore. Their deliberate
 service failures and shared synthetic account counters would invalidate results.
+For the final handoff, repeat steps 7 and 8 after the storage drill returns the
+original configuration: final Extract/discovery/source proof must not be an
+earlier run from before a rebuild, recovery or restore exercise.
 The browser harness only isolates shared-IP login counters on allowlisted QA;
 it waits for real user rate windows and does not relax production limits.
 
 ## New regression evidence
 
-- `discovery.spec.ts`: assignment options/score/start, atomic failure and lost
+- `discovery.spec.ts`: OCR-source acknowledgement for BOTH quiz and assignment
+  publication (including reload and invalidation after a text edit), assignment
+  options/score/start, atomic failure and lost
   response, audience isolation, calendar outage/partial save retry, avatar
   reload/re-login, course selection and persisted binding, real profile data,
   printable Latin questions. Run the entire file, not only a passing selection.
 - `test_role_discovery_regressions.py`: direct API/DB checks of those contracts.
+- `test_extract_source_preservation.py`: preserve bilingual words and source
+  spellings, render delta without inventing an H, keep scientific glyphs intact.
+- `test_native_expat_security.py` and `python -m scripts.verify_native_expat`:
+  load the ACTUAL OS `libexpat.so.1`, not just Python's bundled Expat. Verify
+  malformed/valid UTF-16 in both byte orders. Stage Tests runs this on both API
+  and encoder. The native source builder additionally runs upstream make check.
+- `test_multipart_cleanup.py` and the real-storage case in
+  `tests/integration/test_storage_transactions.py`: an incomplete multipart
+  allocation has no HEAD object; cleanup must still abort its EXACT retired key,
+  leave a prefix neighbour alone, and retry permission/storage failures.
+- `requestStorm.test.ts`: maximum four concurrent course-content/assessment
+  reads, no blockage of identity/playback mutations, no cross-account in-flight
+  sharing, late cache/refresh/file response rejected after an account switch.
+- `hydration.spec.ts`: actual catalog requests and PostgreSQL responses,
+  measured request concurrency plus errors and a usable identity endpoint.
+  Seeds the synthetic student catalog to at least 20 enrollments when needed;
+  old large QA catalogs are not erased. Do not run against a user's project.
 - `test_audit_concurrency.py`: independent TCP requests released by a barrier
   and actual PostgreSQL row counts (including publication and submission).
 - `test_assignment_pdf_fonts.py`: glyph coverage and science text. Also run
@@ -60,9 +87,32 @@ it waits for real user rate windows and does not relax production limits.
 - `qa_extract_fidelity.py`: strict stem/type/ordered options/blank/formula
   comparison. A correct number of questions alone is NOT a pass.
 - `qa_ocr_candidate.py`, `qa_ocr_lines.py`, `qa_ocr_ensemble.py`,
-  `qa_ocr_words.py`: rejected candidate experiments. They override OCR ONLY
+  `qa_ocr_words.py`, `qa_ocr_native_crops.py`: rejected candidate experiments. They override OCR ONLY
   inside the QA process; they are not production fixes. The reference is read
   by the comparator, never used as runtime OCR input or a correction dictionary.
+
+`scripts/qa/ocr-render-scale.py` is another QA-only experiment. Run it with
+`PYTHONPATH=/srv` in qa-tests, mount the file read-only at
+`/qa-tools/ocr-render-scale.py`, and pass `--scale 2 --output /qa/ocr-raster.json`.
+It retains the runtime pixel/time budgets, compares ALL blind files, and uses a
+separate cache version. Higher DPI is not automatically better: the 144-DPI
+candidate lost two biology questions and was rejected. Do not promote this
+experiment or tune the comparator to accept it.
+
+`scripts/qa/ocr-native-page.py` is a separate rejected QA-only experiment:
+mount it read-only at `/qa-tools/ocr-native-page.py`, run with
+`PYTHONPATH=/srv` and `--output /qa/ocr-native-page.json`. It tries an embedded
+full-page image only when its bounds cover the PDF page, avoiding raster
+resampling; otherwise it uses the ordinary parser. All blind files remain in
+the comparison. The measured biology PDF lost two questions and matched only
+3/10, so this was NOT installed as a production OCR path.
+
+`scripts/qa/native-aligned-new.py` can be mounted read-only into each isolated
+image and run with Python (network not needed). It checks the actual Linux
+64-bit libstdc++ non-throwing aligned-new ABI: nine upstream overflow cases and
+one valid aligned allocation. This narrows CVE-2026-95619 reachability on this
+platform; it does not prove PBDS or every C++ path safe, repair the package, or
+waive the raw High scanner finding.
 
 Results are in ignored `.qa/audit2/`: JUnit XML, command exit JSON, SARIF, hash
 manifests and traces. Traces/cookies/logs/secrets must NOT be uploaded as-is.
