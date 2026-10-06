@@ -124,6 +124,11 @@ def seed() -> None:
     teacher_email = os.getenv("INITIAL_TEACHER_EMAIL", "").strip().lower()
     teacher_password = os.getenv("INITIAL_TEACHER_PASSWORD", "")
     demo_enabled = _env_flag("ENABLE_DEMO_ACCOUNTS")
+    if os.getenv("APP_ENV", "").strip().lower() == "production":
+        if demo_enabled or _env_flag("RESET_DEMO_PASSWORDS") or _env_flag("RESET_INITIAL_TEACHER_PASSWORD"):
+            raise RuntimeError("Production seeding must not create demo accounts or reset existing passwords")
+        if teacher_password and len(teacher_password) < 12:
+            raise RuntimeError("Production bootstrap requires a private password of at least 12 characters")
 
     with SessionLocal() as db:
         if teacher_email and teacher_password:

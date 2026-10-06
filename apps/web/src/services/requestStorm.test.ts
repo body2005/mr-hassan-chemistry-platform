@@ -25,6 +25,20 @@ function stubFetch(handler: (input: string, init?: RequestInit) => Response | Pr
 }
 
 describe("apiClient request discipline", () => {
+  it('never caches or coalesces solve GETs and invalidates results after submission', async () => {
+    let attempt = 0;
+    const calls = stubFetch(input => new Response(JSON.stringify(input.endsWith('/solve') ? { attempt: ++attempt } : { score: 1 }), { status: 200 }));
+    const { apiRequest } = await import('./apiClient');
+    const first = await apiRequest('/quizzes/q/solve');
+    await apiRequest('/quiz-attempts/a/result');
+    await apiRequest('/quiz-attempts/a/submit', { method: 'POST', body: '{}' });
+    const second = await apiRequest('/quizzes/q/solve');
+    expect(second).not.toEqual(first);
+    await Promise.all([apiRequest('/quizzes/q/solve'), apiRequest('/quizzes/q/solve')]);
+    expect(calls.filter(c => c.input.endsWith('/solve'))).toHaveLength(4);
+    await apiRequest('/quiz-attempts/a/result');
+    expect(calls.filter(c => c.input.endsWith('/result'))).toHaveLength(2);
+  });
   it('cancels queued catalog reads when logout begins, before waiting for server revocation', async () => {
     const releases: Array<() => void> = [];
     let finishLogout: () => void = () => {};

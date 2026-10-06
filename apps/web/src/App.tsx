@@ -414,6 +414,9 @@ function App() {
     try {
       const updated = await courseService.enrollCourse(courseId);
       setEnrolledCourseIds(updated);
+      const course = await courseService.getMappedCourseContent(courseId);
+      const assessments = await courseService.getCourseAssessmentRefs(courseId);
+      setCourses(existing => [...existing.filter(c => c.id !== courseId), { ...course, assessments }]);
     } catch (error) {
       if (error instanceof ApiClientError && error.status === 402) {
         // Whole-course checkout is no longer offered to students.  Send them
@@ -430,7 +433,6 @@ function App() {
       });
     }
   }
-  void handleEnrollCourse;
 
   function handleMarkNotificationRead(id: string) {
     void notificationService.markAsRead(id).then(setNotifications).catch(() => undefined);
@@ -662,6 +664,7 @@ function App() {
           {activeTab === "MyCourses" && currentUser.role === "student" && (
           <MyCoursesView
             enrolledCourses={enrolledCoursesList}
+            onEnrollCourse={handleEnrollCourse}
             onNavigateToCatalog={() => navigateToTab("Payments")}
             lang={lang}
             currentUser={currentUser}

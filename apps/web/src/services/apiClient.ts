@@ -165,6 +165,11 @@ export function invalidateApiCache(patternOrPrefix?: string | RegExp): void {
 
 function autoInvalidateOnMutation(path: string): void {
   const normalized = path.replace(/^\/api\/v1/, "");
+  if (normalized.startsWith('/quiz-attempts') || normalized.startsWith('/quizzes')) {
+    invalidateApiCache('/quizzes');
+    invalidateApiCache('/quiz-attempts');
+    invalidateApiCache('/courses');
+  }
   if (
     normalized.startsWith("/courses") ||
     normalized.startsWith("/quizzes") ||
@@ -406,6 +411,11 @@ export async function apiRequest<T>(path: string, init: ApiRequestInit = {}, ret
   }
   const method = (init.method || "GET").toUpperCase();
   const isSafeMethod = method === "GET" || method === "HEAD";
+  // Legacy solve GET starts a persisted attempt; it is not a cacheable or
+  // deduplicatable read. Enforce this centrally for every caller.
+  if (method === 'GET' && /^\/quizzes\/[^/?]+\/solve(?:[?]|$)/.test(path.replace(/^\/api\/v1/, ''))) {
+    init = { ...init, skipCache: true, cache: 'no-store' };
+  }
 
   // Mutations bypass cache, are never deduplicated, and invalidate related cache entries on completion
   if (!isSafeMethod) {

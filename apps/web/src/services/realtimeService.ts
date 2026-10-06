@@ -149,10 +149,6 @@ class RealTimeService {
       parsed = rawData;
     }
 
-    const detail = parsed !== null && typeof parsed === "object"
-      ? parsed as Record<string, unknown>
-      : {};
-
     // Invalidate caches and dispatch custom browser events
     switch (eventType) {
       case "notification_created":
@@ -203,13 +199,8 @@ class RealTimeService {
         invalidateApiCache("/payments/me/orders");
         invalidateApiCache("/payments/me/entitlements");
         window.dispatchEvent(new CustomEvent("lms_payment_updated", { detail: parsed }));
-        if (detail.product_type === "lesson" && detail.product_id) {
-          window.dispatchEvent(
-            new CustomEvent("lms_lesson_unlocked", {
-              detail: { lesson_id: detail.product_id, student_id: detail.student_id },
-            })
-          );
-        }
+        // Approval already emits lesson_access_approved. A review (including
+        // rejection) only refreshes authoritative access, never unlocks it.
         break;
 
       case "calendar_updated":

@@ -58,10 +58,10 @@ async function student(browser: Browser, grade = 'SECONDARY_1') {
     await context.close();
   } };
 }
-async function courseWithLesson(page: Page, suffix = '', grade = 'SECONDARY_1') {
+async function courseWithLesson(page: Page, suffix = '', grade = 'SECONDARY_1', price = 0) {
   const course = await post(page, 'courses', { code: `QAD-${crypto.randomUUID().slice(0, 8)}`, title: `QA discovery course ${suffix}`, grade_level: grade });
   const module = await post(page, `courses/${course.id}/modules`, { title: 'QA Unit', position: 1 });
-  const lesson = await post(page, `modules/${module.id}/lessons`, { title: `QA discovery lesson ${suffix}`, kind: 'article', position: 1, price_egp: 0 });
+  const lesson = await post(page, `modules/${module.id}/lessons`, { title: `QA discovery lesson ${suffix}`, kind: 'article', position: 1, price_egp: price });
   await post(page, `courses/${course.id}/publish`, {}, 200);
   return { course, lesson };
 }
@@ -85,6 +85,89 @@ async function publish(page: Page, kind: string) {
 }
 const mcq: DraftQuestion = { id: 'q1', question_text: 'Choose the mass unit.', question_type: 'multiple_choice', points: 7,
   options: [{ key: 'A', text: 'kilogram QA option', is_correct: true }, { key: 'B', text: 'second QA option', is_correct: false }] };
+
+test('new student discovers and enrolls a free course entirely from the catalog UI', async ({ page, browser }) => {
+  await teacher(page);
+  const { course } = await courseWithLesson(page, `catalog ${Date.now()}`);
+  const learner = await student(browser);
+  try {
+    const before = await (await learner.page.request.get(`${base}/api/v1/courses/me/enrollments`)).json();
+    expect(before).toHaveLength(0);
+    const card = learner.page.getByRole('region', { name: 'المقررات المجانية' }).locator('article').filter({ hasText: course.title });
+    await expect(card).toBeVisible();
+    const enrolled = learner.page.waitForResponse(r => r.request().method() === 'POST' && r.url().endsWith(`/courses/${course.id}/enroll`));
+    await card.getByRole('button', { name: 'التسجيل مجانًا', exact: true }).click();
+    expect((await enrolled).status()).toBe(200);
+    await expect(learner.page.getByText(`مقرر ${course.title}`, { exact: true })).toBeVisible();
+    const after = await (await learner.page.request.get(`${base}/api/v1/courses/me/enrollments`)).json();
+    expect(after.map((e: {course_id: string}) => e.course_id)).toEqual([course.id]);
+    await learner.page.screenshot({ path: test.info().outputPath('free-catalog-enrolled.png'), fullPage: true });
+  } finally { await learner.close(); }
+});
+
+test('rejected payment arrives over real SSE without unlocking the student lesson', async ({ page, browser }) => {
+  await teacher(page);
+  const { course, lesson } = await courseWithLesson(page, 'rejected payment', 'SECONDARY_1', 25);
+  const learner = await student(browser);
+  try {
+    await post(learner.page, `courses/${course.id}/enroll`, {}, 200);
+    await learner.page.reload();
+    await learner.page.evaluate(() => {
+      Object.assign(window, { qaReviewEvents: [], qaUnlockEvents: [] });
+      window.addEventListener('lms_payment_updated', e => (window as unknown as { qaReviewEvents: unknown[] }).qaReviewEvents.push((e as CustomEvent).detail));
+      window.addEventListener('lms_lesson_unlocked', e => (window as unknown as { qaUnlockEvents: unknown[] }).qaUnlockEvents.push((e as CustomEvent).detail));
+    });
+    const order = await post(learner.page, 'payments/orders', { product_type: 'lesson', product_id: lesson.id, payment_method: 'instapay' });
+    await post(page, `payments/orders/${order.id}/reject`, { note: 'QA rejected receipt' }, 200);
+    await expect.poll(() => learner.page.evaluate(id => (window as unknown as { qaReviewEvents: Array<{ id: string; status: string }> }).qaReviewEvents.some(e => e.id === id && e.status === 'rejected'), order.id)).toBe(true);
+    expect(await learner.page.evaluate(() => (window as unknown as { qaUnlockEvents: unknown[] }).qaUnlockEvents)).toEqual([]);
+    await expect(learner.page.getByText('تمت إتاحة الدرس بنجاح من المعلم!', { exact: true })).toHaveCount(0);
+    const access = await (await learner.page.request.get(`${base}/api/v1/payments/me/entitlements`)).json();
+    expect(access.filter((e: { resource_id: string }) => e.resource_id === lesson.id)).toHaveLength(0);
+    expect((await learner.page.request.post(`${base}/api/v1/lessons/${lesson.id}/video-token`, { headers: { 'X-CSRF-Token': (await learner.page.context().cookies()).find(c => c.name === 'matgar_csrf')?.value || '' } })).status()).toBe(403);
+  } finally { await learner.close(); }
+});
+
+test('immediate quiz practice uses a fresh PostgreSQL attempt without waiting for cache expiry', async ({ page, browser }) => {
+  await teacher(page);
+  const { course, lesson } = await courseWithLesson(page, 'immediate practice');
+  const record = await post(page, 'quizzes/publish-draft', { course_id: course.id, lesson_id: lesson.id,
+    title: `QA immediate practice ${Date.now()}`, attempts_allowed: 1, idempotency_key: crypto.randomUUID(),
+    questions: [{ prompt: mcq.question_text, question_type: 'mcq', options: ['kilogram QA option', 'second QA option'], correct_answer: 'kilogram QA option', points: 7 }] });
+  const learner = await student(browser);
+  try {
+    await post(learner.page, `courses/${course.id}/enroll`, {}, 200);
+    await learner.page.reload();
+    await learner.page.getByRole('button', { name: /الاختبارات/ }).first().click();
+    const solves: Array<{ attempt: { id: string; is_practice: boolean } }> = [];
+    learner.page.on('response', async r => { if (r.url().endsWith(`/quizzes/${record.id}/solve`) && r.status() === 200) solves.push(await r.json()); });
+    // Exercise the real component + apiClient; no fetch mocks or artificial wait.
+    await learner.page.getByRole('button', { name: 'بدء حل الاختبار', exact: true }).click();
+    await expect.poll(() => solves.length).toBe(1);
+    const firstStartedAt = Date.now();
+    await learner.page.getByText('kilogram QA option', { exact: true }).click();
+    const submitted = learner.page.waitForResponse(r => r.request().method() === 'POST' && r.url().endsWith(`/quiz-attempts/${solves[0].attempt.id}/submit`));
+    await learner.page.getByRole('button', { name: /تسليم الاختبار/ }).first().click();
+    await learner.page.getByRole('button', { name: /تأكيد.*تسليم|تسليم الآن/ }).click();
+    const firstResult = await submitted;
+    expect(firstResult.status()).toBe(200);
+    expect((await firstResult.json()).score).toBe(7);
+    await expect(learner.page.getByText('تم تسليم الاختبار وتصحيحه فورياً', { exact: true })).toBeVisible();
+    await learner.page.getByRole('button', { name: 'العودة إلى المقرر', exact: true }).click();
+    await learner.page.getByRole('button', { name: /امتحن نفسك|بدء حل الاختبار/ }).first().click();
+    await expect.poll(() => solves.length).toBe(2);
+    expect(solves[1].attempt.id).not.toBe(solves[0].attempt.id);
+    expect(solves[1].attempt.is_practice).toBe(true);
+    expect(Date.now() - firstStartedAt).toBeLessThan(15_000);
+    await learner.page.getByText('second QA option', { exact: true }).click();
+    const resubmitted = learner.page.waitForResponse(r => r.request().method() === 'POST' && r.url().endsWith(`/quiz-attempts/${solves[1].attempt.id}/submit`));
+    await learner.page.getByRole('button', { name: /تسليم الاختبار/ }).first().click();
+    await learner.page.getByRole('button', { name: /تأكيد.*تسليم|تسليم الآن/ }).click();
+    const secondResult = await resubmitted;
+    expect(secondResult.status()).toBe(200);
+    expect((await secondResult.json()).score).toBe(0);
+  } finally { await learner.close(); }
+});
 
 test('reviewed FILL_BLANK Extract question publishes through the teacher interface', async ({ page }) => {
   await teacher(page);

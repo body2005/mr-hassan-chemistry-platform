@@ -43,6 +43,7 @@ import { useToast } from "../components/ToastProvider";
 import { FormulaRenderer } from "../components/FormulaRenderer";
 import { PaymentTarget, lessonAccessService } from "../services/paymentService";
 import { VideoLessonPage } from "../components/VideoLessonPage";
+import { FreeCourseCatalog } from "../components/FreeCourseCatalog";
 
 export interface DisplayBookItem extends EducationalBookItem {
   fileUrl?: string;
@@ -125,6 +126,7 @@ export interface CourseQuiz {
 
 interface MyCoursesViewProps {
   enrolledCourses: Course[];
+  onEnrollCourse?: (courseId: string) => Promise<void>;
   onNavigateToCatalog: () => void;
   lang: Language;
   currentUser?: CurrentUser;
@@ -144,6 +146,7 @@ interface MyCoursesViewProps {
 
 export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   enrolledCourses,
+  onEnrollCourse,
   onNavigateToCatalog,
   lang,
   currentUser,
@@ -179,6 +182,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   });
 
   const [selectedCourseId, setSelectedCourseId] = useState("");
+  const [catalogOpen, setCatalogOpen] = useState(false);
+  const freeCatalog = onEnrollCourse && <FreeCourseCatalog year={studentYear} enrolledIds={enrolledCourses.map(c => c.id)}
+    onEnroll={async id => { await onEnrollCourse(id); setSelectedCourseId(id); }} />;
 
   const activeCourse =
     validEnrolledCourses.find((c) => c.id === selectedCourseId) || validEnrolledCourses[0];
@@ -195,21 +201,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   // Track purchased revision IDs
   const [purchasedRevisionIds] = useState<string[]>([]);
 
-  const [localPurchasedIds, setLocalPurchasedIds] = useState<Set<string>>(
-    () => new Set(purchasedLessonIds)
-  );
+  const localPurchasedIds = new Set(purchasedLessonIds);
   const [pendingRequestLessonIds, setPendingRequestLessonIds] = useState<Set<string>>(new Set());
   const [requestingLessonId, setRequestingLessonId] = useState<string | null>(null);
-
-  useEffect(() => {
-    setLocalPurchasedIds((prev) => {
-      const next = new Set(prev);
-      for (const id of purchasedLessonIds) {
-        next.add(id);
-      }
-      return next;
-    });
-  }, [purchasedLessonIds]);
 
   // Load existing pending requests for this student and listen for live unlock
   useEffect(() => {
@@ -226,7 +220,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       const detail = (e as CustomEvent).detail;
       const unlockedId = detail?.lesson_id || detail?.resource_id;
       if (unlockedId) {
-        setLocalPurchasedIds((prev) => new Set([...prev, unlockedId]));
+        // SSE is a hint. Access is replaced only by the server entitlements
+        // supplied by App, not by locally accumulated event IDs.
         setPendingRequestLessonIds((prev) => {
           const next = new Set(prev);
           next.delete(unlockedId);
@@ -620,7 +615,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         quiz: { id: string; title: string; duration_seconds: number | null; total_points: number };
         attempt: { id: string; attempt_number: number; started_at: string | null; expires_at: string | null } | null;
         questions: Array<Omit<ServerQuizSolve["questions"][number], "options"> & { options: unknown }>;
-      }>(`/quizzes/${assessment.id}/solve`);
+      }>(`/quizzes/${assessment.id}/solve`, { skipCache: true });
       setServerQuiz({
         quizId: data.quiz.id,
         title: data.quiz.title,
@@ -1022,6 +1017,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   if (validEnrolledCourses.length === 0) {
     return (
       <div className="page-container">
+        {freeCatalog}
         <div style={{ textAlign: "center", padding: "80px 20px", background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "16px" }}>
           <BookOpen size={48} style={{ color: "var(--text-light)", margin: "0 auto 16px" }} />
           <h2 style={{ margin: "0 0 8px", fontSize: "20px", color: "var(--text-main)" }}>فارغ</h2>
@@ -1108,6 +1104,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   return (
     <div className="page-container">
+      <button className="btn-secondary" onClick={() => setCatalogOpen(prev => !prev)}>{catalogOpen ? 'إغلاق المقررات المتاحة' : 'استعراض المقررات المجانية'}</button>
+      {catalogOpen && freeCatalog}
       {/* Top Urgent Counter */}
       <div className="urgency-banner" style={{ marginBottom: "20px" }}>
         <div className="urgency-counter">

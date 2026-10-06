@@ -1,4 +1,5 @@
 import importlib.util
+import pytest
 from pathlib import Path
 
 from app.core.security import hash_password, verify_password
@@ -13,6 +14,22 @@ def _seed_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("flag", ["ENABLE_DEMO_ACCOUNTS", "RESET_DEMO_PASSWORDS", "RESET_INITIAL_TEACHER_PASSWORD"])
+def test_production_seed_rejects_demo_and_password_reset(db, monkeypatch, flag):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv(flag, "true")
+    with pytest.raises(RuntimeError, match="Production seeding"):
+        _seed_module().seed()
+    assert db.query(User).count() == 0
+
+
+def test_production_seed_rejects_published_short_password(db, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("INITIAL_TEACHER_PASSWORD", "admin")
+    with pytest.raises(RuntimeError, match="private password"):
+        _seed_module().seed()
 
 
 def test_seed_reconciles_email_by_username_without_resetting_password(db):

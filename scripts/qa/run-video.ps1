@@ -77,7 +77,7 @@ if ($Stage -in @('Backend','Tests','All')) {
     foreach ($nativeService in @('api','video-worker')) {
         Invoke-Step "native Expat UTF-16 security regression ($nativeService)" $Docker ($compose + @('exec','-T',$nativeService,'python','-m','scripts.verify_native_expat'))
     }
-    Invoke-Step 'API unit and protection tests' $Docker ($compose + @('run','--rm','--no-deps','-e','STORAGE_DIR=/tmp/qa-storage','qa-tests','python','-m','pytest','tests','--ignore=tests/integration','-q','--junitxml=/qa/api-unit-video.xml'))
+    Invoke-Step 'API unit and protection tests' $Docker ($compose + @('run','--rm','--no-deps','-v',"${taskRoot}/render.yaml:/qa-tools/render.yaml:ro",'-e','STORAGE_DIR=/tmp/qa-storage','qa-tests','python','-m','pytest','tests','--ignore=tests/integration','-q',"--junitxml=/qa/api-unit-video-$runId.xml"))
     Invoke-Step 'real PostgreSQL/S3 missing multipart recovery' $Docker ($compose + @('run','--rm','--no-deps','-e','PYTHONPATH=/srv','-v',"${taskRoot}/infra/qa:/qa-tools:ro",'qa-tests','python','/qa-tools/test-lost-multipart.py'))
 }
 if ($Stage -in @('Tests','Browser','All')) {

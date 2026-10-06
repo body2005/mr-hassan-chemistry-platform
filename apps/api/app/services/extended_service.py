@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 UTC = timezone.utc
 
-from app.models.course import Course, CourseModule, Enrollment, Lesson
+from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus, Lesson
 from app.models.extended import (
     Grade,
     LearningObjective,
@@ -148,6 +148,8 @@ def create_question_versioned(
     explanation: str | None = None,
 ) -> QuestionVersion:
     _ensure_manager(user)
+    if course_id is not None:
+        _managed_course(db, user, course_id)
     question = Question(
         institution_id=user.institution_id,
         author_id=user.id,
@@ -206,6 +208,7 @@ def update_question_versioned(
     if question is None:
         raise LookupError("Question not found")
     _ensure_manager(user)
+    _ensure_question_manager(db, user, question)
 
     material_fields = {"prompt", "options", "correct_answer", "points", "question_type"}
     material_change = any(field in changes for field in material_fields)
@@ -251,6 +254,7 @@ def update_question_versioned(
 def list_question_versions(
     db: Session, user: User, question_id: uuid.UUID
 ) -> list[QuestionVersion]:
+    _ensure_manager(user)
     question = db.scalar(
         select(Question).where(
             Question.id == question_id,
@@ -259,6 +263,7 @@ def list_question_versions(
     )
     if question is None:
         raise LookupError("Question not found")
+    _ensure_question_manager(db, user, question)
     return list(
         db.scalars(
             select(QuestionVersion)
@@ -284,11 +289,45 @@ def record_grade(
     max_score: float,
     feedback: str | None,
 ) -> Grade:
-    if actor.role == UserRole.STUDENT:
-        raise PermissionError("Students cannot write grades")
+    _ensure_manager(actor)
+    # Lock an existing parent, not only the grade: the first grade has no row
+    # to lock. All updates for this student serialize across API workers.
+    student = db.scalar(select(User).where(
+        User.id == student_id, User.institution_id == actor.institution_id,
+        User.role == UserRole.STUDENT, User.deleted_at.is_(None),
+    ).with_for_update())
+    if student is None:
+        raise LookupError("Student not found")
+    if item_type not in {"course", "quiz", "assignment"}:
+        raise ValueError("Unsupported grade item type")
+    if not (0 <= score <= max_score and max_score > 0):
+        raise ValueError("Score must be between zero and maximum score")
+    if item_type in {"quiz", "assignment"}:
+        model = Quiz if item_type == "quiz" else Assignment
+        item = db.get(model, item_id) if item_id else None
+        if item is None or item.institution_id != actor.institution_id:
+            raise LookupError("Assessment not found")
+        if course_id is not None and course_id != item.course_id:
+            raise ValueError("Assessment does not belong to the supplied course")
+        course_id = item.course_id
+    elif item_id is not None:
+        if course_id is not None and item_id != course_id:
+            raise ValueError("Course grade item does not match course")
+        course_id = item_id
+    if course_id is not None:
+        _managed_course(db, actor, course_id)
+        if db.scalar(select(Enrollment.id).where(
+            Enrollment.student_id == student_id, Enrollment.course_id == course_id,
+            Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+        )) is None:
+            raise LookupError("Student enrollment not found")
+    elif actor.role == UserRole.TEACHER:
+        raise PermissionError("Teachers can only grade their own course enrollments")
     existing = db.scalar(
         select(Grade).where(
+            Grade.institution_id == actor.institution_id,
             Grade.student_id == student_id,
+            Grade.course_id == course_id,
             Grade.item_type == item_type,
             Grade.item_id == item_id,
             Grade.is_current.is_(True),
@@ -299,6 +338,8 @@ def record_grade(
         existing.is_current = False
         existing.updated_at = now
         db.add(existing)
+        # Retire the old row before inserting under the current-only index.
+        db.flush()
     grade = Grade(
         institution_id=actor.institution_id,
         student_id=student_id,
@@ -357,11 +398,19 @@ def create_report_job(
         raise ValueError("Unsupported report kind")
     if fmt not in {"xlsx", "pdf"}:
         raise ValueError("Unsupported report format")
+    _ensure_manager(user)
+    # Serializes first-use as well as replay; the composite DB constraint is
+    # a second line of defence, not a replacement for payload validation.
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
     if idempotency_key:
         existing = db.scalar(
-            select(ReportJob).where(ReportJob.idempotency_key == idempotency_key)
+            select(ReportJob).where(ReportJob.idempotency_key == idempotency_key,
+                                   ReportJob.institution_id == user.institution_id,
+                                   ReportJob.requested_by == user.id)
         )
         if existing is not None:
+            if (existing.report_kind, existing.params_json, existing.format) != (report_kind, params, fmt):
+                raise ValueError("IDEMPOTENCY_KEY_REUSED")
             return existing
     job = ReportJob(
         institution_id=user.institution_id,
@@ -379,10 +428,12 @@ def create_report_job(
 
 
 def get_report_job(db: Session, user: User, job_id: uuid.UUID) -> ReportJob:
+    _ensure_manager(user)
     job = db.scalar(
         select(ReportJob).where(
             ReportJob.id == job_id,
             ReportJob.institution_id == user.institution_id,
+            ReportJob.requested_by == user.id,
         )
     )
     if job is None:
@@ -443,3 +494,20 @@ def compute_student_mastery(db: Session, user: User, student_id: uuid.UUID) -> l
 def _ensure_manager(user: User) -> None:
     if user.role not in {UserRole.TEACHER, UserRole.INSTITUTION_ADMIN, UserRole.PLATFORM_ADMIN}:
         raise PermissionError("Insufficient permissions")
+
+
+def _managed_course(db: Session, user: User, course_id: uuid.UUID) -> Course:
+    course = db.get(Course, course_id)
+    if (course is None or course.institution_id != user.institution_id
+            or (user.role == UserRole.TEACHER and course.teacher_id != user.id)):
+        raise LookupError("Course not found")
+    return course
+
+
+def _ensure_question_manager(db: Session, user: User, question: Question) -> None:
+    if user.role != UserRole.TEACHER:
+        return  # staff role and tenant were checked by the caller
+    if question.course_id is not None:
+        _managed_course(db, user, question.course_id)
+    elif question.author_id != user.id:
+        raise LookupError("Question not found")

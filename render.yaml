@@ -10,7 +10,7 @@ services:
 
   - type: web
     name: chemistry-platform-api
-    branch: fix/unified-p1
+    branch: fix/queen-p0-handoff
     runtime: docker
     dockerfilePath: infra/Dockerfile.api
     dockerContext: apps/api
@@ -43,8 +43,7 @@ services:
       - key: INITIAL_TEACHER_USERNAME
         value: hassan_teacher
       - key: INITIAL_TEACHER_PASSWORD
-        # Test-only fixed credential requested for the initial teacher account.
-        value: admin
+        sync: false
       # Keep this off in production: the seed must never reset the password
       # of an existing account, otherwise every deploy silently reverts
       # operator password changes back to the fixed seed credential.
@@ -53,23 +52,19 @@ services:
       - key: INITIAL_TEACHER_NAME
         value: "مستر حسن شعبان"
       - key: ENABLE_DEMO_ACCOUNTS
-        value: "true"
-      - key: DEMO_INSTITUTION_SLUG
-        value: demo
-      - key: DEMO_TEACHER_EMAIL
-        value: teacher@demo.com
-      - key: DEMO_TEACHER_PASSWORD
-        # Test-only fixed credential for teacher@demo.com.
-        value: admin
-      # Fixed test accounts: student01@demo.com through student10@demo.com.
-      # Their common password is supplied only through the secret below.
-      - key: DEMO_STUDENT_PASSWORD
-        # Test-only fixed credential for student01 through student10.
-        value: admin
-      # Optional manual reset flag. Without it, rerunning the seed does not
-      # rotate existing demo passwords.
+        value: "false"
       - key: RESET_DEMO_PASSWORDS
-        value: "true"
+        value: "false"
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM_EMAIL
+        sync: false
+      - key: SMTP_PORT
+        value: "465"
       - key: DB_POOL_SIZE
         value: "5"
       - key: DB_MAX_OVERFLOW
@@ -123,11 +118,11 @@ services:
           property: connectionString
       - key: USE_CELERY_INGESTION
         value: "true"
-    autoDeploy: true
+    autoDeployTrigger: "off"
 
   - type: worker
     name: chemistry-platform-worker
-    branch: fix/unified-p1
+    branch: fix/queen-p0-handoff
     runtime: docker
     dockerfilePath: infra/Dockerfile.api
     dockerContext: apps/api
@@ -144,6 +139,25 @@ services:
         fromDatabase:
           name: chemistry-platform-db
           property: connectionString
+      # Settings validates these in every production process, including workers.
+      - key: FRONTEND_ORIGINS
+        fromService: {type: web, name: chemistry-platform-api, envVarKey: FRONTEND_ORIGINS}
+      - key: SMTP_HOST
+        fromService: {type: web, name: chemistry-platform-api, envVarKey: SMTP_HOST}
+      - key: SMTP_USER
+        fromService: {type: web, name: chemistry-platform-api, envVarKey: SMTP_USER}
+      - key: SMTP_PASSWORD
+        fromService: {type: web, name: chemistry-platform-api, envVarKey: SMTP_PASSWORD}
+      - key: SMTP_FROM_EMAIL
+        fromService: {type: web, name: chemistry-platform-api, envVarKey: SMTP_FROM_EMAIL}
+      - key: SMTP_PORT
+        value: "465"
+      - key: PAYMENT_INSTAPAY_ACCOUNT
+        fromService: {type: web, name: chemistry-platform-api, envVarKey: PAYMENT_INSTAPAY_ACCOUNT}
+      - key: PAYMENT_VODAFONE_CASH_NUMBER
+        fromService: {type: web, name: chemistry-platform-api, envVarKey: PAYMENT_VODAFONE_CASH_NUMBER}
+      - key: PAYMENT_BANK_DETAILS
+        fromService: {type: web, name: chemistry-platform-api, envVarKey: PAYMENT_BANK_DETAILS}
       - key: REDIS_URL
         fromService:
           type: keyvalue
@@ -175,7 +189,7 @@ services:
         sync: false
       - key: GROQ_API_KEY
         sync: false
-    autoDeploy: true
+    autoDeployTrigger: "off"
 
 databases:
   - name: chemistry-platform-db

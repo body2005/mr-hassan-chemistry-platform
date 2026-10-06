@@ -949,6 +949,10 @@ async function validateAssessmentScope(payload: { course_id: string; title: stri
 }
 
 export const courseService = {
+  async getCatalogPage(page: number): Promise<{ courses: Course[]; pages: number }> {
+    const result = await apiRequest<{ items: ApiCourse[]; pagination: { pages: number } }>(`/courses?page=${page}&page_size=100`);
+    return { courses: result.items.map(mapApiCourse), pages: result.pagination.pages };
+  },
   async getCourses(options?: { skipCache?: boolean }): Promise<Course[]> {
     const composedKey = "composed:/courses";
     const generation = getApiAuthGeneration();

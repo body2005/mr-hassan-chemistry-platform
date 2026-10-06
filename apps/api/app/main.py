@@ -32,7 +32,9 @@ async def lifespan(_: FastAPI):
     from app.services.storage_cleanup import cleanup_loop
     from app.core.events import event_broker
     await event_broker.start()
-    cleanup_task = asyncio.create_task(cleanup_loop()) if settings.app_env == "production" else None
+    # Every persistent runtime can enqueue deletion intents. TestClient unit
+    # databases alone opt out; production_like must not accumulate dead jobs.
+    cleanup_task = asyncio.create_task(cleanup_loop()) if settings.app_env.lower() != "test" else None
     try:
         yield
     finally:

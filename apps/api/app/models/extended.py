@@ -31,6 +31,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    cast,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -154,9 +155,6 @@ class Grade(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     with is_current=False for full history."""
 
     __tablename__ = "grades"
-    __table_args__ = (
-        Index("ix_grades_current", "student_id", "item_type", "item_id", unique=True),
-    )
 
     institution_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=False
@@ -174,6 +172,13 @@ class Grade(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     feedback: Mapped[str | None] = mapped_column(Text)
     graded_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    __table_args__ = (
+        Index("ix_grades_current", institution_id, student_id,
+              func.coalesce(cast(course_id, String(36)), "none"), item_type,
+              func.coalesce(cast(item_id, String(36)), "none"), unique=True,
+              postgresql_where=is_current.is_(True), sqlite_where=is_current.is_(True)),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +272,8 @@ class StudentMastery(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class ReportJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "report_jobs"
+    __table_args__ = (UniqueConstraint("institution_id", "requested_by", "idempotency_key",
+                                     name="uq_report_requester_key"),)
 
     institution_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=False
@@ -276,7 +283,7 @@ class ReportJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     report_kind: Mapped[str] = mapped_column(String(60), nullable=False)  # student|class|course|performance|risk
     params_json: Mapped[dict | list | None] = mapped_column(JSON)
-    idempotency_key: Mapped[str | None] = mapped_column(String(100), unique=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(20), default="queued", nullable=False)
     format: Mapped[str] = mapped_column(String(10), default="xlsx", nullable=False)
     object_key: Mapped[str | None] = mapped_column(String(512))
