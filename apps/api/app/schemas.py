@@ -154,7 +154,6 @@ class AuthResponse(BaseModel):
     user: PrivateUserResponse
     expires_in: int
     expires_at: datetime
-    token: str | None = None
 
 
 class ChangePasswordRequest(BaseModel):

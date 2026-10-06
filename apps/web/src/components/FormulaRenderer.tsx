@@ -113,11 +113,14 @@ function renderKatexHtml(latex: string, displayMode: boolean): string {
     return katex.renderToString(clean, {
       displayMode,
       throwOnError: false,
+      trust: false,
       output: "html",
     });
   } catch {
     // If KaTeX rendering fails, return clean text without $ or $$ delimiters
-    return latex.replace(/[$]/g, "").replace(/\\/g, "");
+    return latex.replace(/[$]/g, "").replace(/\\/g, "")
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 }
 

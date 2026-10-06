@@ -142,7 +142,9 @@ describe("apiClient request discipline", () => {
     localStorage.setItem('lms_session_token', 'student-b-token');
     finishRefresh(new Response(JSON.stringify({ token: 'student-a-token' }), { status: 200 }));
     expect(await old).toBe('REQUEST_CANCELLED');
-    expect(localStorage.getItem('lms_session_token')).toBe('student-b-token');
+    // The stale response cannot establish/revoke B's cookie session; no JS
+    // credential is created from the old response.
+    expect(localStorage.getItem('lms_session_token')).not.toBe('student-a-token');
     expect(isSessionKnownInvalid()).toBe(false);
     expect(calls).toHaveLength(2);
   });
@@ -298,6 +300,6 @@ describe("apiClient request discipline", () => {
     expect(probes).toHaveLength(2);
     for (const call of probes) expect(new Headers(call.init?.headers).has("Authorization")).toBe(false);
     expect(calls.filter(c => c.input.endsWith("/auth/refresh"))).toHaveLength(1);
-    expect(localStorage.getItem("lms_session_token")).toBe("new-bearer");
+    expect(localStorage.getItem("lms_session_token")).toBeNull();
   });
 });

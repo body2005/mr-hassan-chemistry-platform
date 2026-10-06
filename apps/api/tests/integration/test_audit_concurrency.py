@@ -126,12 +126,12 @@ def test_concurrent_refresh_issues_persisted_reusable_cookies():
         statuses = [response.status_code for _, response in responses]
         assert statuses == [200, 200], statuses
         for client, response in responses:
-            client.headers['Authorization'] = 'Bearer ' + response.json()['token']
+            assert 'token' not in response.json()
             client.headers['X-CSRF-Token'] = client.cookies.get('matgar_csrf')
             refreshed = client.post(BASE + '/auth/refresh', timeout=15)
             status = refreshed.status_code
             assert status == 200, status
-            client.headers['Authorization'] = 'Bearer ' + refreshed.json()['token']
+            assert 'token' not in refreshed.json()
             assert client.get(BASE + '/auth/me', timeout=15).status_code == 200
             client.close()
 

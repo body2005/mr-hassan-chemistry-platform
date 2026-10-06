@@ -9,6 +9,7 @@ COPY scripts/build_native_ffmpeg.sh /build/build_native_ffmpeg.sh
 RUN sh /build/build_native_ffmpeg.sh
 
 FROM ${API_VIDEO_IMAGE}
+USER 0:0
 COPY --from=encoder-build /build/ffmpeg.deb /tmp/ffmpeg.deb
 RUN apt-get update && apt-get install -y --no-install-recommends libx264-164 \
     && dpkg -i /tmp/ffmpeg.deb && rm /tmp/ffmpeg.deb \

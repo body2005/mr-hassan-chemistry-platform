@@ -123,6 +123,30 @@ def can_access_lesson_content(db: Session, user: User, lesson_id: uuid.UUID) -> 
     return float(course.price_egp or 0) == 0 and float(lesson.price_egp or 0) == 0
 
 
+def accessible_course_lesson_ids(db: Session, user: User, course: Course,
+                                lessons: list[Lesson], *, enrolled: bool) -> set[uuid.UUID]:
+    """Batch equivalent of the single-lesson policy for course-scoped rows."""
+    if course.institution_id != user.institution_id:
+        return set()
+    if user.role in {UserRole.INSTITUTION_ADMIN, UserRole.PLATFORM_ADMIN} or (
+        user.role == UserRole.TEACHER and course.teacher_id == user.id
+    ):
+        return {lesson.id for lesson in lessons}
+    if user.role != UserRole.STUDENT or not enrolled:
+        return set()
+    entitlements = db.scalars(select(StudentEntitlement).where(
+        StudentEntitlement.institution_id == user.institution_id,
+        StudentEntitlement.student_id == user.id,
+        StudentEntitlement.revoked_at.is_(None),
+        StudentEntitlement.entitlement_type.in_([EntitlementType.COURSE, EntitlementType.LESSON]),
+    )).all()
+    active = {(row.entitlement_type, row.resource_id) for row in entitlements if is_entitlement_active(row)}
+    course_access = (EntitlementType.COURSE, course.id) in active
+    return {lesson.id for lesson in lessons if course_access
+            or (EntitlementType.LESSON, lesson.id) in active
+            or (float(course.price_egp or 0) == 0 and float(lesson.price_egp or 0) == 0)}
+
+
 def resolve_product(
     db: Session,
     student: User,

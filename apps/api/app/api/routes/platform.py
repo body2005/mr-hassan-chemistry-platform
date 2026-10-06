@@ -1592,6 +1592,9 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
     if course is None or course.institution_id != user.institution_id:
         raise HTTPException(status_code=404, detail="Course not found")
 
+    if user.role == UserRole.TEACHER and course.teacher_id != user.id:
+        raise HTTPException(status_code=404, detail="Course not found")
+
     enrolled = db.scalar(
         select(Enrollment.id).where(
             Enrollment.course_id == course_id,
@@ -1599,23 +1602,13 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
             Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
         )
     )
-    modules = list(
-        db.scalars(
-            select(CourseModule)
-            .where(CourseModule.course_id == course_id)
-            .order_by(CourseModule.position)
-        ).all()
-    )
-    for module in modules:
-        for lesson in db.scalars(
-            select(Lesson).where(Lesson.module_id == module.id).order_by(Lesson.position)
-        ).all():
-            lesson_ids.append(lesson.id)
-            lesson_titles[lesson.id] = lesson.title
-            if user.role != UserRole.STUDENT:
-                accessible_lessons.add(lesson.id)
-            elif enrolled and can_access_lesson_content(db, user, lesson.id):
-                accessible_lessons.add(lesson.id)
+    lessons = list(db.scalars(select(Lesson).join(CourseModule, Lesson.module_id == CourseModule.id)
+        .where(CourseModule.course_id == course_id)
+        .order_by(CourseModule.position, CourseModule.id, Lesson.position, Lesson.id)).all())
+    from app.services.payment_service import accessible_course_lesson_ids
+    accessible_lessons = accessible_course_lesson_ids(db, user, course, lessons, enrolled=enrolled is not None)
+    lesson_ids = [lesson.id for lesson in lessons]
+    lesson_titles = {lesson.id: lesson.title for lesson in lessons}
 
     quizzes = list(
         db.scalars(
@@ -1640,18 +1633,14 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
         ).all()
     )
 
+    attempt_counts = dict(db.execute(select(QuizAttempt.quiz_id, func.count(QuizAttempt.id))
+        .join(Quiz, Quiz.id == QuizAttempt.quiz_id)
+        .where(Quiz.course_id == course_id, Quiz.institution_id == user.institution_id,
+               QuizAttempt.student_id == user.id, QuizAttempt.is_practice.is_(False))
+        .group_by(QuizAttempt.quiz_id)).all()) if user.role == UserRole.STUDENT else {}
+    course_access = user.role != UserRole.STUDENT or enrolled is not None
+
     def quiz_item(q: Quiz) -> dict:
-        attempts_used = (
-            db.scalar(
-                select(func.count(QuizAttempt.id)).where(
-                    QuizAttempt.quiz_id == q.id,
-                    QuizAttempt.student_id == user.id,
-                    QuizAttempt.is_practice.is_(False),
-                )
-            )
-            if user.role == UserRole.STUDENT
-            else 0
-        )
         return {
             "id": str(q.id),
             "kind": "quiz",
@@ -1663,9 +1652,9 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
             "starts_at": q.starts_at.isoformat() if q.starts_at else None,
             "ends_at": q.ends_at.isoformat() if q.ends_at else None,
             "attempts_allowed": q.attempts_allowed,
-            "attempts_used": attempts_used,
+            "attempts_used": attempt_counts.get(q.id, 0),
             # Unscoped quizzes fall back to: any enrolled student can try.
-            "accessible": q.lesson_id is None or q.lesson_id in accessible_lessons,
+            "accessible": course_access and (q.lesson_id is None or q.lesson_id in accessible_lessons),
         }
 
     def assignment_item(a: Assignment) -> dict:
@@ -1678,7 +1667,7 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
             "lesson_id": str(a.lesson_id) if a.lesson_id else None,
             "due_at": a.due_at.isoformat() if a.due_at else None,
             "max_score": float(a.max_score or 0),
-            "accessible": a.lesson_id is None or a.lesson_id in accessible_lessons,
+            "accessible": course_access and (a.lesson_id is None or a.lesson_id in accessible_lessons),
         }
 
     return {
@@ -2570,6 +2559,13 @@ def get_bootstrap_data(
         "default_institution_slug": settings.default_institution_slug,
     }
     if user is None:
+        # The access cookie can expire before its path-scoped refresh cookie.
+        # A surviving CSRF cookie is only a hint to re-probe/refresh, NEVER
+        # proof of identity. Do not race renewal by returning guest success.
+        if (request.cookies.get(settings.session_cookie_name)
+                or request.cookies.get(settings.csrf_cookie_name)
+                or request.headers.get('Authorization')):
+            raise HTTPException(status_code=401, detail='Invalid or expired session')
         return BootstrapResponse(
             authenticated=False,
             user=None,

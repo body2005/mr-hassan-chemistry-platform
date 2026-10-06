@@ -16,12 +16,14 @@ class LiveSession(requests.Session):
     def close(self):
         # Closing the TCP session is NOT logging out. Clean up through the
         # actual API so repeated drills do not consume video-device slots.
-        if self.headers.get("Authorization"):
+        if self.cookies.get('matgar_session'):
             try:
+                self.headers['X-CSRF-Token'] = self.cookies.get('matgar_csrf', '')
                 self.post(f"{BASE}/auth/logout", timeout=10)
             except requests.RequestException:
                 pass
             self.headers.pop("Authorization", None)
+            self.cookies.clear()
         super().close()
 
 
@@ -37,7 +39,7 @@ def session(email="teacher@demo.com", password="qa-teacher-pass"):
     response = result.post(f"{BASE}/auth/login", json={"email": email, "password": password,
                                                     "institution_slug": "demo"}, timeout=15)
     assert response.status_code == 200, response.text
-    result.headers["Authorization"] = f"Bearer {response.json()['token']}"
+    assert 'token' not in response.json()
     result.headers["X-CSRF-Token"] = result.cookies.get("matgar_csrf", "")
     return result
 

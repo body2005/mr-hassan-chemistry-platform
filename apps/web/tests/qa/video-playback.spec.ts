@@ -2,21 +2,13 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { expect, test } from "./qaTest";
+import { cookieApi } from './cookieApi';
 
 const baseURL = `${process.env.QA_BASE_URL || "http://127.0.0.1:18080"}/api/v1/`;
 
 test("protected WebM supports browser playback, seeking and byte ranges", async ({ page, playwright }) => {
   test.setTimeout(180_000);
-  const api = await playwright.request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true", baseURL });
-  const teacherLogin = await api.post("auth/login", {
-    data: { email: "teacher@demo.com", password: "qa-teacher-pass", institution_slug: "demo" },
-  });
-  expect(teacherLogin.status()).toBe(200);
-  const teacherToken = (await teacherLogin.json()).token as string;
-  const teacher = await playwright.request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true",
-    baseURL,
-    extraHTTPHeaders: { Authorization: `Bearer ${teacherToken}` },
-  });
+  const teacher = (await cookieApi(playwright.request, 'teacher@demo.com', 'qa-teacher-pass')).context;
   const student = await playwright.request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true", baseURL });
   try {
     const code = `QAV${Date.now()}`;
@@ -107,17 +99,13 @@ test("protected WebM supports browser playback, seeking and byte ranges", async 
     expect(tokenResponse.status(), await tokenResponse.text()).toBe(200);
     expect(tokenResponse.headers()["cache-control"]).toContain("no-store");
     const token = await tokenResponse.json();
-    const studentBearer = (await login.json()).token as string;
-    const copiedLink = await playwright.request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true",
-      baseURL,
-      extraHTTPHeaders: {
-        Authorization: `Bearer ${studentBearer}`,
-        Origin: (process.env.QA_BASE_URL || "http://127.0.0.1:18080"),
-        Referer: `${process.env.QA_BASE_URL || "http://127.0.0.1:18080"}/`,
-      },
-    });
+    // A valid second login of the same account has a different session nonce.
+    // A copied playback URL must fail even with that authenticated cookie.
+    const copiedLink = (await cookieApi(playwright.request, 'student03@demo.com', 'qa-student-pass')).context;
     try {
-      expect((await copiedLink.get(token.stream_url, { headers: { Range: "bytes=0-99" } })).status()).toBe(403);
+      expect((await copiedLink.get(token.stream_url, { headers: { Range: "bytes=0-99",
+        Origin: process.env.QA_BASE_URL || 'http://127.0.0.1:18080',
+        Referer: `${process.env.QA_BASE_URL || 'http://127.0.0.1:18080'}/` } })).status()).toBe(403);
     } finally {
       await copiedLink.dispose();
     }
@@ -226,6 +214,6 @@ test("protected WebM supports browser playback, seeking and byte ranges", async 
     expect((await student.post("auth/revoke-all", { headers: { "X-CSRF-Token": newCsrf! } })).status()).toBe(204);
     expect((await student.get(freshUrl, { headers: { Range: "bytes=0-99" } })).status()).toBe(403);
   } finally {
-    await Promise.all([api.dispose(), teacher.dispose(), student.dispose()]);
+    await Promise.all([teacher.dispose(), student.dispose()]);
   }
 });

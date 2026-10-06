@@ -1,25 +1,16 @@
 import { expect, test } from './qaTest';
+import { cookieApi } from './cookieApi';
 
 test('large real student enrollment catalog bounds hydration and leaves auth usable', async ({ page, playwright }) => {
   test.setTimeout(120_000);
   if (process.env.QA_REDIS_CONTAINER !== 'chemistryaudit2-redis-1') throw new Error('Hydration seeding requires isolated chemistryaudit2');
-  const baseURL = `${process.env.QA_BASE_URL}/api/v1/`;
-  const loginApi = await playwright.request.newContext({ baseURL, ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === 'true' });
-  const login = await loginApi.post('auth/login', { data: { email: 'student03@demo.com', password: 'qa-student-pass', institution_slug: 'demo' } });
-  expect(login.status()).toBe(200);
-  const studentToken = (await login.json()).token;
-  await loginApi.dispose();
-  const student = await playwright.request.newContext({ baseURL, ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === 'true',
-    extraHTTPHeaders: { Authorization: `Bearer ${studentToken}` } });
+  const student = (await cookieApi(playwright.request, 'student03@demo.com', 'qa-student-pass')).context;
   try {
     const snapshot = await student.get('bootstrap');
     expect(snapshot.status()).toBe(200);
     const count = (await snapshot.json()).enrolled_course_ids.length;
     if (count < 20) {
-      const teacherLogin = await student.post('auth/login', { data: { email: 'teacher@demo.com', password: 'qa-teacher-pass', institution_slug: 'demo' } });
-      expect(teacherLogin.status()).toBe(200);
-      const teacher = await playwright.request.newContext({ baseURL, ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === 'true',
-        extraHTTPHeaders: { Authorization: `Bearer ${(await teacherLogin.json()).token}` } });
+      const teacher = (await cookieApi(playwright.request, 'teacher@demo.com', 'qa-teacher-pass')).context;
       try {
         for (let index = count; index < 20; index++) {
           const created = await teacher.post('courses', { data: { code: `QAH-${crypto.randomUUID().slice(0, 8)}`,

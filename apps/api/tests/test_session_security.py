@@ -37,7 +37,8 @@ def _register(client: TestClient, db, email: str = "session.student@example.com"
         },
     )
     assert response.status_code == 201, response.text
-    assert response.json()["token"]
+    assert 'token' not in response.json()
+    assert client.cookies.get('matgar_session')
     assert response.json()["expires_at"]
 
 

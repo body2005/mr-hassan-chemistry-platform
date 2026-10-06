@@ -33,7 +33,7 @@ class RealTimeService {
   private async openStream(generation: number): Promise<void> {
     try {
       // Cookie-only identity probe shares apiClient's single refresh and CSRF
-      // protection. EventSource cannot send the cached Authorization bearer.
+      // protection. Neither the SPA nor EventSource uses a readable bearer.
       await apiRequest("/auth/me", { cookieOnly: true, skipCache: true, timeoutMs: 8000 });
       if (!this.active || generation !== this.connectionGeneration) return;
       const streamUrl = apiUrl("/realtime/stream");

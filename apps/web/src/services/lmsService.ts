@@ -11,7 +11,6 @@ import {
   invalidateApiCache,
   getCachedData,
   setCachedData,
-  authToken,
   beginBrowserLogout,
 } from "./apiClient";
 import type { StudentEntitlement } from "./paymentService";
@@ -476,17 +475,9 @@ export interface BootstrapData {
 
 export const bootstrapService = {
   async getBootstrap(): Promise<BootstrapData> {
-    // Pages with no session footprint (e.g. the login screen on a fresh
-    // browser) must stay silent: no bootstrap request, no 401 churn. The
-    // HttpOnly session cookie cannot be introspected from JS, so the persisted
-    // session token (written on every successful login) is the "maybe logged
-    // in" signal. When it is absent AND the client already knows the session
-    // is invalid, resolve as anonymous without touching the network.
-    if (
-      typeof localStorage !== "undefined" &&
-      !localStorage.getItem("lms_session_token") &&
-      isSessionKnownInvalid()
-    ) {
+    // On reload, bootstrap determines cookie identity. No JS-readable token
+    // is needed; only a proven invalid in-memory session skips the probe.
+    if (isSessionKnownInvalid()) {
       markBrowserSessionActive(false);
       setApiAuthScope("anonymous");
       return {
@@ -657,7 +648,7 @@ export const authService = {
     const cleanPass = (pass || "").trim();
 
     try {
-      const result = await apiRequest<{ user: ApiUser; expires_at: string; token?: string }>("/auth/login", {
+      const result = await apiRequest<{ user: ApiUser; expires_at: string }>("/auth/login", {
         method: "POST",
         body: JSON.stringify({ email: cleanEmail, password: cleanPass, institution_slug: institutionSlug }),
       });
@@ -666,9 +657,6 @@ export const authService = {
       setApiAuthScope(user.id);
       clearApiCache();
       if (typeof localStorage !== "undefined") {
-        if (result.token) {
-          localStorage.setItem("lms_session_token", result.token);
-        }
         localStorage.setItem("lms_cached_user", JSON.stringify(user));
         const targetTab = user.role === "student" ? "MyCourses" : "LessonManagement";
         localStorage.setItem("lms_active_tab", targetTab);
@@ -701,7 +689,7 @@ export const authService = {
 
     // 1. Try FastAPI backend API
     try {
-      const result = await apiRequest<{ user: ApiUser; expires_at: string; token?: string }>("/auth/register", {
+      const result = await apiRequest<{ user: ApiUser; expires_at: string }>("/auth/register", {
         method: "POST",
         body: JSON.stringify({
           display_name: userData.name,
@@ -727,9 +715,6 @@ export const authService = {
       setApiAuthScope(user.id);
       clearApiCache();
       if (typeof localStorage !== "undefined") {
-        if (result.token) {
-          localStorage.setItem("lms_session_token", result.token);
-        }
         localStorage.setItem("lms_cached_user", JSON.stringify(user));
         const targetTab = user.role === "student" ? "MyCourses" : "LessonManagement";
         localStorage.setItem("lms_active_tab", targetTab);
@@ -745,7 +730,6 @@ export const authService = {
   },
 
   async logout(): Promise<void> {
-    const token = authToken();
     // Fence queued/in-flight reads before the server can revoke the cookie.
     // Waiting until after POST lets queued private requests start with a dead
     // session, producing 401s and racing a subsequent login.
@@ -758,8 +742,7 @@ export const authService = {
       localStorage.setItem("lms_active_tab", "Landing");
     }
     try {
-      await apiRequest<void>("/auth/logout", { method: "POST",
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+      await apiRequest<void>("/auth/logout", { method: "POST" });
     } catch {
       // Local-first logout remains available during an outage. Do not clear
       // another account's state when this old request eventually returns.
@@ -1133,8 +1116,19 @@ export const courseService = {
     const questions = payload.questions.map(q => {
       const type = canonicalQuestionType(q.question_type);
       if (type === 'unknown') throw new Error('نوع سؤال غير مدعوم؛ راجع نوع السؤال قبل النشر.');
+      // Never invent an answer. A marked radio option is the teacher's
+      // explicit choice; use its text because the solving UI submits text.
+      const selected = (q.options || []).filter(option => option.is_correct);
+      if (selected.length > 1 && ['multiple_choice', 'true_false'].includes(type)) {
+        throw new Error('يلزم تحديد إجابة صحيحة واحدة لكل سؤال.');
+      }
+      const answer = ['multiple_choice', 'true_false'].includes(type)
+        ? selected[0]?.text ?? q.correct_answer : q.correct_answer;
+      if (!['essay', 'short_answer'].includes(type) && !answer?.trim()) {
+        throw new Error('يلزم تحديد الإجابة الصحيحة للأسئلة ذات التصحيح التلقائي قبل النشر.');
+      }
       return { question_type: type, prompt: q.question_text, options: q.options ?? null,
-        correct_answer: q.correct_answer ?? null, points: q.points ?? 1 };
+        correct_answer: answer ?? null, points: q.points ?? 1 };
     });
     await validateAssessmentScope(payload);
     const quiz = await apiRequest<{ id: string }>("/quizzes/publish-draft", {

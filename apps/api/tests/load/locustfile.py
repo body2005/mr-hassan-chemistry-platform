@@ -43,7 +43,11 @@ def _token_for(client) -> str:
         )
         if response.status_code != 200:
             raise RuntimeError(f"Load-test login failed: HTTP {response.status_code}")
-        _SHARED_TOKEN = response.json()["token"]
+        # Server session credentials are never serialized into JSON. This
+        # CLI-only runner may reuse its cookie in memory, never browser storage.
+        _SHARED_TOKEN = client.cookies.get('matgar_session')
+        if not _SHARED_TOKEN:
+            raise RuntimeError('Load-test login did not establish a session cookie')
         return _SHARED_TOKEN
 
 

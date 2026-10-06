@@ -21,10 +21,11 @@ export function hasBrowserSession(): boolean {
   return browserSessionActive;
 }
 
-export function authToken(): string | undefined {
-  if (typeof localStorage === "undefined") return undefined;
-  return localStorage.getItem("lms_session_token") || undefined;
+function removeLegacySessionToken(): void {
+  // Upgrade existing browsers without ever reading/using the old credential.
+  try { localStorage.removeItem('lms_session_token'); } catch { /* storage can be unavailable */ }
 }
+removeLegacySessionToken();
 
 export function apiUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) return path;
@@ -59,7 +60,7 @@ export interface ApiRequestInit extends RequestInit {
   cacheTtlMs?: number;
   skipCache?: boolean;
   cacheKey?: string;
-  /** EventSource sends cookies only; never let a valid bearer mask an expired cookie. */
+  /** Retained for callers; all browser requests now use HttpOnly cookies. */
   cookieOnly?: boolean;
 }
 
@@ -200,8 +201,6 @@ function autoInvalidateOnMutation(path: string): void {
 export async function fetchApiBlob(path: string, retriedAfterRefresh = false): Promise<Blob> {
   const requestEpoch = authScopeEpoch;
   const headers = new Headers();
-  const token = authToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
   let response: Response;
   const controller = new AbortController();
   activeRequestControllers.add(controller);
@@ -267,8 +266,6 @@ async function refreshSession(): Promise<boolean> {
     const headers = new Headers();
     const csrf = csrfToken();
     if (csrf) headers.set("X-CSRF-Token", csrf);
-    const token = authToken();
-    if (token) headers.set("Authorization", `Bearer ${token}`);
     try {
       const response = await fetch(apiUrl("/auth/refresh"), {
         method: "POST",
@@ -280,15 +277,7 @@ async function refreshSession(): Promise<boolean> {
         lastFailedRefreshAt = Date.now();
         return false;
       }
-      try {
-        const body = await response.json();
-        if (refreshEpoch !== authScopeEpoch) return false;
-        if (body?.token && typeof localStorage !== "undefined") {
-          localStorage.setItem("lms_session_token", body.token);
-        }
-      } catch {
-        // An HTTP-only session can still be valid when the refresh body is empty.
-      }
+      removeLegacySessionToken();
       lastFailedRefreshAt = 0;
       browserSessionActive = true;
       sessionInvalidationDispatched = false;
@@ -312,10 +301,6 @@ async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retrie
   delete requestInit.cacheKey;
   delete requestInit.cookieOnly;
   const headers = new Headers(requestInit.headers);
-  const token = init.cookieOnly ? undefined : authToken();
-  if (token && !headers.has("Authorization")) {
-    headers.set("Authorization", `Bearer ${token}`);
-  }
   const isFormData = typeof FormData !== "undefined" && requestInit.body instanceof FormData;
   if (requestInit.body && !isFormData && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const method = (requestInit.method || "GET").toUpperCase();
@@ -394,11 +379,7 @@ async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retrie
   if (response.status === 204) return undefined as T;
   const json = (await response.json()) as T;
   if (requestEpoch !== authScopeEpoch) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
-  if (json && typeof json === "object" && "token" in json && typeof json.token === "string" && json.token) {
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem("lms_session_token", json.token);
-    }
-  }
+  removeLegacySessionToken();
   return json;
 }
 
@@ -512,8 +493,6 @@ export function uploadWithProgress<T>(
     if (timeoutMs > 0) xhr.timeout = timeoutMs;
     const csrf = csrfToken();
     if (csrf) xhr.setRequestHeader("X-CSRF-Token", csrf);
-    const token = authToken();
-    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     if (xhr.upload && onProgress) {
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable && event.total > 0) {

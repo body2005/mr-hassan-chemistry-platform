@@ -121,6 +121,8 @@ services:
 
   api:
     build: *api-build
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     restart: unless-stopped
     entrypoint: ["/bin/sh", "/srv/entrypoint-prod.sh"]
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
@@ -129,6 +131,8 @@ services:
     volumes:
       - video_uploads:/srv/uploads
     depends_on:
+      upload-permissions:
+        condition: service_completed_successfully
       migration:
         condition: service_completed_successfully
       redis:
@@ -143,8 +147,25 @@ services:
       start_period: 30s
     networks: [private]
 
+  upload-permissions:
+    # One-shot migration of the existing named staging volume. No secrets,
+    # network, deletion or root API process; S3 object data is untouched.
+    build: *api-build
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE]
+    security_opt: [no-new-privileges:true]
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["test -d /srv/uploads && chown -R -h 10001:10001 /srv/uploads"]
+    volumes:
+      - video_uploads:/srv/uploads
+
   worker:
     build: *api-build
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     restart: unless-stopped
     entrypoint: ["/bin/sh", "/srv/entrypoint-prod.sh"]
     command: ["celery", "-A", "app.tasks.celery_app.celery_app", "worker", "--loglevel=info", "--concurrency=2", "-Q", "notifications,reports,analytics"]

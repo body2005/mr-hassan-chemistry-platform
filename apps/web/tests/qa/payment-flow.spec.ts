@@ -1,19 +1,14 @@
 import type { APIRequest, APIRequestContext } from "@playwright/test";
 import { expect, test } from "./qaTest";
+import { cookieApi } from './cookieApi';
 
-const baseURL = `${process.env.QA_BASE_URL || "http://127.0.0.1:18080"}/api/v1/`;
 const validPng = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAE0lEQVR4nGP8//8/AwMDEwMYAAAkBgMBXaJOiAAAAABJRU5ErkJggg==",
   "base64",
 );
 
 async function login(request: APIRequest, email: string, password: string): Promise<APIRequestContext> {
-  const anonymous = await request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true", baseURL });
-  const response = await anonymous.post("auth/login", { data: { email, password, institution_slug: "demo" } });
-  expect(response.status(), await response.text()).toBe(200);
-  const token = (await response.json()).token as string;
-  await anonymous.dispose();
-  return request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true", baseURL, extraHTTPHeaders: { Authorization: `Bearer ${token}` } });
+  return (await cookieApi(request, email, password)).context;
 }
 
 test("receipt review grants only the paying student access and sends notifications", async ({ playwright, page, browser }) => {

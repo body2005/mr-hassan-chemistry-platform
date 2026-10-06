@@ -1,22 +1,11 @@
 import type { APIRequest, APIRequestContext } from "@playwright/test";
 import { expect, test } from "./qaTest";
+import { cookieApi } from './cookieApi';
 
 const baseURL = `${process.env.QA_BASE_URL || "http://127.0.0.1:18080"}/api/v1/`;
 
 async function asUser(request: APIRequest, email: string, password: string) {
-  const loginContext = await request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true", baseURL });
-  const login = await loginContext.post("auth/login", {
-    data: { email, password, institution_slug: "demo" },
-  });
-  expect(login.status()).toBe(200);
-  const body = await login.json();
-  await loginContext.dispose();
-  expect(body.token).toBeTruthy();
-  const context = await request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true",
-    baseURL,
-    extraHTTPHeaders: { Authorization: `Bearer ${body.token}` },
-  });
-  return { context, id: body.user.id as string };
+  return cookieApi(request, email, password);
 }
 
 async function created(context: APIRequestContext, path: string, data: unknown) {

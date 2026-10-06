@@ -161,7 +161,8 @@ test('a video lesson without an uploaded source explains its state instead of wa
   await expect(page.getByRole('button', { name: 'طلب إتاحة الدرس من المعلم' })).toHaveCount(0);
 });
 
-test("SSE renews an expired cookie even when the cached bearer is still valid", async ({ page }) => {
+for (const accessState of ['expired', 'absent'] as const) {
+test(`SSE renews an ${accessState} cookie without a JavaScript-readable bearer`, async ({ page }) => {
   test.setTimeout(60_000);
   const initialStream = page.waitForResponse(response => new URL(response.url()).pathname.endsWith("/realtime/stream") && response.status() === 200);
   await login(page);
@@ -170,7 +171,10 @@ test("SSE renews an expired cookie even when the cached bearer is still valid", 
   expect(await page.evaluate(() => document.cookie.includes("matgar_csrf="))).toBe(true);
   const access = cookies.find(c => c.name === "matgar_session");
   expect(access).toBeTruthy();
-  await page.context().addCookies([{ ...access!, value: "expired-qa-access-cookie" }]);
+  expect(access!.httpOnly).toBe(true);
+  expect(await page.evaluate(() => localStorage.getItem('lms_session_token'))).toBeNull();
+  if (accessState === 'expired') await page.context().addCookies([{ ...access!, value: "expired-qa-access-cookie" }]);
+  else await page.context().clearCookies({name:'matgar_session'});
   const streams: number[] = [];
   const refreshes: number[] = [];
   page.on("response", response => {
@@ -183,7 +187,9 @@ test("SSE renews an expired cookie even when the cached bearer is still valid", 
   expect(refreshes).toEqual([200]);
   expect(streams).not.toContain(401);
   await expect(page.locator(".profile-button")).toHaveCount(1);
+  expect(await page.evaluate(() => localStorage.getItem('lms_session_token'))).toBeNull();
 });
+}
 
 for (const scenario of [{ kind: "video", resume: false }, { kind: "material", resume: false }, { kind: "video", resume: true }] as const) {
   const { kind } = scenario;

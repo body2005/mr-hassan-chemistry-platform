@@ -68,10 +68,13 @@ if ($Stage -eq 'Recovery') {
 }
 if ($Stage -in @('Build','All')) {
     Invoke-Step 'video compose validation' $Docker ($compose + @('config','-q'))
-    Invoke-Step 'API/migration/Celery/web build' $Docker ($compose + @('build','api','migration','worker','web'))
+    Invoke-Step 'API/migration/Celery/web/staging-permissions build' $Docker ($compose + @('build','api','migration','worker','web','upload-permissions'))
     # Explicit sequencing avoids extending the old API in a parallel build.
     Invoke-Step 'video worker / QA build' $Docker ($compose + @('build','video-worker','qa-tests'))
-    Invoke-Step 'local video pipeline startup' $Docker ($compose + @('up','-d','--no-build','--wait','--wait-timeout','160','migration','s3-init','api','worker','web','proxy','video-worker','upload-gateway'))
+    # Compose can keep an older manifest identity when BuildKit changes only
+    # the attestation. Recreate the selected runtime services after a build;
+    # named data volumes are retained, and the source gate verifies the IDs.
+    Invoke-Step 'local video pipeline startup' $Docker ($compose + @('up','-d','--no-build','--force-recreate','--wait','--wait-timeout','160','migration','s3-init','api','worker','web','proxy','video-worker','upload-gateway'))
 }
 if ($Stage -in @('Backend','Tests','All')) {
     foreach ($nativeService in @('api','video-worker')) {

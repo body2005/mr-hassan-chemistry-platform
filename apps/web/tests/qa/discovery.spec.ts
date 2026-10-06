@@ -65,7 +65,7 @@ async function courseWithLesson(page: Page, suffix = '', grade = 'SECONDARY_1', 
   await post(page, `courses/${course.id}/publish`, {}, 200);
   return { course, lesson };
 }
-type DraftQuestion = { id: string; question_text: string; question_type: string; points: number; options?: { key: string; text: string; is_correct: boolean }[] };
+type DraftQuestion = { id: string; question_text: string; question_type: string; points: number; correct_answer?: string | null; options?: { key: string; text: string; is_correct: boolean }[] };
 async function prepareDraft(page: Page, lessonId: string, kind: string, questions: DraftQuestion[], future = false) {
   const me = await (await page.request.get(`${base}/api/v1/auth/me`)).json();
   const title = `QA Discovery ${kind} ${Date.now()}`;
@@ -174,6 +174,12 @@ test('reviewed FILL_BLANK Extract question publishes through the teacher interfa
   const { lesson } = await courseWithLesson(page, 'fill blank');
   const title = await prepareDraft(page, lesson.id, 'quiz', [{ id: 'fill', question_type: 'FILL_BLANK',
     question_text: 'The SI unit of mass is ____.', points: 2 }]);
+  await page.getByRole('button', { name: 'حفظ ونشر الاختبار للطلاب', exact: true }).first().click();
+  await expect(page.getByRole('button', { name: 'تأكيد الرفع والنشر الآن' })).toHaveCount(0);
+  const card = page.getByTestId('question-card-fill');
+  await card.getByRole('button', { name: 'تعديل', exact: true }).click();
+  await card.getByPlaceholder('اكتب الكلمة أو المصطلح الصحيح الذي يملأ الفراغ...').fill('kg');
+  await card.getByRole('button', { name: 'حفظ التعديل', exact: true }).click();
   const created = page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/v1/quizzes/publish-draft');
   await publish(page, 'quiz');
   const response = await created;
@@ -269,7 +275,9 @@ for (const kind of ['quiz', 'assignment']) {
     expect(source.questions.every((q: { needs_content_review: boolean }) => q.needs_content_review)).toBe(true);
     const questions = source.questions.map((q: DraftQuestion) => ({ ...q, id: String(q.id), points: 2,
       needs_points_assignment: false, needs_answer_review: false,
-      correct_answer: q.question_type === 'true_false' || q.question_type === 'TRUE_FALSE' ? 'صح' : null,
+      // Synthetic reviewed keys exercise publication, NOT OCR answer accuracy.
+      correct_answer: /true_false/i.test(q.question_type) ? 'صح'
+        : /fill/i.test(q.question_type) ? 'إجابة QA للتصحيح' : null,
       options: q.options?.map((o, i) => ({ ...o, is_correct: i === 0 })) }));
     const title = await prepareDraft(page, lesson.id, kind, questions);
     const writes: string[] = [];

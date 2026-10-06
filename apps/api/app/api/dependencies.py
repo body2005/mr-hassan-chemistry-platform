@@ -7,6 +7,7 @@ from typing import Annotated
 
 from fastapi import Cookie, Depends, HTTPException, Request, status
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from dataclasses import dataclass
@@ -20,9 +21,8 @@ DbSession = Annotated[Session, Depends(get_db)]
 
 
 def _extract_token(request: Request, session_cookie: str | None = None) -> str | None:
-    # An explicit Authorization header must win over a stale browser cookie.
-    # The SPA keeps the freshly issued token in localStorage, while browsers
-    # can retain or reject cross-site cookie deletion independently.
+    # Explicit API-client Bearer credentials take precedence; the browser SPA
+    # sends only HttpOnly cookies and never falls back to localStorage tokens.
     auth = request.headers.get("Authorization") or request.headers.get("authorization")
     if auth and auth.lower().startswith("bearer "):
         return auth[7:].strip()
@@ -145,6 +145,10 @@ def get_optional_user(
         if payload.get("role") != user.role.value:
             return None
         return user
+    except SQLAlchemyError:
+        # An unavailable identity store is a service failure, not evidence
+        # that a valid browser session became anonymous or was revoked.
+        raise
     except Exception:
         return None
 

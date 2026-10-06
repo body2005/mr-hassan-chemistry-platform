@@ -1,24 +1,9 @@
 import { expect, test } from "./qaTest";
-
-const baseURL = `${process.env.QA_BASE_URL || "http://127.0.0.1:18080"}/api/v1/`;
+import { cookieApi } from './cookieApi';
 
 test("student can switch between two enrolled courses", async ({ page, playwright }) => {
-  const loginContext = await playwright.request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true", baseURL });
-  const login = await loginContext.post("auth/login", {
-    data: { email: "teacher@demo.com", password: "qa-teacher-pass", institution_slug: "demo" },
-  });
-  expect(login.status()).toBe(200);
-  const token = (await login.json()).token as string;
-  await loginContext.dispose();
-  const teacher = await playwright.request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true", baseURL, extraHTTPHeaders: { Authorization: `Bearer ${token}` } });
-  const studentLogin = await playwright.request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true", baseURL });
-  const studentResponse = await studentLogin.post("auth/login", {
-    data: { email: "student03@demo.com", password: "qa-student-pass", institution_slug: "demo" },
-  });
-  expect(studentResponse.status()).toBe(200);
-  const studentToken = (await studentResponse.json()).token as string;
-  await studentLogin.dispose();
-  const student = await playwright.request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true", baseURL, extraHTTPHeaders: { Authorization: `Bearer ${studentToken}` } });
+  const teacher = (await cookieApi(playwright.request, 'teacher@demo.com', 'qa-teacher-pass')).context;
+  const student = (await cookieApi(playwright.request, 'student03@demo.com', 'qa-student-pass')).context;
   try {
     const names = [`QA First Course ${Date.now()}`, `QA Second Course ${Date.now()}`];
     const ids: string[] = [];

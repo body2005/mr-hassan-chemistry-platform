@@ -44,6 +44,9 @@ def test_service_failure_and_recovery(service):
                 # failures, never a silent success or an application 500.
                 expected = {"postgres": {503}, "redis": {503}, "worker": {200}, "web": {502, 504}}[service]
                 assert status in expected, response.text
+                if service == 'postgres':
+                    startup = teacher.get(f'{BASE}/bootstrap', timeout=15)
+                    assert startup.status_code == 503, 'DB outage must not become guest success or auth expiry'
             elapsed = time.monotonic() - start
         finally:
             target.start()
@@ -63,5 +66,8 @@ def test_service_failure_and_recovery(service):
         response = teacher.get(f"{BASE}/courses", timeout=15)
         assert response.status_code == 200
         assert {item["id"] for item in response.json()["items"]} == course_ids
+        if service == 'postgres':
+            startup = teacher.get(f'{BASE}/bootstrap', timeout=15)
+            assert startup.status_code == 200 and startup.json()['authenticated'] is True
         print(json.dumps({"service": service, "during_status": status, "seconds": round(elapsed, 3),
                           "recovered": True, "course_ids_unchanged": True}))

@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, or_
 from sqlalchemy.orm import Session
 
 UTC = timezone.utc
@@ -359,18 +359,22 @@ def record_grade(
 
 
 def student_grades(db: Session, viewer: User, student_id: uuid.UUID) -> list[Grade]:
-    if viewer.role == UserRole.STUDENT and viewer.id != student_id:
-        raise PermissionError("Students can only view their own grades")
-    rows = db.scalars(
-        select(Grade)
+    scope = _student_read_course_scope(db, viewer, student_id)
+    query = (select(Grade)
         .where(
             Grade.institution_id == viewer.institution_id,
             Grade.student_id == student_id,
             Grade.is_current.is_(True),
         )
         .order_by(Grade.updated_at.desc())
-    ).all()
-    return list(rows)# ---------------------------------------------------------------------------
+    )
+    if scope is not None:
+        query = query.where(Grade.course_id.in_(scope))
+    rows = db.scalars(query).all()
+    return list(rows)
+
+
+# ---------------------------------------------------------------------------
 # Report jobs
 # ---------------------------------------------------------------------------
 
@@ -447,34 +451,32 @@ def get_report_job(db: Session, user: User, job_id: uuid.UUID) -> ReportJob:
 
 def compute_student_mastery(db: Session, user: User, student_id: uuid.UUID) -> list[dict]:
     """Explainable mastery per learning objective from graded quiz answers."""
-    if user.role == UserRole.STUDENT and user.id != student_id:
-        raise PermissionError("Students can only view their own mastery")
-    objectives = db.scalars(
-        select(LearningObjective).where(
-            LearningObjective.institution_id == user.institution_id
-        )
-    ).all()
+    scope = _student_read_course_scope(db, user, student_id)
+    # Aggregate once, with evidence tied to the authoritative quiz course.
+    # Reused objective codes must not merge evidence from another course.
+    query = (select(LearningObjective, func.sum(QuizAttemptAnswer.awarded_points),
+                    func.sum(Question.points), func.count(QuizAttemptAnswer.id))
+        .select_from(LearningObjective)
+        .join(Question, Question.learning_objective == LearningObjective.code)
+        .join(QuizAttemptAnswer, QuizAttemptAnswer.question_id == Question.id)
+        .join(QuizAttempt, QuizAttempt.id == QuizAttemptAnswer.attempt_id)
+        .join(Quiz, Quiz.id == QuizAttempt.quiz_id)
+        .join(Course, Course.id == Quiz.course_id)
+        .where(LearningObjective.institution_id == user.institution_id,
+               Question.institution_id == user.institution_id,
+               Quiz.institution_id == user.institution_id,
+               Course.institution_id == user.institution_id,
+               QuizAttempt.student_id == student_id,
+               QuizAttempt.is_practice.is_(False),
+               QuizAttemptAnswer.graded_at.is_not(None),
+               or_(LearningObjective.course_id.is_(None), LearningObjective.course_id == Quiz.course_id))
+        .group_by(LearningObjective)
+        .order_by(LearningObjective.code, LearningObjective.id))
+    if scope is not None:
+        query = query.where(Quiz.course_id.in_(scope))
     result: list[dict] = []
-    for objective in objectives:
-        # Evidence: questions tagged with this objective in attempts of this student.
-        rows = db.execute(
-            select(QuizAttemptAnswer.awarded_points, Question.points)
-            .join(QuizAttemptAnswer, QuizAttemptAnswer.question_id == Question.id)
-            .join(
-                QuizAttempt,
-                QuizAttempt.id == QuizAttemptAnswer.attempt_id,
-            )
-            .where(
-                QuizAttempt.student_id == student_id,
-                QuizAttempt.is_practice.is_(False),
-                QuizAttemptAnswer.graded_at.is_not(None),
-                Question.learning_objective == objective.code,
-            )
-        ).all()
-        if not rows:
-            continue
-        earned = sum(float(r[0] or 0) for r in rows)
-        total = sum(float(r[1] or 0) for r in rows)
+    for objective, earned, total, evidence_count in db.execute(query):
+        earned, total = float(earned or 0), float(total or 0)
         if total <= 0:
             continue
         mastery = round(min(1.0, earned / total), 3)
@@ -484,10 +486,29 @@ def compute_student_mastery(db: Session, user: User, student_id: uuid.UUID) -> l
                 "code": objective.code,
                 "title": objective.title,
                 "mastery": mastery,
-                "evidence_count": len(rows),
+                "evidence_count": evidence_count,
             }
         )
     return result
+
+
+def _student_read_course_scope(db: Session, viewer: User, student_id: uuid.UUID):
+    if viewer.role == UserRole.STUDENT and viewer.id != student_id:
+        raise PermissionError("Students can only view their own academic data")
+    student = db.scalar(select(User.id).where(User.id == student_id,
+        User.institution_id == viewer.institution_id, User.role == UserRole.STUDENT,
+        User.deleted_at.is_(None)))
+    if student is None:
+        raise LookupError("Student not found")
+    if viewer.role != UserRole.TEACHER:
+        return None
+    scope = select(Course.id).join(Enrollment, Enrollment.course_id == Course.id).where(
+        Course.institution_id == viewer.institution_id, Course.teacher_id == viewer.id,
+        Enrollment.student_id == student_id,
+        Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]))
+    if db.scalar(scope.limit(1)) is None:
+        raise LookupError("Student not found")
+    return scope
 
 
 

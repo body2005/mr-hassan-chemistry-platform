@@ -46,5 +46,14 @@ RUN python -m scripts.verify_native_expat
 RUN chmod 755 scripts/tesseract_limited.py
 ENV TESSERACT_CMD=/srv/scripts/tesseract_limited.py OMP_THREAD_LIMIT=1
 
+# Application code stays root-owned/read-only to the runtime user. Only
+# staging and the unprivileged home/cache directories are writable.
+RUN groupadd --gid 10001 chemistry \
+    && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin chemistry \
+    && mkdir -p /srv/uploads \
+    && chown 10001:10001 /srv/uploads
+ENV STORAGE_DIR=/srv/uploads
+USER 10001:10001
+
 # Run migrations, then start (command overridden by compose)
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import hashlib
 import json
 import os
@@ -234,6 +235,43 @@ def _validate_assessment_scope(db: Session, course, module_id: uuid.UUID | None,
     return module_id, lesson_id
 
 
+def _validate_quiz_question(question, points: float | None = None) -> None:
+    if (len((question.prompt or '').strip()) < 2
+            or question.learning_objective == 'محتوى غير مفهرس'):
+        raise ValueError('Invalid question content')
+    score = float(question.points if points is None else points)
+    if not math.isfinite(score) or score <= 0:
+        raise ValueError('Question points must be positive and finite')
+    kind = question.question_type.strip().lower()
+    if kind not in {'mcq', 'multiple_choice', 'true_false', 'essay', 'short_answer', 'fill_in_blank', 'ordering', 'matching'}:
+        raise ValueError('Unsupported question type; review the draft before publication')
+    if kind not in {'essay', 'short_answer'}:
+        answer = question.correct_answer
+        if answer is None or (isinstance(answer, (str, list, dict)) and not answer):
+            raise ValueError('An automatically graded question requires a correct answer')
+        if isinstance(answer, str) and not answer.strip():
+            raise ValueError('Correct answer cannot be blank')
+    if kind in {'mcq', 'multiple_choice'}:
+        if not question.options or len(question.options) < 2:
+            raise ValueError('Multiple-choice questions require at least two options')
+        keys, accepted = [], []
+        for index, option in enumerate(question.options):
+            if isinstance(option, str) and option.strip():
+                key = chr(65 + index)
+                accepted.extend([key, option.strip()])
+            elif (isinstance(option, dict) and isinstance(option.get('text'), str)
+                  and option['text'].strip() and option.get('key')):
+                key = str(option['key'])
+                accepted.extend([key, option['text'].strip()])
+            else:
+                raise ValueError('Invalid question option')
+            keys.append(key)
+        if len(keys) != len(set(keys)):
+            raise ValueError('Option keys must be unique')
+        if not any(_answers_equal(question.correct_answer, value) for value in accepted):
+            raise ValueError('Correct answer must identify an available option')
+
+
 def publish_quiz_atomic(db: Session, user: User, payload: QuizPublishRequest) -> Quiz:
     """Validate the complete draft before writing; retry is serialized per author.
 
@@ -248,27 +286,9 @@ def publish_quiz_atomic(db: Session, user: User, payload: QuizPublishRequest) ->
     if payload.starts_at and payload.ends_at and _as_utc(payload.starts_at) >= _as_utc(payload.ends_at):
         raise ValueError("Quiz end must be after its start")
     for question in payload.questions:
-        if len(question.prompt.strip()) < 2 or question.learning_objective == "محتوى غير مفهرس":
-            raise ValueError("Invalid question content")
+        _validate_quiz_question(question)
         if question.course_id not in (None, course.id):
             raise ValueError("Question belongs to another course")
-        kind = question.question_type.strip().lower()
-        if kind not in {'mcq', 'multiple_choice', 'true_false', 'essay', 'short_answer', 'fill_in_blank', 'ordering', 'matching'}:
-            raise ValueError('Unsupported question type; review the draft before publication')
-        if kind in {'mcq', 'multiple_choice'}:
-            if not question.options or len(question.options) < 2:
-                raise ValueError('Multiple-choice questions require at least two options')
-            keys = []
-            for option in question.options:
-                if isinstance(option, str):
-                    if not option.strip():
-                        raise ValueError('An option is empty')
-                elif isinstance(option, dict) and isinstance(option.get('text'), str) and option['text'].strip() and option.get('key'):
-                    keys.append(str(option['key']))
-                else:
-                    raise ValueError('Invalid question option')
-            if len(keys) != len(set(keys)):
-                raise ValueError('Option keys must be unique')
     digest = hashlib.sha256(json.dumps(payload.model_dump(mode="json", exclude={"idempotency_key"}),
                                        sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     db.execute(select(User.id).where(User.id == user.id).with_for_update())
@@ -353,7 +373,7 @@ def create_quiz(db: Session, user: User, payload: QuizCreateRequest) -> Quiz:
 
 def publish_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> Quiz:
     quiz = db.scalar(
-        select(Quiz).where(Quiz.id == quiz_id, Quiz.institution_id == user.institution_id)
+        select(Quiz).where(Quiz.id == quiz_id, Quiz.institution_id == user.institution_id).with_for_update()
     )
     if quiz is None:
         raise LookupError("Quiz not found")
@@ -361,6 +381,22 @@ def publish_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> Quiz:
     if course is None:
         raise LookupError("Course not found")
     ensure_course_manager(user, course)
+    if len(quiz.title.strip()) < 2:
+        raise ValueError('Quiz title is invalid')
+    _validate_assessment_scope(db, course, quiz.module_id, quiz.lesson_id)
+    if quiz.starts_at and quiz.ends_at and _as_utc(quiz.starts_at) >= _as_utc(quiz.ends_at):
+        raise ValueError('Quiz end must be after its start')
+    rows = db.execute(select(Question, QuizQuestion.points).join(
+        QuizQuestion, QuizQuestion.question_id == Question.id).where(
+        QuizQuestion.quiz_id == quiz.id).with_for_update()).all()
+    if not rows:
+        raise ValueError('A quiz must contain at least one valid question')
+    for question, points in rows:
+        if (not question.is_active or question.institution_id != quiz.institution_id
+                or question.course_id not in (None, course.id)
+                or (user.role == UserRole.TEACHER and question.author_id != user.id)):
+            raise ValueError('Quiz contains an unavailable question')
+        _validate_quiz_question(question, points)
     quiz.status = QuizStatus.PUBLISHED
     quiz.published_at = datetime.now(UTC)
     db.commit()

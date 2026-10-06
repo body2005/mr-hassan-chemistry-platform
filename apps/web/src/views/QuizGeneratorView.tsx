@@ -793,6 +793,15 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
         toast({ message: msg, tone: "warning" });
         return;
       }
+      const unreviewedFillCount = currentQuestions.filter(
+        q => normalizeQuestionType(q.question_type) === 'fill_in_blank' && !q.correct_answer?.trim()
+      ).length;
+      if (unreviewedFillCount > 0) {
+        const msg = `توجد أسئلة إكمال الفراغ (${unreviewedFillCount} سؤال) بدون إجابة. افتح تعديل السؤال وحدد الإجابة الصحيحة قبل النشر.`;
+        setError(msg);
+        toast({ message: msg, tone: 'warning' });
+        return;
+      }
     }
 
     setError(null);

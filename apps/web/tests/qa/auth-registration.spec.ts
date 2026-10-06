@@ -4,6 +4,13 @@ test("student registers from the browser and can sign in again", async ({ page, 
   const email = `qa-register-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`;
   const password = "Qa-Registration-2026!";
 
+  await page.addInitScript(() => localStorage.setItem('lms_session_token', 'legacy-test-credential'));
+  const authorizationHeaders: string[] = [];
+  page.on('request', request => {
+    const header = request.headers()['authorization'];
+    if (header) authorizationHeaders.push(header);
+  });
+
   await page.goto("/#auth");
   await page.getByRole("button", { name: "تسجيل جديد" }).click();
   const form = page.locator("form").first();
@@ -15,9 +22,20 @@ test("student registers from the browser and can sign in again", async ({ page, 
   await form.locator("select").nth(1).selectOption("CAIRO");
   await form.locator('input[placeholder="اسم المدرسة"]').fill("مدرسة QA المحلية");
   await form.locator("select").nth(2).selectOption("MALE");
+  const registered = page.waitForResponse(r => r.url().endsWith('/auth/register'));
   await form.locator('button[type="submit"]').click();
+  expect(await (await registered).json()).not.toHaveProperty('token');
 
   await expect(page).toHaveURL(/#mycourses$/);
+  expect(await page.evaluate(() => localStorage.getItem('lms_session_token'))).toBeNull();
+  expect(await page.evaluate(() => document.cookie.includes('matgar_session='))).toBe(false);
+  const access = (await page.context().cookies()).find(c => c.name === 'matgar_session');
+  expect(access?.httpOnly).toBe(true);
+  expect(access?.secure).toBe(true);
+  await page.reload();
+  await expect(page.locator('.profile-button')).toHaveCount(1);
+  expect(await page.evaluate(() => localStorage.getItem('lms_session_token'))).toBeNull();
+  expect(authorizationHeaders).toEqual([]);
 
   const freshContext = await browser.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true" });
   try {
