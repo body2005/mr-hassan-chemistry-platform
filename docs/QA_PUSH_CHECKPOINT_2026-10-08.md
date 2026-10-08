@@ -24,6 +24,7 @@ and Docker volume data are NOT part of this commit.
 | Full API units | 388/0/0 | 0 |
 | Complete live integration | 57/3/0, all 60 executed, 2210.031s | 1 |
 | Standalone byte-boundary diagnostic, unchanged app/limits | 5/0/0, 485.984s | 0 |
+| Concurrent/session/SSE prefix plus byte-boundary diagnostic, unchanged app/limits | 18/0/0, 696.401s | 0 |
 | Approved npm audit | 353 dependencies, 0 known findings | 0 |
 | Approved PyPI audit | 81 actual-image/lock-matched dependencies, 0 known findings, 0 skipped | 0 |
 | Post-suite source/runtime equivalence | 428 frozen source files unchanged; API/Celery/encoder 123 each and web 90 match | 0 |
@@ -40,7 +41,7 @@ These are tested local images, not images deployed on an external server.
 | Exact 1GiB material memory | Full integration accepted 201 and matched downloaded SHA, but anonymous RAM peaked 552,833,024 bytes above the unchanged 512MiB budget. Root cause/repair remains open. |
 | Exact 5GiB video admission | Full integration returned 503 Admission service temporarily unavailable instead of 200; Redis renewal logged TimeoutError. Do not assume TTL expiry or label passing isolated repeats a fix. |
 | 5GiB+1 rejected-video memory | Correct 413, but anonymous RAM peaked 539,918,336 bytes above the same 512MiB budget. No quota/buffer/container cap raised. |
-| Long-lived/warmed reproduction | Prefix concurrency/session/SSE cases followed by all five byte-boundary tests are running; no complete result was available when this checkpoint was prepared. The earlier standalone 5/0/0 does not close the failed full gate. |
+| Long-lived/warmed reproduction | Prefix concurrency/session/SSE plus all five byte-boundary tests completed 18/0/0, Exit0; 119 telemetry samples, no Redis errors or lease losses. This did NOT reproduce the earlier full-run failure, is not a repair, and does not replace successful complete final integration after a long-lived browser run. |
 | Native scanner gate | Scout 3 High/0 Critical EACH API/encoder, raw exit 2 each; Trivy 62 High API/78 High encoder, 0 Critical, raw exit 1 each. All 38 unique union CVEs individually triaged, but source backports/configuration restrictions are not scanner clearance or independent acceptance. See [native review](NATIVE_CVE_REVIEW_2026-10-06.md). |
 | Final recovery/backup/restore | Repeat the encoder crash/retry and frozen-writer SeaweedFS/PostgreSQL restore into NEW stores on this final code, compare all object hashes/metadata and database rows, and exercise restored browser upload/playback/seek/permissions. Earlier runs and guard-only tests are not final acceptance. |
 | Final performance | Repeat longer realistic-media mixed browsing/video/file load with throughput, p95/p99, errors, RAM and PostgreSQL connections. No demonstrated 1000-user capacity; representative external staged load remains unavailable. |

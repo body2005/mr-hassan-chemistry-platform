@@ -35,6 +35,9 @@ exact5GiB video returned503 Admission service temporarily unavailable.
 All60 executed, no skips; same frozen sources and runtime bytes verified
 unchanged after it, Exit0. These failures remain OPEN. Final recovery/load/
 restore/clean-index evidence is still pending.
+Subsequent unchanged standalone five-file-case diagnostic5/0/0 and prefix
+concurrency/session/SSE plus five-file-case diagnostic18/0/0 both exited0.
+Neither reproduces/repairs the full-run failure or replaces the full gate.
 No GitHub push, external deployment or successful remote CI is inferred.
 
 Fresh actual-image raw findings: Scout3High/0Critical EACH API/encoder,
