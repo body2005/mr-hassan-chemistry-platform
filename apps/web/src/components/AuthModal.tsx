@@ -1,7 +1,6 @@
 import React, { useState } from "react";
 import {
   GraduationCap,
-  Upload,
   Users,
   X,
 } from "lucide-react";
@@ -30,7 +29,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [stdEmail, setStdEmail] = useState("");
   const [stdPassword, setStdPassword] = useState("");
   const [stdNationalId, setStdNationalId] = useState("");
-  const [stdIdFile, setStdIdFile] = useState<string | null>(null);
   const [stdPhone, setStdPhone] = useState("");
   const [guardianPhone, setGuardianPhone] = useState("");
   const [stdAge, setStdAge] = useState(16);
@@ -42,7 +40,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [tchEmail, setTchEmail] = useState("");
   const [tchPassword, setTchPassword] = useState("");
   const [tchNationalId, setTchNationalId] = useState("");
-  const [tchIdFile, setTchIdFile] = useState<string | null>(null);
   const [tchPhone, setTchPhone] = useState("");
   const [tchYear, setTchYear] = useState<"1st_secondary" | "2nd_secondary" | "3rd_secondary" | "all">("1st_secondary");
   const [tchSubject, setTchSubject] = useState("الكيمياء");
@@ -104,7 +101,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       email: stdEmail || "student@lms.edu.eg",
       role: "student",
       nationalId: stdNationalId || "30601010109999",
-      nationalIdPhotoUrl: stdIdFile || undefined,
       studentPhone: stdPhone || "01000000000",
       guardianPhone: guardianPhone || "01100000000",
       age: stdAge,
@@ -136,7 +132,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       email: tchEmail || "teacher@lms.edu.eg",
       role: "teacher",
       nationalId: tchNationalId || "28501010109999",
-      nationalIdPhotoUrl: tchIdFile || undefined,
       phone: tchPhone || "01200000000",
       teachingYear: tchYear,
       teachingYearLabel: yearLabels[tchYear],
@@ -331,22 +326,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </div>
             </div>
 
-            {/* ID Card Photo Upload */}
-            <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>صورة البطاقة الشخصية للتحقق:</label>
-              <div style={{ border: "1px dashed #cbd5e1", padding: "10px", borderRadius: "8px", textAlign: "center", background: "#f8fafc" }}>
-                <Upload size={18} style={{ color: "#64748b", margin: "0 auto 4px" }} />
-                <span style={{ fontSize: "11px", color: "#475569" }}>
-                  {stdIdFile ? "تم اختيار الصورة بنجاح" : "اضغط لرفع صورة بطاقة الرقم القومي"}
-                </span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={() => setStdIdFile("uploaded_id.png")}
-                  style={{ display: "block", opacity: 0, height: "1px" }}
-                />
-              </div>
-            </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
               <div>
@@ -467,22 +446,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </div>
             </div>
 
-            {/* Teacher ID Photo Upload */}
-            <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>صورة بطاقة الرقم القومي - للتحقق والاعتماد:</label>
-              <div style={{ border: "1px dashed #cbd5e1", padding: "10px", borderRadius: "8px", textAlign: "center", background: "#f8fafc" }}>
-                <Upload size={18} style={{ color: "#64748b", margin: "0 auto 4px" }} />
-                <span style={{ fontSize: "11px", color: "#475569" }}>
-                  {tchIdFile ? "تم اختيار صورة بطاقة المعلم بنجاح" : "اضغط لرفع صورة البطاقة الشخصية"}
-                </span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={() => setTchIdFile("teacher_id.png")}
-                  style={{ display: "block", opacity: 0, height: "1px" }}
-                />
-              </div>
-            </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
               <div>

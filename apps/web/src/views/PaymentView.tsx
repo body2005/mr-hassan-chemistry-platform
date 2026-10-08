@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   BadgeCheck,
@@ -119,23 +119,57 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [loadingPayments, setLoadingPayments] = useState(false);
+  const [paymentReadError, setPaymentReadError] = useState<string | null>(null);
+  const [hasLoadedPayments, setHasLoadedPayments] = useState(false);
+  const paymentReadGeneration = useRef(0);
+  const cancelPaymentReads = useCallback(() => { paymentReadGeneration.current++; }, []);
 
-  const load = useCallback(async () => {
-    const [nextConfig, nextOrders, nextEntitlements] = await Promise.all([
-      paymentService.getConfig(),
-      paymentService.getMyOrders(),
-      paymentService.getMyEntitlements().catch(() => []),
-    ]);
-    setConfig(nextConfig);
-    setOrders(nextOrders);
-    setEntitlements(nextEntitlements);
-    const firstMethod = nextConfig.methods.find((item) => item.enabled)?.id || "";
-    setMethod((current) => current || firstMethod);
+  const load = useCallback(async (fresh = false) => {
+    const generation = ++paymentReadGeneration.current;
+    setLoadingPayments(true);
+    try {
+      const [nextConfig, nextOrders, nextEntitlements] = await Promise.all([
+        paymentService.getConfig(),
+        paymentService.getMyOrders(fresh),
+        paymentService.getMyEntitlements(fresh),
+      ]);
+      if (generation !== paymentReadGeneration.current) return;
+      setConfig(nextConfig);
+      setOrders(nextOrders);
+      setEntitlements(nextEntitlements);
+      setHasLoadedPayments(true);
+      setPaymentReadError(null);
+      const firstMethod = nextConfig.methods.find((item) => item.enabled)?.id || "";
+      setMethod((current) => current || firstMethod);
+    } catch (error) {
+      if (generation === paymentReadGeneration.current) {
+        setPaymentReadError(error instanceof Error ? error.message : "تعذر تحديث حالة الدفع. أعد المحاولة يدويًا.");
+      }
+      throw error;
+    } finally {
+      if (generation === paymentReadGeneration.current) setLoadingPayments(false);
+    }
   }, []);
 
   useEffect(() => {
-    void load().catch((error) => toast({ message: error instanceof Error ? error.message : "تعذر تحميل بيانات الدفع", tone: "danger" }));
-  }, [load, toast]);
+    setOrders([]); setEntitlements([]); setConfig(null);
+    setHasLoadedPayments(false); setPaymentReadError(null);
+    // An older in-flight read may finish after a review. Reopening this view
+    // must use authoritative state, not resurrect its previous TTL entry.
+    void load(true).catch(() => undefined);
+    return cancelPaymentReads;
+  }, [load, cancelPaymentReads, currentUser?.id]);
+
+  useEffect(() => {
+    const reconcile = () => { void load(true).catch(() => undefined); };
+    window.addEventListener('lms_payment_updated', reconcile);
+    window.addEventListener('lms_lesson_unlocked', reconcile);
+    return () => {
+      window.removeEventListener('lms_payment_updated', reconcile);
+      window.removeEventListener('lms_lesson_unlocked', reconcile);
+    };
+  }, [load]);
 
   useEffect(() => {
     if (!initialTarget) return;
@@ -300,7 +334,8 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
 
             {/* Method cards grid */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "12px", marginBottom: "18px" }}>
-              {enabledMethods.length === 0 && (
+              {!config && <p style={{ margin: 0, fontSize: "12.5px", color: "var(--text-muted)" }}>{paymentReadError ? "تعذر تحميل وسائل الدفع، أعد التحديث يدويًا." : "جارٍ تحميل وسائل الدفع…"}</p>}
+              {config && enabledMethods.length === 0 && (
                 <p style={{ margin: 0, fontSize: "12.5px", color: "var(--text-muted)" }}>لا توجد وسائل دفع مفعلة حالياً — تواصل مع المعلم.</p>
               )}
               {enabledMethods.map((m) => {
@@ -599,11 +634,17 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
                 <h2 style={{ margin: 0, fontSize: "14.5px", fontWeight: 900, color: "var(--text-main)" }}>طلباتك السابقة</h2>
                 <p style={{ margin: "3px 0 0", fontSize: "11px", color: "var(--text-muted)" }}>تابع حالة مراجعة الإيصالات من هنا.</p>
               </div>
-              <button type="button" onClick={() => void load()} aria-label="تحديث" title="تحديث حالة الطلبات" style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "10px", padding: "8px", cursor: "pointer", color: "var(--text-main)", display: "flex" }}>
+              <button type="button" disabled={loadingPayments} onClick={() => void load(true).catch(() => undefined)} aria-label="تحديث" title="تحديث حالة الطلبات" style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "10px", padding: "8px", cursor: "pointer", color: "var(--text-main)", display: "flex" }}>
                 <RefreshCw size={15} />
               </button>
             </div>
-            {orders.length === 0 ? (
+            {paymentReadError && (
+              <p role="alert" style={{ color: "var(--text-main)", border: "1px solid var(--border-color)", borderRadius: "10px", padding: "12px", fontSize: "12px", lineHeight: 1.7 }}>
+                تعذر تحديث حالة الدفع: {paymentReadError}. {hasLoadedPayments ? "المعروض آخر حالة تم تحميلها؛ قد تكون تغيّرت." : "لم تُحمّل الطلبات بعد."} اضغط زر التحديث لإعادة المحاولة.
+              </p>
+            )}
+            {loadingPayments && <p role="status" style={{ color: "var(--text-muted)", fontSize: "12px" }}>جارٍ تحديث حالة الدفع…</p>}
+            {orders.length === 0 && hasLoadedPayments && !paymentReadError ? (
               <div style={{ textAlign: "center", padding: "24px 10px", color: "var(--text-muted)" }}>
                 <CreditCard size={28} style={{ margin: "0 auto 8px", color: "#059669" }} />
                 <p style={{ margin: 0, fontSize: "12px", fontWeight: 700 }}>لا توجد طلبات دفع حتى الآن.</p>

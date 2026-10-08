@@ -81,8 +81,11 @@ services:
     command:
       - >-
         export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/s3_password)";
-        exec /entrypoint.sh mini -dir=/data
+        exec /entrypoint.sh mini -dir=/data -s3.readerCacheSizeMB=64 -s3.cacheCapacityMB=0
     environment:
+      # Soft Go runtime budget, not a hard RSS/cgroup bound. Leave headroom
+      # for native/mapped memory and filesystem cache; size the host separately.
+      GOMEMLIMIT: ${S3_GOMEMLIMIT:-384MiB}
       AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY}
       S3_BUCKET: ${S3_BUCKET:-chemistry-materials}
     secrets:
@@ -224,12 +227,27 @@ services:
       retries: 5
     networks: [private]
 
+  backup-permissions:
+    profiles: ["ops"]
+    image: python:3.12.15-slim-trixie@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: [no-new-privileges:true]
+    entrypoint: ["/bin/sh", "/usr/local/bin/backup-permissions.sh"]
+    volumes:
+      - ${BACKUP_DIR:?set BACKUP_DIR to an external writable directory}:/backups
+      - ./backup-permissions.sh:/usr/local/bin/backup-permissions.sh:ro
+
   backup-postgres:
     profiles: ["ops"]
     image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - >-
+        umask 077;
         export PGPASSWORD="$$(cat /run/secrets/postgres_password)";
         backup="/backups/postgres-$$(date -u +%Y%m%dT%H%M%SZ).dump";
         pg_dump -h postgres -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -Fc -f "$${backup}";
@@ -242,6 +260,8 @@ services:
     volumes:
       - ${BACKUP_DIR:?set BACKUP_DIR to an external writable directory}:/backups
     depends_on:
+      backup-permissions:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     networks: [private]
@@ -250,12 +270,14 @@ services:
     profiles: ["ops"]
     build: *api-build
     entrypoint: ["/bin/sh", "/srv/entrypoint-prod.sh"]
-    command: ["python", "scripts/s3_snapshot.py", "backup", "--directory", "/backups/s3"]
+    command: ["/bin/sh", "-ec", "umask 077; exec python scripts/s3_snapshot.py backup --directory /backups/s3"]
     environment: *api-env
     secrets: *app-secrets
     volumes:
       - ${BACKUP_DIR:?set BACKUP_DIR to an external writable directory}:/backups
     depends_on:
+      backup-permissions:
+        condition: service_completed_successfully
       s3:
         condition: service_healthy
     networks: [private]
@@ -266,10 +288,14 @@ services:
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - >-
+        umask 077;
         tar -C /srv/uploads -czf "/backups/videos-$$(date -u +%Y%m%dT%H%M%SZ).tar.gz" .
     volumes:
       - video_uploads:/srv/uploads:ro
       - ${BACKUP_DIR:?set BACKUP_DIR to an external writable directory}:/backups
+    depends_on:
+      backup-permissions:
+        condition: service_completed_successfully
     networks: [private]
 
 networks:

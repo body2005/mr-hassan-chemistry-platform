@@ -5,6 +5,13 @@ $taskRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 Set-Location $taskRoot
 $folder = if ($Project -eq 'chemistryaudit2') { 'audit2' } else { 'production' }
 $compose = @('compose','--env-file',".qa/$folder/compose.env",'-p',$Project,'-f','infra/docker-compose.yml','-f','infra/qa/production.override.yml')
+# The legacy template must not accidentally recreate a running video pipeline
+# without its overlay, or snapshot while its encoder/direct-upload ingress writes.
+$pipeline = @(& $Docker ps -a --filter "label=com.docker.compose.project=$Project" --filter 'label=com.docker.compose.service=video-worker' --format '{{.Names}}')
+if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the isolated storage-drill scope' }
+if ($pipeline.Count -gt 0) {
+    throw 'Video pipeline exists. Use scripts/qa/video-storage-drill.ps1 for this project; it freezes ALL writers and restores BOTH PostgreSQL and S3.'
+}
 function Invoke-QaCompose([string[]]$Arguments) {
     & $Docker @compose @Arguments
     if ($LASTEXITCODE -ne 0) { throw "QA Compose failed (exit $LASTEXITCODE): $Arguments" }
@@ -37,6 +44,7 @@ Invoke-QaCompose @('run','--rm','--no-deps','qa-tests','python','-m','scripts.st
 # Freeze writers for a consistent cross-store snapshot; restore only to NEW stores.
 Invoke-QaCompose @('stop','api','worker')
 try {
+    Invoke-QaCompose @('run','--rm','--no-deps','backup-permissions')
     Invoke-QaCompose @('run','--rm','--no-deps','backup-postgres')
     Invoke-QaCompose @('run','--rm','--no-deps','--build','backup-s3')
     Invoke-QaCompose @('run','--rm','--no-deps','--build','backup-videos')

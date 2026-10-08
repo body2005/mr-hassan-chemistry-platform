@@ -17,7 +17,8 @@ async function post(page: Page, path: string, data: unknown, status = 201) {
   return response.json();
 }
 
-test("essay and uploaded homework are submitted and graded through the real UI", async ({ page, browser }) => {
+for (const delayedIdentity of [false, true]) {
+test(`essay and uploaded homework are submitted and graded through the real UI${delayedIdentity ? ' after delayed identity hydration' : ''}`, async ({ page, browser }) => {
   test.setTimeout(180_000);
   page.setDefaultTimeout(15_000);
   await login(page, "teacher@demo.com", "qa-teacher-pass");
@@ -37,8 +38,16 @@ test("essay and uploaded homework are submitted and graded through the real UI",
   const studentContext = await browser.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true" });
   const student = await studentContext.newPage();
   student.setDefaultTimeout(15_000);
+  const studentEmail = `qa-manual-${crypto.randomUUID()}@demo.com`;
+  const registered = await student.request.post(`${base}/api/v1/auth/register`, { data: {
+    display_name: 'QA Manual Student', email: studentEmail, password: 'qa-student-pass',
+    grade_level: 'SECONDARY_1', governorate: 'CAIRO', school_name: 'Local QA school', gender: 'MALE',
+  } });
+  expect(registered.status(), await registered.text()).toBe(201);
+  const registrationCsrf = (await studentContext.cookies()).find(c => c.name === 'matgar_csrf')!.value;
+  expect((await student.request.post(`${base}/api/v1/auth/logout`, { headers: { 'X-CSRF-Token': registrationCsrf } })).status()).toBe(204);
   try {
-    await login(student, "student06@demo.com", "qa-student-pass");
+    await login(student, studentEmail, "qa-student-pass");
     await post(student, `courses/${course.id}/enroll`, {}, 200);
     await post(student, `courses/${secondCourse.id}/enroll`, {}, 200);
     const me = await (await student.request.get(`${base}/api/v1/auth/me`)).json();
@@ -59,12 +68,75 @@ test("essay and uploaded homework are submitted and graded through the real UI",
     await expect(student.locator('input[type="file"]')).toHaveCount(1);
     await student.locator('input[type="file"]').setInputFiles({ name: "solution.png", mimeType: "image/png",
       buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAE0lEQVR4nGP8//8/AwMDEwMYAAAkBgMBXaJOiAAAAABJRU5ErkJggg==", "base64") });
+    const other = await studentContext.newPage();
+    const hydrated = other.waitForResponse(response => response.url().endsWith('/bootstrap') && response.status() === 200);
+    await other.goto(`${base}/#profile`);
+    await hydrated;
+    await expect(other.locator('.profile-button')).toHaveCount(1);
+    // Reproduce the expired-access + temporary refresh outage on the actual
+    // homework UI. Never send/replay the non-idempotent file while identity
+    // is unavailable; retain the selected file and current account for retry.
+    const transfers: string[] = [];
+    student.on('request', request => {
+      if (request.method() === 'POST' && new URL(request.url()).pathname === `/api/v1/assignments/${assignment.id}/submissions/file`) transfers.push(request.url());
+    });
+    await studentContext.clearCookies({ name: 'matgar_session' });
+    let failedRefreshes = 0;
+    let otherRefreshes = 0;
+    let failedSheets = 0;
+    student.on('response', response => {
+      if (response.url().includes(`/assignments/${assignment.id}/sheet`) && response.status() === 401) failedSheets++;
+    });
+    await studentContext.route('**/api/v1/auth/refresh', route => {
+      if (route.request().frame().page() === student) failedRefreshes++;
+      else otherRefreshes++;
+      return route.fulfill({ status: 503, json: { detail: 'Synthetic temporary refresh outage' } });
+    });
+    // Exercise the real blob helper, multipart preflight, JSON hydration and
+    // SSE renewal in two tabs sharing cookies; no direct scripted API helper.
+    await student.getByRole('button', { name: 'تحميل PDF', exact: true }).click();
+    await expect(student.getByText('تعذر تحميل ورقة الواجب', { exact: true })).toBeVisible();
+    await other.reload();
+    await student.getByRole('button', { name: 'إرسال الحل للمعلم' }).click();
+    await expect(student.getByText('تعذر تجديد الجلسة مؤقتًا.', { exact: false }).first()).toBeVisible();
+    await expect(student.locator('.profile-button')).toHaveCount(1);
+    expect(await student.locator('input[type="file"]').evaluate(input => (input as HTMLInputElement).files?.length)).toBe(1);
+    expect(transfers).toHaveLength(0);
+    await student.waitForTimeout(11_000); // Observe beyond real frontend cooldown, no retry loop.
+    expect(failedRefreshes).toBe(1);
+    expect(otherRefreshes).toBeGreaterThanOrEqual(1);
+    expect(otherRefreshes).toBeLessThanOrEqual(2);
+    expect(failedSheets).toBe(1);
+    expect(await other.evaluate(() => localStorage.getItem('lms_cached_user'))).not.toBeNull();
+    expect(transfers).toHaveLength(0);
+    await studentContext.unroute('**/api/v1/auth/refresh');
+    const downloaded = student.waitForEvent('download');
+    await student.getByRole('button', { name: 'تحميل PDF', exact: true }).click();
+    expect((await downloaded).suggestedFilename()).toBe(`${assignment.title}.pdf`);
+    const rehydrated = other.waitForResponse(response => response.url().endsWith('/bootstrap') && response.status() === 200);
+    await other.reload();
+    await rehydrated;
+    await expect(other.locator('.profile-button')).toHaveCount(1);
     await student.getByRole("button", { name: "إرسال الحل للمعلم" }).click();
     await expect(student.getByText("تم إرسال حل الواجب للمعلم بنجاح")).toBeVisible();
+    expect(transfers).toHaveLength(1);
 
     await page.goto(`${base}/#submissions`);
-    await page.reload();
-    await page.getByPlaceholder("بحث باسم الطالب، رقم ولي الأمر، أو البريد الإلكتروني...").fill("student06@demo.com");
+    if (delayedIdentity) {
+      let release: () => void = () => {};
+      const held = new Promise<void>(resolve => { release = resolve; });
+      await page.route('**/api/v1/bootstrap', async route => { await held; await route.continue(); });
+      const hydrated = page.waitForResponse(response => response.url().endsWith('/bootstrap') && response.status() === 200);
+      await page.reload();
+      try {
+        await expect(page.getByRole('status')).toContainText('جارٍ التحقق من الحساب');
+        await expect(page.getByRole('button', { name: 'معاينة وتعديل درجة الامتحان' }),
+          'Cached identity must not expose grading before server hydration').toHaveCount(0);
+      } finally { release(); }
+      await hydrated;
+      await page.unroute('**/api/v1/bootstrap');
+    } else await page.reload();
+    await page.getByPlaceholder("بحث باسم الطالب، رقم ولي الأمر، أو البريد الإلكتروني...").fill(studentEmail);
     await page.getByRole('button', { name: 'Toggle Theme' }).click();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
     await page.getByRole("button", { name: "معاينة وتعديل درجة الامتحان" }).click();
@@ -92,7 +164,8 @@ test("essay and uploaded homework are submitted and graded through the real UI",
     expect(submitted.teacher_feedback).toBe("Clear working and units.");
   } finally {
     const csrf = (await studentContext.cookies()).find(c => c.name === "matgar_csrf")?.value;
-    if (csrf) expect((await student.request.post(`${base}/api/v1/auth/logout`, { headers: { "X-CSRF-Token": csrf } })).status()).toBe(204);
+    if (csrf) expect.soft((await student.request.post(`${base}/api/v1/auth/logout`, { headers: { "X-CSRF-Token": csrf } })).status()).toBe(204);
     await studentContext.close();
   }
 });
+}

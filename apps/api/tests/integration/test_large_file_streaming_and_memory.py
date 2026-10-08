@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 import threading
-import shutil
 import zipfile
 import pytest
 from app.core.upload_limits import MAX_VIDEO_BYTES, MAX_MATERIAL_BYTES
@@ -91,7 +90,7 @@ def test_exact_upload_byte_boundaries(kind, extra, tmp_path):
     """Padding tests byte limits, NOT realistic content size or user capacity.
 
     The ZIP is valid, uncompressed; WebM preserves the playable clip and adds
-    an EBML Void in its unknown-size Segment. No whole-file RAM buffer.
+    an EBML Void inside its correctly resized Segment. No whole-file RAM buffer.
     """
     from .live_helpers import clear_auth, wait_until
     clear_auth()
@@ -100,13 +99,8 @@ def test_exact_upload_byte_boundaries(kind, extra, tmp_path):
     path = tmp_path / ("boundary.webm" if kind == "video" else "boundary.zip")
     if kind == "video":
         source_path = Path(os.environ["QA_MEDIA_DIR"]) / "video.webm"
-        with source_path.open("rb") as source:
-            assert b"\x18\x53\x80\x67\x01\xff\xff\xff\xff\xff\xff\xff" in source.read(128)
-        shutil.copyfile(source_path, path)
-        remaining = size - path.stat().st_size - 9
-        with path.open("ab") as target:
-            target.write(b"\xec" + (remaining | (1 << 56)).to_bytes(8, "big"))
-            target.truncate(size)
+        from tests.fixture_media import padded_webm
+        padded_webm(source_path, path, size)
     else:
         # Local header (36), central record (52), end record (22): 110 bytes.
         remaining = size - 110

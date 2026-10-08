@@ -1,4 +1,4 @@
-import { apiRequest, fetchApiBlob, uploadWithProgress } from "./apiClient";
+import { apiRequest, fetchApiBlob, invalidateApiCache, uploadWithProgress } from "./apiClient";
 
 /** "ai_subscription" remains a valid legacy value for historical orders. */
 export type PaymentProductType = "course" | "lesson" | "ai_subscription";
@@ -51,8 +51,18 @@ export interface PaymentTarget {
 
 export const paymentService = {
   getConfig: () => apiRequest<PaymentConfig>("/payments/config", { cacheTtlMs: 300_000 }),
-  getMyOrders: () => apiRequest<PaymentOrder[]>("/payments/me/orders", { cacheTtlMs: 15_000 }),
-  getMyEntitlements: () => apiRequest<StudentEntitlement[]>("/payments/me/entitlements", { cacheTtlMs: 60_000 }),
+  getMyOrders: (fresh = false) => {
+    if (fresh) invalidateApiCache('/payments/me/orders');
+    return apiRequest<PaymentOrder[]>("/payments/me/orders", {
+      cacheTtlMs: 15_000, skipCache: fresh, ...(fresh ? { cache: 'no-store' as const } : {}),
+    });
+  },
+  getMyEntitlements: (fresh = false) => {
+    if (fresh) invalidateApiCache('/payments/me/entitlements');
+    return apiRequest<StudentEntitlement[]>("/payments/me/entitlements", {
+      cacheTtlMs: 60_000, skipCache: fresh, ...(fresh ? { cache: 'no-store' as const } : {}),
+    });
+  },
   createOrder: (payload: {
     product_type: PaymentProductType;
     product_id?: string;
@@ -72,10 +82,13 @@ export const paymentService = {
     return uploadWithProgress<PaymentOrder>(`/payments/orders/${orderId}/receipt`, form, onProgress, 60_000);
   },
   getOrder: (orderId: string) => apiRequest<PaymentOrder>(`/payments/orders/${orderId}`, { cacheTtlMs: 30_000 }),
-  listOrders: (status?: PaymentStatus) => apiRequest<PaymentOrder[]>(
-    `/payments/orders${status ? `?status=${encodeURIComponent(status)}` : ""}`,
-    { cacheTtlMs: 15_000 },
-  ),
+  listOrders: (status?: PaymentStatus, fresh = false) => {
+    if (fresh) invalidateApiCache('/payments/orders');
+    return apiRequest<PaymentOrder[]>(
+      `/payments/orders${status ? `?status=${encodeURIComponent(status)}` : ""}`,
+      { cacheTtlMs: 15_000, skipCache: fresh, ...(fresh ? { cache: 'no-store' as const } : {}) },
+    );
+  },
   approve: (orderId: string, note?: string) => apiRequest<PaymentOrder>(`/payments/orders/${orderId}/approve`, {
     method: "POST",
     body: JSON.stringify({ note: note || undefined }),

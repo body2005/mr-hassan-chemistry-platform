@@ -12,6 +12,7 @@ from app.core.rate_limit import _get_redis_client
 
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 120
+RENEW_INTERVAL_SECONDS = 30
 ACQUIRE = """
 local t = redis.call('TIME'); local now = tonumber(t[1]) + tonumber(t[2])/1000000
 for i,key in ipairs(KEYS) do
@@ -48,6 +49,7 @@ class ResourceLease:
         self.client = None
         self.renew_task = None
         self.owner = None
+        self.lost = False
 
     async def acquire(self) -> bool:
         self.client = await asyncio.to_thread(_get_redis_client)
@@ -70,17 +72,47 @@ class ResourceLease:
 
     async def _renew(self):
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(RENEW_INTERVAL_SECONDS)
+            failure = None
             try:
                 alive = await asyncio.to_thread(self.client.eval, RENEW, len(self.keys), *self.keys,
                                                self.token, LEASE_SECONDS)
-            except Exception:
+            except Exception as exc:
                 alive = False
+                failure = type(exc).__name__
             if not alive:
-                logger.warning("Resource lease lost; closing reserved work")
+                self.lost = True
+                logger.warning("Resource lease lost; closing reserved work (reason=%s)",
+                               failure or "reservation_missing_or_expired")
                 if self.owner and not self.owner.done():
                     self.owner.cancel()
                 return
+
+    async def run(self, app, scope, receive, send):
+        """Fail closed on OUR cancellation, without rewriting client disconnects.
+
+        Once headers are sent, close the stream instead of emitting a second
+        status or a successful tail. No resource budget or renewal is relaxed.
+        """
+        started = False
+
+        async def guarded_send(message):
+            nonlocal started
+            if message['type'] == 'http.response.start':
+                started = True
+            await send(message)
+
+        try:
+            return await app(scope, receive, guarded_send)
+        except asyncio.CancelledError:
+            if not self.lost or started:
+                raise
+            from fastapi.responses import JSONResponse
+            with anyio.CancelScope(shield=True):
+                return await JSONResponse(
+                    {'detail': 'Admission service temporarily unavailable'},
+                    status_code=503, headers={'Retry-After': '2'},
+                )(scope, receive, send)
 
     async def release(self):
         # Streaming disconnect cancels the ASGI task. Cleanup must run outside

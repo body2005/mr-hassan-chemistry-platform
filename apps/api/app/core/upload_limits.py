@@ -62,7 +62,7 @@ class UploadBudgetMiddleware:
                         raise HTTPException(413, "Upload exceeds the allowed byte limit")
                 return message
             try:
-                return await self.app(scope, bounded_receive, send)
+                return await lease.run(self.app, scope, bounded_receive, send)
             finally:
                 await lease.release()
         return await self.app(scope, receive, send)

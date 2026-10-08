@@ -3,11 +3,17 @@ import json
 import time
 import pytest
 import requests
-from .live_helpers import BASE, container, session, wait_until
+import uuid
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+from app.models.mail_outbox import ResetMailOutbox
+from app.models.user import PasswordResetToken
+from .live_helpers import BASE, container, session, wait_until, pg_engine, operational_logs, clear_auth
 
 
 @pytest.mark.parametrize("service", ["postgres", "redis", "s3", "worker", "mailpit", "web", "proxy"])
 def test_service_failure_and_recovery(service):
+    clear_auth()
     target = container(service)
     with session() as teacher:
         before = teacher.get(f"{BASE}/courses", timeout=15)
@@ -25,13 +31,31 @@ def test_service_failure_and_recovery(service):
                 status = teacher.get(f"{BASE}/{path}", timeout=30).status_code
                 assert status == 503, f"Object-store outage misreported as {status}"
             elif service == "mailpit":
+                engine = pg_engine()
+                user_id = uuid.UUID(teacher.get(f'{BASE}/auth/me', timeout=10).json()['id'])
+                with Session(engine) as db:
+                    previous_jobs = set(db.scalars(select(ResetMailOutbox.id).join(PasswordResetToken,
+                        PasswordResetToken.id == ResetMailOutbox.token_id).where(PasswordResetToken.user_id == user_id)))
                 response = teacher.post(f"{BASE}/auth/password-reset/request", json={"email": "teacher@demo.com",
                                                                  "institution_slug": "demo"}, timeout=20)
                 status = response.status_code
                 # Deliberately generic even when mail fails: 503 only for
                 # existing users would disclose which email addresses exist.
                 assert status == 200, response.text
-                assert b"Password reset email delivery failed" in container("api").logs(tail=40)
+                # Delivery is no longer synchronous in HTTP. Require durable
+                # PostgreSQL retry evidence instead of an immediate SMTP log.
+                def deferred():
+                    with Session(engine) as db:
+                        job = db.scalar(select(ResetMailOutbox).join(PasswordResetToken,
+                            PasswordResetToken.id == ResetMailOutbox.token_id).where(
+                            PasswordResetToken.user_id == user_id, ResetMailOutbox.id.not_in(previous_jobs)))
+                        if job and job.attempts > 0:
+                            assert job.completed_at is None and job.encrypted_token
+                            return job.id
+                    return None
+                wait_until(deferred, 45)
+                mail_job_id = deferred()
+                operational_logs('api', lambda logs: b'Reset mail delivery deferred' in logs)
             elif service == "proxy":
                 with pytest.raises(requests.RequestException):
                     teacher.get(f"{BASE}/courses", timeout=10)
@@ -69,5 +93,14 @@ def test_service_failure_and_recovery(service):
         if service == 'postgres':
             startup = teacher.get(f'{BASE}/bootstrap', timeout=15)
             assert startup.status_code == 200 and startup.json()['authenticated'] is True
+        if service == 'mailpit':
+            try:
+                def delivered():
+                    with Session(engine) as db:
+                        job = db.get(ResetMailOutbox, mail_job_id)
+                        return job.completed_at is not None and job.encrypted_token is None
+                wait_until(delivered, 75)
+            finally:
+                engine.dispose()
         print(json.dumps({"service": service, "during_status": status, "seconds": round(elapsed, 3),
                           "recovered": True, "course_ids_unchanged": True}))

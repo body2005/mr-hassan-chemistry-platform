@@ -4,6 +4,8 @@ FROM ${API_TEST_IMAGE}
 # The API and its production workers inherit the non-root runtime instead.
 USER 0:0
 # Test tooling never enters the production runtime image.
-RUN python -m ensurepip && python -m pip install --no-cache-dir \
-    requests==2.32.5 requests-toolbelt==1.0.0 docker==7.1.0
+RUN python -m ensurepip \
+    && python -m pip install --no-cache-dir --retries 3 --timeout 60 pip==26.2.1 \
+    && python -m pip install --no-cache-dir --retries 3 --timeout 60 \
+    requests==2.32.5 requests-toolbelt==1.0.0 docker==7.1.0 pip-audit==2.10.1
 COPY . .

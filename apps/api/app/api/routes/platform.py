@@ -12,7 +12,7 @@ from collections import defaultdict
 UTC = timezone.utc
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, status, UploadFile, File, Query
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 import shutil
 from sqlalchemy import func, select
@@ -59,6 +59,7 @@ from app.schemas import (
     GradeSubmissionRequest,
     GradeQuizAnswerRequest,
     LessonCreateRequest,
+    LessonCommentCreateRequest,
     LessonProgressResponse,
     ModuleCreateRequest,
     ModuleResponse,
@@ -88,12 +89,18 @@ VIDEO_TOKEN_TTL_SECONDS = 300
 # A video session is keyed by (account, lesson). Issue a token only while the
 # concurrent-session budget for that pair is not exhausted; return its expiry.
 def _register_video_session(
-    db: Session, user_id: uuid.UUID, lesson_id: uuid.UUID, session_jti: str, ttl_seconds: int
+    db: Session, user_id: uuid.UUID, lesson_id: uuid.UUID, session_jti: str, ttl_seconds: int,
+    *, family_id: uuid.UUID | None = None,
 ) -> datetime:
     settings = get_settings()
     max_sessions = settings.video_max_concurrent_sessions
     now = datetime.now(UTC)
     base_key = f"video-session:{user_id}:{lesson_id}"
+    # Refresh rotates the access JWT's jti, not the browser/device family.
+    # Count the validated family once while keeping each playback token bound
+    # to the current jti in _authorize_video_stream. Legacy cookies have no
+    # family; retain their existing jti slots until their normal expiry.
+    slot_id = f"family:{family_id}" if family_id is not None else session_jti
     r = _video_session_redis()
     if r is not None:
         try:
@@ -111,7 +118,7 @@ def _register_video_session(
                 return 0
                 """,
                 1, base_key, now.timestamp(), now.timestamp() + ttl_seconds,
-                session_jti, max_sessions, ttl_seconds + 5,
+                slot_id, max_sessions, ttl_seconds + 5,
             )
             if not admitted:
                 raise HTTPException(
@@ -124,7 +131,7 @@ def _register_video_session(
             raise
         except Exception:
             logger.warning("Redis unavailable for video session tracking")
-    if settings.redis_required or settings.app_env in {"production", "production_like"}:
+    if settings.redis_required or settings.deployment_environment:
         raise HTTPException(503, "Video session service temporarily unavailable", headers={"Retry-After": "2"})
     # Dev/test fallback: best-effort in-process ledger.
     with _memory_video_sessions_lock:
@@ -132,13 +139,13 @@ def _register_video_session(
         for key, expiry in list(entries.items()):
             if expiry <= now.timestamp():
                 entries.pop(key, None)
-        if session_jti not in entries and len(entries) >= max_sessions:
+        if slot_id not in entries and len(entries) >= max_sessions:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Too many concurrent video sessions for this account.",
                 headers={"Retry-After": "30"},
             )
-        entries[session_jti] = now.timestamp() + ttl_seconds
+        entries[slot_id] = now.timestamp() + ttl_seconds
     return now + timedelta(seconds=ttl_seconds)
 
 
@@ -187,23 +194,25 @@ def _revoke_video_sessions(
         keys.append(f"video-deny:family:{family_id}")
     if session_jti:
         keys.append(f"video-deny:session:{session_jti}")
+    slots = ([f"family:{family_id}"] if family_id is not None else []) + ([session_jti] if session_jti else [])
     if r is not None:
         try:
             for key in keys:
                 r.set(key, until.isoformat(), ex=VIDEO_TOKEN_TTL_SECONDS + 30)
-            if session_jti:
+            if slots:
                 for key in r.scan_iter(match=f"video-session:{user_id}:*"):
-                    r.zrem(key, session_jti)
+                    r.zrem(key, *slots)
             return
         except Exception:
             logger.warning("Redis unavailable for video revocation; using memory marker")
     for key in keys:
         _memory_video_deny[key] = until
-    if session_jti:
+    if slots:
         with _memory_video_sessions_lock:
             for key, entries in _memory_video_sessions.items():
                 if key.startswith(f"video-session:{user_id}:"):
-                    entries.pop(session_jti, None)
+                    for slot in slots:
+                        entries.pop(slot, None)
 
 
 _memory_video_deny: dict[str, datetime] = {}
@@ -306,8 +315,14 @@ def _lesson_course(db: Session, lesson_id: uuid.UUID) -> tuple[Lesson, Course]:
     return row[0], row[1]
 
 
-def _require_lesson_access(db: Session, user: User, lesson_id: uuid.UUID) -> tuple[Lesson, Course]:
+def _require_lesson_access(
+    db: Session, user: User, lesson_id: uuid.UUID, *, same_institution: bool = False,
+) -> tuple[Lesson, Course]:
     lesson, course = _lesson_course(db, lesson_id)
+    # Discussion was institution-scoped, including platform administrators.
+    # Do not broaden it while aligning enrollment/ownership with media access.
+    if same_institution and course.institution_id != user.institution_id:
+        raise HTTPException(status_code=404, detail="Lesson not found")
     if not can_access_lesson_content(db, user, lesson_id):
         if course.institution_id != user.institution_id:
             raise HTTPException(status_code=404, detail="Lesson not found")
@@ -598,7 +613,9 @@ def create_lesson_video_token(lesson_id: uuid.UUID, request: Request, response: 
             family_id = uuid.UUID(str(raw_family))
         except (TypeError, ValueError):
             family_id = None
-    expires_at = _register_video_session(db, user.id, lesson.id, session_id, VIDEO_TOKEN_TTL_SECONDS)
+    expires_at = _register_video_session(
+        db, user.id, lesson.id, session_id, VIDEO_TOKEN_TTL_SECONDS, family_id=family_id,
+    )
     token = create_video_token(
         user=user,
         lesson_id=lesson.id,
@@ -1259,7 +1276,11 @@ def mark_notification_read(
 
 
 @router.get("/calendar", response_model=list[CalendarEventResponse])
-def list_calendar(user: CurrentUser, db: Db) -> list[CalendarEventResponse]:
+def list_calendar(
+    user: CurrentUser, db: Db,
+    limit: Annotated[int, Query(ge=1, le=500)] = 500,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[CalendarEventResponse]:
     query = select(CalendarEvent).where(CalendarEvent.institution_id == user.institution_id)
     if user.role == UserRole.STUDENT:
         query = query.where(
@@ -1267,7 +1288,10 @@ def list_calendar(user: CurrentUser, db: Db) -> list[CalendarEventResponse]:
         )
     return [
         CalendarEventResponse.model_validate(item)
-        for item in db.scalars(query.order_by(CalendarEvent.starts_at.asc()).limit(500)).all()
+        for item in db.scalars(
+            query.order_by(CalendarEvent.starts_at.asc(), CalendarEvent.id.asc())
+            .offset(offset).limit(limit)
+        ).all()
     ]
 
 
@@ -2481,47 +2505,31 @@ def _comment_tree(db: Session, lesson_id: uuid.UUID, user: CurrentUser) -> list[
 
 @router.get("/lessons/{lesson_id}/comments")
 def list_lesson_comments(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
-    lesson = db.get(Lesson, lesson_id)
-    if lesson is None:
-        raise HTTPException(status_code=404, detail="Lesson not found")
-    module = db.get(CourseModule, lesson.module_id) if lesson.module_id else None
-    course = db.get(Course, module.course_id) if module else None
-    if course is None or course.institution_id != user.institution_id:
-        raise HTTPException(status_code=404, detail="Lesson not found")
+    _require_lesson_access(db, user, lesson_id, same_institution=True)
     return {"comments": _comment_tree(db, lesson_id, user)}
 
 
 @router.post("/lessons/{lesson_id}/comments", status_code=201)
 def add_lesson_comment(
     lesson_id: uuid.UUID,
-    payload: dict,
+    payload: LessonCommentCreateRequest,
     user: CurrentUser,
     db: Db,
     request: Request,
 ) -> dict:
     enforce_rate_limit(request, bucket="read")
-    body = (payload.get("body") or "").strip()
-    parent_raw = payload.get("parent_id")
-    if not body or len(body) > 2000:
-        raise HTTPException(status_code=422, detail="Comment must be 1..2000 characters")
-    lesson = db.get(Lesson, lesson_id)
-    if lesson is None:
-        raise HTTPException(status_code=404, detail="Lesson not found")
-    module = db.get(CourseModule, lesson.module_id) if lesson.module_id else None
-    course = db.get(Course, module.course_id) if module else None
-    if course is None or course.institution_id != user.institution_id:
-        raise HTTPException(status_code=404, detail="Lesson not found")
+    lesson, course = _require_lesson_access(db, user, lesson_id, same_institution=True)
     parent: LessonComment | None = None
-    if parent_raw:
-        parent = db.get(LessonComment, uuid.UUID(str(parent_raw)))
-        if parent is None or parent.lesson_id != lesson.id:
+    if payload.parent_id is not None:
+        parent = db.get(LessonComment, payload.parent_id)
+        if parent is None or parent.lesson_id != lesson.id or parent.parent_id is not None:
             raise HTTPException(status_code=422, detail="Parent comment not found")
     comment = LessonComment(
         institution_id=course.institution_id,
         lesson_id=lesson.id,
         student_id=user.id,
         parent_id=parent.id if parent else None,
-        body=body,
+        body=payload.body,
     )
     db.add(comment)
     db.commit()

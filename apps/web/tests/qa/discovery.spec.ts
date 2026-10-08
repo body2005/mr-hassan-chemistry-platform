@@ -3,12 +3,16 @@
  * Run after the standard journeys; do not overlap shared-IP auth tests.
  */
 import type { Browser, Page } from '@playwright/test';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
+import { promisify } from 'node:util';
 import { expect, test } from './qaTest';
+import { assertAccessible } from './accessibility';
 
 const base = process.env.QA_BASE_URL || 'https://localhost:18543';
+const runDocker = promisify(execFile);
 function pdfText(pdf: Buffer) {
   return execFileSync(process.env.QA_PYTHON || 'python', ['-c',
     'import io,sys; from pypdf import PdfReader; print("\\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(sys.stdin.buffer.read())).pages))'],
@@ -22,15 +26,31 @@ async function signIn(page: Page, email: string, password: string) {
   const form = page.locator('form').first();
   await form.locator('input[type="text"]').fill(email);
   await form.locator('input[type="password"]').fill(password);
-  await form.locator('button[type="submit"]').click();
+  // Separate the real15s transport budget from the unchanged5s UI budget.
+  // A successful cookie login must hydrate the SAME server identity, not
+  // merely expose a cached profile while the origin is unauthenticated.
+  const loggedIn = page.waitForResponse(response => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/auth/login', { timeout: 15_000 });
+  const hydrated = page.waitForResponse(async response =>
+    new URL(response.url()).pathname === '/api/v1/bootstrap' && response.status() === 200
+    && (await response.json()).authenticated === true, { timeout: 15_000 })
+    .then(response => ({ response }), (error: unknown) => ({ error }));
+  const [loginResponse] = await Promise.all([loggedIn, form.locator('button[type="submit"]').click()]);
+  expect(loginResponse.status(), 'Real login must succeed; do not retry429/401').toBe(200);
+  const identity = await loginResponse.json();
+  const hydration = await hydrated;
+  if ('error' in hydration) throw hydration.error;
+  const bootstrap = await hydration.response.json();
+  expect(bootstrap.user.id).toBe(identity.user.id);
+  expect(bootstrap.user.email).toBe(email);
   await expect(page.locator('.profile-button')).toHaveCount(1);
 }
 async function teacher(page: Page) {
   const project = process.env.QA_REDIS_CONTAINER?.replace(/-redis-1$/, '');
   if (project !== 'chemistryaudit2') throw new Error('Discovery requires chemistryaudit2');
-  const output = execFileSync(process.env.QA_DOCKER || 'docker', ['exec', '-e', 'QA_ISOLATED=true', '-e', `QA_PROJECT=${project}`,
+  const { stdout } = await runDocker(process.env.QA_DOCKER || 'docker', ['exec', '-e', 'QA_ISOLATED=true', '-e', `QA_PROJECT=${project}`,
     `${project}-api-1`, 'sh', '/srv/entrypoint-prod.sh', 'python', '-m', 'scripts.seed_qa_teacher'], { encoding: 'utf8', timeout: 20_000 });
-  const identity = JSON.parse(output.trim());
+  const identity = JSON.parse(stdout.trim());
   await signIn(page, identity.email, identity.password);
   return identity;
 }
@@ -53,6 +73,7 @@ async function student(browser: Browser, grade = 'SECONDARY_1') {
   await page.goto(base);
   await expect(page.locator('.profile-button')).toHaveCount(1);
   return { page, close: async () => {
+    if (page.isClosed()) return;
     const csrf = (await context.cookies()).find(c => c.name === 'matgar_csrf')?.value;
     if (csrf) expect((await page.request.post(`${base}/api/v1/auth/logout`, { headers: { 'X-CSRF-Token': csrf } })).status()).toBe(204);
     await context.close();
@@ -86,6 +107,29 @@ async function publish(page: Page, kind: string) {
 const mcq: DraftQuestion = { id: 'q1', question_text: 'Choose the mass unit.', question_type: 'multiple_choice', points: 7,
   options: [{ key: 'A', text: 'kilogram QA option', is_correct: true }, { key: 'B', text: 'second QA option', is_correct: false }] };
 
+async function observeNativePaymentStream(page: Page) {
+  // No successful responses/events are synthesized. This only observes the
+  // browser's native EventSource, including the server's subscription event.
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    const state = { connected: 0, errors: 0, reviews: [] as Array<{ id: string; status: string }>, unlocks: [] as unknown[] };
+    Object.assign(window, { qaPaymentStream: state });
+    window.addEventListener('lms_payment_updated', e => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.id) state.reviews.push(detail);
+    });
+    window.addEventListener('lms_lesson_unlocked', e => state.unlocks.push((e as CustomEvent).detail));
+    window.EventSource = class extends NativeEventSource {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        this.addEventListener('connected', () => state.connected++);
+        this.addEventListener('error', () => state.errors++);
+      }
+    };
+  });
+  return () => page.evaluate(() => (window as unknown as { qaPaymentStream: { connected: number; errors: number; reviews: Array<{ id: string; status: string }>; unlocks: unknown[] } }).qaPaymentStream);
+}
+
 test('new student discovers and enrolls a free course entirely from the catalog UI', async ({ page, browser }) => {
   await teacher(page);
   const { course } = await courseWithLesson(page, `catalog ${Date.now()}`);
@@ -105,26 +149,85 @@ test('new student discovers and enrolls a free course entirely from the catalog 
   } finally { await learner.close(); }
 });
 
-test('rejected payment arrives over real SSE without unlocking the student lesson', async ({ page, browser }) => {
+for (const streamOutage of [false, true]) test(`rejected payment ${streamOutage ? 'missed during stream outage reconciles after real SSE reconnect' : 'arrives over real SSE and updates the history'} without unlocking the student lesson`, async ({ page, browser }) => {
   await teacher(page);
   const { course, lesson } = await courseWithLesson(page, 'rejected payment', 'SECONDARY_1', 25);
   const learner = await student(browser);
   try {
     await post(learner.page, `courses/${course.id}/enroll`, {}, 200);
+    // Chromium offline mode need not terminate an already-open TCP stream.
+    // Abort the real SSE transport while keeping the document/API available;
+    // never synthesize a review/connected event or a successful SSE response.
+    if (streamOutage) await learner.page.route('**/api/v1/realtime/stream', route => route.abort('internetdisconnected'));
+    // Observe the UNMOCKED native stream. A profile button or response headers
+    // do not prove the new document subscribed after its bootstrap/reload.
+    const observed = await observeNativePaymentStream(learner.page);
     await learner.page.reload();
-    await learner.page.evaluate(() => {
-      Object.assign(window, { qaReviewEvents: [], qaUnlockEvents: [] });
-      window.addEventListener('lms_payment_updated', e => (window as unknown as { qaReviewEvents: unknown[] }).qaReviewEvents.push((e as CustomEvent).detail));
-      window.addEventListener('lms_lesson_unlocked', e => (window as unknown as { qaUnlockEvents: unknown[] }).qaUnlockEvents.push((e as CustomEvent).detail));
-    });
+    if (streamOutage) {
+      await expect.poll(async () => (await observed()).errors, { timeout: 15_000 }).toBeGreaterThan(0);
+      expect((await observed()).connected).toBe(0);
+    } else {
+      await expect.poll(async () => (await observed()).connected, { timeout: 15_000 }).toBeGreaterThan(0);
+    }
     const order = await post(learner.page, 'payments/orders', { product_type: 'lesson', product_id: lesson.id, payment_method: 'instapay' });
+    await learner.page.goto(`${base}/#payments`);
+    const row = learner.page.locator('article').filter({ hasText: lesson.title });
+    await expect(row.getByText('بانتظار رفع الإيصال', { exact: true })).toBeVisible();
+    const connected = (await observed()).connected;
     await post(page, `payments/orders/${order.id}/reject`, { note: 'QA rejected receipt' }, 200);
-    await expect.poll(() => learner.page.evaluate(id => (window as unknown as { qaReviewEvents: Array<{ id: string; status: string }> }).qaReviewEvents.some(e => e.id === id && e.status === 'rejected'), order.id)).toBe(true);
-    expect(await learner.page.evaluate(() => (window as unknown as { qaUnlockEvents: unknown[] }).qaUnlockEvents)).toEqual([]);
+    if (streamOutage) {
+      expect((await observed()).reviews.some(e => e.id === order.id)).toBe(false);
+      await learner.page.unroute('**/api/v1/realtime/stream');
+      await expect.poll(async () => (await observed()).connected, { timeout: 25_000 }).toBeGreaterThan(connected);
+    } else {
+      await expect.poll(async () => (await observed()).reviews.some(e => e.id === order.id && e.status === 'rejected')).toBe(true);
+    }
+    // Exercise the REAL still-mounted PaymentView, not just a DOM event or
+    // an API read. No reload/manual refresh/cache-expiry delay masks staleness.
+    await expect(row.getByText('مرفوض', { exact: true })).toBeVisible();
+    await expect(row.getByText('ملاحظة المراجعة: QA rejected receipt', { exact: true })).toBeVisible();
+    expect((await observed()).unlocks).toEqual([]);
     await expect(learner.page.getByText('تمت إتاحة الدرس بنجاح من المعلم!', { exact: true })).toHaveCount(0);
+    const persisted = await learner.page.request.get(`${base}/api/v1/payments/orders/${order.id}`);
+    expect(persisted.status()).toBe(200); expect((await persisted.json()).status).toBe('rejected');
     const access = await (await learner.page.request.get(`${base}/api/v1/payments/me/entitlements`)).json();
     expect(access.filter((e: { resource_id: string }) => e.resource_id === lesson.id)).toHaveLength(0);
     expect((await learner.page.request.post(`${base}/api/v1/lessons/${lesson.id}/video-token`, { headers: { 'X-CSRF-Token': (await learner.page.context().cookies()).find(c => c.name === 'matgar_csrf')?.value || '' } })).status()).toBe(403);
+  } finally { await learner.page.unroute('**/api/v1/realtime/stream'); await learner.close(); }
+});
+
+test('teacher receives a newly uploaded receipt in the mounted review UI without reload', async ({ page, browser }) => {
+  const observed = await observeNativePaymentStream(page);
+  await teacher(page);
+  const { course, lesson } = await courseWithLesson(page, 'teacher payment live', 'SECONDARY_1', 25);
+  const learner = await student(browser);
+  try {
+    await post(learner.page, `courses/${course.id}/enroll`, {}, 200);
+    await page.goto(`${base}/#paymentmanagement`);
+    await expect(page.getByRole('heading', { name: 'طلبات الطلاب', exact: true })).toBeVisible();
+    await expect.poll(async () => (await observed()).connected, { timeout: 15_000 }).toBeGreaterThan(0);
+    await expect(page.getByText('لا توجد طلبات في هذه الحالة.', { exact: true })).toBeVisible();
+    const order = await post(learner.page, 'payments/orders', { product_type: 'lesson', product_id: lesson.id, payment_method: 'instapay' });
+    const row = page.locator('.review-row').filter({ hasText: lesson.title });
+    // Pending checkout creation persists a visible reviewer-owned order, but
+    // the backend deliberately emits payment_created only when its receipt
+    // is uploaded. Do not assert an undocumented pre-receipt broadcast.
+    const pendingOrder = await page.request.get(`${base}/api/v1/payments/orders/${order.id}`);
+    expect(pendingOrder.status()).toBe(200); expect((await pendingOrder.json()).status).toBe('pending');
+    const csrf = (await learner.page.context().cookies()).find(c => c.name === 'matgar_csrf')?.value || '';
+    const receipt = await learner.page.request.post(`${base}/api/v1/payments/orders/${order.id}/receipt`, {
+      headers: { 'X-CSRF-Token': csrf },
+      multipart: { receipt: { name: 'qa-synthetic-receipt.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAE0lEQVR4nGP8//8/AwMDEwMYAAAkBgMBXaJOiAAAAABJRU5ErkJggg==', 'base64') } },
+    });
+    expect(receipt.status(), await receipt.text()).toBe(200);
+    await expect.poll(async () => (await observed()).reviews.some(e => e.id === order.id && e.status === 'under_review')).toBe(true);
+    await expect(row.getByText('قيد المراجعة', { exact: true })).toBeVisible();
+    await expect(row.getByRole('button', { name: 'الإيصال', exact: true })).toBeVisible();
+    await row.getByRole('button', { name: 'رفض', exact: true }).click();
+    await page.getByRole('dialog', { name: 'رفض طلب الدفع', exact: true }).getByRole('button', { name: 'رفض الطلب', exact: true }).click();
+    await expect(row.getByText('rejected', { exact: true })).toBeVisible();
+    const access = await (await learner.page.request.get(`${base}/api/v1/payments/me/entitlements`)).json();
+    expect(access.some((item: { resource_id: string }) => item.resource_id === lesson.id)).toBe(false);
   } finally { await learner.close(); }
 });
 
@@ -451,35 +554,100 @@ for (const failure of ['empty notification body', 'calendar outage'] as const) {
   });
 }
 
-for (const role of ['teacher', 'student']) {
-  test(`${role} profile avatar survives its automatic reload`, async ({ page, browser }) => {
+for (const { role, slowBootstrap } of [
+  { role: 'teacher', slowBootstrap: false },
+  { role: 'student', slowBootstrap: false },
+  { role: 'student', slowBootstrap: true },
+]) {
+  // Avatar upload journeys were replaced by the user's explicit no-personal-
+  // photos requirement, not removed to hide the historical failed test.
+  test(`${role} account has no personal photo controls${slowBootstrap ? ' after delayed identity hydration' : ''}`, async ({ page, browser }) => {
     const learner = role === 'student' ? await student(browser) : null;
     const author = !learner ? await teacher(page) : null;
     const target = learner?.page || page;
+    const photoRequests: string[] = [];
+    target.on('request', request => {
+      if (new URL(request.url()).pathname === '/api/v1/auth/avatar') photoRequests.push(request.method());
+    });
     try {
       await target.goto(`${base}/#profile`);
-      const reloaded = target.waitForEvent('load');
-      await target.locator('#avatar-upload').setInputFiles({ name: 'qa-avatar.png', mimeType: 'image/png',
-        buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAE0lEQVR4nGP8//8/AwMDEwMYAAAkBgMBXaJOiAAAAABJRU5ErkJggg==', 'base64') });
-      await reloaded;
-      await expect(target.locator('.profile-button')).toHaveCount(1);
       await expect(target.getByRole('heading', { name: 'الملف التعريفي للحساب' })).toBeVisible();
-      await target.screenshot({ path: test.info().outputPath(`avatar-${role}.png`), fullPage: true });
+      if (slowBootstrap) {
+        let held = false;
+        let release!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        await target.route('**/api/v1/bootstrap', async route => {
+          const response = await route.fetch();
+          held = true;
+          await gate;
+          await route.fulfill({ response });
+        });
+        const hydrated = target.waitForResponse(response =>
+          new URL(response.url()).pathname === '/api/v1/bootstrap' && response.status() === 200);
+        try {
+          await target.reload();
+          await expect.poll(() => held).toBe(true);
+          await expect(target.getByRole('button', { name: 'تغيير كلمة المرور', exact: true }), 'Cached identity must not allow account changes before server hydration').toHaveCount(0);
+        } finally { release(); }
+        await hydrated;
+        await expect(target.getByRole('heading', { name: 'الملف التعريفي للحساب' })).toBeVisible();
+        await target.unroute('**/api/v1/bootstrap');
+      }
+      await expect(target.locator('main input[type="file"]')).toHaveCount(0);
+      await expect(target.locator('main img[src*="/auth/avatar"]')).toHaveCount(0);
+      await target.screenshot({ path: test.info().outputPath(`account-no-photos-${role}.png`), fullPage: true });
       const me = await (await target.request.get(`${base}/api/v1/auth/me`)).json();
-      expect(me.avatar_url, 'Server must persist an authenticated avatar URL').toMatch(/^\/api\/v1\/auth\/avatar/);
-      await expect(target.locator('main img[src^="/api/v1/auth/avatar"]')).toHaveCount(1);
-      const image = await target.request.get(`${base}${me.avatar_url}`);
-      expect(image.status()).toBe(200);
-      expect(image.headers()['content-type']).toContain('image/png');
+      expect(me).not.toHaveProperty('avatar_url');
+      // Even a previously cached URL must not cause a personal photo fetch.
+      await target.evaluate(() => {
+        const cached = JSON.parse(localStorage.getItem('lms_cached_user')!);
+        cached.avatarUrl = '/api/v1/auth/avatar';
+        localStorage.setItem('lms_cached_user', JSON.stringify(cached));
+      });
+      if (role === 'student' && !slowBootstrap) {
+        // Observe a REAL origin response under a bounded transport delay,
+        // not fabricated identity or a weakened visibility assertion. This
+        // reproduces the fixture's former5s bootstrap/render race reliably.
+        await target.route('**/api/v1/bootstrap', async route => {
+          const response = await route.fetch();
+          await delay(5500);
+          await route.fulfill({ response });
+        });
+      }
+      const reloadedIdentity = target.waitForResponse(response =>
+        new URL(response.url()).pathname === '/api/v1/bootstrap' && response.status() === 200,
+      { timeout: 15_000 });
       await target.reload();
-      await expect(target.locator('main img[src^="/api/v1/auth/avatar"]')).toHaveCount(1);
+      const reloadedBootstrap = await (await reloadedIdentity).json();
+      expect(reloadedBootstrap.authenticated).toBe(true);
+      expect(reloadedBootstrap.user.id).toBe(me.id);
+      await expect(target.getByRole('heading', { name: 'الملف التعريفي للحساب' })).toBeVisible();
+      await target.unroute('**/api/v1/bootstrap');
+      await expect(target.locator('main input[type="file"], main img[src*="/auth/avatar"]')).toHaveCount(0);
+      expect(photoRequests).toEqual([]);
       const csrf = (await target.context().cookies()).find(c => c.name === 'matgar_csrf')!.value;
+      expect((await target.request.get(`${base}/api/v1/auth/avatar`)).status()).toBe(410);
+      expect((await target.request.post(`${base}/api/v1/auth/avatar`, { data: {}, headers: {'X-CSRF-Token': csrf} })).status()).toBe(410);
       expect((await target.request.post(`${base}/api/v1/auth/logout`, {headers: {'X-CSRF-Token': csrf}})).status()).toBe(204);
       await target.reload();
+      if (role === 'teacher') {
+        // Keep successful login data opaque and delay only its delivery.
+        // Login remains the real API/cookies with real rate limiting.
+        await target.route('**/api/v1/auth/login', async route => {
+          const response = await route.fetch();
+          await delay(5500);
+          await route.fulfill({ response });
+        });
+      }
       await signIn(target, me.email, author?.password || 'qa-discovery-only-pass');
       await target.goto(`${base}/#profile`);
-      await expect(target.locator('main img[src^="/api/v1/auth/avatar"]')).toHaveCount(1);
-    } finally { if (learner) await learner.close(); }
+      await expect(target.getByRole('heading', { name: 'الملف التعريفي للحساب' })).toBeVisible();
+      await expect(target.locator('main input[type="file"], main img[src*="/auth/avatar"]')).toHaveCount(0);
+    } finally {
+      if (learner) {
+        await learner.close();
+      }
+    }
   });
 }
 
@@ -567,10 +735,46 @@ test('saved calendar plus failed notification keeps a truthful draft and retry c
   fail = false;
   await page.getByRole('button', {name: 'تأكيد وحفظ الموعد في الجدول', exact: true}).click();
   await expect(page.getByRole('button', {name: 'تأكيد وحفظ الموعد في الجدول', exact: true})).toHaveCount(0);
-  const events = await (await page.request.get(`${base}/api/v1/calendar`)).json();
+  const events: {title: string; id: string}[] = [];
+  for (let offset = 0; offset < 50_000; offset += 500) {
+    const response = await page.request.get(`${base}/api/v1/calendar?limit=500&offset=${offset}`);
+    expect(response.status(), await response.text()).toBe(200);
+    const records = await response.json();
+    events.push(...records);
+    if (records.length < 500) break;
+    expect(offset, 'Calendar pagination must terminate within the bounded client range').toBeLessThan(49_500);
+  }
+  expect(new Set(events.map(event => event.id)).size).toBe(events.length);
   expect(events.filter((event: {title: string}) => event.title === title)).toHaveLength(1);
   const notifications = await (await page.request.get(`${base}/api/v1/notifications`)).json();
   expect(notifications.filter((item: {title: string}) => item.title.includes(title))).toHaveLength(1);
+});
+
+test('calendar429 is visible, stops automatic replay and recovers with a keyboard retry', async ({page}) => {
+  await teacher(page);
+  let unavailable = true;
+  const requests: string[] = [];
+  await page.route('**/api/v1/calendar?**', async route => {
+    if (route.request().method() !== 'GET') { await route.continue(); return; }
+    requests.push(new URL(route.request().url()).search);
+    if (unavailable) await route.fulfill({ status: 429, contentType: 'application/json',
+      body: JSON.stringify({ detail: 'QA calendar read window' }) });
+    else await route.continue();
+  });
+  await page.goto(`${base}/#notifications`);
+  await expect(page.getByRole('alert')).toContainText('تعذر تحديث المواعيد');
+  await assertAccessible(page, test.info(), 'calendar-refresh-failed');
+  await expect.poll(() => requests.length).toBe(1);
+  await page.waitForTimeout(2100); // observation only: no background429 timer may replay
+  expect(requests).toHaveLength(1);
+  unavailable = false;
+  await page.getByRole('button', { name: 'إعادة تحميل المواعيد', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'جدول مواعيد الإرسال والتقويم الشهري' })).toBeVisible();
+  await expect.poll(() => requests.length).toBeGreaterThan(1);
+  expect((await page.request.get(`${base}/api/v1/auth/me`)).status()).toBe(200);
+  console.log(JSON.stringify({ case: 'calendar429-manual-recovery', requests, automatic_outage_requests: 1 }));
 });
 
 test('new teacher does not show a fabricated verified identity', async ({ page }) => {

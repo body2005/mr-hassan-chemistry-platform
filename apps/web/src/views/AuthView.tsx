@@ -16,18 +16,9 @@ import {
 import { CurrentUser } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
 import { authService } from "../services/lmsService";
+import { RegistrationWizard } from "../components/RegistrationWizard";
 
-const GOVERNORATES = [
-  ["ALEXANDRIA", "الإسكندرية", "Alexandria"], ["ASWAN", "أسوان", "Aswan"], ["ASIUT", "أسيوط", "Asiut"],
-  ["BEHEIRA", "البحيرة", "Beheira"], ["BENI_SUEF", "بني سويف", "Beni Suef"], ["CAIRO", "القاهرة", "Cairo"],
-  ["DAKAHLIA", "الدقهلية", "Dakahlia"], ["DAMIETTA", "دمياط", "Damietta"], ["FAYOUM", "الفيوم", "Fayoum"],
-  ["GHARBIA", "الغربية", "Gharbia"], ["GIZA", "الجيزة", "Giza"], ["ISMAILIA", "الإسماعيلية", "Ismailia"],
-  ["KAFR_EL_SHEIKH", "كفر الشيخ", "Kafr El Sheikh"], ["LUXOR", "الأقصر", "Luxor"], ["MATROUH", "مطروح", "Matrouh"],
-  ["MINYA", "المنيا", "Minya"], ["MONUFIA", "المنوفية", "Monufia"], ["NEW_VALLEY", "الوادي الجديد", "New Valley"],
-  ["NORTH_SINAI", "شمال سيناء", "North Sinai"], ["PORT_SAID", "بورسعيد", "Port Said"], ["QALYUBIA", "القليوبية", "Qalyubia"],
-  ["QENA", "قنا", "Qena"], ["RED_SEA", "البحر الأحمر", "Red Sea"], ["SHARQIA", "الشرقية", "Sharqia"],
-  ["SOHAG", "سوهاج", "Sohag"], ["SOUTH_SINAI", "جنوب سيناء", "South Sinai"], ["SUEZ", "السويس", "Suez"],
-] as const;
+
 
 interface AuthViewProps {
   initialTab?: "signin" | "register";
@@ -69,26 +60,13 @@ export const AuthView: React.FC<AuthViewProps> = ({
     const syncResetLink = () => {
       const token = new URLSearchParams(window.location.hash.split("?", 2)[1] || "").get("reset_token") || "";
       setResetToken(token);
-      if (token) setResetMode("confirm");
+      if (token) { setResetMode("confirm"); setActiveTab("signin"); }
     };
     window.addEventListener("hashchange", syncResetLink);
     return () => window.removeEventListener("hashchange", syncResetLink);
   }, []);
 
-  // Student Register State
-  const [regName, setRegName] = useState("");
-  const [regEmail, setRegEmail] = useState("");
-  const [regPassword, setRegPassword] = useState("");
-  const [showRegPassword, setShowRegPassword] = useState(false);
-  const [regConfirmPassword, setRegConfirmPassword] = useState("");
-  const [showRegConfirmPassword, setShowRegConfirmPassword] = useState(false);
-  const [regYear, setRegYear] = useState<"" | "1st_secondary" | "2nd_secondary" | "3rd_secondary">("");
-  const [regStudentPhone, setRegStudentPhone] = useState("");
-  const [regGuardianPhone, setRegGuardianPhone] = useState("");
-  const [regNationalId, setRegNationalId] = useState("");
-  const [regGovernorate, setRegGovernorate] = useState("");
-  const [regSchoolName, setRegSchoolName] = useState("");
-  const [regGender, setRegGender] = useState<"" | "MALE" | "FEMALE">("");
+
 
   // Handle Strict Validated Sign In via authService
   async function handleSignIn(e: React.FormEvent) {
@@ -114,52 +92,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
     }
   }
 
-  // Handle Student Registration via authService
-  async function handleRegister(e: React.FormEvent) {
-    e.preventDefault();
-    setError("");
-    setSuccessMsg("");
 
-    if (regPassword !== regConfirmPassword) {
-      setError(lang === "ar" ? "كلمتا المرور غير متطابقتين، يرجى التأكد من تطابق كلمة المرور وتأكيدها." : "Passwords do not match. Please verify confirmation.");
-      return;
-    }
-
-    if (regPassword.length < 6) {
-      setError(lang === "ar" ? "يجب أن تكون كلمة المرور 6 أحرف أو أرقام على الأقل." : "Password must be at least 6 characters.");
-      return;
-    }
-
-    if (!regYear || !regGovernorate || !regSchoolName.trim() || !regGender) {
-      setError(lang === "ar" ? "يرجى استكمال الصف والمحافظة والمدرسة والنوع." : "Please complete grade, governorate, school, and gender.");
-      return;
-    }
-
-    const res = await authService.register({
-      name: regName,
-      email: regEmail,
-      password: regPassword,
-      academicYear: regYear,
-      studentPhone: regStudentPhone,
-      guardianPhone: regGuardianPhone,
-      nationalId: regNationalId,
-      governorate: regGovernorate,
-      schoolName: regSchoolName,
-      gender: regGender,
-    });
-
-    if (!res.success) {
-      setError(res.error || (lang === "ar" ? "تعذر إنشاء الحساب" : "Registration failed"));
-      return;
-    }
-
-    if (res.user) {
-      setSuccessMsg(lang === "ar" ? "تم إنشاء الحساب بنجاح! جاري الدخول..." : "Account created successfully! Logging in...");
-      setTimeout(() => {
-        onLoginSuccess(res.user!);
-      }, 600);
-    }
-  }
 
   async function handlePasswordReset(e: React.FormEvent) {
     e.preventDefault();
@@ -203,6 +136,12 @@ export const AuthView: React.FC<AuthViewProps> = ({
   if (isSubmitting) {
     return <PageLoadingScreen brandTitle="منصة الكيمياء التعليمية — مستر حسن شعبان" />;
   }
+
+  const registrationView = (
+    <RegistrationWizard embedded lang={lang} theme={theme} onToggleLang={onToggleLang}
+      onToggleTheme={onToggleTheme} onSignIn={() => setActiveTab("signin")}
+      onBack={onBackToLanding} onSuccess={onLoginSuccess} />
+  );
 
   return (
     <div
@@ -249,6 +188,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
             boxShadow: theme === "dark" ? "0 2px 10px rgba(0,0,0,0.4)" : "0 2px 10px rgba(0,0,0,0.06)",
           }}
           title={theme === "dark" ? t.toggleThemeLight : t.toggleThemeDark}
+          aria-label={lang === "ar" ? "تغيير المظهر" : "Change theme"}
         >
           {theme === "dark" ? <Sun size={16} style={{ color: "#f59e0b" }} /> : <Moon size={16} />}
         </button>
@@ -329,7 +269,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
             background: "var(--bg-surface)",
             display: "flex",
             flexDirection: "column",
-            justifyContent: "center",
+            justifyContent: "flex-start",
             alignItems: "center",
             padding: "60px 48px 30px",
             boxSizing: "border-box",
@@ -339,9 +279,11 @@ export const AuthView: React.FC<AuthViewProps> = ({
             transition: "transform 0.6s cubic-bezier(0.4, 0, 0.2, 1)",
           }}
         >
-          <div style={{ maxWidth: "540px", width: "100%", margin: "auto 0" }}>
+          <div style={{ maxWidth: "540px", width: "100%", margin: "auto 0", flexShrink: 0 }}>
             {/* Tab Switcher Pill (Moved down into the form header area) */}
             <div
+              dir="rtl"
+              aria-label={lang === "ar" ? "نوع الدخول" : "Account access"}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -360,6 +302,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
               {/* Sign In Toggle Button */}
               <button
                 type="button"
+                aria-pressed={activeTab === "signin"}
                 onClick={() => {
                   setActiveTab("signin");
                   setError("");
@@ -387,6 +330,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
               {/* Register Toggle Button */}
               <button
                 type="button"
+                aria-pressed={activeTab === "register"}
                 onClick={() => {
                   setActiveTab("register");
                   setError("");
@@ -516,10 +460,12 @@ export const AuthView: React.FC<AuthViewProps> = ({
             ) : activeTab === "signin" ? (
               <form onSubmit={handleSignIn} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
                 <div>
-                  <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "5px", textTransform: "uppercase" }}>
+                  <label htmlFor="auth-signin-identity" style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "5px", textTransform: "uppercase" }}>
                     {lang === "ar" ? "البريد الإلكتروني أو اسم المستخدم" : "Email or Username"}
                   </label>
                   <input
+                    id="auth-signin-identity"
+                    autoComplete="username"
                     type="text"
                     required
                     value={signInEmail}
@@ -540,11 +486,13 @@ export const AuthView: React.FC<AuthViewProps> = ({
                 </div>
 
                 <div>
-                  <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "5px", textTransform: "uppercase" }}>
+                  <label htmlFor="auth-signin-password" style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "5px", textTransform: "uppercase" }}>
                     {t.passwordLabel}
                   </label>
                   <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
                     <input
+                      id="auth-signin-password"
+                      autoComplete="current-password"
                       type={showSignInPassword ? "text" : "password"}
                       required
                       value={signInPassword}
@@ -632,280 +580,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
               </form>
             ) : (
               /* ===================== VIEW B: STUDENT REGISTER FORM ===================== */
-              <form onSubmit={handleRegister} style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                <div>
-                  <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>
-                    {lang === "ar" ? "اسم الطالب رباعي:" : "Full Student Name:"}
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={regName}
-                    onChange={(e) => setRegName(e.target.value)}
-                    placeholder={lang === "ar" ? "مثال: عمر زيدان عبد الرحمن" : "e.g. Omar Zeidan Abdelrahman"}
-                    style={{
-                      width: "100%",
-                      padding: "9px 12px",
-                      border: "1px solid var(--border-color-strong)",
-                      borderRadius: "8px",
-                      fontSize: "13px",
-                      background: "var(--bg-surface-secondary)",
-                      color: "var(--text-main)",
-                      boxSizing: "border-box",
-                    }}
-                  />
-                </div>
-
-                <div>
-                  <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>
-                    {t.emailLabel}:
-                  </label>
-                  <input
-                    type="email"
-                    required
-                    value={regEmail}
-                    onChange={(e) => setRegEmail(e.target.value)}
-                    placeholder="student@example.com"
-                    style={{
-                      width: "100%",
-                      padding: "9px 12px",
-                      border: "1px solid var(--border-color-strong)",
-                      borderRadius: "8px",
-                      fontSize: "13px",
-                      background: "var(--bg-surface-secondary)",
-                      color: "var(--text-main)",
-                      boxSizing: "border-box",
-                    }}
-                  />
-                </div>
-
-                {/* Password and Confirm Password Row with Eye Toggles */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
-                  <div>
-                    <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>
-                      {t.passwordLabel}:
-                    </label>
-                    <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
-                      <input
-                        type={showRegPassword ? "text" : "password"}
-                        required
-                        value={regPassword}
-                        onChange={(e) => setRegPassword(e.target.value)}
-                        placeholder="••••••••"
-                        style={{
-                          width: "100%",
-                          padding: isRtl ? "9px 34px 9px 10px" : "9px 10px 9px 34px",
-                          border: "1px solid var(--border-color-strong)",
-                          borderRadius: "8px",
-                          fontSize: "13px",
-                          background: "var(--bg-surface-secondary)",
-                          color: "var(--text-main)",
-                          boxSizing: "border-box",
-                        }}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowRegPassword(!showRegPassword)}
-                        style={{
-                          position: "absolute",
-                          [isRtl ? "left" : "right"]: "8px",
-                          background: "none",
-                          border: "none",
-                          color: "var(--text-muted)",
-                          cursor: "pointer",
-                          display: "flex",
-                          alignItems: "center",
-                          padding: "2px",
-                        }}
-                        title={showRegPassword ? (lang === "ar" ? "إخفاء كلمة المرور" : "Hide password") : (lang === "ar" ? "إظهار كلمة المرور" : "Show password")}
-                      >
-                        {showRegPassword ? <EyeOff size={15} /> : <Eye size={15} />}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>
-                      {lang === "ar" ? "تأكيد كلمة المرور:" : "Confirm Password:"}
-                    </label>
-                    <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
-                      <input
-                        type={showRegConfirmPassword ? "text" : "password"}
-                        required
-                        value={regConfirmPassword}
-                        onChange={(e) => setRegConfirmPassword(e.target.value)}
-                        placeholder="••••••••"
-                        style={{
-                          width: "100%",
-                          padding: isRtl ? "9px 34px 9px 10px" : "9px 10px 9px 34px",
-                          border: "1px solid var(--border-color-strong)",
-                          borderRadius: "8px",
-                          fontSize: "13px",
-                          background: "var(--bg-surface-secondary)",
-                          color: "var(--text-main)",
-                          boxSizing: "border-box",
-                        }}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowRegConfirmPassword(!showRegConfirmPassword)}
-                        style={{
-                          position: "absolute",
-                          [isRtl ? "left" : "right"]: "8px",
-                          background: "none",
-                          border: "none",
-                          color: "var(--text-muted)",
-                          cursor: "pointer",
-                          display: "flex",
-                          alignItems: "center",
-                          padding: "2px",
-                        }}
-                        title={showRegConfirmPassword ? (lang === "ar" ? "إخفاء كلمة المرور" : "Hide password") : (lang === "ar" ? "إظهار كلمة المرور" : "Show password")}
-                      >
-                        {showRegConfirmPassword ? <EyeOff size={15} /> : <Eye size={15} />}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Academic Year Selection */}
-                <div>
-                  <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>
-                    {lang === "ar" ? "الصف الدراسي (تحدد المواد بناءً عليه):" : "Academic Year:"}
-                  </label>
-                  <select
-                    value={regYear}
-                    onChange={(e) => setRegYear(e.target.value as "1st_secondary" | "2nd_secondary" | "3rd_secondary")}
-                    required
-                    style={{
-                      width: "100%",
-                      padding: "9px 12px",
-                      border: "1px solid var(--border-color-strong)",
-                      borderRadius: "8px",
-                      fontSize: "13px",
-                      background: "var(--bg-surface-secondary)",
-                      color: "var(--text-main)",
-                      boxSizing: "border-box",
-                      fontWeight: 700,
-                    }}
-                  >
-                    <option value="" disabled>{lang === "ar" ? "اختر الصف الدراسي" : "Select academic year"}</option>
-                    <option value="1st_secondary">{lang === "ar" ? "الصف الأول الثانوي" : "1st Secondary Year"}</option>
-                    <option value="2nd_secondary">{lang === "ar" ? "الصف الثاني الثانوي" : "2nd Secondary Year"}</option>
-                    <option value="3rd_secondary">{lang === "ar" ? "الصف الثالث الثانوي" : "3rd Secondary Year"}</option>
-                  </select>
-                </div>
-
-                {/* Phone Numbers */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
-                  <div>
-                    <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>
-                      {lang === "ar" ? "هاتف الطالب:" : "Student Phone:"}
-                    </label>
-                    <input
-                      type="tel"
-                      inputMode="numeric"
-                      maxLength={11}
-                      value={regStudentPhone}
-                      onChange={(e) => setRegStudentPhone(e.target.value)}
-                      placeholder="010XXXXXXXX"
-                      style={{
-                        width: "100%",
-                        padding: "9px 12px",
-                        border: "1px solid var(--border-color-strong)",
-                        borderRadius: "8px",
-                        fontSize: "12px",
-                        background: "var(--bg-surface-secondary)",
-                        color: "var(--text-main)",
-                        boxSizing: "border-box",
-                      }}
-                    />
-                  </div>
-
-                  <div>
-                    <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>
-                      {lang === "ar" ? "هاتف ولي الأمر:" : "Guardian Phone:"}
-                    </label>
-                    <input
-                      type="tel"
-                      inputMode="numeric"
-                      maxLength={11}
-                      value={regGuardianPhone}
-                      onChange={(e) => setRegGuardianPhone(e.target.value)}
-                      placeholder="011XXXXXXXX"
-                      style={{
-                        width: "100%",
-                        padding: "9px 12px",
-                        border: "1px solid var(--border-color-strong)",
-                        borderRadius: "8px",
-                        fontSize: "12px",
-                        background: "var(--bg-surface-secondary)",
-                        color: "var(--text-main)",
-                        boxSizing: "border-box",
-                      }}
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>
-                    {lang === "ar" ? "الرقم القومي:" : "National ID:"}
-                  </label>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={14}
-                    value={regNationalId}
-                    onChange={(e) => setRegNationalId(e.target.value)}
-                    placeholder="30608150104892"
-                    style={{
-                      width: "100%",
-                      padding: "9px 12px",
-                      border: "1px solid var(--border-color-strong)",
-                      borderRadius: "8px",
-                      fontSize: "12px",
-                      background: "var(--bg-surface-secondary)",
-                      color: "var(--text-main)",
-                      boxSizing: "border-box",
-                    }}
-                  />
-                </div>
-
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
-                  <div>
-                    <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>{lang === "ar" ? "المحافظة:" : "Governorate:"}</label>
-                    <select required value={regGovernorate} onChange={(e) => setRegGovernorate(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", background: "var(--bg-surface-secondary)", color: "var(--text-main)" }}>
-                      <option value="" disabled>{lang === "ar" ? "اختر المحافظة" : "Select governorate"}</option>
-                      {GOVERNORATES.map(([code, ar, en]) => <option key={code} value={code}>{lang === "ar" ? ar : en}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>{lang === "ar" ? "المدرسة:" : "School:"}</label>
-                    <input required minLength={2} maxLength={200} value={regSchoolName} onChange={(e) => setRegSchoolName(e.target.value)} placeholder={lang === "ar" ? "اسم المدرسة" : "School name"} style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", boxSizing: "border-box", background: "var(--bg-surface-secondary)", color: "var(--text-main)" }} />
-                  </div>
-                </div>
-
-                <div>
-                  <label style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "3px" }}>{lang === "ar" ? "النوع:" : "Gender:"}</label>
-                  <select required value={regGender} onChange={(e) => setRegGender(e.target.value as "" | "MALE" | "FEMALE")} style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong)", borderRadius: "8px", background: "var(--bg-surface-secondary)", color: "var(--text-main)" }}><option value="" disabled>{lang === "ar" ? "اختر النوع" : "Select gender"}</option><option value="MALE">{lang === "ar" ? "ذكر" : "Male"}</option><option value="FEMALE">{lang === "ar" ? "أنثى" : "Female"}</option></select>
-                </div>
-
-                <button
-                  type="submit"
-                  className="btn-primary"
-                  style={{
-                    width: "100%",
-                    justifyContent: "center",
-                    padding: "11px",
-                    borderRadius: "10px",
-                    fontSize: "13.5px",
-                    fontWeight: 800,
-                    marginTop: "4px",
-                  }}
-                >
-                  {lang === "ar" ? "تسجيل وإنشاء الحساب مباشرة" : "Complete Registration"}
-                </button>
-              </form>
+              registrationView
             )}
           </div>
         </div>

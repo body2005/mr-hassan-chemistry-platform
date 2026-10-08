@@ -252,6 +252,8 @@ def _validate_quiz_question(question, points: float | None = None) -> None:
         if isinstance(answer, str) and not answer.strip():
             raise ValueError('Correct answer cannot be blank')
     if kind in {'mcq', 'multiple_choice'}:
+        if question.options and len(question.options) > 26:
+            raise ValueError('Multiple-choice questions support at most 26 options (A–Z)')
         if not question.options or len(question.options) < 2:
             raise ValueError('Multiple-choice questions require at least two options')
         keys, accepted = [], []

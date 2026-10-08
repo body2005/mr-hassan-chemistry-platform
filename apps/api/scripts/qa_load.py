@@ -18,12 +18,8 @@ from urllib.parse import urljoin
 import requests
 from requests_toolbelt.multipart.encoder import MultipartEncoder
 from sqlalchemy import text
+from scripts.qa_load_policy import LoadSafety, percentile
 from tests.integration.live_helpers import BASE, clear_auth, container, lesson, pg_engine, session
-
-
-def percentile(values, q):
-    import math
-    return round(sorted(values)[max(0, math.ceil(len(values) * q) - 1)], 2) if values else None
 
 
 def seed_video(teacher, item, media, engine):
@@ -112,6 +108,15 @@ def main():
     names = ["api", "worker", "s3", "postgres", "redis"]
     if video_mode == 'hls': names += ['video-worker', 'upload-gateway']
     services = {name: container(name) for name in names}
+    limits = {}
+    for name, service in services.items():
+        service.reload()
+        config = service.attrs['HostConfig']
+        cpus = config.get('NanoCpus', 0) / 10**9
+        if not cpus and config.get('CpuQuota', 0) > 0 and config.get('CpuPeriod', 0) > 0:
+            cpus = config['CpuQuota'] / config['CpuPeriod']
+        limits[name] = {'memory_bytes': config.get('Memory', 0), 'cpu_percent': cpus * 100}
+    safety = LoadSafety()
     samples, stop = [], threading.Event()
     previous_cpu = {}
 
@@ -131,7 +136,10 @@ def main():
                 with engine.connect() as connection:
                     item["postgres_connections"] = connection.scalar(text("SELECT count(*) FROM pg_stat_activity"))
                     item["postgres_active"] = connection.scalar(text("SELECT count(*) FROM pg_stat_activity WHERE state='active'"))
+                    item['postgres_max_connections'] = int(connection.scalar(text('SHOW max_connections')))
+                    item['video_queue_depth'] = connection.scalar(text("SELECT count(*) FROM video_uploads WHERE status IN ('queued','processing')"))
                 samples.append(item)
+                safety.resources(item, limits)
             except Exception as exc:
                 samples.append({"sampling_error": type(exc).__name__})
             stop.wait(2)
@@ -141,6 +149,8 @@ def main():
     results = []
     try:
         for concurrency in (1, 5, 10):
+            if safety.stopped.is_set():
+                break
             # Renew existing sessions before each stage, not new device slots.
             for index in range(concurrency):
                 response = students[index].post(f"{BASE}/lessons/{video['id']}/video-token", timeout=15)
@@ -155,28 +165,34 @@ def main():
                 try:
                     with client.request(kwargs.pop("method", "GET"), url, stream=True, timeout=(3, 45), **kwargs) as response:
                         size = sum(len(chunk) for chunk in response.iter_content(256 * 1024))
-                        records.append({"kind": kind, "ms": (time.monotonic() - before) * 1000,
+                        item = {"kind": kind, "ms": (time.monotonic() - before) * 1000,
                                         "status": response.status_code, "bytes": size,
-                                        "retry_after": response.headers.get("Retry-After")})
+                                        "retry_after": response.headers.get("Retry-After")}
                 except requests.RequestException as exc:
-                    records.append({"kind": kind, "ms": (time.monotonic() - before) * 1000,
-                                    "status": "network", "bytes": 0, "error": type(exc).__name__})
+                    item = {"kind": kind, "ms": (time.monotonic() - before) * 1000,
+                            "status": "network", "bytes": 0, "error": type(exc).__name__}
+                records.append(item)
+                safety.request(item)
 
             def browse(index):
                 rng = random.Random(index)
                 count = 0
-                while time.monotonic() < deadline:
+                while time.monotonic() < deadline and not safety.stopped.is_set():
                     endpoint = ("courses", "bootstrap", "notifications", "progress/me")[count % 4]
                     record("browse", students[index], f"{BASE}/{endpoint}")
+                    if safety.stopped.is_set():
+                        break
                     # Substantial video chunks with changing offsets simulate playback/seek.
                     target, size = rng.choice(urls[index])
                     length = min(size, 512 * 1024)
                     start = rng.randrange(max(1, size - length + 1))
                     record("video", students[index], target, headers={"Range": f"bytes={start}-{start + length - 1}"})
                     count += 1
-                    time.sleep(0.5)
+                    safety.stopped.wait(0.5)
 
             def upload(index):
+                if safety.stopped.is_set():
+                    return
                 # Separate transport session; preserve real user limits, no fresh identity per upload.
                 client = requests.Session()
                 client.verify = teacher.verify
@@ -206,9 +222,9 @@ def main():
             errors = [r for r in records if not isinstance(r["status"], int) or r["status"] >= 400]
             result = {"sessions": concurrency, "seconds": round(elapsed, 2), "requests": len(records),
                       "throughput_rps": round(len(records) / elapsed, 2), "errors": len(errors),
-                      "error_rate": len(errors) / len(records), "p95_ms": percentile([r["ms"] for r in records], .95),
+                      "error_rate": len(errors) / len(records) if records else None, "p95_ms": percentile([r["ms"] for r in records], .95),
                       "p99_ms": percentile([r["ms"] for r in records], .99), "transferred_bytes": sum(r["bytes"] for r in records),
-                      "groups": groups, "error_details": errors[:20]}
+                      "groups": groups, "error_details": errors[:20], "stop_reason": safety.reason}
             results.append(result)
             print(json.dumps(result), flush=True)
     finally:
@@ -223,6 +239,12 @@ def main():
     report = {"video_bytes": (media / "video.webm").stat().st_size, "pdf_bytes": (media / "large.pdf").stat().st_size,
               "video_mode": video_mode, "fixture_upload": "private S3 fixture, not public gateway load" if video_mode == 'hls' else 'legacy API',
               "results": results, "samples": samples,
+              "actual_service_limits": limits, "stop_reason": safety.reason,
+              "completed_stages": len(results), "planned_stages": 3,
+              "safety_policy": {'rolling_requests': 100, 'error_rate_stop_above': .01,
+                                'interactive_p95_stop_above_ms': 2000, 'upload_stop_above_ms': 15000,
+                                'resource_consecutive_samples': 3, 'cpu_memory_stop_fraction': .9,
+                                'postgres_connection_stop_fraction': .8, 'video_queue_stop_at': 50},
               "peak_memory_bytes": {name: max(s["memory_bytes"][name] for s in valid) for name in services},
               "peak_cpu_percent": {name: max((s["cpu_percent"][name] for s in valid if s["cpu_percent"][name] is not None), default=None) for name in services},
               "peak_pg_connections": max(s["postgres_connections"] for s in valid),
@@ -234,7 +256,7 @@ def main():
     Path(f"/qa/load-{stamp}.json").write_text(output, encoding="utf-8")
     Path("/qa/load.json").write_text(output, encoding="utf-8")
     print(json.dumps({k: report[k] for k in ("peak_memory_bytes", "peak_pg_connections", "peak_pg_active")}))
-    if any(stage["errors"] for stage in results):
+    if safety.stopped.is_set() or len(results) != 3 or any(stage["errors"] for stage in results):
         raise SystemExit(1)
 
 

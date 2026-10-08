@@ -20,6 +20,7 @@ from app.core.database import engine
 from app.core.metrics import record_request
 from app.core.upload_limits import UploadBudgetMiddleware
 from app.core.rate_limit import enforce_rate_limit
+from app.core.response_security import ResponseSecurityHeadersMiddleware
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -30,11 +31,13 @@ logging.getLogger("uvicorn.access").addFilter(RedactAccessTokenFilter())
 async def lifespan(_: FastAPI):
     """Application lifespan (indexing recovery removed with the Knowledge Center)."""
     from app.services.storage_cleanup import cleanup_loop
+    from app.services.session_maintenance import maintenance_loop
     from app.core.events import event_broker
     await event_broker.start()
     # Every persistent runtime can enqueue deletion intents. TestClient unit
     # databases alone opt out; production_like must not accumulate dead jobs.
     cleanup_task = asyncio.create_task(cleanup_loop()) if settings.app_env.lower() != "test" else None
+    maintenance_task = asyncio.create_task(maintenance_loop()) if settings.app_env.lower() != "test" else None
     try:
         yield
     finally:
@@ -43,13 +46,17 @@ async def lifespan(_: FastAPI):
             cleanup_task.cancel()
             with suppress(asyncio.CancelledError):
                 await cleanup_task
+        if maintenance_task:
+            maintenance_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await maintenance_task
 
 
 app = FastAPI(
     title=settings.app_name,
     summary="Learning management and local document extraction",
     version="0.1.0",
-    docs_url="/docs" if settings.app_env != "production" else None,
+    docs_url="/docs" if not settings.deployment_environment else None,
     redoc_url=None,
     lifespan=lifespan,
 )
@@ -171,6 +178,12 @@ async def security_middleware(request, call_next):
         f"{settings.api_v1_prefix}/auth/logout",
         f"{settings.api_v1_prefix}/auth/refresh",
     }
+    # Defense in depth only: trusted browser origins may legitimately be
+    # cross-site. Metadata never grants identity or replaces double-submit.
+    if (unsafe_method and request.headers.get('Sec-Fetch-Site') == 'cross-site'
+            and not (origin and is_origin_allowed(origin))
+            and (not has_bearer_auth or cookie_auth_endpoint)):
+        return JSONResponse(status_code=403, content={'detail': 'Cross-site browser request is not allowed'})
     if (
         unsafe_method
         and (
@@ -226,19 +239,11 @@ async def security_middleware(request, call_next):
         int((time.perf_counter() - started) * 1000),
     )
     response.headers["X-Request-ID"] = request_id
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
-    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-    if settings.secure_cookies:
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'self'"
-
     return response
 
 
-# Register CORS after the custom middleware so it is the outermost layer.  It
-# must be the single source of CORS headers; manually writing a wildcard
+# Register CORS outside admission and the auth middleware. It must be the
+# single source of CORS headers; manually writing a wildcard
 # Access-Control-Allow-Headers breaks credentialed Authorization preflights.
 app.add_middleware(AdmissionMiddleware, classify=classify_rate_limit_category)
 app.add_middleware(UploadBudgetMiddleware)
@@ -260,6 +265,10 @@ app.add_middleware(
     expose_headers=["X-Request-ID"],
     max_age=600,
 )
+# Header-only ASGI wrapper must be outside ALL rejecting user middleware,
+# including CORS preflights and upload/admission failures. It never grants
+# identity, overrides CORS or buffers the streaming body.
+app.add_middleware(ResponseSecurityHeadersMiddleware, secure=settings.secure_cookies)
 
 
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploads")

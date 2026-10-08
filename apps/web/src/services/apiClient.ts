@@ -1,7 +1,8 @@
 const API_BASE_URL = (import.meta.env.VITE_API_URL || "/api/v1").replace(/\/$/, "");
 let sessionInvalidationDispatched = false;
 let sessionKnownInvalid = false;
-let refreshInFlight: Promise<boolean> | null = null;
+type RefreshResult = 'renewed' | 'invalid' | 'transient' | 'cancelled';
+let refreshInFlight: Promise<RefreshResult> | null = null;
 let browserSessionActive = false;
 
 /**
@@ -46,12 +47,14 @@ type ApiErrorBody = {
 export class ApiClientError extends Error {
   readonly code: string;
   readonly status: number;
+  readonly retryAfterMs?: number;
 
-  constructor(code: string, message: string, status: number, options?: { cause?: unknown }) {
+  constructor(code: string, message: string, status: number, options?: { cause?: unknown; retryAfterMs?: number }) {
     super(message, options);
     this.name = "ApiClientError";
     this.code = code;
     this.status = status;
+    this.retryAfterMs = options?.retryAfterMs;
   }
 }
 
@@ -76,6 +79,14 @@ let currentAuthScope = "anonymous";
 let authScopeEpoch = 0;
 let activeCourseReads = 0;
 const queuedCourseReads: Array<() => void> = [];
+let courseReadCooldown: { epoch: number; until: number; error: ApiClientError } | null = null;
+
+function retryAfterMilliseconds(header: string | null): number | undefined {
+  if (!header?.trim()) return undefined;
+  const seconds = /^\d+$/.test(header.trim()) ? Number(header) : NaN;
+  const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
+  return Number.isFinite(delay) && delay > 0 ? delay : undefined;
+}
 const activeRequestControllers = new Set<AbortController>();
 
 function drainCourseReads(): void {
@@ -87,13 +98,30 @@ function boundedCourseRead<T>(run: () => Promise<T>, epoch: number, signal?: Abo
   // calls. This is not a retry policy and does not change server rate limits.
   return new Promise<T>((resolve, reject) => {
     queuedCourseReads.push(() => {
+      if (epoch !== authScopeEpoch || signal?.aborted) {
+        reject(new ApiClientError('REQUEST_CANCELLED', 'Request cancelled', 0));
+        return;
+      }
+      if (courseReadCooldown?.epoch === epoch && courseReadCooldown.until > Date.now()) {
+        // Cancel the queued batch, not the session. Never replay it on a timer
+        // or let a fast 503/429 response drain hundreds of network requests.
+        reject(courseReadCooldown.error);
+        return;
+      }
       activeCourseReads++;
       Promise.resolve().then(() => {
         if (epoch !== authScopeEpoch || signal?.aborted) {
           throw new ApiClientError('REQUEST_CANCELLED', 'Request cancelled', 0);
         }
         return run();
-      }).then(resolve, reject).finally(() => { activeCourseReads--; drainCourseReads(); });
+      }).then(resolve, error => {
+        if (epoch === authScopeEpoch && error instanceof ApiClientError &&
+            ([429, 502, 503, 504].includes(error.status) ||
+             ['NETWORK_ERROR', 'REQUEST_TIMEOUT'].includes(error.code))) {
+          courseReadCooldown = { epoch, until: Date.now() + (error.retryAfterMs ?? 2000), error };
+        }
+        reject(error);
+      }).finally(() => { activeCourseReads--; drainCourseReads(); });
     });
     drainCourseReads();
   });
@@ -104,6 +132,9 @@ export function setApiAuthScope(scope: string, forceNewGeneration = false): void
   if (currentAuthScope !== normalized || forceNewGeneration) {
     currentAuthScope = normalized;
     authScopeEpoch++;
+    courseReadCooldown = null;
+    lastFailedRefreshAt = 0;
+    refreshInFlight = null;
     for (const controller of activeRequestControllers) controller.abort();
     clearApiCache();
     if (typeof window !== 'undefined') window.dispatchEvent(new Event('lms_auth_scope_updated'));
@@ -217,7 +248,8 @@ export async function fetchApiBlob(path: string, retriedAfterRefresh = false): P
     if (response.status === 401 && !retriedAfterRefresh && !isAuthPath(path)) {
       const refreshed = await refreshSession();
       if (requestEpoch !== authScopeEpoch) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
-      if (refreshed) return fetchApiBlob(path, true);
+      if (refreshed === 'renewed') return fetchApiBlob(path, true);
+      checkRefreshFailure(refreshed);
     }
     if (response.status === 401) clearStaleSession(path);
     throw new ApiClientError(`HTTP_${response.status}`, `Request failed (${response.status})`, response.status);
@@ -256,39 +288,58 @@ function isAuthPath(path: string): boolean {
 
 let lastFailedRefreshAt = 0;
 
-async function refreshSession(): Promise<boolean> {
+function checkRefreshFailure(result: RefreshResult): void {
+  if (result === 'cancelled') throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
+  if (result === 'transient') throw new ApiClientError('SESSION_REFRESH_UNAVAILABLE',
+    'تعذر تجديد الجلسة مؤقتًا. بياناتك محفوظة؛ حاول مرة أخرى بعد قليل.', 503);
+}
+
+async function refreshSession(): Promise<RefreshResult> {
+  if (sessionKnownInvalid) return 'invalid';
   if (refreshInFlight) return refreshInFlight;
-  // A refresh that just failed means the session is genuinely gone; do not
-  // hammer the endpoint once per subsequent 401 (storm guard).
-  if (Date.now() - lastFailedRefreshAt < 10_000) return false;
+  // A temporary outage is not evidence of logout. No automatic retry loop;
+  // further requests in this tab return a recoverable error during cooldown.
+  if (lastFailedRefreshAt && Date.now() - lastFailedRefreshAt < 10_000) return 'transient';
   const refreshEpoch = authScopeEpoch;
-  refreshInFlight = (async () => {
+  const pending = (async (): Promise<RefreshResult> => {
     const headers = new Headers();
     const csrf = csrfToken();
     if (csrf) headers.set("X-CSRF-Token", csrf);
+    const controller = new AbortController();
+    activeRequestControllers.add(controller);
+    const timer = window.setTimeout(() => controller.abort(), 15_000);
     try {
       const response = await fetch(apiUrl("/auth/refresh"), {
         method: "POST",
         headers,
         credentials: "include",
+        signal: controller.signal,
       });
-      if (refreshEpoch !== authScopeEpoch) return false;
+      if (refreshEpoch !== authScopeEpoch) return 'cancelled';
       if (!response.ok) {
+        // 403 may be stale CSRF/proxy policy, not a revoked credential.
+        if (response.status === 401) return 'invalid';
         lastFailedRefreshAt = Date.now();
-        return false;
+        return 'transient';
       }
       removeLegacySessionToken();
       lastFailedRefreshAt = 0;
       browserSessionActive = true;
       sessionInvalidationDispatched = false;
-      return true;
+      sessionKnownInvalid = false;
+      return 'renewed';
     } catch {
-      return false;
+      if (refreshEpoch !== authScopeEpoch) return 'cancelled';
+      lastFailedRefreshAt = Date.now();
+      return 'transient';
     } finally {
-      refreshInFlight = null;
+      window.clearTimeout(timer);
+      activeRequestControllers.delete(controller);
     }
   })();
-  return refreshInFlight;
+  refreshInFlight = pending;
+  void pending.finally(() => { if (refreshInFlight === pending) refreshInFlight = null; });
+  return pending;
 }
 
 async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retriedAfterRefresh = false): Promise<T> {
@@ -366,14 +417,18 @@ async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retrie
     if (response.status === 401 && !retriedAfterRefresh && !isAuthPath(path)) {
       const refreshed = await refreshSession();
       if (requestEpoch !== authScopeEpoch) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
-      if (refreshed) return executeRequest<T>(path, init, true);
+      if (refreshed === 'renewed') return executeRequest<T>(path, init, true);
+      checkRefreshFailure(refreshed);
     }
     if (response.status === 401) clearStaleSession(path);
-    throw new ApiClientError(code, message, response.status);
+    throw new ApiClientError(code, message, response.status, {
+      retryAfterMs: retryAfterMilliseconds(response.headers.get('Retry-After')),
+    });
   }
   if (path === "/auth/login" || path === "/auth/register") {
     sessionInvalidationDispatched = false;
     sessionKnownInvalid = false;
+    lastFailedRefreshAt = 0;
     clearApiCache();
   }
   if (response.status === 204) return undefined as T;
@@ -472,46 +527,59 @@ export async function apiRequest<T>(path: string, init: ApiRequestInit = {}, ret
   return requestPromise;
 }
 
-export function uploadWithProgress<T>(
+export async function uploadWithProgress<T>(
   path: string,
   formData: FormData,
   onProgress?: (percent: number, loaded?: number, total?: number) => void,
   timeoutMs: number = 0,
   onXhrCreated?: (xhr: XMLHttpRequest) => void
 ): Promise<T> {
+  const requestEpoch = authScopeEpoch;
+  // Renew before sending potentially large/non-idempotent multipart bytes.
+  // A temporary refresh outage is not logout, and must not start a transfer.
+  await apiRequest('/auth/me', { skipCache: true, cacheTtlMs: 0 });
+  if (requestEpoch !== authScopeEpoch) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    if (onXhrCreated) {
-      try {
-        onXhrCreated(xhr);
-      } catch (err) {
-        console.error("onXhrCreated callback error", err);
-      }
-    }
-    xhr.open("POST", apiUrl(path));
-    xhr.withCredentials = true;
-    if (timeoutMs > 0) xhr.timeout = timeoutMs;
-    const csrf = csrfToken();
-    if (csrf) xhr.setRequestHeader("X-CSRF-Token", csrf);
+    const controller = new AbortController();
+    let settled = false;
+    const changedAccount = () => requestEpoch !== authScopeEpoch;
+    const cancelled = () => new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
+    const finish = (error?: unknown, value?: T) => {
+      if (settled) return;
+      settled = true;
+      activeRequestControllers.delete(controller);
+      controller.signal.removeEventListener('abort', abortUpload);
+      if (error !== undefined) reject(error);
+      else resolve(value as T);
+    };
+    const abortUpload = () => {
+      xhr.abort();
+      finish(cancelled()); // DONE XHRs need not emit an abort event.
+    };
+    activeRequestControllers.add(controller);
+    controller.signal.addEventListener('abort', abortUpload, { once: true });
     if (xhr.upload && onProgress) {
       xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable && event.total > 0) {
+        if (!settled && !changedAccount() && event.lengthComputable && event.total > 0) {
           const pct = Math.round((event.loaded / event.total) * 100);
           onProgress(pct, event.loaded, event.total);
         }
       };
     }
 
-    xhr.onload = () => {
+    xhr.onload = async () => {
+      if (settled) return;
+      if (changedAccount()) { finish(cancelled()); return; }
       if (xhr.status >= 200 && xhr.status < 300) {
         if (xhr.status === 204) {
-          resolve(undefined as T);
+          finish();
           return;
         }
         try {
-          resolve(JSON.parse(xhr.responseText) as T);
+          finish(undefined, JSON.parse(xhr.responseText) as T);
         } catch {
-          resolve(xhr.responseText as unknown as T);
+          finish(undefined, xhr.responseText as unknown as T);
         }
       } else {
         let msg = `Upload failed (${xhr.status})`;
@@ -548,16 +616,46 @@ export function uploadWithProgress<T>(
             msg = "فشل رفع الملف: انقطع الاتصال أو انتهت مهلة الخادم. يرجى التحقق من سرعة الإنترنت والمحاولة مرة أخرى.";
           }
         }
-        if (xhr.status === 401) clearStaleSession(path);
-        console.error(`[Upload Error] Status: ${xhr.status}, Response:`, xhr.responseText);
-        reject(new ApiClientError(code, msg, xhr.status));
+        try {
+          if (xhr.status === 401) {
+            const refreshed = await refreshSession();
+            if (settled) return;
+            if (changedAccount()) { finish(cancelled()); return; }
+            if (refreshed === 'renewed') {
+              // Do not blindly replay bytes: some upload endpoints do not
+              // provide a replay/idempotency contract. Let the user retry.
+              finish(new ApiClientError('UPLOAD_RETRY_REQUIRED',
+                'تم تجديد الجلسة. لم يكتمل الرفع؛ تحقق من حالة الملف ثم أعد المحاولة.', 401));
+              return;
+            }
+            checkRefreshFailure(refreshed);
+            // Do not abort this completed XHR while invalidating its scope.
+            activeRequestControllers.delete(controller);
+            clearStaleSession(path);
+          }
+          finish(new ApiClientError(code, msg, xhr.status));
+        } catch (error) { finish(error); }
       }
     };
 
-    xhr.onerror = () => reject(new ApiClientError("NETWORK_ERROR", "فشل الاتصال بالخادم أثناء رفع الملف", 0));
-    xhr.ontimeout = () => reject(new ApiClientError("REQUEST_TIMEOUT", "استغرقت عملية الرفع وقتاً أطول من المتوقع", 0));
-    xhr.onabort = () => reject(new ApiClientError("ABORTED", "تم إلغاء رفع الملف", 0));
+    xhr.onerror = () => finish(changedAccount() ? cancelled() : new ApiClientError("NETWORK_ERROR", "فشل الاتصال بالخادم أثناء رفع الملف", 0));
+    xhr.ontimeout = () => finish(changedAccount() ? cancelled() : new ApiClientError("REQUEST_TIMEOUT", "استغرقت عملية الرفع وقتاً أطول من المتوقع", 0));
+    xhr.onabort = () => finish(changedAccount() ? cancelled() : new ApiClientError("ABORTED", "تم إلغاء رفع الملف", 0));
 
-    xhr.send(formData);
+    try {
+      xhr.open("POST", apiUrl(path));
+      xhr.withCredentials = true;
+      if (timeoutMs > 0) xhr.timeout = timeoutMs;
+      const csrf = csrfToken();
+      if (csrf) xhr.setRequestHeader("X-CSRF-Token", csrf);
+      onXhrCreated?.(xhr);
+      if (changedAccount()) { finish(cancelled()); return; }
+      // abort() before send() need not emit an event in real browsers.
+      if (xhr.readyState === XMLHttpRequest.UNSENT) {
+        finish(new ApiClientError('ABORTED', 'تم إلغاء رفع الملف', 0));
+        return;
+      }
+      if (!settled) xhr.send(formData);
+    } catch (error) { finish(error); }
   });
 }

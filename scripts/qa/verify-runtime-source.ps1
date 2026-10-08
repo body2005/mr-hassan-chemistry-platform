@@ -5,12 +5,13 @@ Set-Location $taskRoot
 $manifestCode=@'
 import hashlib,json,pathlib
 root=pathlib.Path('/srv')
-files=[*root.joinpath('app').rglob('*.py'),*root.joinpath('scripts').rglob('*.py'),
-       *root.joinpath('scripts').rglob('*.sh'),root/'entrypoint-prod.sh',root/'requirements.txt',root/'requirements.lock']
+files=[*root.joinpath('app').rglob('*.py'),
+       *(p for p in root.joinpath('scripts').rglob('*') if p.is_file() and p.suffix in {'.py','.sh','.cc','.diff','.tsv'}),
+       root/'entrypoint-prod.sh',root/'requirements.txt',root/'requirements.lock']
 print(json.dumps({str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for p in files}))
 '@
 $results=[System.Collections.Generic.List[object]]::new()
-foreach($service in @('api','video-worker')){
+foreach($service in @('api','worker','video-worker')){
     $target="chemistryaudit2-$service-1"
     $owner=& $Docker inspect $target --format '{{index .Config.Labels "com.docker.compose.project"}}/{{index .Config.Labels "com.docker.compose.service"}}'
     if($LASTEXITCODE -ne 0 -or $owner -ne "chemistryaudit2/$service"){throw 'Not the expected isolated QA runtime'}
@@ -24,7 +25,7 @@ foreach($service in @('api','video-worker')){
             $mismatch.Add($relative)
         }
     }
-    $hostSources=@(rg --files apps/api/app apps/api/scripts -g '*.py' -g '*.sh')
+    $hostSources=@(rg --files apps/api/app apps/api/scripts -g '*.py' -g '*.sh' -g '*.cc' -g '*.diff' -g '*.tsv')
     foreach($file in $hostSources){
         $relative=$file.Replace('\','/').Substring('apps/api/'.Length)
         if(!$manifest.ContainsKey($relative)){$mismatch.Add("missing-in-runtime:$relative")}

@@ -83,7 +83,65 @@ describe("apiClient request discipline", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  it.each([429, 503])('stops queued course hydration on %s without replay, while keeping foreground auth usable', async status => {
+    let unavailable = true;
+    const calls = stubFetch(input => new Response('{}', {
+      status: input.includes('/courses/') && unavailable ? status : 200,
+      headers: { 'Retry-After': '2' },
+    }));
+    const { apiRequest } = await import('./apiClient');
+    const results = await Promise.all(Array.from({ length: 150 }, (_, id) =>
+      apiRequest(`/courses/${id}/assessments`).catch(error => error.status)));
+    expect(results).toEqual(Array(150).fill(status));
+    expect(calls.filter(call => call.input.includes('/courses/'))).toHaveLength(4);
+    await apiRequest('/auth/me');
+    await expect(apiRequest('/courses/not-replayed/assessments')).rejects.toMatchObject({ status });
+    expect(calls.filter(call => call.input.includes('/courses/'))).toHaveLength(4);
+    unavailable = false;
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 2_100);
+    // Time passing alone must never replay the failed 150-request batch.
+    expect(calls.filter(call => call.input.includes('/courses/'))).toHaveLength(4);
+    await expect(apiRequest('/courses/explicit-retry/assessments')).resolves.toEqual({});
+    expect(calls.filter(call => call.input.includes('/courses/'))).toHaveLength(5);
+  });
+
+  it('a failed former-account course read cannot put the next account into cooldown', async () => {
+    let finishOld: (response: Response) => void = () => {};
+    const calls = stubFetch(input => input.includes('/courses/old/')
+      ? new Promise<Response>(resolve => { finishOld = resolve; })
+      : new Response('{}', { status: 200 }));
+    const { apiRequest, setApiAuthScope } = await import('./apiClient');
+    setApiAuthScope('student-a');
+    const old = apiRequest('/courses/old/assessments').catch(error => error.code);
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    setApiAuthScope('student-b');
+    finishOld(new Response('{}', { status: 503, headers: { 'Retry-After': '60' } }));
+    expect(await old).toBe('REQUEST_CANCELLED');
+    await expect(apiRequest('/courses/new/assessments')).resolves.toEqual({});
+    expect(calls).toHaveLength(2);
+  });
+
+  it('stops a queued hydration batch on a network outage, without blocking a later explicit retry', async () => {
+    let unavailable = true;
+    const calls = stubFetch(() => {
+      if (unavailable) throw new TypeError('Synthetic network outage');
+      return new Response('{}', { status: 200 });
+    });
+    const { apiRequest } = await import('./apiClient');
+    const outcomes = await Promise.all(Array.from({ length: 150 }, (_, id) =>
+      apiRequest(`/courses/${id}/assessments`).catch(error => error.code)));
+    expect(outcomes).toEqual(Array(150).fill('NETWORK_ERROR'));
+    expect(calls).toHaveLength(4);
+    unavailable = false;
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 2_100);
+    await expect(apiRequest('/courses/explicit-network-retry/assessments')).resolves.toEqual({});
+    expect(calls).toHaveLength(5);
   });
 
   it("bounds course hydration without blocking identity or playback mutations", async () => {

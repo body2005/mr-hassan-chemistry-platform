@@ -12,6 +12,7 @@ import { PaymentTarget, StudentEntitlement, paymentService } from "./services/pa
 import { realtimeService } from "./services/realtimeService";
 import { LessonAccessModal } from "./components/LessonAccessModal";
 import { FloatingProgressFab } from "./components/FloatingProgressFab";
+import { bootstrapRetryDelay, type BootstrapFailure } from './utils/bootstrapRecovery';
 
 // Views
 import { LandingPageView } from "./views/LandingPageView";
@@ -94,6 +95,8 @@ function App() {
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(() => cachedUser);
   const [authStatus, setAuthStatus] = useState<AuthStatus>(() => (cachedUser ? "authenticated" : "loading"));
   const [retryAttempt, setRetryAttempt] = useState(0);
+  const [bootstrapFailure, setBootstrapFailure] = useState<BootstrapFailure | null>(null);
+  const [bootstrapChecking, setBootstrapChecking] = useState(true);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [authLoading, setAuthLoading] = useState(() => !cachedUser);
   const authSyncId = useRef(0);
@@ -109,6 +112,7 @@ function App() {
   // Cached identity does not imply that this user's course catalog is loaded.
   // Keep teacher mutations unavailable until the matching bootstrap arrives.
   const [courseScopeReady, setCourseScopeReady] = useState<string | null>(null);
+  const [courseHydrationIssue, setCourseHydrationIssue] = useState(false);
   const [enrolledCourseIds, setEnrolledCourseIds] = useState<string[]>([]);
   const [entitlements, setEntitlements] = useState<StudentEntitlement[]>([]);
   const [checkoutTarget, setCheckoutTarget] = useState<PaymentTarget | null>(null);
@@ -130,6 +134,7 @@ function App() {
 
     async function handleBootstrapSync() {
       const requestId = ++authSyncId.current;
+      setBootstrapChecking(true);
       try {
         const bootstrap = await bootstrapService.getBootstrap();
         if (requestId !== authSyncId.current) return;
@@ -137,9 +142,11 @@ function App() {
           setCurrentUser(bootstrap.user);
           setAuthStatus("authenticated");
           setRetryAttempt(0);
+          setBootstrapFailure(null);
           setNotifications(bootstrap.notifications);
           setCourses(bootstrap.courses);
           setCourseScopeReady(bootstrap.user.id);
+          setCourseHydrationIssue(false);
           if (bootstrap.user.role === "student") {
             setEnrolledCourseIds(bootstrap.enrolledCourseIds);
             setEntitlements(bootstrap.entitlements);
@@ -157,6 +164,7 @@ function App() {
               }
             })).then((enriched) => {
               if (requestId !== authSyncId.current) return;
+              setCourseHydrationIssue(enriched.some((course) => course === null));
               const resolved: Course[] = [];
               for (const course of enriched) if (course) resolved.push(course);
               if (resolved.length === 0) return;
@@ -175,13 +183,18 @@ function App() {
           setCourseScopeReady(null);
           setAuthStatus("unauthenticated");
           setRetryAttempt(0);
+          setBootstrapFailure(null);
         }
       } catch (error) {
         if (requestId !== authSyncId.current) return;
         console.error("Bootstrap sync error", error);
+        setBootstrapFailure(error instanceof ApiClientError ? error : {});
         setAuthStatus("temporarily_unavailable");
       } finally {
-        if (requestId === authSyncId.current) setAuthLoading(false);
+        if (requestId === authSyncId.current) {
+          setAuthLoading(false);
+          setBootstrapChecking(false);
+        }
       }
     }
 
@@ -208,16 +221,17 @@ function App() {
     };
   }, []);
 
-  // Exponential backoff retry when auth server is temporarily unavailable
+  // Bounded recovery for temporary outages, never a timed replay of429.
   useEffect(() => {
-    if (authStatus !== "temporarily_unavailable") return;
-    const delay = Math.min(2000 * Math.pow(1.5, retryAttempt), 30000);
+    if (authStatus !== "temporarily_unavailable" || bootstrapChecking) return;
+    const delay = bootstrapRetryDelay(bootstrapFailure, retryAttempt);
+    if (delay === null) return;
     const timer = setTimeout(() => {
       setRetryAttempt((prev) => prev + 1);
       window.dispatchEvent(new Event("lms_user_updated"));
     }, delay);
     return () => clearTimeout(timer);
-  }, [authStatus, retryAttempt]);
+  }, [authStatus, retryAttempt, bootstrapFailure, bootstrapChecking]);
 
   // Track active navigation tab with Google Chrome native History & Hash support
   const [activeTab, setActiveTab] = useState<AllTabs>(() => {
@@ -365,7 +379,7 @@ function App() {
   // Stable callbacks so the SSE lifecycle effect below doesn't tear down and
   // re-open the stream whenever these identities change.
   const studentUserId = currentUser?.role === "student" ? currentUser.id : null;
-  const realtimeUserId = currentUser?.id;
+  const realtimeUserId = courseScopeReady === currentUser?.id ? currentUser?.id : undefined;
   const refreshStudentAccess = useCallback(() => {
     if (!studentUserId) return;
     void Promise.all([courseService.getEnrolledCourseIds(), paymentService.getMyEntitlements()])
@@ -479,6 +493,11 @@ function App() {
     } finally {
       authSyncId.current += 1;
       setCurrentUser(null);
+      setCourseScopeReady(null);
+      setCourseHydrationIssue(false);
+      setBootstrapChecking(false);
+      setBootstrapFailure(null);
+      setRetryAttempt(0);
       setAuthStatus("unauthenticated");
       setAuthLoading(false);
       navigateToTab("Landing");
@@ -548,11 +567,14 @@ function App() {
               boxShadow: "0 2px 8px rgba(0,0,0,0.18)",
             }}
           >
-            <span>⚠️ الخدمة غير متاحة مؤقتًا، جاري محاولة إعادة الاتصال بالخادم...</span>
+            <span>{lang === 'ar'
+              ? '⚠️ الخدمة غير متاحة مؤقتًا. إذا استمر الانقطاع، استخدم إعادة المحاولة.'
+              : 'The service is temporarily unavailable. If it persists, retry manually.'}</span>
             <button
               type="button"
               onClick={() => {
                 setRetryAttempt(0);
+                setBootstrapFailure(null);
                 window.dispatchEvent(new Event("lms_user_updated"));
               }}
               style={{
@@ -605,11 +627,14 @@ function App() {
             boxShadow: "0 2px 8px rgba(0,0,0,0.18)",
           }}
         >
-          <span>⚠️ الخدمة غير متاحة مؤقتًا، جاري محاولة إعادة الاتصال بالخادم... (البيانات المعروضة من الذاكرة المؤقتة)</span>
+          <span>{lang === 'ar'
+            ? '⚠️ الخدمة غير متاحة مؤقتًا. بياناتك محفوظة؛ إذا استمر الانقطاع، استخدم إعادة المحاولة.'
+            : 'The service is temporarily unavailable. Your data is preserved; retry manually if it persists.'}</span>
           <button
             type="button"
             onClick={() => {
               setRetryAttempt(0);
+              setBootstrapFailure(null);
               window.dispatchEvent(new Event("lms_user_updated"));
             }}
             style={{
@@ -658,7 +683,23 @@ function App() {
           currentUser={currentUser}
         />
 
+        {courseHydrationIssue && authStatus !== 'temporarily_unavailable' && (
+          <div role="alert" className="course-hydration-warning">
+            <span>{lang === 'ar'
+              ? 'تعذر تحميل بعض بيانات المقررات. بيانات حسابك محفوظة؛ يمكنك إعادة المحاولة.'
+              : 'Some course data could not load. Your account is preserved; you can retry.'}</span>
+            <button type="button" onClick={() => window.dispatchEvent(new Event('lms_user_updated'))}>
+              {lang === 'ar' ? 'إعادة تحميل المقررات' : 'Retry course loading'}
+            </button>
+          </div>
+        )}
+
         <Suspense fallback={<div className="page-container" style={{ minHeight: "60vh" }} />}>
+          {courseScopeReady !== currentUser.id ? (
+            <div className="page-container" role="status">{lang === 'ar'
+              ? 'جارٍ التحقق من الحساب قبل إتاحة المحتوى والتعديل…'
+              : 'Verifying your account before enabling content and changes…'}</div>
+          ) : <>
           {/* Dynamic Route Views */}
           {/* Student Views */}
           {activeTab === "MyCourses" && currentUser.role === "student" && (
@@ -731,22 +772,21 @@ function App() {
 
         {/* Full-Page Profile Route */}
           {activeTab === "Profile" && currentUser && (
-          <ProfileView
-            user={currentUser}
-            onLogout={handleLogout}
-            lang={lang}
-          />
+            courseScopeReady === currentUser.id
+              ? <ProfileView user={currentUser} onLogout={handleLogout} lang={lang} />
+              : <div className="page-container" role="status">{lang === 'ar' ? 'جارٍ التحقق من الحساب قبل إتاحة تعديل بياناته…' : 'Verifying your account before enabling profile changes…'}</div>
           )}
+          </>}
         </Suspense>
       </main>
 
       {/* Global Background Upload Manager Widget - strictly for teachers only */}
-      {currentUser?.role !== "student" && (
+      {courseScopeReady === currentUser.id && currentUser.role !== "student" && (
         <GlobalUploadWidget currentUser={currentUser} menuOpen={menuOpen} />
       )}
 
       {/* Global Student Course Progress FAB: draggable, bottom-right default, appears on all pages, hides when video enlarged */}
-      {currentUser?.role === "student" && (
+      {courseScopeReady === currentUser.id && currentUser.role === "student" && (
         <FloatingProgressFab
           courses={courses}
           currentUser={currentUser}
@@ -757,7 +797,7 @@ function App() {
       {/* Lesson Access Approval Modal for Teachers and Students */}
       <LessonAccessModal
         requestId={selectedAccessRequestId}
-        isOpen={isAccessModalOpen}
+        isOpen={isAccessModalOpen && courseScopeReady === currentUser.id}
         onClose={() => {
           setIsAccessModalOpen(false);
           setSelectedAccessRequestId(null);

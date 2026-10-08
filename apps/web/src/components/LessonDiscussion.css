@@ -1,0 +1,28 @@
+.lesson-discussion {
+  background: var(--bg-surface, #fff);
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 20px;
+  padding: 24px 28px;
+  color: var(--text-main, #0f172a);
+}
+.discussion-header, .discussion-author { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.discussion-header { justify-content: space-between; margin-bottom: 20px; }
+.discussion-header h3 { font-size: 18px; margin: 0; }
+.lesson-discussion button { font: inherit; cursor: pointer; }
+.lesson-discussion button:disabled { cursor: not-allowed; opacity: .6; }
+.lesson-discussion :is(input, button):focus-visible { outline: 2px solid var(--color-primary, #059669); outline-offset: 3px; }
+.discussion-header button, .discussion-reply-toggle { background: transparent; border: 0; color: var(--text-main, #0f172a); padding: 8px; }
+.discussion-composer { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin-bottom: 26px; }
+.lesson-discussion input { width: 100%; min-width: 0; box-sizing: border-box; padding: 12px 16px; font: inherit; color: var(--text-main, #0f172a); background: var(--bg-surface-secondary, #f8fafc); border: 1px solid var(--border-color, #e2e8f0); border-radius: 12px; }
+.discussion-composer button, .discussion-reply-composer button, .discussion-error button { border: 0; border-radius: 10px; background: #0f392b; color: #fff; padding: 10px 20px; }
+.discussion-error { border: 1px solid var(--border-color, #e2e8f0); border-radius: 12px; padding: 12px; color: var(--text-main, #0f172a); }
+.discussion-empty { background: var(--bg-surface-secondary, #f8fafc); border: 1px dashed var(--border-color, #e2e8f0); border-radius: 12px; padding: 24px 12px; text-align: center; }
+.discussion-list { display: grid; gap: 22px; }
+.discussion-author time { color: var(--text-muted, #64748b); font-size: 12px; }
+.discussion-teacher { background: #0f392b; color: #fff; border-radius: 6px; padding: 2px 8px; font-size: 12px; }
+.discussion-body { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; margin: 8px 0; }
+.discussion-reply-toggle { display: inline-flex; align-items: center; gap: 5px; }
+.discussion-reply-composer { display: flex; gap: 8px; margin: 10px 0; }
+.discussion-replies { display: grid; gap: 12px; padding-inline-start: 28px; }
+.discussion-replies article { padding: 14px; background: var(--bg-surface-secondary, #f8fafc); border: 1px solid var(--border-color, #e2e8f0); border-radius: 12px; }
+@media (max-width: 480px) { .lesson-discussion { padding: 20px 16px; } .discussion-replies { padding-inline-start: 12px; } }

@@ -6,7 +6,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from pydantic import AliasChoices, Field, model_validator
+from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def is_deployment_environment(value: str) -> bool:
+    # Unknown names fail closed; Settings separately rejects unsupported names.
+    return value.strip().lower() not in {'development', 'test', 'testing'}
 
 
 class Settings(BaseSettings):
@@ -20,13 +26,15 @@ class Settings(BaseSettings):
     app_env: str = "development"
     api_v1_prefix: str = "/api/v1"
     secret_key: str = Field(default="development-only-change-me", min_length=16)
-    session_cookie_name: str = "matgar_session"
-    csrf_cookie_name: str = "matgar_csrf"
-    refresh_cookie_name: str = "matgar_refresh"
+    # Public SPA/HttpOnly session contract: reject unsupported renaming.
+    session_cookie_name: Literal['matgar_session'] = "matgar_session"
+    csrf_cookie_name: Literal['matgar_csrf'] = "matgar_csrf"
+    refresh_cookie_name: Literal['matgar_refresh'] = "matgar_refresh"
     session_issuer: str = "mr-hassan-chemistry-platform"
     session_ttl_seconds: int = Field(default=12 * 60 * 60, ge=300, le=60 * 60 * 24)
     refresh_ttl_seconds: int = Field(default=60 * 60 * 24 * 30, ge=60 * 60, le=60 * 60 * 24 * 365)
     password_reset_ttl_minutes: int = Field(default=30, ge=5, le=24 * 60)
+    refresh_replay_grace_seconds: int = Field(default=30, ge=1, le=30)
     smtp_host: str | None = None
     smtp_port: int = Field(default=465, ge=1, le=65535)
     smtp_user: str | None = None
@@ -103,23 +111,36 @@ class Settings(BaseSettings):
     def secure_cookies(self) -> bool:
         if self.cookie_secure is not None:
             return self.cookie_secure
-        return self.app_env.lower() == "production"
+        return self.deployment_environment
+
+    @property
+    def deployment_environment(self) -> bool:
+        return is_deployment_environment(self.app_env)
 
     @model_validator(mode="after")
     def validate_production_secret(self) -> "Settings":
-        if self.app_env.lower() == "production" and self.secret_key == "development-only-change-me":
+        self.app_env = self.app_env.strip().lower()
+        if self.app_env not in {'development', 'test', 'testing', 'production', 'production_like', 'staging'}:
+            raise ValueError('Unsupported APP_ENV; do not silently treat a deployment as development')
+        if self.deployment_environment and (len(self.secret_key) < 32 or self.secret_key.lower() in {
+            'development-only-change-me', 'test-secret-key-that-is-long-enough',
+            'change-me-before-production-please', 'your-secret-key-here-change-this-now'}):
             raise ValueError("SECRET_KEY must be replaced before production startup")
-        if self.app_env.lower() == "production" and (
+        if self.deployment_environment and not self.secure_cookies:
+            raise ValueError('Secure cookies must remain enabled in deployment environments')
+        if self.deployment_environment and os.getenv('DISABLE_RATE_LIMITING', '').lower() in {'1', 'true', 'yes'}:
+            raise ValueError('Rate limiting cannot be disabled in deployment environments')
+        if self.deployment_environment and (
             not self.cors_origins or any(not origin.startswith("https://") for origin in self.cors_origins)
         ):
             raise ValueError("FRONTEND_ORIGINS must use HTTPS in production")
-        if self.app_env.lower() == "production" and not all(
+        if self.deployment_environment and not all(
             (self.smtp_host, self.smtp_user, self.smtp_password, self.smtp_from_email)
         ):
             raise ValueError("SMTP delivery must be configured before production startup")
-        if self.app_env.lower() == "production" and not self.smtp_tls_verify:
+        if self.deployment_environment and not self.smtp_tls_verify:
             raise ValueError("SMTP TLS certificate verification must remain enabled in production")
-        if self.app_env.lower() == "production" and not any(
+        if self.deployment_environment and not any(
             (self.payment_instapay_account, self.payment_vodafone_cash_number, self.payment_bank_details)
         ):
             raise ValueError("At least one payment destination must be configured before production startup")
@@ -140,7 +161,7 @@ class Settings(BaseSettings):
         if not origins and raw:
             origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
 
-        if self.app_env.lower() != "production":
+        if not self.deployment_environment:
             default_exact = [
                 "https://mr-hassan-chemistry-platform.vercel.app",
                 "https://mr-hassan-chemistry.vercel.app",
@@ -161,7 +182,7 @@ class Settings(BaseSettings):
             # fails closed rather than silently widening CORS.
             re.compile(configured)
             return configured
-        if self.app_env.lower() == "production":
+        if self.deployment_environment:
             return None
         return r"^https://mr-hassan-chemistry-platform-[a-z0-9]+-body19\.vercel\.app$"
 

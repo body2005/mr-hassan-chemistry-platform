@@ -11,6 +11,7 @@ from typing import AsyncGenerator
 from fastapi import HTTPException, Request, status
 
 from app.core.rate_limit import resolve_client_ip
+from app.core.config import get_settings
 from app.core.security import decode_session_token
 from app.core.leases import ResourceLease
 
@@ -39,7 +40,7 @@ def _resolve_concurrency_key(request: Request) -> str:
         token = auth[7:].strip()
     if not token:
         # 2. Cookie
-        token = request.cookies.get("matgar_session")
+        token = request.cookies.get(get_settings().session_cookie_name)
 
     if token:
         try:
@@ -57,7 +58,7 @@ def _resolve_concurrency_key(request: Request) -> str:
 async def concurrency_guard(
     request: Request,
     is_heavy: bool = False,
-) -> AsyncGenerator[None, None]:
+) -> AsyncGenerator[ResourceLease | None, None]:
     """Admission control context manager rejecting excess concurrent work before execution."""
     if os.getenv("APP_ENV") == "test" and os.getenv("DISABLE_RATE_LIMITING", "").lower() in {"1", "true", "yes"}:
         yield
@@ -72,7 +73,7 @@ async def concurrency_guard(
     distributed = await lease.acquire()
     if distributed:
         try:
-            yield
+            yield lease
         finally:
             await lease.release()
         return
@@ -143,12 +144,15 @@ class AdmissionMiddleware:
         category = self.classify(scope["method"], scope["path"])
         guard = concurrency_guard(request, is_heavy=category in {"heavy_query", "upload", "quiz_extraction"})
         try:
-            await guard.__aenter__()
+            lease = await guard.__aenter__()
         except HTTPException as exc:
             from fastapi.responses import JSONResponse
             response = JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
             return await response(scope, receive, send)
         try:
-            await self.app(scope, receive, send)
+            if lease is not None:
+                await lease.run(self.app, scope, receive, send)
+            else:
+                await self.app(scope, receive, send)
         finally:
             await guard.__aexit__(None, None, None)

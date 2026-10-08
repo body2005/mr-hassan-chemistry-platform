@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import uuid
+from pathlib import Path
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 from app.core.storage import S3StorageProvider
@@ -28,7 +29,11 @@ def test_production_like_periodic_consumer_deletes_only_synthetic_object():
             db.add(StorageCleanup(object_key=key)); db.commit()
         result = subprocess.run([sys.executable, '-m', 'scripts.qa_cleanup_runtime'], env={**os.environ,
             'APP_ENV': 'production_like', 'STORAGE_BACKEND': 's3', 'DATABASE_URL': url.render_as_string(hide_password=False),
-            'QA_CLEANUP_KEY': key}, capture_output=True, text=True, timeout=45)
+            'QA_CLEANUP_KEY': key, 'SECRET_KEY': Path(os.environ['SECRET_KEY_FILE']).read_text().strip(),
+            'COOKIE_SECURE': 'true', 'FRONTEND_ORIGINS': 'https://proxy',
+            'SMTP_HOST': 'mailpit', 'SMTP_USER': 'qa', 'SMTP_PASSWORD': 'synthetic-not-used',
+            'SMTP_FROM_EMAIL': 'qa@example.test', 'SMTP_TLS_VERIFY': 'true',
+            'PAYMENT_INSTAPAY_ACCOUNT': 'qa-synthetic-merchant'}, capture_output=True, text=True, timeout=45)
         # Never print environment or stderr: a configuration failure could
         # include a connection string. Assertions expose status only.
         assert result.returncode == 0, f'Periodic consumer probe failed, exit={result.returncode}'

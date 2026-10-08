@@ -49,6 +49,13 @@ class RealTimeService {
         // missed while offline from the authenticated database-backed route.
         invalidateApiCache("/notifications");
         window.dispatchEvent(new CustomEvent("lms_notifications_updated"));
+        // A review/access change can occur while no subscriber exists. Read
+        // durable state on every connection; never replay/fabricate an unlock
+        // from a pending order or assume Redis pub/sub is event history.
+        invalidateApiCache("/payments/orders");
+        invalidateApiCache("/payments/me/orders");
+        invalidateApiCache("/payments/me/entitlements");
+        window.dispatchEvent(new CustomEvent("lms_payment_updated"));
       };
 
       // Listen for named SSE events from the backend

@@ -6,6 +6,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.database import SessionLocal, engine
+from app.core.config import is_deployment_environment
 from app.core.security import hash_password, verify_password
 from app.models import Base
 from app.models.institution import Institution
@@ -93,6 +94,10 @@ def _seed_account(
         # are otherwise idempotent and must never invalidate a live login.
         if reset_password:
             existing.password_hash = hash_password(password)
+            from datetime import datetime, timezone
+            existing.password_changed_at = datetime.now(timezone.utc)
+            from app.services.auth_service import invalidate_password_reset_tokens
+            invalidate_password_reset_tokens(db, existing.id)
             changed = True
         if changed:
             db.commit()
@@ -124,7 +129,7 @@ def seed() -> None:
     teacher_email = os.getenv("INITIAL_TEACHER_EMAIL", "").strip().lower()
     teacher_password = os.getenv("INITIAL_TEACHER_PASSWORD", "")
     demo_enabled = _env_flag("ENABLE_DEMO_ACCOUNTS")
-    if os.getenv("APP_ENV", "").strip().lower() == "production":
+    if is_deployment_environment(os.getenv("APP_ENV", "development")):
         if demo_enabled or _env_flag("RESET_DEMO_PASSWORDS") or _env_flag("RESET_INITIAL_TEACHER_PASSWORD"):
             raise RuntimeError("Production seeding must not create demo accounts or reset existing passwords")
         if teacher_password and len(teacher_password) < 12:

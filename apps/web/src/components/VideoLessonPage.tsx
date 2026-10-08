@@ -10,15 +10,9 @@ import {
   Settings,
   Expand,
   Share2,
-  Eye,
   Calendar,
   Download,
   FileText,
-  Heart,
-  CornerDownLeft,
-  ChevronDown,
-  ChevronLeft,
-  ArrowRight,
 } from "lucide-react";
 import { Course, CurrentUser, VideoLesson } from "../types/lms";
 import { apiRequest, apiUrl } from "../services/apiClient";
@@ -26,6 +20,9 @@ import { VideoTelemetryTracker } from "../services/videoTelemetry";
 import { lessonAccessService } from "../services/paymentService";
 import { useToast } from "./ToastProvider";
 import Hls from "hls.js";
+import { useHlsTransport } from "./useHlsTransport";
+import { VideoLessonNavigation } from "./VideoLessonNavigation";
+import { LessonDiscussion } from "./LessonDiscussion";
 
 export interface VideoLessonPageProps {
   lesson: VideoLesson;
@@ -38,19 +35,6 @@ export interface VideoLessonPageProps {
   onDownloadMaterial?: (url: string, filename: string) => void;
 }
 
-type CommentItem = {
-  id: string;
-  author: string;
-  role?: string;
-  isTeacher?: boolean;
-  isMine?: boolean;
-  avatar?: string;
-  body: string;
-  timeAgo: string;
-  likes: number;
-  isLiked?: boolean;
-  replies?: CommentItem[];
-};
 
 interface StoredVideoProgress {
   currentTime: number;
@@ -121,6 +105,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   const [playbackUrl, setPlaybackUrl] = useState("");
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const playbackRenewingRef = useRef(false);
+  const playbackScopeRef = useRef<object | null>(null);
   const lastPlaybackRenewalRef = useRef(0);
   const pendingPlaybackResumeRef = useRef<{ time: number; playing: boolean } | null>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -163,13 +148,6 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     };
   }, [isFullscreen, isWide]);
 
-  // Sort & Comments state (Real comments only, NO mock comments)
-  const [sortBy, setSortBy] = useState<"newest" | "top">("newest");
-  const [comments, setComments] = useState<CommentItem[]>([]);
-  const [newCommentText, setNewCommentText] = useState("");
-  const [replyInputs, setReplyInputs] = useState<Record<string, string>>({});
-  const [activeReplyId, setActiveReplyId] = useState<string | null>(null);
-  const [isSubmittingComment, setIsSubmittingComment] = useState(false);
 
   // Reset or restore lesson state when lesson changes
   useEffect(() => {
@@ -198,6 +176,9 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   // Protected playback token fetching
   useEffect(() => {
     let disposed = false;
+    const scope = {};
+    playbackScopeRef.current = scope;
+    playbackRenewingRef.current = false;
     lastPlaybackRenewalRef.current = 0;
     pendingPlaybackResumeRef.current = null;
     setPlaybackUrl("");
@@ -207,6 +188,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
       setPlaybackError("لا يوجد فيديو جاهز لهذا الدرس بعد. إذا كنت قد رفعته، تحقق من اكتمال الرفع والمعالجة في إدارة الدروس ثم حدّث الصفحة.");
       return () => {
         disposed = true;
+        if (playbackScopeRef.current === scope) playbackScopeRef.current = null;
       };
     }
 
@@ -214,6 +196,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
       setPlaybackUrl(lesson.videoUrl);
       return () => {
         disposed = true;
+        if (playbackScopeRef.current === scope) playbackScopeRef.current = null;
       };
     }
 
@@ -231,49 +214,11 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
 
     return () => {
       disposed = true;
+      if (playbackScopeRef.current === scope) playbackScopeRef.current = null;
     };
-  }, [lesson.id, lesson.videoUrl, lesson.requiresProtectedPlayback]);
+  }, [lesson.id, lesson.videoUrl, lesson.requiresProtectedPlayback, currentUser?.id]);
 
-  useEffect(() => {
-    const video = videoElementRef.current;
-    if (!video || !playbackUrl) return;
-    if (!playbackUrl.includes("/hls/")) {
-      video.src = playbackUrl;
-      setQualityOptions(["الأصلية"]);
-      setSelectedQuality("الأصلية");
-      return;
-    }
-    if (!Hls.isSupported()) {
-      if (video.canPlayType("application/vnd.apple.mpegurl")) {
-        video.src = playbackUrl;
-        setQualityOptions(["تلقائي"]);
-        setSelectedQuality("تلقائي");
-      } else setPlaybackError("المتصفح لا يدعم البث التكيفي؛ جرّب متصفحًا حديثًا.");
-      return;
-    }
-    const hls = new Hls({
-      maxBufferLength: 30,
-      maxMaxBufferLength: 60,
-      // Stop rather than creating a request storm (including HTTP 429).
-      manifestLoadPolicy: { default: { maxTimeToFirstByteMs: 10000, maxLoadTimeMs: 20000, timeoutRetry: null, errorRetry: null } },
-      playlistLoadPolicy: { default: { maxTimeToFirstByteMs: 10000, maxLoadTimeMs: 20000, timeoutRetry: null, errorRetry: null } },
-      fragLoadPolicy: { default: { maxTimeToFirstByteMs: 10000, maxLoadTimeMs: 30000, timeoutRetry: null, errorRetry: null } },
-    });
-    hlsRef.current = hls;
-    hls.on(Hls.Events.MANIFEST_PARSED, () => {
-      setQualityOptions(["تلقائي", ...hls.levels.map(level => `${level.height}p`)]);
-      setSelectedQuality("تلقائي");
-    });
-    hls.on(Hls.Events.ERROR, (_event, data) => {
-      if (data.fatal || [401, 403, 429].includes(data.response?.code || 0)) {
-        hls.stopLoad();
-        setPlaybackError("توقف البث؛ تحقق من اتصالك أو صلاحية الجلسة ثم أعد المحاولة.");
-      }
-    });
-    hls.attachMedia(video);
-    hls.loadSource(playbackUrl);
-    return () => { hls.destroy(); hlsRef.current = null; };
-  }, [playbackUrl]);
+  useHlsTransport(playbackUrl, videoElementRef, hlsRef, setQualityOptions, setSelectedQuality, setPlaybackError);
 
   useEffect(() => {
     if (!playbackUrl.includes("/hls/") || !lesson.requiresProtectedPlayback) return;
@@ -293,12 +238,13 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
       });
     }, 240_000);
     return () => { disposed = true; window.clearTimeout(timer); };
-  }, [playbackUrl, lesson.id, lesson.requiresProtectedPlayback]);
+  }, [playbackUrl, lesson.id, lesson.requiresProtectedPlayback, currentUser?.id]);
 
   const [isAccessRequested, setIsAccessRequested] = useState(false);
   const [isSubmittingAccessRequest, setIsSubmittingAccessRequest] = useState(false);
 
   useEffect(() => {
+    let disposed = false;
     const handleUnlocked = (e: Event) => {
       const detail = (e as CustomEvent).detail;
       const targetId = detail?.lesson_id || detail?.resource_id;
@@ -309,6 +255,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
           method: "POST",
         })
           .then(({ stream_url }) => {
+            if (disposed) return;
             setPlaybackUrl(apiUrl(stream_url));
             toast({ message: "تمت إتاحة الدرس بنجاح، جاري تشغيل الفيديو!", tone: "success" });
           })
@@ -316,8 +263,11 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
       }
     };
     window.addEventListener("lms_lesson_unlocked", handleUnlocked);
-    return () => window.removeEventListener("lms_lesson_unlocked", handleUnlocked);
-  }, [lesson.id, toast]);
+    return () => {
+      disposed = true;
+      window.removeEventListener("lms_lesson_unlocked", handleUnlocked);
+    };
+  }, [lesson.id, currentUser?.id, toast]);
 
   async function handleRequestLessonAccess() {
     setIsSubmittingAccessRequest(true);
@@ -354,52 +304,6 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     };
   }, [lesson, playbackUrl]);
 
-  // Load real server comments (NO mock comments)
-  useEffect(() => {
-    let disposed = false;
-    setComments([]);
-    void apiRequest<{
-      comments: Array<{
-        id: string;
-        author: string;
-        is_mine: boolean;
-        body: string;
-        created_at: string | null;
-        replies: Array<{ id: string; author: string; is_mine: boolean; body: string }>;
-      }>;
-    }>(`/lessons/${lesson.id}/comments`)
-      .then((data) => {
-        if (disposed || !data?.comments) return;
-        const mapped: CommentItem[] = data.comments.map((c) => ({
-          id: c.id,
-          author: c.author,
-          isTeacher: Boolean((c as { is_teacher?: boolean }).is_teacher),
-          isMine: c.is_mine,
-          timeAgo: c.created_at ? new Date(c.created_at).toLocaleDateString("ar-EG") : "مؤخراً",
-          body: c.body,
-          likes: 0,
-          isLiked: false,
-          replies: (c.replies || []).map((r) => ({
-            id: r.id,
-            author: r.author,
-            isTeacher: Boolean((r as { is_teacher?: boolean }).is_teacher),
-            isMine: r.is_mine,
-            timeAgo: "مؤخراً",
-            body: r.body,
-            likes: 0,
-            isLiked: false,
-          })),
-        }));
-        setComments(mapped);
-      })
-      .catch(() => {
-        if (!disposed) setComments([]);
-      });
-
-    return () => {
-      disposed = true;
-    };
-  }, [lesson.id]);
 
   // Video element handlers
   const handlePlayPause = () => {
@@ -465,7 +369,8 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   };
 
   async function renewProtectedPlayback() {
-    if (!lesson.requiresProtectedPlayback || playbackRenewingRef.current) return;
+    const scope = playbackScopeRef.current;
+    if (!scope || !lesson.requiresProtectedPlayback || playbackRenewingRef.current) return;
     // A broken source should not cause an unbounded token/request loop.
     if (Date.now() - lastPlaybackRenewalRef.current < 10_000) {
       setPlaybackError("تعذر تشغيل الفيديو. أعد المحاولة بعد قليل.");
@@ -477,13 +382,15 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     const resume = { time: player?.currentTime ?? currentTime, playing: isPlaying || Boolean(player && !player.paused) };
     try {
       const { stream_url } = await apiRequest<{ stream_url: string }>(`/lessons/${lesson.id}/video-token`, { method: "POST" });
+      if (playbackScopeRef.current !== scope) return;
       pendingPlaybackResumeRef.current = resume;
       setPlaybackError(null);
       setPlaybackUrl(apiUrl(stream_url));
     } catch {
+      if (playbackScopeRef.current !== scope) return;
       setPlaybackError("تعذر تجديد رابط الفيديو. تحقق من اتصالك واستحقاقك ثم أعد المحاولة.");
     } finally {
-      playbackRenewingRef.current = false;
+      if (playbackScopeRef.current === scope) playbackRenewingRef.current = false;
     }
   }
 
@@ -656,121 +563,6 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     }
   };
 
-  // Add Comment (Real submission)
-  const handleAddComment = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newCommentText.trim()) return;
-
-    const body = newCommentText.trim();
-    setIsSubmittingComment(true);
-
-    try {
-      void apiRequest<{ id: string }>(`/lessons/${lesson.id}/comments`, {
-        method: "POST",
-        body: JSON.stringify({ body }),
-      }).catch(() => undefined);
-
-      const authorName = isTeacher
-        ? (course.teacherName || currentUser?.name || "معلم المادة")
-        : (currentUser?.name || "طالب معتمد");
-
-      const newC: CommentItem = {
-        id: `local-${Date.now()}`,
-        author: authorName,
-        isTeacher,
-        isMine: true,
-        timeAgo: "الآن",
-        body,
-        likes: 0,
-        isLiked: false,
-        replies: [],
-      };
-
-      setComments((prev) => [newC, ...prev]);
-      setNewCommentText("");
-      toast("تم إضافة تعليقك بنجاح", "success");
-    } catch {
-      toast("تعذر نشر التعليق، حاول مجدداً", "danger");
-    } finally {
-      setIsSubmittingComment(false);
-    }
-  };
-
-  // Add Reply
-  const handleAddReply = (commentId: string) => {
-    const text = replyInputs[commentId]?.trim();
-    if (!text) return;
-
-    void apiRequest<{ id: string }>(`/lessons/${lesson.id}/comments`, {
-      method: "POST",
-      body: JSON.stringify({ body: text, parent_id: commentId }),
-    }).catch(() => undefined);
-
-    const authorName = isTeacher
-      ? (course.teacherName || currentUser?.name || "معلم المادة")
-      : (currentUser?.name || "طالب معتمد");
-
-    setComments((prev) =>
-      prev.map((c) => {
-        if (c.id === commentId) {
-          return {
-            ...c,
-            replies: [
-              ...(c.replies || []),
-              {
-                id: `rep-${Date.now()}`,
-                author: authorName,
-                isTeacher,
-                isMine: true,
-                timeAgo: "الآن",
-                body: text,
-                likes: 0,
-                isLiked: false,
-              },
-            ],
-          };
-        }
-        return c;
-      })
-    );
-
-    setReplyInputs((prev) => ({ ...prev, [commentId]: "" }));
-    setActiveReplyId(null);
-    toast("تم إرسال الرد بنجاح", "success");
-  };
-
-  // Toggle Like
-  const handleToggleLike = (commentId: string, isReply = false, parentId?: string) => {
-    setComments((prev) =>
-      prev.map((c) => {
-        if (!isReply && c.id === commentId) {
-          const isLiked = !c.isLiked;
-          return {
-            ...c,
-            isLiked,
-            likes: isLiked ? c.likes + 1 : Math.max(0, c.likes - 1),
-          };
-        }
-        if (isReply && c.id === parentId && c.replies) {
-          return {
-            ...c,
-            replies: c.replies.map((r) => {
-              if (r.id === commentId) {
-                const isLiked = !r.isLiked;
-                return {
-                  ...r,
-                  isLiked,
-                  likes: isLiked ? r.likes + 1 : Math.max(0, r.likes - 1),
-                };
-              }
-              return r;
-            }),
-          };
-        }
-        return c;
-      })
-    );
-  };
 
   // Progress computations:
   // 1. Current lesson watched percentage (based on actual watched seconds)
@@ -792,9 +584,6 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
 
   // (Suggested lessons section removed per design — sidebar shows progress only.)
 
-  const totalCommentsCount = useMemo(() => {
-    return comments.reduce((acc, c) => acc + 1 + (c.replies?.length || 0), 0);
-  }, [comments]);
 
   // YouTube / Google Drive embed detection
   const isEmbed = useMemo(() => {
@@ -828,112 +617,8 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
         fontFamily: "var(--font-sans)",
       }}
     >
-      {/* ── Breadcrumb Bar (Top) ── */}
-      <div
-        style={{
-          background: "var(--bg-surface, #ffffff)",
-          borderBottom: "1px solid var(--border-color, #e2e8f0)",
-          padding: "9px 24px",
-          position: "sticky",
-          top: "-4px",
-          zIndex: 40,
-        }}
-      >
-        <div
-          style={{
-            maxWidth: "1400px",
-            margin: "0 auto",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            flexWrap: "wrap",
-            gap: "12px",
-          }}
-        >
-          {/* Breadcrumb Path */}
-          <nav
-            aria-label="Breadcrumb"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-              fontSize: "13px",
-              flexWrap: "wrap",
-              marginRight: "-346px",
-            }}
-          >
-            <button
-              onClick={onClose}
-              style={{
-                background: "transparent",
-                border: "none",
-                color: "#059669",
-                fontWeight: 700,
-                cursor: "pointer",
-                padding: "2px 4px",
-                borderRadius: "4px",
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "4px",
-              }}
-            >
-              الرئيسية
-            </button>
-
-            <ChevronLeft size={14} style={{ color: "var(--text-light, #94a3b8)" }} />
-
-            <span
-              onClick={onClose}
-              role="button"
-              tabIndex={0}
-              style={{
-                color: "#0f392b",
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
-              {course.title}
-            </span>
-
-            <ChevronLeft size={14} style={{ color: "var(--text-light, #94a3b8)" }} />
-
-            <span
-              style={{
-                color: "var(--text-main, #0f172a)",
-                fontWeight: 800,
-                maxWidth: "320px",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {lesson.title}
-            </span>
-          </nav>
-
-          {/* Return to Course Button */}
-          <button
-            onClick={onClose}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-              background: "var(--bg-surface-secondary, #f1f5f9)",
-              border: "1px solid var(--border-color, #e2e8f0)",
-              borderRadius: "10px",
-              padding: "7px 14px",
-              fontSize: "12.5px",
-              fontWeight: 800,
-              color: "var(--text-main, #0f172a)",
-              cursor: "pointer",
-              transition: "background 0.2s ease",
-            }}
-          >
-            <ArrowRight size={15} />
-            <span>{isTeacher ? "رجوع لإدارة الدروس" : "رجوع للمقرر"}</span>
-          </button>
-        </div>
-      </div>
+      <VideoLessonNavigation courseTitle={course.title} lessonTitle={lesson.title}
+        isTeacher={isTeacher} onClose={onClose} />
 
       {/* ── Main Two-Column Layout ── */}
       <div
@@ -1143,6 +828,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                       {/* Interactive Range Input Overlay */}
                       <input
                         type="range"
+                        aria-label="موضع تشغيل الفيديو"
                         min={0}
                         max={duration || 100}
                         step={0.1}
@@ -1291,6 +977,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                             />
                             <input
                               type="range"
+                              aria-label="مستوى صوت الفيديو"
                               min={0}
                               max={1}
                               step={0.05}
@@ -1562,7 +1249,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                     padding: "8px 18px",
                     fontSize: "13px",
                     fontWeight: 800,
-                    color: "#059669",
+                    color: "var(--success-text)",
                     cursor: "pointer",
                     whiteSpace: "nowrap",
                     transition: "all 0.15s ease",
@@ -1576,7 +1263,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                 </button>
               </div>
 
-              {/* Stats Row: Views & Publish Date (No Manual Complete Button) */}
+              {/* Only server-provided metadata; no invented views/dates. */}
               <div
                 style={{
                   display: "flex",
@@ -1591,14 +1278,11 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
               >
                 <div style={{ display: "flex", alignItems: "center", gap: "18px", flexWrap: "wrap" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--text-muted, #64748b)", fontSize: "12.5px" }}>
-                    <Eye size={15} style={{ color: "#059669" }} />
-                    <span>{14 + (lesson.order || 1) * 2}.3 ألف مشاهدة</span>
-                  </div>
-
-                  <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--text-muted, #64748b)", fontSize: "12.5px" }}>
                     <Calendar size={15} style={{ color: "#059669" }} />
                     <span>
-                      تاريخ النشر: {lesson.uploadedAt ? new Date(lesson.uploadedAt).toLocaleDateString("ar-EG", { year: "numeric", month: "long", day: "numeric" }) : "24 يناير 2024"}
+                      {lesson.uploadedAt && Number.isFinite(Date.parse(lesson.uploadedAt))
+                        ? `تاريخ النشر: ${new Date(lesson.uploadedAt).toLocaleDateString("ar-EG", { year: "numeric", month: "long", day: "numeric" })}`
+                        : "تاريخ النشر غير متاح"}
                     </span>
                   </div>
                 </div>
@@ -1686,365 +1370,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
               )}
             </div>
 
-            {/* 3. Comments & Discussion Card (Real comments only) */}
-            <div
-              style={{
-                background: "var(--bg-surface, #ffffff)",
-                border: "1px solid var(--border-color, #e2e8f0)",
-                borderRadius: "20px",
-                padding: "24px 28px",
-                boxShadow: "var(--card-shadow, 0 1px 3px rgba(0,0,0,0.05))",
-              }}
-            >
-              {/* Header: Title with Count & Sort Selector */}
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  marginBottom: "20px",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <h3
-                    style={{
-                      margin: 0,
-                      fontSize: "18px",
-                      fontWeight: 900,
-                      color: "var(--text-main, #0f172a)",
-                    }}
-                  >
-                    التعليقات والمناقشات ({totalCommentsCount})
-                  </h3>
-                </div>
-
-                {/* Sort dropdown */}
-                <div
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    fontSize: "13px",
-                    fontWeight: 700,
-                    color: "var(--text-muted, #64748b)",
-                    cursor: "pointer",
-                  }}
-                  onClick={() => setSortBy(sortBy === "newest" ? "top" : "newest")}
-                >
-                  <span>{sortBy === "newest" ? "الأحدث أولاً" : "الأكثر تفاعلاً"}</span>
-                  <ChevronDown size={15} />
-                </div>
-              </div>
-
-              {/* Comment Input Composer */}
-              <form onSubmit={handleAddComment} style={{ marginBottom: "26px" }}>
-                <div style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
-                  {/* User Avatar */}
-                  <div
-                    style={{
-                      width: "40px",
-                      height: "40px",
-                      borderRadius: "50%",
-                      background: "#0f392b",
-                      color: "#ffffff",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontWeight: 800,
-                      fontSize: "13px",
-                      flexShrink: 0,
-                      boxShadow: "0 2px 6px rgba(15, 57, 43, 0.2)",
-                    }}
-                  >
-                    {(currentUser?.name || "ط").slice(0, 2)}
-                  </div>
-
-                  {/* Input field */}
-                  <div style={{ flex: 1 }}>
-                    <input
-                      type="text"
-                      value={newCommentText}
-                      onChange={(e) => setNewCommentText(e.target.value)}
-                      placeholder="اكتب سؤالك أو تعليقك حول هذا الدرس..."
-                      style={{
-                        width: "100%",
-                        padding: "12px 18px",
-                        borderRadius: "14px",
-                        border: "1px solid var(--border-color, #e2e8f0)",
-                        background: "var(--bg-surface-secondary, #f8fafc)",
-                        color: "var(--text-main, #0f172a)",
-                        fontSize: "13.5px",
-                        fontFamily: "inherit",
-                        outline: "none",
-                        boxSizing: "border-box",
-                        transition: "border-color 0.2s ease",
-                      }}
-                    />
-
-                    {/* Submit Button */}
-                    <div style={{ display: "flex", justifyContent: "flex-start", marginTop: "10px" }}>
-                      <button
-                        type="submit"
-                        disabled={!newCommentText.trim() || isSubmittingComment}
-                        style={{
-                          background: "#0f392b",
-                          border: "none",
-                          borderRadius: "10px",
-                          padding: "9px 24px",
-                          color: "#ffffff",
-                          fontSize: "13px",
-                          fontWeight: 800,
-                          cursor: !newCommentText.trim() || isSubmittingComment ? "not-allowed" : "pointer",
-                          opacity: !newCommentText.trim() || isSubmittingComment ? 0.6 : 1,
-                          transition: "background 0.15s ease",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "6px",
-                        }}
-                      >
-                        <span>{isSubmittingComment ? "جاري النشر..." : "إضافة تعليق"}</span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </form>
-
-              {/* Comments List (Real only, or friendly empty state) */}
-              {comments.length === 0 ? (
-                <div
-                  style={{
-                    textAlign: "center",
-                    padding: "32px 16px",
-                    background: "var(--bg-surface-secondary, #f8fafc)",
-                    borderRadius: "14px",
-                    border: "1px dashed var(--border-color, #e2e8f0)",
-                    color: "var(--text-muted, #64748b)",
-                    fontSize: "13px",
-                  }}
-                >
-                  لا توجد تعليقات بعد على هذا الدرس — كن أول من يطرح سؤاله أو استفساره.
-                </div>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: "22px" }}>
-                  {comments.map((comment) => (
-                    <div key={comment.id} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                      {/* Main Comment */}
-                      <div style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
-                        <div
-                          style={{
-                            width: "38px",
-                            height: "38px",
-                            borderRadius: "50%",
-                            background: comment.isMine ? "#059669" : "#1e293b",
-                            color: "#ffffff",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            fontWeight: 800,
-                            fontSize: "12.5px",
-                            flexShrink: 0,
-                          }}
-                        >
-                          {comment.author.slice(0, 2)}
-                        </div>
-
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
-                            <strong style={{ fontSize: "14px", fontWeight: 800, color: "var(--text-main)" }}>
-                              {comment.author}
-                            </strong>
-                            <span style={{ fontSize: "11.5px", color: "var(--text-muted, #94a3b8)" }}>
-                              {comment.timeAgo}
-                            </span>
-                          </div>
-
-                          <p style={{ margin: "0 0 8px", fontSize: "13px", lineHeight: "1.7", color: "var(--text-main, #334155)" }}>
-                            {comment.body}
-                          </p>
-
-                          {/* Actions (Like & Reply) */}
-                          <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-                            <button
-                              type="button"
-                              onClick={() => handleToggleLike(comment.id)}
-                              style={{
-                                background: "none",
-                                border: "none",
-                                cursor: "pointer",
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: "5px",
-                                fontSize: "12px",
-                                color: comment.isLiked ? "#e11d48" : "var(--text-muted, #64748b)",
-                                fontWeight: 700,
-                                padding: "2px 4px",
-                              }}
-                            >
-                              <Heart size={14} fill={comment.isLiked ? "#e11d48" : "none"} />
-                              <span>{comment.likes} إعجاب</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => setActiveReplyId(activeReplyId === comment.id ? null : comment.id)}
-                              style={{
-                                background: "none",
-                                border: "none",
-                                cursor: "pointer",
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: "5px",
-                                fontSize: "12px",
-                                color: "var(--text-muted, #64748b)",
-                                fontWeight: 700,
-                                padding: "2px 4px",
-                              }}
-                            >
-                              <CornerDownLeft size={14} />
-                              <span>رد</span>
-                            </button>
-                          </div>
-
-                          {/* Inline Reply Composer */}
-                          {activeReplyId === comment.id && (
-                            <div style={{ marginTop: "10px", display: "flex", gap: "8px" }}>
-                              <input
-                                type="text"
-                                value={replyInputs[comment.id] || ""}
-                                onChange={(e) => setReplyInputs({ ...replyInputs, [comment.id]: e.target.value })}
-                                placeholder="اكتب ردك هنا..."
-                                style={{
-                                  flex: 1,
-                                  padding: "8px 14px",
-                                  borderRadius: "8px",
-                                  border: "1px solid var(--border-color)",
-                                  background: "var(--bg-surface-secondary)",
-                                  color: "var(--text-main)",
-                                  fontSize: "12.5px",
-                                  outline: "none",
-                                }}
-                              />
-                              <button
-                                type="button"
-                                onClick={() => handleAddReply(comment.id)}
-                                style={{
-                                  background: "#059669",
-                                  border: "none",
-                                  borderRadius: "8px",
-                                  padding: "7px 16px",
-                                  color: "#ffffff",
-                                  fontSize: "12px",
-                                  fontWeight: 800,
-                                  cursor: "pointer",
-                                }}
-                              >
-                                رد
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Nested Replies */}
-                      {comment.replies && comment.replies.length > 0 && (
-                        <div
-                          style={{
-                            marginInlineStart: "48px",
-                            display: "flex",
-                            flexDirection: "column",
-                            gap: "10px",
-                          }}
-                        >
-                          {comment.replies.map((reply) => (
-                            <div
-                              key={reply.id}
-                              style={{
-                                background: "var(--bg-surface-secondary, #f8fafc)",
-                                border: "1px solid var(--border-color, #e2e8f0)",
-                                borderRadius: "14px",
-                                padding: "14px 16px",
-                                display: "flex",
-                                gap: "12px",
-                                alignItems: "flex-start",
-                              }}
-                            >
-                              <div
-                                style={{
-                                  width: "34px",
-                                  height: "34px",
-                                  borderRadius: "50%",
-                                  background: reply.isTeacher ? "#0f392b" : "#059669",
-                                  color: "#ffffff",
-                                  display: "flex",
-                                  alignItems: "center",
-                                  justifyContent: "center",
-                                  fontWeight: 800,
-                                  fontSize: "12px",
-                                  flexShrink: 0,
-                                }}
-                              >
-                                {reply.author.slice(0, 2)}
-                              </div>
-
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
-                                  <strong style={{ fontSize: "13.5px", fontWeight: 800, color: "var(--text-main)" }}>
-                                    {reply.author}
-                                  </strong>
-                                  {reply.isTeacher && (
-                                    <span
-                                      style={{
-                                        fontSize: "10.5px",
-                                        fontWeight: 800,
-                                        background: "var(--bg-accent, #ecfdf5)",
-                                        color: "#059669",
-                                        border: "1px solid var(--border-accent, #a7f3d0)",
-                                        padding: "1px 7px",
-                                        borderRadius: "6px",
-                                      }}
-                                    >
-                                      المعلم
-                                    </span>
-                                  )}
-                                  <span style={{ fontSize: "11px", color: "var(--text-muted, #94a3b8)" }}>
-                                    {reply.timeAgo}
-                                  </span>
-                                </div>
-
-                                <p style={{ margin: "0 0 6px", fontSize: "12.5px", lineHeight: "1.65", color: "var(--text-main)" }}>
-                                  {reply.body}
-                                </p>
-
-                                <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleToggleLike(reply.id, true, comment.id)}
-                                    style={{
-                                      background: "none",
-                                      border: "none",
-                                      cursor: "pointer",
-                                      display: "inline-flex",
-                                      alignItems: "center",
-                                      gap: "4px",
-                                      fontSize: "11.5px",
-                                      color: reply.isLiked ? "#e11d48" : "var(--text-muted, #64748b)",
-                                      fontWeight: 700,
-                                    }}
-                                  >
-                                    <Heart size={13} fill={reply.isLiked ? "#e11d48" : "none"} />
-                                    <span>{reply.likes} إعجاب</span>
-                                  </button>
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            <LessonDiscussion lessonId={lesson.id} currentUser={currentUser} />
           </div>
 
           {/* =========================================================================

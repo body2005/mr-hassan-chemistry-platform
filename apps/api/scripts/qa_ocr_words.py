@@ -2,6 +2,7 @@
 import argparse
 import json
 import re
+import shlex
 import tempfile
 import time
 from pathlib import Path
@@ -13,13 +14,17 @@ from app.services.extraction_limits import OCR_TIMEOUT_SECONDS, ExtractionLimitE
 from scripts.qa_extract_fidelity import compare
 
 
-def candidate(image, lang='ara+eng'):
+def candidate(image, lang='ara+eng', *, tessdata_dir=None, word_psm=8):
     deadline = time.monotonic() + OCR_TIMEOUT_SECONDS
     def read(source, psm):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise ExtractionLimitError('Word OCR exhausted its total time budget')
-        return ocr_quality.tokens(pytesseract.image_to_data(source, lang=lang, config=f'--psm {psm}',
+        config = f'--psm {psm}'
+        crop_model = tessdata_dir is not None and source is not image
+        if crop_model:
+            config += ' --tessdata-dir ' + shlex.quote(str(tessdata_dir))
+        return ocr_quality.tokens(pytesseract.image_to_data(source, lang='ara' if crop_model else lang, config=config,
                      timeout=remaining, output_type=pytesseract.Output.DICT))
     words = read(image, 3)
     alternatives = read(image, 6)
@@ -33,7 +38,7 @@ def candidate(image, lang='ara+eng'):
         with image.crop((max(0, left-4), max(0, top-5), min(image.width, left+word['width']+4),
                          min(image.height, top+word['height']+5))) as crop:
             with crop.resize((crop.width*2, crop.height*2), Image.Resampling.LANCZOS) as enlarged:
-                recognized = read(enlarged, 8)
+                recognized = read(enlarged, word_psm)
         if len(recognized) != 1:
             continue
         other = recognized[0]
@@ -49,8 +54,13 @@ def candidate(image, lang='ara+eng'):
 def main():
     arg = argparse.ArgumentParser(__doc__)
     arg.add_argument('--output', type=Path, required=True)
+    arg.add_argument('--candidate-tessdata-dir', type=Path)
+    arg.add_argument('--word-psm', type=int, choices=[7, 8], default=8)
     args = arg.parse_args()
-    ocr_quality.recognize = candidate
+    if args.candidate_tessdata_dir and not (args.candidate_tessdata_dir/'ara.traineddata').is_file():
+        arg.error('Missing explicit candidate Arabic model')
+    ocr_quality.recognize = lambda image, lang='ara+eng': candidate(image, lang,
+        tessdata_dir=args.candidate_tessdata_dir, word_psm=args.word_psm)
     root = Path('/srv/tests/fixtures/blind_inputs')
     manifest = json.loads((root/'reference.json').read_text())['files']
     with tempfile.TemporaryDirectory() as folder:

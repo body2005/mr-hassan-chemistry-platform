@@ -13,17 +13,26 @@ test("student registers from the browser and can sign in again", async ({ page, 
 
   await page.goto("/#auth");
   await page.getByRole("button", { name: "تسجيل جديد" }).click();
+  await expect(page.locator('.registration-steps li')).toHaveCount(2);
   const form = page.locator("form").first();
-  await form.locator('input[type="text"]').first().fill("طالب اختبار التسجيل");
-  await form.locator('input[type="email"]').fill(email);
-  await form.locator('input[type="password"]').nth(0).fill(password);
-  await form.locator('input[type="password"]').nth(1).fill(password);
-  await form.locator("select").nth(0).selectOption("2nd_secondary");
-  await form.locator("select").nth(1).selectOption("CAIRO");
-  await form.locator('input[placeholder="اسم المدرسة"]').fill("مدرسة QA المحلية");
-  await form.locator("select").nth(2).selectOption("MALE");
+  await page.getByLabel('الاسم الأول').fill('أحمد');
+  await page.getByLabel('الاسم الأوسط').fill('محمد');
+  await page.getByLabel('الاسم الأخير').fill('حسن');
+  await page.getByRole('radio', { name: 'ذكر', exact: true }).check();
+  await page.getByLabel('السنة الدراسية').selectOption('2nd_secondary');
+  await page.getByRole('button', { name: 'التالي', exact: true }).click();
+  await page.getByLabel('رقم تليفونك الشخصي').fill('01012345678');
+  await page.getByLabel('رقم ولي الأمر').fill('01112345678');
+  await page.getByLabel('المحافظة').selectOption('CAIRO');
+  await page.getByLabel('المدينة أو المنطقة').fill('البساتين');
+  await page.getByLabel('اسم المدرسة').fill('مدرسة QA المحلية');
+  await page.getByLabel('البريد الإلكتروني').fill(email);
+  await form.locator('input[name="password"]').fill(password);
+  await page.getByLabel('تأكيد كلمة المرور').fill(password);
+  await expect(page.getByRole('heading', { name: 'التواصل وإنشاء الحساب' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'التالي', exact: true })).toHaveCount(0);
   const registered = page.waitForResponse(r => r.url().endsWith('/auth/register'));
-  await form.locator('button[type="submit"]').click();
+  await page.getByRole('button', { name: 'إنشاء حسابي', exact: true }).click();
   expect(await (await registered).json()).not.toHaveProperty('token');
 
   await expect(page).toHaveURL(/#mycourses$/);

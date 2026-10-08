@@ -211,6 +211,18 @@ def test_reset_request_sends_fragment_link_without_exposing_account(monkeypatch,
         )
         assert known.status_code == missing.status_code == 200
         assert known.json() == missing.json()
+        assert sent == []  # Public request never waits for SMTP.
+        from app.models.mail_outbox import ResetRequestOutbox
+        from app.services.session_maintenance import deliver_reset_mail, process_reset_requests
+        jobs = db.query(ResetRequestOutbox).all()
+        assert len(jobs) == 2
+        assert all(job.completed_at is None and job.encrypted_identity for job in jobs)
+        assert process_reset_requests() == 2  # Known and missing identities both complete.
+        assert process_reset_requests() == 0
+        db.expire_all()
+        assert all(job.completed_at and job.encrypted_identity is None for job in jobs)
+        assert deliver_reset_mail() == 1
+        assert deliver_reset_mail() == 0  # Completed delivery is idempotent.
         assert len(sent) == 1
         body = sent[0].get_content()
         assert "/#auth?reset_token=" in body

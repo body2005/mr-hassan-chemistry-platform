@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 UTC = timezone.utc
 
@@ -452,6 +452,14 @@ def get_report_job(db: Session, user: User, job_id: uuid.UUID) -> ReportJob:
 def compute_student_mastery(db: Session, user: User, student_id: uuid.UUID) -> list[dict]:
     """Explainable mastery per learning objective from graded quiz answers."""
     scope = _student_read_course_scope(db, user, student_id)
+    scoped_objective = aliased(LearningObjective)
+    # Legacy code references resolve to the course-specific objective first.
+    # A global code receives evidence only when no course override exists.
+    course_override = select(scoped_objective.id).where(
+        scoped_objective.institution_id == LearningObjective.institution_id,
+        scoped_objective.code == LearningObjective.code,
+        scoped_objective.course_id == Quiz.course_id,
+    ).correlate(LearningObjective, Quiz).exists()
     # Aggregate once, with evidence tied to the authoritative quiz course.
     # Reused objective codes must not merge evidence from another course.
     query = (select(LearningObjective, func.sum(QuizAttemptAnswer.awarded_points),
@@ -469,7 +477,8 @@ def compute_student_mastery(db: Session, user: User, student_id: uuid.UUID) -> l
                QuizAttempt.student_id == student_id,
                QuizAttempt.is_practice.is_(False),
                QuizAttemptAnswer.graded_at.is_not(None),
-               or_(LearningObjective.course_id.is_(None), LearningObjective.course_id == Quiz.course_id))
+               or_(LearningObjective.course_id == Quiz.course_id,
+                   (LearningObjective.course_id.is_(None) & ~course_override)))
         .group_by(LearningObjective)
         .order_by(LearningObjective.code, LearningObjective.id))
     if scope is not None:

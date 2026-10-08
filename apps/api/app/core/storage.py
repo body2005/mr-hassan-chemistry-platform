@@ -78,7 +78,8 @@ class LocalStorageProvider(BaseStorageProvider):
     def __init__(self, base_dir: str | None = None):
         self.base_dir = os.path.abspath(base_dir or os.getenv("STORAGE_DIR", "storage"))
         os.makedirs(self.base_dir, exist_ok=True)
-        self.is_production = os.getenv("APP_ENV", "").lower() == "production"
+        from app.core.config import get_settings
+        self.is_production = get_settings().deployment_environment
         self.is_persistent_mount = (
             self.base_dir.startswith("/var/data")
             or os.path.ismount(self.base_dir)
@@ -93,16 +94,27 @@ class LocalStorageProvider(BaseStorageProvider):
             )
 
     def _full_path(self, storage_key: str) -> str:
-        if os.path.exists(storage_key):
-            return os.path.abspath(storage_key)
-        norm = os.path.normpath(storage_key).lstrip("/\\")
+        if not storage_key or '\x00' in storage_key:
+            raise ValueError("Invalid storage key")
+        # Treat both separators as path separators on every OS; old absolute
+        # keys remain supported ONLY when canonically contained in this root.
+        key = storage_key.replace('\\', os.sep).replace('/', os.sep)
+        if '..' in key.split(os.sep):
+            raise ValueError("Storage traversal is forbidden")
+        norm = os.path.normpath(key)
         base_name = os.path.basename(self.base_dir.rstrip("/\\"))
         parts = norm.split(os.sep)
-        if parts and parts[0] == base_name:
+        if not os.path.isabs(norm) and parts and parts[0] == base_name:
             norm = os.sep.join(parts[1:])
-        if ".." in norm.split(os.sep):
-            raise ValueError(f"Invalid storage key with traversal: {storage_key}")
-        return os.path.join(self.base_dir, norm)
+        root = os.path.realpath(self.base_dir)
+        candidate = os.path.realpath(norm if os.path.isabs(norm) else os.path.join(root, norm))
+        try:
+            contained = os.path.commonpath([root, candidate]) == root
+        except ValueError:
+            contained = False
+        if not contained or candidate == root:
+            raise ValueError("Storage key must remain inside the storage root")
+        return candidate
 
     def save_file(self, local_source_path: str, storage_key: str, content_type: str | None = None) -> str:
         dest_path = self._full_path(storage_key)
@@ -119,8 +131,6 @@ class LocalStorageProvider(BaseStorageProvider):
         return dest_path
 
     def get_local_path(self, storage_key: str) -> str | None:
-        if os.path.exists(storage_key):
-            return os.path.abspath(storage_key)
         path = self._full_path(storage_key)
         return path if os.path.exists(path) else None
 
@@ -145,24 +155,14 @@ class LocalStorageProvider(BaseStorageProvider):
                 yield chunk
 
     def get_size(self, storage_key: str) -> int:
-        if os.path.exists(storage_key):
-            return os.path.getsize(storage_key)
         path = self.get_local_path(storage_key) or self._full_path(storage_key)
         return os.path.getsize(path)
 
     def exists(self, storage_key: str) -> bool:
-        if os.path.exists(storage_key):
-            return True
         path = self.get_local_path(storage_key) or self._full_path(storage_key)
         return os.path.exists(path)
 
     def delete(self, storage_key: str) -> bool:
-        if os.path.exists(storage_key):
-            try:
-                os.remove(storage_key)
-                return True
-            except OSError:
-                return False
         path = self.get_local_path(storage_key) or self._full_path(storage_key)
         if os.path.exists(path):
             try:
@@ -448,7 +448,7 @@ def get_storage_provider() -> BaseStorageProvider:
                     region_name=settings.s3_region,
                 )
             except Exception as e:
-                if settings.app_env.lower() == "production":
+                if settings.deployment_environment:
                     raise RuntimeError("Configured object storage is unavailable") from e
                 logger.warning("Failed to initialize S3 storage provider (%s); falling back to local storage.", e)
                 _storage_instance = LocalStorageProvider()

@@ -1,4 +1,5 @@
 from app.models.base import Base
+from app.models.mail_outbox import ResetMailOutbox, ResetRequestOutbox
 from app.models.storage_cleanup import StorageCleanup
 from app.models.video_upload import VideoUpload
 from app.models.course import Course, CourseModule, Enrollment, Lesson

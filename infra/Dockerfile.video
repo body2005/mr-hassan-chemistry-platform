@@ -11,6 +11,10 @@ RUN sh /build/build_native_ffmpeg.sh
 FROM ${API_VIDEO_IMAGE}
 USER 0:0
 COPY --from=encoder-build /build/ffmpeg.deb /tmp/ffmpeg.deb
+# Keep verifiable native provenance outside Debian's slim doc exclusions.
+COPY --from=encoder-build /build/package/usr/share/doc/ffmpeg/chemistry-source.txt /usr/local/share/chemistry-native/ffmpeg/source.txt
+COPY --from=encoder-build /build/signature-status.txt /usr/local/share/chemistry-native/ffmpeg/signature.txt
+COPY --from=encoder-build /build/runtime-decoders.txt /usr/local/share/chemistry-native/ffmpeg/decoders.txt
 RUN apt-get update && apt-get install -y --no-install-recommends libx264-164 \
     && dpkg -i /tmp/ffmpeg.deb && rm /tmp/ffmpeg.deb \
     && rm -rf /var/lib/apt/lists/* \

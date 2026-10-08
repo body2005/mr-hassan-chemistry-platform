@@ -28,9 +28,6 @@ def _extract_token(request: Request, session_cookie: str | None = None) -> str |
         return auth[7:].strip()
     if session_cookie:
         return session_cookie
-    query_token = request.query_params.get("token")
-    if query_token:
-        return query_token.strip()
     return None
 
 

@@ -54,7 +54,6 @@ export const STORAGE_KEYS = {
 } as const;
 
 type ApiUser = {
-  avatar_url?: string | null;
   uploaded_videos_count?: number | null;
   enrolled_students_count?: number | null;
   id: string;
@@ -190,7 +189,6 @@ function mapApiUser(user: ApiUser): CurrentUser {
     email: user.email,
     nationalId: user.national_id || "",
     joinedDate: user.created_at.slice(0, 10),
-    avatarUrl: user.avatar_url || undefined,
   };
   if (user.role === "student") {
     const grade = user.grade_level ? gradeMap[user.grade_level] : undefined;
@@ -679,6 +677,10 @@ export const authService = {
     academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary";
     studentPhone?: string;
     guardianPhone?: string;
+    motherPhone?: string;
+    city?: string;
+    educationDivision?: 'GENERAL' | 'AZHAR';
+    specialization?: 'SCIENCE' | 'MATH';
     nationalId?: string;
     governorate: string;
     schoolName: string;
@@ -703,6 +705,10 @@ export const authService = {
           }[userData.academicYear],
           student_phone: userData.studentPhone || null,
           guardian_phone: userData.guardianPhone || null,
+          mother_phone: userData.motherPhone || null,
+          city: userData.city || null,
+          education_division: userData.educationDivision || null,
+          specialization: userData.specialization || null,
           national_id: userData.nationalId || null,
           governorate: userData.governorate,
           school_name: userData.schoolName,
@@ -827,13 +833,41 @@ export const notificationService = {
 // 3. CALENDAR & SCHEDULE SERVICE
 // ============================================================================
 export const calendarService = {
+  getCachedCalendarEvents(): CalendarScheduleEvent[] {
+    // Derived state belongs to the active auth scope, never a shared disk key.
+    return getCachedData<CalendarScheduleEvent[]>('composed:/calendar') || [];
+  },
+
   async getCalendarEvents(): Promise<CalendarScheduleEvent[]> {
-    const result = await apiRequest<ApiCalendarEvent[]>("/calendar", { cacheTtlMs: 30_000 });
+    const cached = getCachedData<CalendarScheduleEvent[]>('composed:/calendar');
+    if (cached) return cached;
+    const generation = getApiAuthGeneration();
+    const result: ApiCalendarEvent[] = [];
+    const seen = new Set<string>();
+    let complete = false;
+    // Bound work and fail visibly rather than silently returning a truncated
+    // calendar. Never replay429/503 pages; a new call is an explicit retry.
+    for (let offset = 0; offset < 50_000; offset += 500) {
+      const page = await apiRequest<ApiCalendarEvent[]>(`/calendar?limit=500&offset=${offset}`, { cacheTtlMs: 30_000 });
+      if (generation !== getApiAuthGeneration()) {
+        throw new ApiClientError('REQUEST_CANCELLED', 'Calendar identity changed', 0);
+      }
+      if (!Array.isArray(page) || page.length > 500 || page.some(item => !item?.id)) {
+        throw new ApiClientError('INVALID_CALENDAR_PAGE', 'تعذر قراءة جميع المواعيد؛ أعد المحاولة.', 0);
+      }
+      for (const item of page) {
+        if (seen.has(item.id)) throw new ApiClientError('INVALID_CALENDAR_PAGE', 'تعذر قراءة جميع المواعيد؛ أعد المحاولة.', 0);
+        seen.add(item.id); result.push(item);
+      }
+      if (page.length < 500) { complete = true; break; }
+    }
+    if (!complete) throw new ApiClientError('CALENDAR_TOO_LARGE', 'تعذر تحميل جميع المواعيد؛ تواصل مع الدعم.', 0);
     const mapped = result.map(mapApiCalendarEvent);
+    setCachedData('composed:/calendar', mapped, 30_000);
     try {
-      localStorage.setItem("lms_calendar_events_cache", JSON.stringify(mapped));
+      localStorage.removeItem("lms_calendar_events_cache");
     } catch {
-      // Caching is optional when browser storage is unavailable.
+      // Remove only obsolete derived data; browser storage may be unavailable.
     }
     return mapped;
   },
@@ -1310,12 +1344,6 @@ export type ApiManagedUser = Pick<
 };
 
 export const userService = {
-  async uploadAvatar(file: File): Promise<void> {
-    const data = new FormData();
-    data.append('file', file);
-    await apiRequest('/auth/avatar', {method: 'POST', body: data});
-    invalidateApiCache('/auth');
-  },
   async getProfileSummary(): Promise<{enrolled_students_count?: number; uploaded_videos_count?: number; progress?: Array<{lesson_id: string; title: string; completion_percent: number}>}> {
     return apiRequest('/auth/profile-summary');
   },

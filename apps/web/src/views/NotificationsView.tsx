@@ -191,20 +191,14 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
     return DEFAULT_SCHEDULES;
   });
 
-  const [calendarEvents, setCalendarEvents] = useState<CalendarScheduleEvent[]>(() => {
-    try {
-      const stored = localStorage.getItem("lms_calendar_events_cache");
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      }
-    } catch {
-      // Fall back to the default calendar if local storage is unavailable.
-    }
-    return DEFAULT_CALENDAR_EVENTS;
-  });
+  const [calendarEvents, setCalendarEvents] = useState<CalendarScheduleEvent[]>(() =>
+    calendarService.getCachedCalendarEvents().length > 0
+      ? calendarService.getCachedCalendarEvents() : DEFAULT_CALENDAR_EVENTS);
 
   const [activeNotifications, setActiveNotifications] = useState<NotificationItem[]>(() => deduplicateNotifications(notifications));
+  const [calendarLoadError, setCalendarLoadError] = useState<string | null>(null);
+  const [calendarLoading, setCalendarLoading] = useState(false);
+  const calendarReloadPending = useRef(false);
 
   useEffect(() => {
     setActiveNotifications(deduplicateNotifications(notifications));
@@ -212,6 +206,10 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
 
   // Sync state between teacher and student in real time
   const reloadFromServer = async () => {
+    if (calendarReloadPending.current) return;
+    calendarReloadPending.current = true;
+    setCalendarLoading(true);
+    setCalendarLoadError(null);
     try {
       const [remoteSchedules, remoteEvents, remoteNotifications] = await Promise.all([
         calendarService.getNotificationSchedules(),
@@ -225,9 +223,9 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       setSchedules(normalizedSchedules);
       setCalendarEvents(remoteEvents);
       setActiveNotifications(deduplicateNotifications(remoteNotifications));
-    } catch (e) {
-      console.error(e);
-    }
+    } catch {
+      setCalendarLoadError('تعذر تحديث المواعيد والإشعارات. البيانات المعروضة قد تكون غير مكتملة؛ أعد التحميل يدويًا.');
+    } finally { calendarReloadPending.current = false; setCalendarLoading(false); }
   };
 
   // Sync selectedGrade when role or student year changes
@@ -760,6 +758,13 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
 
   return (
     <div className="page-container" style={{ maxWidth: "1280px", margin: "0 auto" }}>
+      {calendarLoadError && <div role="alert" style={{ padding: '16px', marginBottom: '16px',
+        border: '1px solid #dc2626', borderRadius: '12px', color: 'var(--text-main)', background: 'var(--bg-surface)' }}>
+        <p>{calendarLoadError}</p>
+        <button type="button" className="btn btn-primary" disabled={calendarLoading} onClick={() => void reloadFromServer()}>
+          إعادة تحميل المواعيد
+        </button>
+      </div>}
       {/* 2-Column Responsive Grid matching the exact reference image */}
       <div className="notifications-layout-grid" style={{ width: "100%" }}>
         {/* =========================================================================

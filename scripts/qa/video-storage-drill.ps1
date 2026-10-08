@@ -3,6 +3,7 @@ param(
     [string]$Docker='C:\Users\body\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe'
 )
 $ErrorActionPreference='Stop'
+$npxExecutable=if($IsWindows){'npx.cmd'}else{'npx'}
 $taskRoot=(Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 Set-Location $taskRoot
 $folder=if($Project -eq 'chemistryaudit2'){'audit2'}else{'production'}
@@ -50,10 +51,16 @@ try{
     Invoke-Drill 'freeze ALL ingress/application/encoder writers' @('stop','upload-gateway','api','worker','video-worker')
     Invoke-Drill 'recreate SeaweedFS WITHOUT removing volume' @('up','-d','--no-deps','--force-recreate','--wait','--wait-timeout','90','s3')
     Invoke-Drill 'original hashes/private reads after storage recreation' @('run','--rm','--no-deps','qa-tests','python','-m','scripts.verify_video_assets')
+    Invoke-Drill 'bounded production backup directory permission initialization' @('run','--rm','--no-deps','backup-permissions')
     Invoke-Drill 'PostgreSQL snapshot' @('run','--rm','--no-deps','backup-postgres')
+    $s3RestartBefore=& $Docker inspect "$Project-s3-1" --format '{{.RestartCount}}'
+    if($LASTEXITCODE -ne 0){throw 'Cannot inspect backup source restart count'}
     # compose run has no --no-build flag. It does not build unless --build is
     # requested; the existing immutable image ID and pull=never are sufficient.
     Invoke-Drill 'production backup on SAME tested API image; no source rebuild' @('run','--rm','--no-deps','--pull','never','backup-s3')
+    $s3RestartAfter=& $Docker inspect "$Project-s3-1" --format '{{.RestartCount}}'
+    if($LASTEXITCODE -ne 0 -or $s3RestartAfter -ne $s3RestartBefore){throw 'S3 restarted during backup; do not accept it as stable'}
+    Invoke-Drill 'source S3 cgroup peak/events after full backup (no OOM)' @('exec','-T','s3','sh','-ec','cat /sys/fs/cgroup/memory.peak; cat /sys/fs/cgroup/memory.events; ! grep -Eq "^oom(_kill)? [1-9]" /sys/fs/cgroup/memory.events')
     $snapshot=Get-ChildItem -LiteralPath ".qa/$folder/backups/s3" -Directory | Sort-Object Name | Select-Object -Last 1
     $dump=Get-ChildItem -LiteralPath ".qa/$folder/backups" -Filter 'postgres-*.dump' | Sort-Object Name | Select-Object -Last 1
     if(!$snapshot -or !(Test-Path (Join-Path $snapshot.FullName 'manifest.json')) -or !$dump){throw 'No completed matching backup artifacts'}
@@ -79,7 +86,7 @@ try{
     $env:QA_PLAYWRIGHT_OUTPUT=Join-Path $taskRoot ".qa/$folder/restored-video-$($env:QA_RESTORE_RUN_ID)"
     Push-Location (Join-Path $taskRoot 'apps/web')
     try{
-        & npx.cmd playwright test --config playwright.qa.config.ts tests/qa/video-playback.spec.ts --reporter=list,junit
+        & $npxExecutable playwright test --config playwright.qa.config.ts tests/qa/video-playback.spec.ts --reporter=list,junit
         $code=$LASTEXITCODE
         $results.Add(@{command='actual browser NEW upload/encode/playback on restored stores';exit_code=$code;utc=[DateTime]::UtcNow.ToString('o')})
         $results | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $taskRoot ".qa/$folder/video-storage-$($env:QA_RESTORE_RUN_ID).json") -Encoding utf8

@@ -19,7 +19,7 @@ def password_reset_mail_configured(settings: Settings | None = None) -> bool:
     )
 
 
-def send_password_reset_email(recipient: str, token: str, settings: Settings | None = None) -> None:
+def send_password_reset_email(recipient: str, token: str, settings: Settings | None = None, *, message_id: str | None = None) -> None:
     config = settings or get_settings()
     if not password_reset_mail_configured(config):
         raise RuntimeError("Password reset email is not configured")
@@ -32,6 +32,8 @@ def send_password_reset_email(recipient: str, token: str, settings: Settings | N
     message["Subject"] = "إعادة تعيين كلمة المرور — منصة الكيمياء"
     message["From"] = config.smtp_from_email
     message["To"] = recipient
+    if message_id:
+        message["Message-ID"] = f"<reset-{message_id}@chemistry.local>"
     message.set_content(
         "طلبت إعادة تعيين كلمة المرور. افتح الرابط التالي خلال "
         f"{config.password_reset_ttl_minutes} دقيقة:\n\n{reset_link}\n\n"

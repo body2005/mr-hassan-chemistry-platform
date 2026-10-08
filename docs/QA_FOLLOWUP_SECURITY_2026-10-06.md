@@ -179,7 +179,7 @@ memory.events.max زاد512في PDF الكبير و627/215/87015/88405في حا�
 هويات الصور المشغلة فعلًا في الجولة النهائية؛ ليس الاعتماد على tag متغير:
 
 ```text
-API          sha256:cf32269c86c6ad219316514d63943c311d1c908eed28de91052344bc1271f8e6
+backend      sha256:cf32269c86c6ad219316514d63943c311d1c908eed28de91052344bc1271f8e6
 video-worker sha256:7b02402eea811fbccf51f3d2c430ffb799be0dcf3fb71d13aebceace95d3645e
 web          sha256:a63ad27f295276c1afe557daa5aa673ff941356eb931cf6e230ba4e06ec077cb
 ```

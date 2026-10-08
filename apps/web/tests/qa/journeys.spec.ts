@@ -51,6 +51,23 @@ test("student can log in, navigate dashboard and profile, then log out in Arabic
   await page.getByRole("button", { name: "تسجيل الخروج" }).first().click();
   await page.getByRole("button", { name: "تسجيل الخروج" }).last().click();
   await expect(page.locator(".sidebar-bottom .profile-button")).toHaveCount(0);
+  // Re-enter the SAME account without a document reload. A previous ready
+  // course scope must be cleared by logout, not reused before new bootstrap.
+  let release: () => void = () => {};
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/v1/bootstrap', async route => { await held; await route.continue(); });
+  try {
+    await page.evaluate(() => { window.location.hash = 'auth'; });
+    const form = page.locator('form').first();
+    await form.locator('input[type="text"]').fill('student01@demo.com');
+    await form.locator('input[type="password"]').fill('qa-student-pass');
+    await form.locator('button[type="submit"]').click();
+    await expect(page).toHaveURL(/#mycourses$/);
+    await expect(page.getByRole('status').filter({ hasText: 'جارٍ التحقق من الحساب' })).toBeVisible();
+    expect((await page.request.get('/api/v1/auth/me')).status()).toBe(200);
+  } finally { release(); }
+  await expect(page.getByRole('status').filter({ hasText: 'جارٍ التحقق من الحساب' })).toHaveCount(0);
+  await page.unroute('**/api/v1/bootstrap');
   console.log(JSON.stringify({ role: "student", requests: observed.requests, issues: observed.issues }));
   expect(observed.issues).toEqual([]);
 });

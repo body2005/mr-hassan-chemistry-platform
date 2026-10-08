@@ -22,6 +22,40 @@ def test_credential_mutations_keep_the_real_auth_budget(path):
     assert classify_rate_limit_category('POST', path) == 'auth'
 
 
+def test_refresh_has_no_special_relaxed_default(monkeypatch) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rate_limit_login", 15)
+    monkeypatch.setattr(settings, "rate_limit_window_seconds", 60)
+    assert rate_limit._get_category_defaults("auth") == (15, 60)
+    assert rate_limit._get_category_defaults("auth_refresh") == (15, 60)
+
+
+def test_mixed_auth_mutations_share_the_original_budget(monkeypatch) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rate_limit_login", 15)
+    monkeypatch.setattr(settings, "rate_limit_window_seconds", 60)
+    monkeypatch.setattr(settings, "redis_required", False)
+    monkeypatch.setattr(settings, "app_env", "test")
+    monkeypatch.delenv("DISABLE_RATE_LIMITING", raising=False)
+    monkeypatch.setattr(rate_limit, "_get_redis_client", lambda: None)
+    # Isolate the unit-test store, not live Redis counters or production limits.
+    monkeypatch.setattr(rate_limit, "_windows", rate_limit.defaultdict(rate_limit.deque))
+    paths = ["login", "refresh", "logout", "change-password", "password-reset/request"]
+    for number in range(15):
+        path = paths[number % len(paths)]
+        request = _request()
+        category = classify_rate_limit_category("POST", f"/api/v1/auth/{path}")
+        rate_limit.enforce_rate_limit(request, category=category)
+        if path == "refresh":
+            # The route's existing 60/min guard must not bypass middleware's 15/min.
+            rate_limit.enforce_rate_limit(request, bucket="auth", limit=60, window_seconds=60)
+            assert len(request.state.rate_limit_policies) == 2
+    with pytest.raises(HTTPException) as exc_info:
+        rate_limit.enforce_rate_limit(_request(), category="auth")
+    assert exc_info.value.status_code == 429
+    assert 1 <= int(exc_info.value.headers["Retry-After"]) <= 60
+
+
 @pytest.mark.parametrize(
     ("method", "path", "expected"),
     [
@@ -50,6 +84,8 @@ def test_endpoint_does_not_charge_upload_twice_after_middleware() -> None:
     # The middleware has already charged the upload bucket for this request.
     # The route-level guard must not consume it again.
     rate_limit.enforce_rate_limit(request, category="upload", limit=1, window_seconds=60)
+    rate_limit.enforce_rate_limit(request, category="upload", limit=1, window_seconds=60)
+    assert len(request.state.rate_limit_policies) == 1
 
 
 def test_required_redis_fails_closed_without_memory_fallback(monkeypatch) -> None:

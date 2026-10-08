@@ -1,10 +1,8 @@
 """Server-side gates for the role discovery findings; no source-specific fixes."""
-import io
 import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
-from PIL import Image
 from sqlalchemy import select
 import pytest
 
@@ -138,21 +136,24 @@ def test_broadcast_enforces_grade_and_owned_enrollment(db):
         assert [item['id'] for item in retry.json()] == [item['id'] for item in first.json()]
 
 
-def test_avatar_is_validated_private_and_persistent(db):
+@pytest.mark.parametrize('role', [UserRole.TEACHER, UserRole.STUDENT])
+def test_personal_photo_feature_is_closed_without_touching_existing_objects(db, monkeypatch, role):
     inst, teacher, _ = setup(db, 'avatar-role')
-    buffer = io.BytesIO(); Image.new('RGB', (4, 4), 'blue').save(buffer, 'PNG')
+    user = teacher if role == UserRole.TEACHER else make_user(db, inst.id, role, 'no-photo-student')
+    retained_key = f'avatars/{user.id}/retained-private-object.png'
+    user.avatar_key = retained_key
+    db.commit()
+    def forbidden_storage():
+        raise AssertionError('Removed photo endpoints must not access storage')
+    monkeypatch.setattr('app.core.storage.get_storage_provider', forbidden_storage)
     with TestClient(app) as client:
-        login(client, teacher, inst.slug)
-        uploaded = client.post('/api/v1/auth/avatar', headers=csrf_headers(client), files={'file': ('avatar.png', buffer.getvalue(), 'image/png')})
-        assert uploaded.status_code == 200, uploaded.text
-        url = uploaded.json()['avatar_url']
-        assert url.startswith('/api/v1/auth/avatar')
-        assert client.get('/api/v1/auth/me').json()['avatar_url'] == url
-        image = client.get(url)
-        assert image.status_code == 200 and image.headers['content-type'] == 'image/png'
-        assert client.post('/api/v1/auth/avatar', headers=csrf_headers(client), files={'file': ('fake.png', b'not an image', 'image/png')}).status_code == 422
-        assert client.post('/api/v1/auth/avatar', headers=csrf_headers(client), files={'file': ('large.png', b'x' * (2 * 1024 * 1024 + 1), 'image/png')}).status_code == 413
-        assert client.post('/api/v1/auth/avatar', files={'file': ('avatar.png', buffer.getvalue(), 'image/png')}).status_code == 403
+        login(client, user, inst.slug)
+        assert 'avatar_url' not in client.get('/api/v1/auth/me').json()
+        assert client.get('/api/v1/auth/avatar').status_code == 410
+        assert client.post('/api/v1/auth/avatar', headers=csrf_headers(client), json={}).status_code == 410
+        assert client.post('/api/v1/auth/avatar', json={}).status_code == 403
+        db.refresh(user)
+        assert user.avatar_key == retained_key
     with TestClient(app) as anonymous:
         assert anonymous.get('/api/v1/auth/avatar').status_code == 401
 

@@ -6,6 +6,7 @@ from fastapi.responses import StreamingResponse
 
 from app.api.dependencies import CurrentUser, DbSession, get_current_user
 from app.core.database import SessionLocal
+from app.core.config import get_settings
 from app.core.events import event_broker, sse_event_generator
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ async def realtime_event_stream(
     def still_authorized():
         with SessionLocal() as fresh:
             try:
-                get_current_user(request, fresh, request.cookies.get("matgar_session"))
+                get_current_user(request, fresh, request.cookies.get(get_settings().session_cookie_name))
                 return True
             except Exception:
                 return False

@@ -113,7 +113,7 @@ git -c core.safecrlf=false diff --check         # C6
 هويات الصور **المشغّلة فعلًا** والمفحوصة؛ لا أعتمد على tag متغير:
 
 ```text
-API          sha256:d718c4836c697a6c755de4a1187442efe9ede72c9d613e6f239dea9d246bbdad
+backend      sha256:d718c4836c697a6c755de4a1187442efe9ede72c9d613e6f239dea9d246bbdad
 video-worker sha256:adffd9085c5fb4f8fa47034da65dd2f362dfe9d13a298117fd2dc52579d2c26b
 web          sha256:157ab5152b78f2bb38584d02e4b9ba3827da67069efa49a59367022998eb54e0
 ```

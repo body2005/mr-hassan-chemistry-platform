@@ -30,7 +30,7 @@ if ($Stage -in @('Prepare','All')) {
     Invoke-Compose 'build QA runner' @('build','qa-tests')
     Invoke-Compose 'start production template locally' @('up','-d','--wait','--wait-timeout','160')
     Invoke-Compose 'reload bind-mounted proxy config' @('exec','-T','proxy','nginx','-s','reload')
-    Invoke-Compose 'seed synthetic identities' @('exec','-T','-e','QA_ISOLATED=true','api','sh','/srv/entrypoint-prod.sh','python','scripts/seed_qa.py')
+    Invoke-Compose 'seed synthetic identities from test-only runner' @('run','--rm','--no-deps','-e','QA_ISOLATED=true','qa-tests','python','scripts/seed_qa.py')
     Invoke-Compose 'generate valid large PDF' @('run','--rm','--no-deps','qa-tests','python','scripts/generate_qa_pdf.py')
     Push-Location (Join-Path $taskRoot 'apps/web')
     try {

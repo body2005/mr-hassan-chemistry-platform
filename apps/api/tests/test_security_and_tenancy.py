@@ -237,7 +237,7 @@ def test_quiz_attempt_expiry_is_server_enforced(db) -> None:
 
     response = client.post(
         f"/api/v1/quiz-attempts/{expired_attempt.id}/submit",
-        json={"submission_key": "key-12345678", "answers": []},
+        json={"submission_key": "key-" + uuid.uuid4().hex, "answers": []},
         headers=csrf_headers(client),
     )
     # Expired attempts must be refused with a permission-style error.
@@ -385,7 +385,7 @@ def test_health_and_ready_endpoints_exist() -> None:
     ready = client.get("/api/v1/ready")
     assert health.status_code == 200
     assert ready.status_code == 200
-    assert "dependencies" in ready.json()
+    assert set(ready.json()) == {"status"}
 
 
 def test_csrf_protection_enforcement(db) -> None:

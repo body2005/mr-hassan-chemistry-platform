@@ -59,6 +59,10 @@ class UserResponse(BaseModel):
     gender: Gender | None = None
     student_phone: str | None = None
     guardian_phone: str | None = None
+    mother_phone: str | None = None
+    city: str | None = None
+    education_division: str | None = None
+    specialization: str | None = None
     national_id: str | None = None
     religion: Religion | None = None
     is_active: bool
@@ -67,7 +71,6 @@ class UserResponse(BaseModel):
 
 class PrivateUserResponse(UserResponse):
     """Returned to the authenticated account owner and administrators during auth flows."""
-    avatar_url: str | None = None
     uploaded_videos_count: int | None = None
     enrolled_students_count: int | None = None
 
@@ -94,6 +97,10 @@ class RegisterRequest(BaseModel):
     grade_level: GradeLevel
     student_phone: str | None = None
     guardian_phone: str | None = None
+    mother_phone: str | None = None
+    city: str | None = Field(default=None, min_length=2, max_length=100)
+    education_division: str | None = Field(default=None, pattern=r'^(GENERAL|AZHAR)$')
+    specialization: str | None = Field(default=None, pattern=r'^(SCIENCE|MATH)$')
     national_id: str | None = None
     governorate: str = Field(min_length=1, max_length=40)
     school_name: str = Field(min_length=2, max_length=200)
@@ -110,10 +117,19 @@ class RegisterRequest(BaseModel):
             raise ValueError("Value is required")
         return normalized
 
-    @field_validator("student_phone", "guardian_phone", mode="before")
+    @field_validator("student_phone", "guardian_phone", "mother_phone", mode="before")
     @classmethod
     def validate_phone(cls, value: object) -> str | None:
         return _normalize_phone(value if isinstance(value, str) else None)
+
+    @field_validator("city", mode="before")
+    @classmethod
+    def trim_city(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("City must be text")
+        return value.strip()
 
     @field_validator("national_id", mode="before")
     @classmethod
@@ -368,6 +384,13 @@ class NotificationResponse(BaseModel):
     created_at: datetime
 
 
+class LessonCommentCreateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    body: str = Field(min_length=1, max_length=2000, strict=True)
+    parent_id: uuid.UUID | None = None
+
+
 class NotificationCreateRequest(BaseModel):
     recipient_id: uuid.UUID
     kind: str = Field(min_length=2, max_length=40)
@@ -423,6 +446,12 @@ class QuestionCreateRequest(BaseModel):
     correct_answer: object | None = None
     points: float = Field(default=1.0, gt=0, le=1000)
     learning_objective: str | None = Field(default=None, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_option_limit(self) -> "QuestionCreateRequest":
+        if self.question_type.strip().lower() in {"mcq", "multiple_choice"} and self.options and len(self.options) > 26:
+            raise ValueError("Multiple-choice questions support at most 26 options (A–Z)")
+        return self
 
 
 class QuestionResponse(BaseModel):

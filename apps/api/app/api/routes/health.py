@@ -1,5 +1,3 @@
-from typing import Annotated
-
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -7,9 +5,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.database import get_db
+from app.core.database import SessionLocal
 from app.core.metrics import render_metrics
 from app.schemas import ReadinessResponse
+from app.api.dependencies import require_roles
+from app.models.user import UserRole
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+import threading
+import time
 
 router = APIRouter()
 
@@ -31,17 +34,18 @@ def health_check() -> HealthResponse:
 
 
 @router.get("/metrics", include_in_schema=False)
-def metrics() -> Response:
+def metrics(_monitor=Depends(require_roles(UserRole.PLATFORM_ADMIN))) -> Response:
     return Response(content=render_metrics(), media_type="text/plain; version=0.0.4")
 
 
-@router.get("/ready", response_model=ReadinessResponse)
-def readiness_check(db: Annotated[Session, Depends(get_db)]) -> ReadinessResponse:
+def _probe_readiness(db: Session) -> ReadinessResponse:
     import os
     settings = get_settings()
     from app.core.storage import get_storage_provider
-    storage = get_storage_provider()
-    storage_check = storage.check_readiness()
+    try:
+        storage_check = get_storage_provider().check_readiness()
+    except Exception:
+        storage_check = {"status": "unavailable"}
 
     dependencies: dict[str, str] = {
         "database": "ok",
@@ -62,7 +66,7 @@ def readiness_check(db: Annotated[Session, Depends(get_db)]) -> ReadinessRespons
     try:
         import redis
 
-        redis.Redis.from_url(settings.redis_url, socket_connect_timeout=0.2).ping()
+        redis.Redis.from_url(settings.redis_url, socket_connect_timeout=0.2, socket_timeout=0.3).ping()
         dependencies["redis"] = "ok"
     except Exception:
         pass
@@ -74,7 +78,7 @@ def readiness_check(db: Annotated[Session, Depends(get_db)]) -> ReadinessRespons
             import redis
 
             if broker_url.startswith("redis://") or broker_url.startswith("rediss://"):
-                redis.Redis.from_url(broker_url, socket_connect_timeout=0.3).ping()
+                redis.Redis.from_url(broker_url, socket_connect_timeout=0.3, socket_timeout=0.3).ping()
                 broker_ok = True
             else:
                 from app.tasks.celery_app import celery_app
@@ -109,7 +113,7 @@ def readiness_check(db: Annotated[Session, Depends(get_db)]) -> ReadinessRespons
         dependencies["ingestion_dispatcher"] = "unavailable"
 
     # In production and production_like, all core services (DB, Storage, Ingestion) must be healthy
-    is_prod_like = settings.app_env.lower() in {"production", "production_like"}
+    is_prod_like = settings.deployment_environment
     if is_prod_like:
         critical_deps = [
             dependencies["database"],
@@ -149,3 +153,64 @@ def readiness_check(db: Annotated[Session, Depends(get_db)]) -> ReadinessRespons
         environment=settings.app_env,
         dependencies=dependencies,
     )
+
+# One shared probe per API process, max one background connection/task, with a
+# 2s HTTP wait budget and 5s cache. A slow dependency cannot grow a work queue.
+_probe_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="readiness")
+_probe_lock = threading.Lock()
+_probe_future = None
+_probe_cache = None
+
+
+def _run_probe():
+    with SessionLocal() as db:
+        if db.bind.dialect.name == "postgresql":
+            db.execute(text("SET LOCAL statement_timeout = '1500ms'"))
+        return _probe_readiness(db)
+
+
+def _cached_readiness():
+    global _probe_future, _probe_cache
+    if get_settings().app_env in {"test", "testing"}:
+        return _run_probe()
+    with _probe_lock:
+        if _probe_cache and time.monotonic() - _probe_cache[0] < 5:
+            if isinstance(_probe_cache[1], Exception):
+                raise _probe_cache[1]
+            return _probe_cache[1]
+        if _probe_future is None:
+            _probe_future = _probe_executor.submit(_run_probe)
+        future = _probe_future
+    try:
+        result = future.result(timeout=2)
+    except TimeoutError:
+        raise HTTPException(503, "Readiness temporarily unavailable")
+    except Exception as error:
+        # Negative readiness results are cached too. A fast failing dependency
+        # must not turn a public probe storm into repeated expensive checks.
+        with _probe_lock:
+            _probe_cache = (time.monotonic(), error)
+        raise
+    finally:
+        if future.done():
+            with _probe_lock:
+                if _probe_future is future:
+                    _probe_future = None
+    with _probe_lock:
+        _probe_cache = (time.monotonic(), result)
+    return result
+
+
+@router.get("/ready")
+def readiness_check():
+    try:
+        result = _cached_readiness()
+    except Exception:
+        # No dependency names/configuration/exception detail on the public probe.
+        raise HTTPException(503, "Service is not ready")
+    return {"status": result.status}
+
+
+@router.get("/ready/details", response_model=ReadinessResponse, include_in_schema=False)
+def readiness_details(_monitor=Depends(require_roles(UserRole.PLATFORM_ADMIN))):
+    return _cached_readiness()

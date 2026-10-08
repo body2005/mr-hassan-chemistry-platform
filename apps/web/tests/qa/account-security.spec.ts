@@ -7,16 +7,24 @@ test("profile changes password and revokes all browser sessions", async ({ page,
 
   await page.goto("/#auth");
   await page.getByRole("button", { name: "تسجيل جديد" }).click();
+  await expect(page.locator('.registration-steps li')).toHaveCount(2);
   const registration = page.locator("form").first();
-  await registration.locator('input[type="text"]').first().fill("طالب اختبار الأمان");
-  await registration.locator('input[type="email"]').fill(email);
-  await registration.locator('input[type="password"]').nth(0).fill(oldPassword);
-  await registration.locator('input[type="password"]').nth(1).fill(oldPassword);
-  await registration.locator("select").nth(0).selectOption("2nd_secondary");
-  await registration.locator("select").nth(1).selectOption("CAIRO");
-  await registration.locator('input[placeholder="اسم المدرسة"]').fill("مدرسة QA المحلية");
-  await registration.locator("select").nth(2).selectOption("MALE");
-  await registration.locator('button[type="submit"]').click();
+  await page.getByLabel('الاسم الأول').fill('طالب');
+  await page.getByLabel('الاسم الأوسط').fill('اختبار');
+  await page.getByLabel('الاسم الأخير').fill('الأمان');
+  await page.getByRole('radio', { name: 'ذكر', exact: true }).check();
+  await page.getByLabel('السنة الدراسية').selectOption('2nd_secondary');
+  await page.getByRole('button', { name: 'التالي', exact: true }).click();
+  await page.getByLabel('رقم تليفونك الشخصي').fill('01012345678');
+  await page.getByLabel('رقم ولي الأمر').fill('01112345678');
+  await page.getByLabel('المحافظة').selectOption('CAIRO');
+  await page.getByLabel('المدينة أو المنطقة').fill('البساتين');
+  await page.getByLabel('اسم المدرسة').fill('مدرسة QA المحلية');
+  await page.getByLabel('البريد الإلكتروني').fill(email);
+  await registration.locator('input[name="password"]').fill(oldPassword);
+  await page.getByLabel('تأكيد كلمة المرور').fill(oldPassword);
+  await expect(page.getByRole('heading', { name: 'التواصل وإنشاء الحساب', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'إنشاء حسابي', exact: true }).click();
   await expect(page).toHaveURL(/#mycourses$/);
 
   const secondContext = await browser.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true" });
@@ -47,7 +55,7 @@ test("profile changes password and revokes all browser sessions", async ({ page,
     await expect.poll(async () => {
       const inbox = await (await page.request.get(`${mailUrl}/api/v1/messages`)).json();
       return inbox.messages.some((message: { To: { Address: string }[] }) => message.To.some(recipient => recipient.Address === email));
-    }).toBe(true);
+    }, { timeout: 30_000 }).toBe(true);
     await wizard.getByRole('button', { name: 'تم', exact: true }).click();
     await expect(security.getByRole('button', { name: 'تغيير كلمة المرور' })).toBeFocused();
     await security.getByRole('button', { name: 'تغيير كلمة المرور' }).click();

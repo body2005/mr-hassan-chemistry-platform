@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import secrets
-import io
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 UTC = timezone.utc
 from typing import Annotated
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status, UploadFile, File
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select, func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -17,13 +15,12 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import CurrentUser
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.core.rate_limit import enforce_rate_limit
+from app.core.rate_limit import enforce_rate_limit, resolve_client_ip
 from app.core.security import create_session_token, decode_session_token, hash_token
 
 # A rotated refresh token replayed within this window is treated as a racing
 # tab (normal multi-tab behavior) rather than credential theft: the tab gets a
 # fresh session instead of the whole family being revoked.
-_REFRESH_REPLAY_GRACE_SECONDS = 30
 from app.models.platform import RefreshSession, RevokedSession
 from app.models.user import User
 from app.schemas import (
@@ -37,7 +34,7 @@ from app.schemas import (
     UserResponse,
 )
 from app.services import auth_service
-from app.services.mail_service import password_reset_mail_configured, send_password_reset_email
+from app.services.mail_service import password_reset_mail_configured
 from app.services.audit_service import record_audit
 
 router = APIRouter(prefix="/auth")
@@ -45,52 +42,18 @@ Db = Annotated[Session, Depends(get_db)]
 logger = logging.getLogger(__name__)
 
 
-@router.post("/avatar", response_model=PrivateUserResponse)
-async def upload_avatar(request: Request, user: CurrentUser, db: Db, file: UploadFile = File(...)):
-    from PIL import Image, UnidentifiedImageError
-    from app.core.storage import get_storage_provider
-    from app.services.storage_cleanup import enqueue_cleanup, compensate_upload
-
+@router.post("/avatar", include_in_schema=False)
+def account_photo_upload_removed(request: Request, user: CurrentUser):
+    # Explicit product decision: no personal photos for any account role.
+    # Keep a closed legacy endpoint so old clients get a clear outcome. Do
+    # not parse/process the image or mutate/delete existing private objects.
     enforce_rate_limit(request, bucket="avatar", limit=10, window_seconds=60)
-    raw = await file.read(2 * 1024 * 1024 + 1)
-    if len(raw) > 2 * 1024 * 1024:
-        raise HTTPException(413, "Avatar limit is 2 MiB")
-    try:
-        image = Image.open(io.BytesIO(raw))
-        if image.format not in {"PNG", "JPEG", "WEBP"} or image.width * image.height > 4_000_000:
-            raise ValueError("Unsupported image")
-        image.load()
-        image = image.convert("RGB")
-        image.thumbnail((512, 512))
-        output = io.BytesIO()
-        image.save(output, format="PNG")
-    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
-        raise HTTPException(422, "Upload a valid PNG, JPEG or WebP image") from exc
-    storage = get_storage_provider()
-    key = f"avatars/{user.id}/{uuid.uuid4()}.png"
-    storage.save_bytes(output.getvalue(), key, "image/png")
-    try:
-        # Serialize replacement so concurrent uploads clean up the preceding
-        # version, not an unrelated resource or the winning current avatar.
-        locked = db.scalar(select(User).where(User.id == user.id).with_for_update().execution_options(populate_existing=True))
-        enqueue_cleanup(db, locked.avatar_key)
-        locked.avatar_key = key
-        db.commit()
-        db.refresh(locked)
-    except Exception:
-        db.rollback()
-        compensate_upload(db, key)
-        raise
-    return PrivateUserResponse.model_validate(locked)
+    raise HTTPException(410, "Personal account photos are not supported")
 
 
-@router.get("/avatar")
-def read_avatar(user: CurrentUser):
-    from app.core.storage import get_storage_provider
-    if not user.avatar_key:
-        raise HTTPException(404, "No avatar")
-    return StreamingResponse(get_storage_provider().open_stream(user.avatar_key), media_type="image/png",
-                             headers={"Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff"})
+@router.get("/avatar", include_in_schema=False)
+def account_photo_read_removed(user: CurrentUser):
+    raise HTTPException(410, "Personal account photos are not supported")
 
 
 @router.get("/profile-summary")
@@ -119,8 +82,9 @@ def _cookie_options(request: Request | None = None) -> tuple[str, bool]:
     settings = get_settings()
     is_https = False
     if request:
-        proto = request.headers.get("x-forwarded-proto") or request.url.scheme
-        is_https = proto.lower() == "https"
+        # Uvicorn applies forwarded headers only for explicitly trusted peers.
+        # Never trust a raw client-supplied X-Forwarded-Proto here.
+        is_https = request.url.scheme.lower() == "https"
     # Browser sessions are same-origin via the frontend /api proxy.  Lax
     # prevents third-party cookie sends while preserving ordinary navigation.
     # Cross-site cookies would require SameSite=None and materially weaken the
@@ -242,6 +206,20 @@ def register(
 @router.post("/login", response_model=AuthResponse)
 def login(payload: LoginRequest, response: Response, db: Db, request: Request) -> AuthResponse:
     enforce_rate_limit(request, bucket="auth", limit=12, window_seconds=60)
+    # Apply before DB/password work. No plaintext account identifiers in keys.
+    client_ip = resolve_client_ip(request)
+    account_identity = payload.institution_slug.strip().lower() + ":" + auth_service.normalize_email(payload.email)
+    # Short, distributed admission backoff, capped at ten seconds. Pairing
+    # account+IP prevents a remote attacker imposing this cooldown on every
+    # device of a victim. Existing IP/account rolling budgets remain active.
+    # Count attempts uniformly (not account existence); no sleeps/DB locks.
+    enforce_rate_limit(request, bucket="login_retry", limit=4, window_seconds=10,
+                       identity=account_identity + ":" + client_ip)
+    # Rejected short retries must not consume/extend the account-wide budget.
+    enforce_rate_limit(request, bucket="login_ip", limit=12, window_seconds=60,
+                       identity=client_ip)
+    enforce_rate_limit(request, bucket="login_account", limit=20, window_seconds=300,
+                       identity=account_identity)
     user = auth_service.authenticate(db, payload)
     if user is None:
         record_audit(db, request, action="login_failed", resource_type="session")
@@ -295,7 +273,7 @@ def refresh(
             # slower one still carries the just-rotated cookie), not theft.
             # Hand the racing tab the family's current credential instead of
             # killing the whole family and logging the user out.
-            grace_cutoff = now - timedelta(seconds=_REFRESH_REPLAY_GRACE_SECONDS)
+            grace_cutoff = now - timedelta(seconds=get_settings().refresh_replay_grace_seconds)
             successor = (
                 db.query(RefreshSession)
                 .filter(
@@ -316,6 +294,16 @@ def refresh(
                 RefreshSession.family_id == session.family_id,
                 RefreshSession.revoked_at.is_(None),
             ).update({RefreshSession.revoked_at: now}, synchronize_session=False)
+            from app.models.platform import Notification, DeliveryStatus
+            dedup = "refresh-reuse:" + str(session.family_id)
+            if not db.scalar(select(Notification.id).where(
+                    Notification.recipient_id == user.id, Notification.dedup_key == dedup)):
+                record_audit(db, request, action="refresh_reuse_detected", resource_type="session", actor=user)
+                db.add(Notification(institution_id=user.institution_id, recipient_id=user.id,
+                    kind="security", title="أُغلقت جلسة تسجيل دخول",
+                    message="أُعيد استخدام جلسة قديمة بعد انتهاء مهلة التزامن؛ أُغلق هذا الجهاز احتياطيًا. إذا لم تتوقع ذلك، غيّر كلمة المرور.",
+                    action_url="#profile", dedup_key=dedup, delivered_at=now,
+                    delivery_status=DeliveryStatus.DELIVERED))
             db.commit()
         _clear_auth_cookies(response, request)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh session is invalid")
@@ -354,6 +342,22 @@ def logout(
 ) -> None:
     settings = get_settings()
     payload = decode_session_token(session_cookie) if session_cookie else None
+    refresh_hash = hash_token(request.cookies.get(settings.refresh_cookie_name, ''))
+    refresh_owner = db.scalar(select(RefreshSession.user_id).where(RefreshSession.token_hash == refresh_hash))
+    # Use the opaque refresh hash, not unverified JWT claims. Lock order is
+    # the same as rotation: user first, refresh row second.
+    if not payload and refresh_owner:
+        user = db.scalar(select(User).where(User.id == refresh_owner).with_for_update())
+        row = db.scalar(select(RefreshSession).where(RefreshSession.token_hash == refresh_hash)
+                        .with_for_update().execution_options(populate_existing=True))
+        if user and row and _as_utc(row.expires_at) > datetime.now(UTC):
+            db.query(RefreshSession).filter(RefreshSession.user_id == user.id,
+                RefreshSession.family_id == row.family_id, RefreshSession.revoked_at.is_(None)).update(
+                    {RefreshSession.revoked_at: datetime.now(UTC)}, synchronize_session=False)
+            from app.api.routes.platform import _revoke_video_sessions
+            _revoke_video_sessions(db, user.id, row.family_id, None)
+            record_audit(db, request, action="logout", resource_type="session", actor=user)
+            db.commit()
     if payload:
         try:
             user_id = uuid.UUID(str(payload["sub"]))
@@ -435,24 +439,23 @@ def revoke_all_sessions(user: CurrentUser, db: Db, request: Request) -> None:
 def request_password_reset(
     payload: PasswordResetRequest, db: Db, request: Request
 ) -> dict[str, str]:
-    enforce_rate_limit(request, bucket="auth", limit=5, window_seconds=300)
+    enforce_rate_limit(request, bucket="password_reset_request", limit=5, window_seconds=300)
     if not password_reset_mail_configured():
         raise HTTPException(status_code=503, detail="Password reset is temporarily unavailable")
     # Deliberately generic: account existence must not be exposed to callers.
-    token = auth_service.request_password_reset(db, str(payload.email), payload.institution_slug)
-    if token:
-        try:
-            send_password_reset_email(str(payload.email), token)
-        except Exception:
-            # SMTP failures must not reveal whether the account exists, and
-            # neither the token nor recipient address may enter the logs.
-            logger.error("Password reset email delivery failed")
+    from app.services.session_maintenance import enqueue_reset_request
+    try:
+        enqueue_reset_request(db, str(payload.email), payload.institution_slug)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="Password reset is temporarily unavailable",
+                            headers={"Retry-After": "1"}) from exc
     return {"message": "If the account exists, reset instructions will be sent securely."}
 
 
 @router.post("/password-reset/confirm", status_code=status.HTTP_204_NO_CONTENT)
 def confirm_password_reset(payload: PasswordResetConfirm, db: Db, request: Request) -> None:
-    enforce_rate_limit(request, bucket="auth", limit=5, window_seconds=300)
+    enforce_rate_limit(request, bucket="password_reset_confirm", limit=5, window_seconds=300)
     try:
         auth_service.reset_password(db, payload)
     except ValueError as exc:

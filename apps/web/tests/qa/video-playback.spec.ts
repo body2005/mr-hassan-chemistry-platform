@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { expect, test } from "./qaTest";
 import { cookieApi } from './cookieApi';
+import { assertAccessible } from './accessibility';
 
 const baseURL = `${process.env.QA_BASE_URL || "http://127.0.0.1:18080"}/api/v1/`;
 
@@ -149,15 +150,58 @@ test("protected WebM supports browser playback, seeking and byte ranges", async 
     await page.getByRole("button", { name: "مشاهدة الدرس" }).first().click();
     const lessonPlayer = page.locator("video").first();
     await expect(lessonPlayer).toBeVisible();
-    const renewed = page.waitForResponse((response) => response.url().endsWith(`/lessons/${lesson.id}/video-token`) && response.status() === 200);
+    const waitForRenewal = () => page.waitForResponse((response) => response.url().endsWith(`/lessons/${lesson.id}/video-token`) && response.status() === 200);
+    let renewed: ReturnType<typeof page.waitForResponse>;
     if (token.format === "hls") {
       await expect(page.getByRole("button", { name: "إعادة المحاولة", exact: true })).toBeVisible();
+      await assertAccessible(page, test.info(), 'video-transport-error');
       expect(deniedSegments).toBeGreaterThan(0);
       expect(deniedSegments).toBeLessThanOrEqual(2); // No unbounded retries.
       await page.unroute(segmentRoute);
+      const other = await page.context().newPage();
+      let connected = 0;
+      other.on('console', message => {
+        if (message.text().includes('[RealTime] Connected to event stream')) connected++;
+      });
+      let refreshFailures = 0;
+      try {
+        const hydrated = other.waitForResponse(response => response.url().endsWith('/bootstrap') && response.status() === 200);
+        await other.goto('/#profile');
+        await hydrated;
+        await expect.poll(() => connected).toBeGreaterThan(0);
+        await page.context().route('**/api/v1/auth/refresh', route => {
+          refreshFailures++;
+          return route.fulfill({ status: 503, json: { detail: 'Synthetic video session outage' } });
+        });
+        await page.context().clearCookies({ name: 'matgar_session' });
+        // Real HLS retry requires token admission; concurrent tab reload also
+        // exercises JSON identity and SSE under the same unavailable cookies.
+        await page.getByRole('button', { name: 'إعادة المحاولة', exact: true }).click();
+        await expect(page.getByText('تعذر تجديد رابط الفيديو.', { exact: false })).toBeVisible();
+        await other.reload();
+        await page.waitForTimeout(11_000);
+        expect(refreshFailures).toBeGreaterThan(0);
+        expect(refreshFailures).toBeLessThanOrEqual(4);
+        for (const tab of [page, other]) {
+          expect(await tab.evaluate(() => localStorage.getItem('lms_cached_user'))).not.toBeNull();
+        }
+        await page.context().unroute('**/api/v1/auth/refresh');
+        const previouslyConnected = connected;
+        const recovered = other.waitForResponse(response => response.url().endsWith('/bootstrap') && response.status() === 200);
+        await other.reload();
+        await recovered;
+        await expect.poll(() => connected).toBeGreaterThan(previouslyConnected);
+      } finally {
+        await page.context().unroute('**/api/v1/auth/refresh');
+        await other.close();
+      }
+      // Start this response wait at the recovery action, not before the
+      // deliberately unavailable11-second/two-tab observation above.
+      renewed = waitForRenewal();
       await page.getByRole("button", { name: "إعادة المحاولة", exact: true }).click();
     } else {
       await expect.poll(() => lessonPlayer.evaluate((video: HTMLVideoElement) => video.readyState)).toBeGreaterThanOrEqual(2);
+      renewed = waitForRenewal();
       await lessonPlayer.evaluate((video: HTMLVideoElement) => {
         video.src = "/api/v1/lessons/not-a-valid-id/stream?token=expired";
         video.load();
@@ -166,6 +210,7 @@ test("protected WebM supports browser playback, seeking and byte ranges", async 
     await renewed;
     await expect.poll(() => lessonPlayer.evaluate((video: HTMLVideoElement) => video.readyState), { timeout: 30_000 }).toBeGreaterThanOrEqual(2);
     await expect.poll(() => lessonPlayer.evaluate((video: HTMLVideoElement) => video.currentSrc)).not.toContain("token=expired");
+    await assertAccessible(page, test.info(), 'video-ready');
     if (token.format === "hls") {
       await lessonPlayer.evaluate(async (video: HTMLVideoElement) => { video.muted = true; await video.play(); });
       await expect.poll(() => lessonPlayer.evaluate((video: HTMLVideoElement) => video.currentTime), { timeout: 20_000 }).toBeGreaterThanOrEqual(4);
@@ -190,6 +235,76 @@ test("protected WebM supports browser playback, seeking and byte ranges", async 
     await page.locator("#qa-video").evaluate((video: HTMLVideoElement) => { video.currentTime = 3; });
     await expect.poll(() => page.locator("#qa-video").evaluate((video: HTMLVideoElement) => video.currentTime)).toBeGreaterThanOrEqual(2.9);
     }
+
+    // Discussion writes must persist before success. A failed POST preserves
+    // the input, sends no automatic retry and must not invent a parent UUID.
+    const discussion = page.getByRole('region', { name: 'التعليقات والمناقشات' });
+    const commentText = 'QA real persisted comment ' + randomUUID();
+    const input = discussion.getByRole('textbox', { name: 'تعليقك على الدرس' });
+    await expect(input).toBeEnabled();
+    await input.fill(commentText);
+    let rejectedWrites = 0;
+    const commentRoute = `**/api/v1/lessons/${lesson.id}/comments`;
+    await page.route(commentRoute, route => {
+      if (route.request().method() !== 'POST') return route.continue();
+      rejectedWrites++;
+      return route.fulfill({ status: 503, json: { detail: 'Synthetic discussion save outage' } });
+    });
+    await discussion.getByRole('button', { name: 'إضافة تعليق', exact: true }).click();
+    await expect(discussion.getByRole('alert')).toContainText('تعذر نشر التعليق');
+    await expect(input).toHaveValue(commentText);
+    await expect(discussion.getByText(commentText, { exact: true })).toHaveCount(0);
+    await page.waitForTimeout(2500);
+    expect(rejectedWrites).toBe(1);
+    await assertAccessible(page, test.info(), 'video-discussion-save-error');
+    await page.unroute(commentRoute);
+    const savedComment = page.waitForResponse(response => response.request().method() === 'POST'
+      && response.url().endsWith(`/lessons/${lesson.id}/comments`) && response.status() === 201);
+    await discussion.getByRole('button', { name: 'إضافة تعليق', exact: true }).click();
+    const comment = await (await savedComment).json();
+    expect(comment.id).toMatch(/^[a-f0-9-]{36}$/);
+    await expect(input).toHaveValue('');
+    const parentCard = discussion.locator(`article[data-comment-id="${comment.id}"]`);
+    await expect(parentCard.getByText(commentText, { exact: true })).toBeVisible();
+    await parentCard.getByRole('button', { name: 'رد', exact: true }).click();
+    const replyText = 'QA real persisted reply ' + randomUUID();
+    await parentCard.getByPlaceholder('اكتب ردك هنا...').fill(replyText);
+    const savedReply = page.waitForResponse(response => response.request().method() === 'POST'
+      && response.url().endsWith(`/lessons/${lesson.id}/comments`) && response.status() === 201);
+    await parentCard.locator('form').getByRole('button', { name: 'رد', exact: true }).click();
+    const reply = await (await savedReply).json();
+    expect(reply.parent_id).toBe(comment.id);
+    await expect(parentCard.getByText(replyText, { exact: true })).toBeVisible();
+    const persisted = await page.request.get(`/api/v1/lessons/${lesson.id}/comments`);
+    expect(persisted.status()).toBe(200);
+    const persistedParent = (await persisted.json()).comments.find((item: { id: string }) => item.id === comment.id);
+    expect(persistedParent.body).toBe(commentText);
+    expect(persistedParent.replies.find((item: { id: string }) => item.id === reply.id).body).toBe(replyText);
+    await assertAccessible(page, test.info(), 'video-discussion-saved-reply');
+
+    // Real keyboard activation (jsdom's native-tag regression is not a
+    // browser proof). Keep RTL navigation in the mobile viewport as well.
+    await page.setViewportSize({ width: 390, height: 844 });
+    const breadcrumb = page.getByRole('navigation', { name: 'Breadcrumb' });
+    const bounds = await breadcrumb.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(391);
+    await assertAccessible(page, test.info(), 'video-mobile-rtl-ready');
+    const courseBreadcrumb = breadcrumb.getByRole('button', { name: 'QA Video Course', exact: true });
+    await courseBreadcrumb.focus();
+    await courseBreadcrumb.press('Enter');
+    await expect(page.locator('video:not(#qa-video)')).toHaveCount(0);
+    await page.getByRole('button', { name: 'مشاهدة الدرس' }).first().click();
+    await expect(page.locator('video:not(#qa-video)')).toHaveCount(1);
+    await expect(page.getByRole('region', { name: 'التعليقات والمناقشات' })
+      .getByText(commentText, { exact: true })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'التعليقات والمناقشات' })
+      .getByText(replyText, { exact: true })).toBeVisible();
+    await page.getByRole('navigation', { name: 'Breadcrumb' })
+      .getByRole('button', { name: 'QA Video Course', exact: true }).focus();
+    await page.keyboard.press('Space');
+    await expect(page.locator('video:not(#qa-video)')).toHaveCount(0);
 
     // Logout must kill the old URL, but a fresh login must be able to watch.
     expect((await student.post("auth/logout", { headers: { "X-CSRF-Token": csrf! } })).status()).toBe(204);

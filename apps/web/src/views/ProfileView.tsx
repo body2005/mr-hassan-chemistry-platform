@@ -9,7 +9,6 @@ import {
   Search,
   ShieldCheck,
   Trash2,
-  Upload,
   Users,
   Video,
 } from "lucide-react";
@@ -255,50 +254,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 overflow: "hidden",
               }}
             >
-              {user.avatarUrl ? (
-                <img src={user.avatarUrl} alt={user.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-              ) : (
-                user.name.slice(0, 2)
-              )}
+              {user.name.slice(0, 2)}
             </div>
 
-            <label
-              htmlFor="avatar-upload"
-              style={{
-                position: "absolute",
-                bottom: "-2px",
-                left: "-2px",
-                width: "26px",
-                height: "26px",
-                borderRadius: "50%",
-                background: "#059669",
-                color: "#ffffff",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                cursor: "pointer",
-                border: "2px solid #ffffff",
-                boxShadow: "0 2px 4px rgba(0,0,0,0.15)",
-              }}
-              title="تغيير الصورة الشخصية"
-            >
-              <Upload size={12} />
-              <input
-                id="avatar-upload"
-                type="file"
-                accept="image/*"
-                onChange={async (e) => {
-                  const file = e.target.files?.[0];
-                  if (file) {
-                    try {
-                      await userService.uploadAvatar(file);
-                      window.location.reload();
-                    } catch (err) { setProfileError(err instanceof Error ? err.message : 'تعذر حفظ الصورة'); }
-                  }
-                }}
-                style={{ display: "none" }}
-              />
-            </label>
           </div>
           <div>
             <h2 style={{ margin: "0 0 6px", fontSize: "22px", color: "var(--text-main)" }}>{user.name}</h2>

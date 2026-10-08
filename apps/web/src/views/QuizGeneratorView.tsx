@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   AlertCircle,
   ArrowDown,
@@ -26,13 +26,15 @@ import { GeneratedQuestion, QuizDraftResponse } from "../types/quiz";
 import { useToast } from "../components/ToastProvider";
 import { FormulaRenderer } from "../components/FormulaRenderer";
 import { RichFormulaEditor } from "../components/RichFormulaEditor";
-import { formatChemicalFormula } from "../utils/formulaUtils";
 import { quizHistoryService, PublishedQuizRecord } from "../services/quizHistoryService";
 import { QuizHistorySection } from "../components/QuizHistorySection";
 import { contentReviewFingerprint, hasContentReview, requiresContentReview } from "../services/quizContentReview";
 import { canonicalQuestionType } from "../services/questionType";
-import { clockLabel } from "../services/clockField";
 import { TimeField } from "../components/TimeField";
+import { QuizPublishConfirmation } from "../components/QuizPublishConfirmation";
+import { appendMcqOption, removeMcqOption } from "../services/mcqOptions";
+import { McqOptionsEditor } from "../components/McqOptionsEditor";
+import { QuestionSourceReview } from "../components/QuestionSourceReview";
 
 const QUIZ_DRAFT_STORAGE_KEY_PREFIX = "lms_quiz_maker_unuploaded_draft_v2";
 
@@ -50,7 +52,7 @@ function getInitialQuizDraft(userId: string) {
     if (!hasQuestions && !hasTitle) {
       return null;
     }
-    return parsed;
+    return { draft: parsed, serialized: raw };
   } catch (e) {
     console.error("Error reading saved quiz draft:", e);
     return null;
@@ -82,7 +84,27 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   const toast = useToast();
   const quizDraftStorageKey = getQuizDraftStorageKey(currentUser.id);
   const initialDraftRef = useRef(getInitialQuizDraft(currentUser.id));
-  const initialDraft = initialDraftRef.current;
+  const initialDraft = initialDraftRef.current?.draft;
+  // A late effect in an empty/stale tab must not erase or overwrite a draft
+  // saved by another tab. Only replace the exact version this editor read or
+  // wrote; this is conflict detection, not a collaborative editing protocol.
+  const savedDraftRef = useRef({ key: quizDraftStorageKey, serialized: initialDraftRef.current?.serialized ?? null as string | null });
+  const [draftSaveConflict, setDraftSaveConflict] = useState(false);
+  const clearOwnSavedDraft = useCallback(() => {
+    try {
+      const stored = localStorage.getItem(quizDraftStorageKey);
+      const own = savedDraftRef.current;
+      if (own.key === quizDraftStorageKey && stored === own.serialized) {
+        if (stored !== null) localStorage.removeItem(quizDraftStorageKey);
+        own.serialized = null;
+        setDraftSaveConflict(false);
+      } else if (stored !== null) {
+        setDraftSaveConflict(true);
+      }
+    } catch (error) {
+      console.error("Failed to clear own quiz draft:", error);
+    }
+  }, [quizDraftStorageKey]);
   const [publicationKey, setPublicationKey] = useState<string>(() => initialDraft?.publicationKey || crypto.randomUUID());
 
   const [hasRestoredDraft, setHasRestoredDraft] = useState<boolean>(() => !!initialDraft);
@@ -287,7 +309,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   useEffect(() => {
     // If the quiz is approved/published or actively extracting, do not auto-save
     if (approved) {
-      localStorage.removeItem(quizDraftStorageKey);
+      clearOwnSavedDraft();
       setHasRestoredDraft(false);
       return;
     }
@@ -297,7 +319,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     }
 
     if (questions.length === 0 && quizTitle.trim().length === 0) {
-      localStorage.removeItem(quizDraftStorageKey);
+      clearOwnSavedDraft();
       setHasRestoredDraft(false);
       return;
     }
@@ -325,7 +347,16 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     };
 
     try {
-      localStorage.setItem(quizDraftStorageKey, JSON.stringify(payload));
+      const stored = localStorage.getItem(quizDraftStorageKey);
+      const own = savedDraftRef.current;
+      if (stored !== null && (own.key !== quizDraftStorageKey || stored !== own.serialized)) {
+        setDraftSaveConflict(true);
+        return;
+      }
+      const serialized = JSON.stringify(payload);
+      localStorage.setItem(quizDraftStorageKey, serialized);
+      savedDraftRef.current = { key: quizDraftStorageKey, serialized };
+      setDraftSaveConflict(false);
       setHasRestoredDraft(true);
     } catch (e) {
       console.error("Failed to auto-save un-uploaded quiz draft:", e);
@@ -351,12 +382,13 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     extractedAt,
     draft,
     quizDraftStorageKey,
+    clearOwnSavedDraft,
     publicationKey,
   ]);
 
   function handleResetNewQuiz() {
     if (window.confirm("هل أنت متأكد من رغبتك في مسح مسودة هذا الاختبار الحالية والبدء باختبار جديد من البداية؟")) {
-      localStorage.removeItem(quizDraftStorageKey);
+      clearOwnSavedDraft();
       setDraft(null);
       setPublicationKey(crypto.randomUUID());
       setQuizTitle("");
@@ -396,7 +428,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     setExtractedFileName(null);
     setExtractedFileFingerprint(null);
     setExtractedAt(null);
-    localStorage.removeItem(quizDraftStorageKey);
+    clearOwnSavedDraft();
     setHasRestoredDraft(false);
 
     try {
@@ -622,15 +654,10 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   }
 
   function addOptionToQuestion(qId: number) {
-    const keys = ["أ", "ب", "ج", "د", "هـ", "و"];
     setActiveQuestionsList((prev) =>
       prev.map((q) => {
         if (q.id === qId && q.options) {
-          const nextKey = keys[q.options.length] || `خيار ${q.options.length + 1}`;
-          return {
-            ...q,
-            options: [...q.options, { key: nextKey, text: `خيار ${nextKey}`, is_correct: false }],
-          };
+          return { ...q, options: appendMcqOption(q.options) };
         }
         return q;
       })
@@ -640,14 +667,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   function removeOptionFromQuestion(qId: number, optKey: string) {
     setActiveQuestionsList((prev) =>
       prev.map((q) => {
-        if (q.id === qId && q.options && q.options.length > 2) {
-          const filtered = q.options.filter((o) => o.key !== optKey);
-          if (!filtered.some((o) => o.is_correct) && filtered.length > 0) {
-            filtered[0].is_correct = true;
-          }
-          return { ...q, options: filtered };
-        }
-        return q;
+        return q.id === qId ? removeMcqOption(q, optKey) : q;
       })
     );
   }
@@ -866,6 +886,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       return;
     }
 
+    // A retry has started; the previous attempt's error is not its outcome.
+    setError(null);
     setIsPublishing(true);
     setPublicationWarning(null);
     try {
@@ -983,7 +1005,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       setPublicationWarning("تم نشر المحتوى؛ جارٍ تحديث التقويم والإشعار...");
       setApproved(true);
       setShowPublishConfirmModal(false);
-      localStorage.removeItem(quizDraftStorageKey);
+      clearOwnSavedDraft();
       setHasRestoredDraft(false);
       // Publish the actual assessment BEFORE announcing it. An ancillary
       // notification/calendar failure must not cause duplicate publication on
@@ -1147,6 +1169,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
             </p>
           </div>
 
+      {draftSaveConflict && <div role="alert" style={{ padding: '12px', marginBottom: '16px', border: '1px solid var(--border-color)', borderRadius: '10px', background: 'var(--bg-surface-secondary)', color: 'var(--text-main)' }}>
+        توجد مسودة أحدث في تبويب آخر. لن نستبدلها أو نحذفها تلقائيًا. انسخ تعديلاتك الحالية ثم حدّث الصفحة لاستعادة المسودة الأحدث.
+      </div>}
       <div className="responsive-split-grid">
         {/* Left Column: Configuration Form */}
         <div style={{ background: "var(--bg-surface, #ffffff)", border: "1px solid var(--border-color, #e2e8f0)", borderRadius: "16px", padding: "20px" }}>
@@ -1404,6 +1429,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
             ) : (
               <>
                 <select
+                  aria-label="الدرس المرتبط بالتقييم"
                   required
                   value={selectedLessonIds[0] || ""}
                   onChange={(e) => setSelectedLessonIds(e.target.value ? [e.target.value] : [])}
@@ -1500,6 +1526,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "8px" }}>
                 <input
                   type="date"
+                  aria-label="تاريخ بداية الإتاحة"
                   required
                   value={publishStartDate}
                   onChange={(e) => setPublishStartDate(e.target.value)}
@@ -1538,6 +1565,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "8px" }}>
                 <input
                   type="date"
+                  aria-label="تاريخ انتهاء الإتاحة"
                   required
                   value={closeDeadlineDate}
                   onChange={(e) => setCloseDeadlineDate(e.target.value)}
@@ -1896,6 +1924,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                           {/* Editable Question Type Selector with distinct badge (Requirement 9) */}
                           <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                             <select
+                              aria-label={`نوع السؤال ${qIdx + 1}`}
                               value={normalizeQuestionType(q.question_type)}
                               onChange={(e) => updateQuestionType(q.id, e.target.value as "multiple_choice" | "essay" | "true_false" | "fill_in_blank")}
                               style={{
@@ -2088,23 +2117,10 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                         </div>
                       )}
 
-                      {requiresContentReview(q) && (
-                        <label style={{ display: "flex", gap: "10px", alignItems: "flex-start", padding: "12px",
-                          marginBottom: "12px", borderRadius: "8px", border: "1px solid var(--border-color)",
-                          background: "var(--bg-surface-secondary)", color: "var(--text-main)", lineHeight: "1.7" }}>
-                          <input type="checkbox" aria-label={`مراجعة نص السؤال ${qIdx + 1} مع المصدر`}
-                            checked={hasContentReview(q)} onChange={e => {
-                              const checked = e.target.checked;
-                              setActiveQuestionsList(prev => prev.map(item => item.id === q.id ? { ...item,
-                                content_review_fingerprint: checked ? contentReviewFingerprint(item) : undefined } : item));
-                            }} />
-                          <span>قارنت نص السؤال والاختيارات بالملف الأصلي{q.source_page ? ` — صفحة ${q.source_page}` : ""}.
-                            <small style={{ display: "block", color: "var(--text-muted)" }}>
-                              قراءة الصور قد تُسقط حروفًا أو رموزًا. صحّح النص أولًا؛ أي تعديل للنص أو الاختيارات يلغي هذا التأكيد.
-                            </small>
-                          </span>
-                        </label>
-                      )}
+                      <QuestionSourceReview question={q} index={qIdx} onReview={checked => {
+                        setActiveQuestionsList(prev => prev.map(item => item.id === q.id ? { ...item,
+                          content_review_fingerprint: checked ? contentReviewFingerprint(item) : undefined } : item));
+                      }} />
 
                       {/* Question Text */}
                       {isEditing ? (
@@ -2258,158 +2274,10 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                         </div>
                       )}
 
-                      {/* Options List (for MCQ) */}
-                      {normalizeQuestionType(q.question_type) === "multiple_choice" && q.options && q.options.length > 0 && (
-                        <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "12px" }}>
-                          {q.options.map((opt) => (
-                            <div
-                              key={opt.key}
-                              style={{
-                                padding: "8px 12px",
-                                borderRadius: "8px",
-                                border: opt.is_correct ? "1.5px solid #059669" : "1px solid var(--border-color)",
-                                background: opt.is_correct ? "var(--bg-accent, #ecfdf5)" : "var(--bg-surface-secondary, #ffffff)",
-                                fontSize: "13px",
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "space-between",
-                                gap: "10px",
-                              }}
-                            >
-                              <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1 }}>
-                                {/* Correct Option Radio */}
-                                <button
-                                  type="button"
-                                  onClick={() => setCorrectOption(q.id, opt.key)}
-                                  style={{
-                                    width: "22px",
-                                    height: "22px",
-                                    borderRadius: "50%",
-                                    border: opt.is_correct ? "2px solid #059669" : "2px solid var(--border-color-strong)",
-                                    background: opt.is_correct ? "#059669" : "transparent",
-                                    color: "white",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    cursor: "pointer",
-                                    flexShrink: 0,
-                                    fontSize: "11px",
-                                    fontWeight: 900,
-                                  }}
-                                  title="اضغط لتعيين هذا الخيار كإجابة صحيحة"
-                                >
-                                  {opt.is_correct ? "✓" : ""}
-                                </button>
-
-                                <span style={{ fontWeight: 800, color: "#0f392b", minWidth: "22px" }}>({opt.key})</span>
-
-                                {isEditing ? (
-                                  <div style={{ flex: 1, display: "flex", gap: "6px", alignItems: "center" }}>
-                                    <input
-                                      type="text"
-                                      value={opt.text}
-                                      onChange={(e) => updateOptionText(q.id, opt.key, e.target.value)}
-                                      onPaste={(e) => {
-                                        e.preventDefault();
-                                        const text = e.clipboardData.getData("text/plain");
-                                        if (!text) return;
-                                        const formatted = formatChemicalFormula(text);
-                                        const input = e.currentTarget;
-                                        const start = input.selectionStart || 0;
-                                        const end = input.selectionEnd || 0;
-                                        const current = opt.text || "";
-                                        const updated = current.slice(0, start) + formatted + current.slice(end);
-                                        updateOptionText(q.id, opt.key, updated);
-                                      }}
-                                      placeholder="نص الخيار..."
-                                      onBlur={(e) => {
-                                        const val = e.target.value;
-                                        const formatted = formatChemicalFormula(val);
-                                        if (formatted !== val) {
-                                          updateOptionText(q.id, opt.key, formatted);
-                                        }
-                                      }}
-                                      style={{
-                                        flex: 1,
-                                        padding: "4px 8px",
-                                        border: "1px solid var(--border-color-strong)",
-                                        borderRadius: "6px",
-                                        fontSize: "13px",
-                                        background: "var(--bg-surface)",
-                                        color: "var(--text-main)",
-                                        outline: "none",
-                                      }}
-                                    />
-                                  </div>
-                                ) : (
-                                  <span style={{ color: "var(--text-main)", fontWeight: opt.is_correct ? 700 : 500 }}>
-                                    <FormulaRenderer inline text={opt.text} />
-                                  </span>
-                                )}
-                              </div>
-
-                              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                {opt.is_correct && (
-                                  <span style={{ color: "#059669", fontWeight: 800, fontSize: "11px" }}>
-                                    الإجابة الصحيحة
-                                  </span>
-                                )}
-                                {isEditing && (q.options?.length ?? 0) > 2 && (
-                                  <button
-                                    type="button"
-                                    onClick={() => removeOptionFromQuestion(q.id, opt.key)}
-                                    style={{ background: "none", border: "none", color: "rgb(118, 40, 40)", cursor: "pointer", padding: "2px" }}
-                                    title="حذف هذا الخيار"
-                                  >
-                                    <Trash2 size={12} />
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          ))}
-
-                          {isEditing && (q.options?.length ?? 0) < 6 && (
-                            <button
-                              type="button"
-                              onClick={() => addOptionToQuestion(q.id)}
-                              style={{
-                                alignSelf: "flex-start",
-                                padding: "4px 10px",
-                                borderRadius: "6px",
-                                border: "1px dashed #059669",
-                                background: "#ecfdf5",
-                                color: "#059669",
-                                fontSize: "11px",
-                                fontWeight: 700,
-                                cursor: "pointer",
-                              }}
-                            >
-                              + إضافة خيار جديد
-                            </button>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Options Placeholder for MCQ when empty */}
-                      {normalizeQuestionType(q.question_type) === "multiple_choice" && (!q.options || q.options.length === 0) && (
-                        <div style={{ marginBottom: "12px" }}>
-                          <button
-                            type="button"
-                            onClick={() => updateQuestionType(q.id, "multiple_choice")}
-                            style={{
-                              padding: "6px 12px",
-                              borderRadius: "6px",
-                              border: "1px dashed #059669",
-                              background: "#ecfdf5",
-                              color: "#059669",
-                              fontSize: "12px",
-                              fontWeight: 700,
-                              cursor: "pointer",
-                            }}
-                          >
-                            + إضافة خيارات السؤال (أ، ب، ج، د)
-                          </button>
-                        </div>
+                      {normalizeQuestionType(q.question_type) === "multiple_choice" && (
+                        <McqOptionsEditor question={q} editing={isEditing} onText={updateOptionText}
+                          onCorrect={setCorrectOption} onAdd={addOptionToQuestion} onRemove={removeOptionFromQuestion}
+                          onInitialize={() => updateQuestionType(q.id, "multiple_choice")} />
                       )}
 
                       {/* Fill in the Blank Student Answer Box & Definition */}
@@ -2614,220 +2482,16 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
 
       {/* Confirmation Modal Before Upload / Publish */}
       {showPublishConfirmModal && (
-        <div
-          className="modal-overlay"
-          role="dialog"
-          aria-modal="true"
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            background: "rgba(15, 23, 42, 0.65)",
-            backdropFilter: "blur(4px)",
-            zIndex: 9999,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "20px",
-          }}
-        >
-          <div
-            style={{
-              background: "var(--bg-surface, #ffffff)",
-              borderRadius: "16px",
-              width: "100%",
-              maxWidth: "520px",
-              boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.3)",
-              border: "1px solid var(--border-color, #e2e8f0)",
-              overflow: "hidden",
-            }}
-          >
-            {/* Modal Header */}
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                padding: "16px 20px",
-                background: assessmentType === "quiz" ? "#0f766e" : "#0f392b",
-                color: "#ffffff",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                <UploadCloud size={20} color="#34d399" />
-                <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 800 }}>
-                  تأكيد رفع واعتماد {assessmentType === "quiz" ? "الاختبار" : "الواجب"}
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => !isPublishing && setShowPublishConfirmModal(false)}
-                disabled={isPublishing}
-                className="modal-close-btn"
-                style={{
-                  background: "var(--modal-close-bg)",
-                  border: "none",
-                  color: "#ffffff",
-                  cursor: isPublishing ? "not-allowed" : "pointer",
-                  width: "32px",
-                  height: "32px",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  borderRadius: "8px",
-                }}
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            {/* Modal Body */}
-            <div style={{ padding: "20px" }}>
-              <div style={{ display: "flex", alignItems: "flex-start", gap: "12px", marginBottom: "16px" }}>
-                <AlertCircle size={22} color="#059669" style={{ flexShrink: 0, marginTop: "2px" }} />
-                <div>
-                  <p style={{ margin: 0, fontSize: "14px", fontWeight: 800, color: "var(--text-main, #0f172a)", lineHeight: "1.5" }}>
-                    هل أنت متأكد من رغبتك في رفع واعتماد هذا {assessmentType === "quiz" ? "الاختبار" : "الواجب"} للطلاب؟
-                  </p>
-                  <p style={{ margin: "4px 0 0", fontSize: "12.5px", color: "var(--text-muted, #64748b)" }}>
-                    سيتم تثبيت الموعد في جدول التقويم {sendScheduledNotification ? "وإرسال إشعار فوري لجميع طلاب الصف." : "وفقاً للإعدادات المحددة."}
-                  </p>
-                </div>
-              </div>
-
-              {/* Summary Card */}
-              {error && <p role="alert" style={{color: 'var(--danger, #dc2626)', margin: '12px 0'}}>{error}</p>}
-              <div
-                style={{
-                  background: "var(--bg-surface-secondary, #f8fafc)",
-                  borderRadius: "12px",
-                  border: "1px solid var(--border-color, #e2e8f0)",
-                  padding: "14px 16px",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "10px",
-                  fontSize: "13px",
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px solid var(--border-color, #e2e8f0)", paddingBottom: "8px" }}>
-                  <span style={{ color: "var(--text-muted, #64748b)", fontWeight: 600 }}>العنوان:</span>
-                  <span style={{ color: "var(--text-main, #0f172a)", fontWeight: 800 }}>
-                    {quizTitle.trim() || `${assessmentType === "quiz" ? "اختبار" : "واجب"} جديد`}
-                  </span>
-                </div>
-
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ color: "var(--text-muted, #64748b)", fontWeight: 600 }}>الصف الدراسي:</span>
-                  <span style={{ color: "#0f766e", fontWeight: 800 }}>
-                    {selectedAcademicYear === "1st_secondary" ? "الصف الأول الثانوي" : selectedAcademicYear === "2nd_secondary" ? "الصف الثاني الثانوي" : "الصف الثالث الثانوي"}
-                  </span>
-                </div>
-
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ color: "var(--text-muted, #64748b)", fontWeight: 600 }}>عدد الأسئلة والدرجات:</span>
-                  <span style={{ color: "var(--text-main, #0f172a)", fontWeight: 700 }}>
-                    {activeQuestionsList().length} سؤال ({activeQuestionsList().reduce((sum, q) => sum + (q.points || 0), 0)} درجة)
-                  </span>
-                </div>
-
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ color: "var(--text-muted, #64748b)", fontWeight: 600 }}>موعد البدء والنشر:</span>
-                  <span dir="ltr" style={{ color: "var(--text-main, #0f172a)", fontWeight: 700, fontSize: 18 }}>
-                    {publishStartDate} ({clockLabel(publishStartTime)})
-                  </span>
-                </div>
-
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ color: "var(--text-muted, #64748b)", fontWeight: 600 }}>{assessmentType === "quiz" ? "موعد الإغلاق" : "آخر موعد للتسليم"}:</span>
-                  <span dir="ltr" style={{ color: "#dc2626", fontWeight: 700, fontSize: 18 }}>
-                    {closeDeadlineDate} ({clockLabel(closeDeadlineTime)})
-                  </span>
-                </div>
-
-                {assessmentType === "quiz" && (
-                  <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <span style={{ color: "var(--text-muted, #64748b)", fontWeight: 600 }}>مدة حل الاختبار:</span>
-                    <span style={{ color: "#0369a1", fontWeight: 700 }}>
-                      {quizDurationMinutes} دقيقة
-                    </span>
-                  </div>
-                )}
-
-                <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid var(--border-color, #e2e8f0)", paddingTop: "8px" }}>
-                  <span style={{ color: "var(--text-muted, #64748b)", fontWeight: 600 }}>إشعار الطلاب:</span>
-                  <span style={{ color: sendScheduledNotification ? "#059669" : "#64748b", fontWeight: 700 }}>
-                    {sendScheduledNotification ? "✓ سيتم إرسال إشعار فوري" : "بدون إشعار"}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Modal Footer */}
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "flex-end",
-                alignItems: "center",
-                gap: "10px",
-                padding: "14px 20px",
-                background: "var(--bg-surface-secondary, #f8fafc)",
-                borderTop: "1px solid var(--border-color, #e2e8f0)",
-              }}
-            >
-              <button
-                type="button"
-                onClick={() => setShowPublishConfirmModal(false)}
-                disabled={isPublishing}
-                style={{
-                  padding: "8px 18px",
-                  borderRadius: "8px",
-                  border: "1px solid var(--border-color-strong, #cbd5e1)",
-                  background: "var(--bg-surface, #ffffff)",
-                  color: "var(--text-main, #334155)",
-                  fontSize: "13px",
-                  fontWeight: 700,
-                  cursor: isPublishing ? "not-allowed" : "pointer",
-                }}
-              >
-                إلغاء
-              </button>
-
-              <button
-                type="button"
-                onClick={handleConfirmPublish}
-                disabled={isPublishing}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  padding: "8px 22px",
-                  borderRadius: "8px",
-                  border: "none",
-                  background: assessmentType === "quiz" ? "#0f766e" : "#0f392b",
-                  color: "#ffffff",
-                  fontSize: "13px",
-                  fontWeight: 800,
-                  cursor: isPublishing ? "wait" : "pointer",
-                  boxShadow: "0 2px 6px rgba(15, 118, 110, 0.25)",
-                }}
-              >
-                {isPublishing ? (
-                  <>
-                    <Loader2 size={16} className="animate-spin" />
-                    <span>جاري الرفع والنشر...</span>
-                  </>
-                ) : (
-                  <>
-                    <CheckSquare size={16} />
-                    <span>تأكيد الرفع والنشر الآن</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
+        <QuizPublishConfirmation
+          assessmentType={assessmentType} title={quizTitle} academicYear={selectedAcademicYear}
+          questionCount={activeQuestionsList().length}
+          totalPoints={activeQuestionsList().reduce((sum, q) => sum + (q.points || 0), 0)}
+          startDate={publishStartDate} startTime={publishStartTime}
+          deadlineDate={closeDeadlineDate} deadlineTime={closeDeadlineTime}
+          durationMinutes={quizDurationMinutes} notifyStudents={sendScheduledNotification}
+          busy={isPublishing} error={error}
+          onCancel={() => setShowPublishConfirmModal(false)} onConfirm={handleConfirmPublish}
+        />
       )}
     </div>
   );

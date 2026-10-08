@@ -17,16 +17,18 @@ def _seed_module():
 
 
 @pytest.mark.parametrize("flag", ["ENABLE_DEMO_ACCOUNTS", "RESET_DEMO_PASSWORDS", "RESET_INITIAL_TEACHER_PASSWORD"])
-def test_production_seed_rejects_demo_and_password_reset(db, monkeypatch, flag):
-    monkeypatch.setenv("APP_ENV", "production")
+@pytest.mark.parametrize("environment", ["production", "production_like", "staging"])
+def test_production_seed_rejects_demo_and_password_reset(db, monkeypatch, flag, environment):
+    monkeypatch.setenv("APP_ENV", environment)
     monkeypatch.setenv(flag, "true")
     with pytest.raises(RuntimeError, match="Production seeding"):
         _seed_module().seed()
     assert db.query(User).count() == 0
 
 
-def test_production_seed_rejects_published_short_password(db, monkeypatch):
-    monkeypatch.setenv("APP_ENV", "production")
+@pytest.mark.parametrize("environment", ["production", "production_like", "staging"])
+def test_production_seed_rejects_published_short_password(db, monkeypatch, environment):
+    monkeypatch.setenv("APP_ENV", environment)
     monkeypatch.setenv("INITIAL_TEACHER_PASSWORD", "admin")
     with pytest.raises(RuntimeError, match="private password"):
         _seed_module().seed()

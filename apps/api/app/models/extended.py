@@ -32,6 +32,7 @@ from sqlalchemy import (
     Uuid,
     func,
     cast,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -231,6 +232,12 @@ class NotificationDelivery(UUIDPrimaryKeyMixin, Base):
 
 class LearningObjective(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "learning_objectives"
+    __table_args__ = (
+        Index("uq_objective_scoped_code", "institution_id", "course_id", "code", unique=True,
+              postgresql_where=text("course_id IS NOT NULL"), sqlite_where=text("course_id IS NOT NULL")),
+        Index("uq_objective_global_code", "institution_id", "code", unique=True,
+              postgresql_where=text("course_id IS NULL"), sqlite_where=text("course_id IS NULL")),
+    )
 
     institution_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=False

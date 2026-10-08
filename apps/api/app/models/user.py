@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 try:
     from enum import StrEnum
 except ImportError:  # Python 3.10: enum.StrEnum arrived in 3.11
@@ -64,6 +64,10 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     grade_level: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     student_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
     guardian_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    mother_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    education_division: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    specialization: Mapped[str | None] = mapped_column(String(16), nullable=True)
     national_id: Mapped[str | None] = mapped_column(String(14), nullable=True)
     governorate: Mapped[str | None] = mapped_column(String(40), nullable=True)
     school_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -76,6 +80,8 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc))
     avatar_key: Mapped[str | None] = mapped_column(String(512))
 
     @property

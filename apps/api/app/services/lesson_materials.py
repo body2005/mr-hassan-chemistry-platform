@@ -81,6 +81,12 @@ async def upload_material(
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
+    # Starlette's parsed file size excludes multipart envelope bytes. Reject
+    # known overflow before making a second staging copy or contacting S3.
+    # Unknown sizes still use the streaming byte counter below.
+    if file.size is not None and file.size > MAX_MATERIAL_BYTES:
+        raise HTTPException(status_code=413, detail=f"Material exceeds the {MAX_MATERIAL_BYTES}-byte limit (1 GiB)")
+
     filename = os.path.basename(file.filename or "material")
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ALLOWED_MATERIAL_EXT:
@@ -108,6 +114,7 @@ async def upload_material(
     os.makedirs(tmp_dir, exist_ok=True)
     ensure_staging_capacity(file.size or MAX_MATERIAL_BYTES, tmp_dir)
     staged = os.path.join(tmp_dir, f"mat_{uuid.uuid4().hex[:12]}_{filename}")
+    storage_started = False
     try:
         with open(staged, "wb") as out:
             while True:
@@ -117,17 +124,19 @@ async def upload_material(
                 size += len(chunk)
                 if size > MAX_MATERIAL_BYTES:
                     raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                         detail=f"Material exceeds the {MAX_MATERIAL_BYTES}-byte limit (1 GiB)",
                     )
                 digest.update(chunk)
                 out.write(chunk)
         if size == 0:
             raise HTTPException(status_code=400, detail="Empty file")
+        storage_started = True
         storage.save_file(staged, object_key)
     except BaseException:
         db.rollback()
-        compensate_upload(db, object_key)
+        if storage_started:
+            compensate_upload(db, object_key)
         raise
     finally:
         if os.path.exists(staged):

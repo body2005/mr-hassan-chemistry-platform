@@ -6,14 +6,12 @@ export interface StudentProfile {
   email: string;
   role: "student";
   nationalId: string;
-  nationalIdPhotoUrl?: string;
   studentPhone: string;
   guardianPhone: string;
   age: number;
   academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary";
   academicYearLabel: string;
   interestedSubjects: string[];
-  avatarUrl?: string;
   isBlocked?: boolean;
   joinedDate: string;
   governorate?: string;
@@ -28,7 +26,6 @@ export interface TeacherProfile {
   email: string;
   role: "teacher" | "institution_admin" | "platform_admin";
   nationalId: string;
-  nationalIdPhotoUrl?: string;
   phone: string;
   teachingYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary" | "all";
   teachingYearLabel: string;
@@ -37,7 +34,6 @@ export interface TeacherProfile {
   contractAgreedAt?: string;
   uploadedVideosCount?: number;
   enrolledStudentsCount?: number;
-  avatarUrl?: string;
   joinedDate: string;
 }
 

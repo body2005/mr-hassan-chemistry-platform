@@ -499,9 +499,8 @@ export class UploadManager {
 
     for (const file of files) {
       try {
-        // Renew once BEFORE transferring bytes. Never blindly replay a large
-        // multipart upload after a 401 or re-upload completed files forever.
-        await apiRequest("/auth/me", { cacheTtlMs: 0 });
+        // The shared multipart helper renews before bytes and never blindly
+        // replays a non-idempotent upload after a 401.
         if (!active()) return;
         task.statusDetail = `جاري رفع: ${file.name}`;
         task.progress = Math.max(1, Math.round((uploadedCount / files.length) * 100));
@@ -526,6 +525,7 @@ export class UploadManager {
           },
           0,
           (xhr) => {
+            if (!active()) { xhr.abort(); return; }
             task.xhr = xhr;
           }
         );

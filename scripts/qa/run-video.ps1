@@ -18,6 +18,8 @@ $compose = @('compose','--env-file',".qa/$folder/compose.env",'-p',$Project,
     '-f','infra/docker-compose.yml','-f','infra/qa/production.override.yml','-f','infra/video-pipeline.override.yml')
 $results = [System.Collections.Generic.List[object]]::new()
 $runId = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
+$npmExecutable = if ($IsWindows) { 'npm.cmd' } else { 'npm' }
+$npxExecutable = if ($IsWindows) { 'npx.cmd' } else { 'npx' }
 function Save-Results {
     $json = $results | ConvertTo-Json -Depth 4
     $json | Set-Content -LiteralPath (Join-Path $taskRoot ".qa/$folder/video-commands-$Stage-$runId.json") -Encoding utf8
@@ -61,7 +63,20 @@ if ($Stage -eq 'Load') {
     Invoke-Step '3 x 180s real HLS/browsing/large PDF mixed load' $Docker ($compose + @('run','--rm','--no-deps','-v',"${taskRoot}/apps/api/scripts/qa_load.py:/srv/scripts/qa_load.py:ro",'qa-tests','python','-m','scripts.qa_load'))
 }
 if ($Stage -eq 'Integration') {
-    Invoke-Step 'all live PostgreSQL/storage/fault integration tests' $Docker ($compose + @('run','--rm','--no-deps','-e','STORAGE_DIR=/tmp/qa-storage','qa-tests','python','-m','pytest','tests/integration','-q','--tb=short',"--junitxml=/qa/api-integration-video-$runId.xml",'-o','junit_logging=all'))
+    . (Join-Path $PSScriptRoot 'runtime-recovery.ps1')
+    $baseline = @(Get-QARuntimeSnapshot -Docker $Docker -Project $Project)
+    try {
+        Invoke-Step 'all live PostgreSQL/storage/fault integration tests' $Docker ($compose + @('run','--rm','--no-deps','-v',"${taskRoot}/apps/api/tests:/srv/tests:ro",'-e','STORAGE_DIR=/tmp/qa-storage','qa-tests','python','-m','pytest','tests/integration','-q','--tb=short',"--junitxml=/qa/api-integration-video-$runId.xml",'-o','junit_logging=all'))
+    } finally {
+        try {
+            $recovery = @(Restore-QARuntimeSnapshot -Docker $Docker -Snapshot $baseline)
+            $recovery | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath ".qa/$folder/runtime-recovery-$runId.json" -Encoding utf8
+            $results.Add(@{command='restore initially running QA services after fault runner exit (not readiness)';exit_code=0;utc=[DateTime]::UtcNow.ToString('o')})
+        } catch {
+            $results.Add(@{command='restore initially running QA services after fault runner exit (not readiness)';exit_code=1;utc=[DateTime]::UtcNow.ToString('o')})
+            throw
+        } finally { Save-Results }
+    }
 }
 if ($Stage -eq 'Recovery') {
     Invoke-Step 'stopped encoder and real crash during encoding with PostgreSQL durable retry' $Docker ($compose + @('run','--rm','--no-deps','-e','PYTHONPATH=/srv','-v',"${taskRoot}/infra/qa:/qa-tools:ro",'qa-tests','python','/qa-tools/video-worker-recovery.py'))
@@ -78,12 +93,22 @@ if ($Stage -in @('Build','All')) {
 }
 if ($Stage -in @('Backend','Tests','All')) {
     foreach ($nativeService in @('api','video-worker')) {
-        Invoke-Step "native Expat UTF-16 security regression ($nativeService)" $Docker ($compose + @('exec','-T',$nativeService,'python','-m','scripts.verify_native_expat'))
+        Invoke-Step "native/Python Expat UTF-16 and buffer-capacity security regressions ($nativeService)" $Docker ($compose + @('exec','-T',$nativeService,'python','-m','scripts.verify_native_expat'))
     }
-    Invoke-Step 'API unit and protection tests' $Docker ($compose + @('run','--rm','--no-deps','-v',"${taskRoot}/render.yaml:/qa-tools/render.yaml:ro",'-e','STORAGE_DIR=/tmp/qa-storage','qa-tests','python','-m','pytest','tests','--ignore=tests/integration','-q',"--junitxml=/qa/api-unit-video-$runId.xml"))
+    $qaShellExecutable = Join-Path $PSHOME $(if ($IsWindows) { 'pwsh.exe' } else { 'pwsh' })
+    Invoke-Step 'actual restricted FFmpeg binary and signed provenance checks' $qaShellExecutable @('-NoProfile','-File',(Join-Path $PSScriptRoot 'verify-native-video.ps1'),'-Docker',$Docker,'-Project',$Project)
+    Invoke-Step 'API unit and protection tests' $Docker ($compose + @('run','--rm','--no-deps','-v',"${taskRoot}/render.yaml:/qa-tools/render.yaml:ro",'-v',"${taskRoot}/apps/api/tests:/srv/tests:ro",'-e','STORAGE_DIR=/tmp/qa-storage','qa-tests','python','-m','pytest','tests','--ignore=tests/integration','-q',"--junitxml=/qa/api-unit-video-$runId.xml"))
+    Invoke-Step 'fresh/previous-head PostgreSQL migration gates' $Docker ($compose + @('run','--rm','--no-deps','qa-tests','python','-m','scripts.ci_migrations'))
     Invoke-Step 'real PostgreSQL/S3 missing multipart recovery' $Docker ($compose + @('run','--rm','--no-deps','-e','PYTHONPATH=/srv','-v',"${taskRoot}/infra/qa:/qa-tools:ro",'qa-tests','python','/qa-tools/test-lost-multipart.py'))
 }
 if ($Stage -in @('Tests','Browser','All')) {
+    if ($Stage -eq 'Browser') {
+        # Browser tests must run the current served frontend, not an older
+        # image that happens to pass while npm builds different local assets.
+        # Only web/proxy are recreated; API, data and real limits are retained.
+        Invoke-Step 'build current served frontend before full browser gate' $Docker ($compose + @('build','web'))
+        Invoke-Step 'recreate current web/proxy only' $Docker ($compose + @('up','-d','--no-deps','--no-build','--force-recreate','--wait','--wait-timeout','90','web','proxy'))
+    }
     Invoke-Step 'start isolated QA SMTP inbox' $Docker ($compose + @('up','-d','--no-deps','mailpit'))
     $mailReady = $false
     $mailDeadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -110,14 +135,18 @@ if ($Stage -in @('Tests','Browser','All')) {
     $env:QA_PLAYWRIGHT_OUTPUT = Join-Path $taskRoot (".qa/$folder/video-results-" + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss'))
     Push-Location (Join-Path $taskRoot 'apps/web')
     try {
-        Invoke-Step 'frontend lint' 'npm.cmd' @('run','lint')
-        Invoke-Step 'frontend build' 'npm.cmd' @('run','build')
-        Invoke-Step 'frontend unit tests' 'npm.cmd' @('test')
+        Invoke-Step 'frontend lint' $npmExecutable @('run','lint')
+        Invoke-Step 'frontend build' $npmExecutable @('run','build')
+        # Run every isolated file with one fork on memory-constrained local
+        # hosts. This does not skip tests or change assertions/security limits.
+        $frontendResults = Join-Path $taskRoot ".qa/$folder/frontend-video-$runId.xml"
+        Invoke-Step 'frontend unit tests' $npmExecutable @('test','--','--maxWorkers=1',
+            '--reporter=default','--reporter=junit',"--outputFile=$frontendResults")
         if ($Stage -eq 'Browser') {
-            Invoke-Step 'all frontend browser journeys on production template' 'npx.cmd' @('playwright','test','--config','playwright.qa.config.ts','--reporter=list,junit')
-            Invoke-Step 'npm dependency audit' 'npm.cmd' @('audit','--audit-level=high')
+            Invoke-Step 'all frontend browser journeys on production template' $npxExecutable @('playwright','test','--config','playwright.qa.config.ts','--reporter=list,junit')
+            Invoke-Step 'npm dependency audit' $npmExecutable @('audit','--audit-level=high')
         } else {
-            Invoke-Step 'publication/resumption/playback browser tests' 'npx.cmd' @('playwright','test','--config','playwright.qa.config.ts','tests/qa/publication.spec.ts','tests/qa/video-playback.spec.ts','--reporter=list,junit')
+            Invoke-Step 'publication/resumption/playback browser tests' $npxExecutable @('playwright','test','--config','playwright.qa.config.ts','tests/qa/publication.spec.ts','tests/qa/video-playback.spec.ts','--reporter=list,junit')
         }
     } finally { Pop-Location }
     Invoke-Step 'diff check' 'git' @('-c','core.safecrlf=false','diff','--check')

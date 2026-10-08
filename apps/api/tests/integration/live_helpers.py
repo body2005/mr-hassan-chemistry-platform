@@ -49,23 +49,27 @@ def clear_auth():
     store = redis.Redis.from_url(os.environ["REDIS_URL"])
     # Shared demo users keep their real rolling limits. Wait between cases;
     # never clear user keys to compensate for the harness reusing identities.
-    script = """local ms=0; for _,k in ipairs(redis.call('KEYS','rate-limit:auth:*')) do
-      if not string.find(k,':ip:',1,true) and redis.call('ZCARD',k)>=8 then
-        ms=math.max(ms,redis.call('PTTL',k)) end end; return ms"""
+    script = """local ms=0;
+      for _,p in ipairs({'rate-limit:auth:*','rate-limit:auth_refresh:*','rate-limit:login_ip:*','rate-limit:login_account:*','rate-limit:login_retry:*'}) do
+        for _,k in ipairs(redis.call('KEYS',p)) do
+          local cap=string.find(p,'login_retry',1,true) and 4 or (string.find(p,'login_account',1,true) and 15 or 8);
+          if redis.call('ZCARD',k)>=cap then ms=math.max(ms,redis.call('PTTL',k)) end
+        end
+      end; return ms"""
     delay_ms = int(store.eval(script, 0))
-    if delay_ms > 65000:
+    if delay_ms > 305000:
         raise RuntimeError("Unexpected live QA auth window; do not bypass it")
     if delay_ms > 0:
         time.sleep((delay_ms + 100) / 1000)
-    keys = list(store.scan_iter("rate-limit:auth:ip:*"))
-    if keys:
-        store.unlink(*keys)
 
 
 def container(service):
     isolated()
     found = docker.from_env().containers.list(all=True, filters={"label": [
-        f"com.docker.compose.project={os.environ['QA_PROJECT']}", f"com.docker.compose.service={service}"]})
+        f"com.docker.compose.project={os.environ['QA_PROJECT']}", f"com.docker.compose.service={service}",
+        "com.docker.compose.oneoff=False"]})
+    # One-off compose diagnostic/test processes share the service label, but
+    # must never be selected for fault injection against the runtime service.
     assert len(found) == 1, f"Expected one isolated {service} container, got {len(found)}"
     return found[0]
 

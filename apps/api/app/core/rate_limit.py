@@ -6,6 +6,8 @@ import threading
 import time
 import uuid
 import ipaddress
+import hashlib
+import hmac
 from collections import defaultdict, deque
 from typing import Any
 
@@ -80,7 +82,7 @@ def _get_redis_client() -> redis.Redis | None:
         _redis_client = None
         _redis_script = None
         _last_redis_failure = time.monotonic()
-        logger.warning("Redis rate limiting is unavailable; falling back to in-memory window")
+        logger.warning("Redis rate limiting unavailable; deployment fails closed, development may use bounded local fallback")
         return None
 
 
@@ -186,6 +188,14 @@ def _in_memory_enforce(key: str, limit: int, window_seconds: int) -> None:
                 headers={"Retry-After": str(retry_after)},
             )
         entries.append(now)
+        # Development-only fallback has finite cardinality. Production fails
+        # closed on Redis outage and never relies on this per-process cache.
+        if len(_windows) > 4096:
+            for stale_key in list(_windows):
+                if stale_key != key:
+                    del _windows[stale_key]
+                    if len(_windows) <= 4096:
+                        break
 
 
 def enforce_rate_limit(
@@ -195,21 +205,26 @@ def enforce_rate_limit(
     category: str | None = None,
     limit: int | None = None,
     window_seconds: int | None = None,
+    identity: str | None = None,
 ) -> None:
     global _redis_client, _redis_script
-    if os.getenv("DISABLE_RATE_LIMITING", "").lower() in {"1", "true", "yes"}:
-        return
-
     settings = get_settings()
-    effective_category = (category or bucket or "api").lower().replace("-", "_")
-    categories_already_enforced = getattr(request.state, "rate_limit_categories", set())
-    if effective_category in categories_already_enforced:
+    if os.getenv("DISABLE_RATE_LIMITING", "").lower() in {"1", "true", "yes"}:
+        if settings.deployment_environment:
+            raise HTTPException(503, "Rate limiting configuration is unavailable")
         return
+    effective_category = (category or bucket or "api").lower().replace("-", "_")
     default_limit, default_window = _get_category_defaults(effective_category)
     final_limit = limit if limit is not None else default_limit
     final_window = window_seconds if window_seconds is not None else default_window
-
-    key = resolve_rate_limit_key(request, effective_category)
+    policy = (effective_category, final_limit, final_window, identity)
+    policies = getattr(request.state, 'rate_limit_policies', set())
+    if policy in policies:
+        return
+    request.state.rate_limit_policies = policies | {policy}
+    key = (f'rate-limit:{effective_category}:identity:{hmac.new(settings.secret_key.encode(), identity.encode(), hashlib.sha256).hexdigest()}'
+           if identity is not None else resolve_rate_limit_key(request, effective_category))
+    key += f':{final_limit}:{final_window}'
 
     # Attempt Redis atomic sliding window first
     r = _get_redis_client()
@@ -235,7 +250,7 @@ def enforce_rate_limit(
             _redis_script = None
             logger.warning("Redis rate limiting query failed")
 
-    if settings.redis_required or settings.app_env.lower() in {"production", "production_like"}:
+    if settings.redis_required or settings.deployment_environment:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Rate limiting is temporarily unavailable.",

@@ -1,5 +1,39 @@
 import { expect, test } from "./qaTest";
 
+for (const status of [429, 503]) {
+test(`persistent bootstrap ${status} stops automatic requests and permits explicit recovery`, async ({ page }) => {
+  await page.goto('/#auth');
+  const form = page.locator('form').first();
+  await form.locator('input[type="text"]').fill('student06@demo.com');
+  await form.locator('input[type="password"]').fill('qa-student-pass');
+  await form.locator('button[type="submit"]').click();
+  await expect(page).toHaveURL(/#mycourses$/);
+  await expect(page.locator('.student-course-list, .my-courses-view, .profile-button').first()).toBeVisible();
+  let requests = 0;
+  let recover = false;
+  await page.route('**/api/v1/bootstrap', async route => {
+    requests++;
+    if (recover) return route.continue();
+    return route.fulfill({ status, headers: { 'Retry-After': '2' }, json: { detail: 'Persistent synthetic bootstrap outage' } });
+  });
+  await page.reload();
+  await expect(page.getByRole('alert')).toContainText('الخدمة غير متاحة مؤقتًا');
+  await page.waitForTimeout(12_000); // Beyond2+3+4.5s retries AND Retry-After.
+  expect(requests).toBe(status === 429 ? 1 : 4);
+  const stopped = requests;
+  // Cross the former fourth auto-retry at16.25s too. A15s observation
+  // falsely passed the old unbounded503 policy during its next backoff.
+  await page.waitForTimeout(8000);
+  expect(requests).toBe(stopped);
+  expect((await page.request.get('/api/v1/auth/me')).status()).toBe(200);
+  recover = true;
+  await page.getByRole('button', { name: 'إعادة المحاولة الآن' }).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.locator('.profile-button')).toBeVisible();
+  expect(requests).toBe(stopped + 1);
+});
+}
+
 test("authenticated dashboard recovers after a failed bootstrap without a request storm", async ({ page }) => {
   await page.goto("/#auth");
   const form = page.locator("form").first();
