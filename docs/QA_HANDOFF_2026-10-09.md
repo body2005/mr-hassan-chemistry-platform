@@ -1,10 +1,48 @@
 # تسليم المراجعة المحلية — 9 أكتوبر 2026
 
-هذه نتيجة إصلاح واختبار محلي، **وليست موافقة نشر**. العمل على
-`fix/queen-p0-handoff` وبيئة `chemistryaudit2` فقط. لا نشر خارجي أو دمج أو
-force push. لا SMS أو ترجمة نصية للفيديو أو صور شخصية؛ OCR الأحياء مؤجل.
+هذه نتيجة إصلاح واختبار محلي، **وليست موافقة نشر**. الكود رُفع إلى
+`fix/queen-p0-handoff` عند `6796750664151e180054018ea4fdc97242d46bcb`؛ تحقق التطابق
+عبر `git ls-remote` وGitHub API، Exit0. فحص تاريخ الـcommits الثلاثة غير المرفوعة
+وقت الفحص:0 أسرار، Exit0. بقي المشروع غير المرتبط خارج Git.
+
+**ملاحظة تاريخية بعد الرفع السابق:** تكامل `vercel[bot]` الموجود نفّذ
+نشرًا تلقائيًا لهذا SHA، deployment6960376648، وحالةsuccess. اسم البيئة فيGitHub
+`Production` لكن `production_environment=false`؛ لا يمكن الجزم بتغيير النطاق
+الإنتاجي من هذا الاسم وحده. عنوان النشر المسجل:
+https://mr-hassan-chemistry-platform-ptgtyo6db-body19.vercel.app
+لم أطلب نشرًا مستقلًا ولم أختبر هذا السيرفر. أوضح المستخدم لاحقًا أن Vercel
+خارج نطاق العمل وأن الرفع العادي مسموح؛ لم أغيّر إعداداته أو أنفّذ rollback.
+ثم طلب تنفيذ العمل محليًا والرفع فقط دون تشغيل GitHub Actions: طُلب إلغاء
+التشغيل السابق Exit0، والـcommit التالي يحمل `[skip ci]` دون تعطيل البوابات.
+CI السابق `Review quality gates`: frontend/secrets نجحا، backend فشل؛ ليس نجاحًا كاملًا:
+https://github.com/body2005/mr-hassan-chemistry-platform/actions/runs/37928630587
+
+الاختبارات على `chemistryaudit2` فقط. لا دمج أوforce push أوSMS أو ترجمة نصية
+للفيديو أو صور شخصية؛ OCR الأحياء مؤجل.
 حد OCR المحفوظ: المقارن الصارم السابق6/1/0، وملف الأحياء7/10 أسئلة مطابقة.
 لم يُعد هذا الاختبار ولم تُخفّف المقارنة؛ التأجيل لا يعني اكتمال الدقة.
+
+## استكمال محلي بعد توجيه «ارفع فقط»
+
+| العائق | قبل / السبب | التغيير والنتيجة المحلية | الأمر / Exit / Passed-Failed-Skipped |
+|---|---|---|---|
+| تجهيز backend في CI | GitHub:468P/1F/0S، Exit1؛ native Expat2.6.1 وPython2.8.5 بدل2.9.0 | `quality.yml` يبني API ثم طبقة `Dockerfile.qa` المطابقة؛ لا حذف أو mock للاختبار. تعذر `FROM sha256:…` في المحاولة الأولى Exit1؛ صُحح بمرجع محلي مع فحصID قبل/بعد، ثم نجح البناء Exit0 | `pytest scripts/qa/tests/test_ci_backend_environment.py tests/test_native_expat_security.py` داخل طبقة QA الجديدة: Exit0،4/0/0؛ `ci-backend-environment-20261009.xml` |
+| صعوبة تشخيص502 بلا تسريب | السجل القديم لا يميّز وقت الاتصال عن وصول headers؛ سبب واقعة logout الأصلية غير مثبت | `apps/web/nginx.conf` وملفا `infra/nginx*.conf` يسجّلون upstream address/connect/header/response فقط؛ no raw query/cookies/Authorization.3 حالات Nginx فعلية معزولة اختبرت200/503/502 والتسريب | `pytest scripts/qa/tests/test_proxy_diagnostics_live.py`: Exit0،3/0/0؛ `proxy-diagnostics-20261009.xml`. ليست إصلاحًا مثبتًا لواقعة502 الأصلية |
+| تشغيل نسخة التجربة بعد تغيير config | ضرورة تفعيل التشخيص دون إعادة مجموعات التطبيق | بناءweb فقط، `nginx -t` للـweb/proxy وreload؛ API/encoder/DB/S3 دون إعادة بناء أو تغيير | build/up/config/reload Exit0؛ صفحةHTTPS200. تحذير chunk631.81KB باقٍ، لا فشل build |
+| حسابات التجربة عند التسليم | التحقق من صلاحية بيانات الدخول، لا إعادة رحلة كاملة | `scripts/qa/handoff_smoke.py`: TLS موثوق، login200/me200/logout204 لكل دور؛ لا reset أو طباعة tokens | `python /qa-tools/handoff_smoke.py`: Exit0؛2 أدوار ناجحة،0 فاشل، ليست مجموعةpytest |
+
+التشغيل البعيد لإصلاحCI الجديد **لم يُنفذ بطلب المستخدم**؛ نجاح الاختبار
+المحلي لا يُسمّى نجاحGitHub. `[skip ci]` يمنع تشغيلات push/pull_request لهذا
+الـcommit فقط؛ الفحوص المطلوبة قد تبقى Pending ولا يجيز ذلك الدمج:
+[توثيق GitHub](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/skip-workflow-runs).
+الاختبارات القديمة الناجحة لم تُعد؛ فحص Expat أعيد وحده لأنه المتأثر بتجهيزCI.
+
+للتجربة على هذا الجهاز: https://localhost:18543/، مؤسسة `demo`.
+المدرس `teacher@demo.com` / `qa-teacher-pass`؛ الطالب `student01@demo.com` /
+`qa-student-pass`. حسابات اصطناعية محلية فقط، ليست بيانات نشر.
+جرّب إنشاء درس ورفع فيديو/مذكرة، نشرQuiz وواجب، ثم من الطالب التشغيل وseek
+وحل الاختبار وتسليم الواجب، ومن المدرس التصحيح. جرّب التسجيل بخطوتين وتغيير
+كلمة المرور. تنبيهات الصور وسبب502 والحمل الخارجي وOCR الأحياء ليست مغلقة.
 
 ## ما نُفذ في الاستكمال الأخير
 

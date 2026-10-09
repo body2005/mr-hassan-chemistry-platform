@@ -1,12 +1,66 @@
 # Local review progress — 9 October 2026
 
-Checkpoint, **not release approval**. Branch `fix/queen-p0-handoff`, existing
-HEAD `0c24a2f7e06a14c03f76c6609b6a45f9a03f6c5f`; the following repairs are in
-the local working tree, not a new committed/uploaded release. The older
+Checkpoint, **not release approval**. Branch `fix/queen-p0-handoff`, code now
+committed/pushed at `6796750664151e180054018ea4fdc97242d46bcb`, independently
+matched by remote Git and GitHub API (Exit0). The next local continuation below
+is prepared for a normal push with `[skip ci]`, explicitly requested by the user. The older
 `chemistryprodlocal` runtime is stopped. Work and tests target `chemistryaudit2`.
 Do not use earlier reports as evidence for this code or GitHub upload.
 
 ## Latest checkpoint (read this before historical entries)
+
+### Local-only continuation; no new GitHub execution requested
+
+User excluded Vercel management and authorized normal pushes, then explicitly
+asked for local work and upload only, with no GitHub execution. No Vercel
+settings/deployment/rollback actions. Requested cancellation of existing run
+37928630587 (Exit0); no dispatch/rerun. Next commit uses `[skip ci]`; required
+checks are not bypassed/declared passing and may remain Pending.
+
+Read-only evidence from that earlier run: frontend/secrets succeeded. Backend
+JUnit469 cases:468P/1F/0E/0S,69.706s,Exit1. Native security regression rejected
+host Expat2.6.1/Python bundled2.8.5. Repaired workflow builds production API and
+its existing QA-only layer instead of using host Python. Every original test,
+migration and audit remains; production runtime does not gain test tools.
+Local raw-config-ID `FROM` attempt failed Exit1, correctly reproduced before
+acceptance. Corrected reference is a job-local tag with immutable-ID checks
+both sides; Docker RUN uses recorded IDs. Local QA-layer buildExit0 on existing
+clean API42adb4da… (no native rebuild). Targeted native/CI guards4P/0F/0E/0S,
+0.628s,Exit0, `ci-backend-environment-20261009.xml`; no full suite repeated.
+
+Added safe upstream address/connect/header/response timings to3 Nginx configs;
+error_log remains disabled because raw errors can expose playback queries.
+New isolated real-Nginx cases200/503/premature-close502:3P/0F/0E/0S,2.592s,
+Exit0, `proxy-diagnostics-20261009.xml`. Query/cookie/Authorization sentinels
+absent from logs. UUID fixture containers/network removed, no app service stop
+or data volume removal. Original sporadic logout502 remains undiagnosed; this
+is observability plus a reproduced fixture cause, not proof of its repair.
+Web-only build/up and web/proxy nginx validation/reloadExit0; existing JS assets
+were cached identical. Handoff HTTPS200, synthetic teacher/student each login200,
+identity200,logout204 with trusted CA. No token logging/reset. Native API/encoder
+unchanged, previous latest CVE scans retained, not repeated for config-only work.
+Instructions and before/after table: `QA_HANDOFF_2026-10-09.md`.
+
+### Post-push verification / unexpected existing Vercel automation
+
+Push advanced remote4298486 to6796750 (the two existing local commits plus the
+new111-file repair/evidence commit). Current checkout/index secret scan0;
+separate network-disabled Gitleaks of exactly the3 unpublished commits0,
+no leaks, `clean-results-20261009-115723/gitleaks-unpublished.json`.
+`push-verification-20261009.json` records independent Git/API SHA equality.
+Remote Actions run37928630587 began automatically; secrets job succeeded,
+other jobs in_progress at inspection, not declared green.
+
+The pre-push statement "no deployment" must not be used as post-push evidence:
+the repository's EXISTING `vercel[bot]` integration automatically created
+deployment6960376648 for this SHA, state success, named environment Production,
+BUT GitHub `production_environment=false`. This is not proof the production
+domain was changed and not proof of external functional correctness. Recorded
+URL `https://mr-hassan-chemistry-platform-ptgtyo6db-body19.vercel.app`.
+No independent deploy/merge/rollback/settings change was requested by this
+agent. Further pushes were initially stopped pending user direction. The user
+subsequently excluded Vercel management and authorized ordinary GitHub uploads;
+the newer local-only/skip-ci instruction above governs this continuation.
 
 ### Targeted-only continuation — user clarification, 9 October
 
