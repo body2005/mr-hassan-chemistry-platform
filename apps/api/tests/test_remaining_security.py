@@ -260,6 +260,8 @@ def test_mcq_option_limit_matches_text_keys_without_rewriting_history(kind):
 
 
 def test_mail_outbox_retries_without_request_delivery_and_erases_secret(monkeypatch, db):
+    from app.core.config import get_settings
+    monkeypatch.setattr(get_settings(), 'email_enabled', True)
     inst, user, _client = account(db)
     from app.models.mail_outbox import ResetMailOutbox
     raw = auth_service.request_password_reset(db, user.email, inst.slug, enqueue_mail=True)

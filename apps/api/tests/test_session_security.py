@@ -177,6 +177,8 @@ def test_reset_request_sends_fragment_link_without_exposing_account(monkeypatch,
     assert client.post("/api/v1/auth/password-reset/request", json=request).status_code == 503
 
     monkeypatch.setenv("SMTP_HOST", "smtp.example.test")
+    monkeypatch.setenv("EMAIL_ENABLED", "true")
+    monkeypatch.setenv("EMAIL_PROVIDER", "smtp")
     monkeypatch.setenv("SMTP_PORT", "465")
     monkeypatch.setenv("SMTP_USER", "qa@example.test")
     monkeypatch.setenv("SMTP_PASSWORD", "synthetic-test-only")

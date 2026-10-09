@@ -96,6 +96,9 @@ services:
       S3_SECRET_KEY: qa-minio-password
       S3_BUCKET: chemistry-qa
       FRONTEND_ORIGINS: http://127.0.0.1:18080
+      # Isolated mail-delivery tests opt in; deployments default to no email.
+      EMAIL_ENABLED: "true"
+      EMAIL_PROVIDER: smtp
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
       SMTP_USER: qa-smtp-user

@@ -584,6 +584,10 @@ export const bootstrapService = {
 let meInFlight: Promise<CurrentUser | null> | null = null;
 
 export const authService = {
+  async getFeatures(): Promise<{ password_reset_enabled: boolean }> {
+    return apiRequest<{ password_reset_enabled: boolean }>("/auth/features");
+  },
+
   async getRegisteredUsers(): Promise<never[]> {
     return [];
   },

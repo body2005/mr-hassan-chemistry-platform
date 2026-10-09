@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { KeyRound, Mail, X } from 'lucide-react';
 import { authService } from '../services/lmsService';
+import { usePasswordResetAvailability } from '../hooks/usePasswordResetAvailability';
 
 export function PasswordChangeWizard({ email, lang, onClose, onChanged }: {
   email: string; lang: string; onClose: () => void; onChanged: () => void;
 }) {
   const ar = lang === 'ar';
+  const passwordResetAvailable = usePasswordResetAvailability();
   const [step, setStep] = useState<'current' | 'new' | 'reset' | 'sent'>('current');
   const [current, setCurrent] = useState('');
   const [password, setPassword] = useState('');
@@ -46,7 +48,13 @@ export function PasswordChangeWizard({ email, lang, onClose, onChanged }: {
     }
     locked.current = true; setBusy(true);
     try {
-      if (step === 'reset') { await authService.requestPasswordReset(resetEmail); move('sent'); }
+      if (step === 'reset') {
+        if (!passwordResetAvailable) {
+          setError(ar ? 'استعادة كلمة المرور بالإيميل غير متاحة. تواصل مع إدارة المنصة.' : 'Email recovery is unavailable. Contact the platform administration.');
+          return;
+        }
+        await authService.requestPasswordReset(resetEmail); move('sent');
+      }
       else if (step === 'new') { await authService.changePassword(current, password); onChanged(); }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : (ar ? 'تعذر إكمال الطلب. حاول مرة أخرى.' : 'Could not complete the request. Please retry.'));
@@ -65,7 +73,8 @@ export function PasswordChangeWizard({ email, lang, onClose, onChanged }: {
       </> : <form onSubmit={submit}>
         {step === 'current' && <>
           <label>{ar ? 'كلمة المرور الحالية' : 'Current password'}<input type="password" autoComplete="current-password" value={current} onChange={e => setCurrent(e.target.value)} required disabled={busy} /></label>
-          <button className="security-text-button" type="button" onClick={() => move('reset')}><Mail size={16} />{ar ? 'نسيت كلمة المرور الحالية؟' : 'Forgot your current password?'}</button>
+          {passwordResetAvailable === true && <button className="security-text-button" type="button" onClick={() => move('reset')}><Mail size={16} />{ar ? 'نسيت كلمة المرور الحالية؟' : 'Forgot your current password?'}</button>}
+          {passwordResetAvailable === false && <p>{ar ? 'لو نسيت كلمة المرور، تواصل مع إدارة المنصة.' : 'Forgot your password? Contact the platform administration.'}</p>}
         </>}
         {step === 'new' && <>
           <label>{ar ? 'كلمة المرور الجديدة' : 'New password'}<input type="password" autoComplete="new-password" minLength={10} value={password} onChange={e => setPassword(e.target.value)} required disabled={busy} /></label>

@@ -2,9 +2,10 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { AuthView } from './AuthView';
-const mocks = vi.hoisted(() => ({ request: vi.fn(), confirm: vi.fn() }));
+const mocks = vi.hoisted(() => ({ request: vi.fn(), confirm: vi.fn(), features: vi.fn() }));
 vi.mock('../services/lmsService', () => ({ authService: {
   requestPasswordReset: mocks.request, confirmPasswordReset: mocks.confirm,
+  getFeatures: mocks.features,
 } }));
 let root: Root, host: HTMLDivElement;
 const originalScrollTo = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTo');
@@ -13,6 +14,7 @@ beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   window.history.replaceState({}, '', '/#auth');
   mocks.request.mockReset(); mocks.confirm.mockReset();
+  mocks.features.mockReset().mockResolvedValue({ password_reset_enabled: true });
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
 afterEach(async () => {

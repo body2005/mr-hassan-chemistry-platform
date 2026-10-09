@@ -17,6 +17,7 @@ import { CurrentUser } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
 import { authService } from "../services/lmsService";
 import { RegistrationWizard } from "../components/RegistrationWizard";
+import { usePasswordResetAvailability } from "../hooks/usePasswordResetAvailability";
 import { authTabHash, readAuthTab, type AuthTab } from "../services/authNavigation";
 
 
@@ -41,6 +42,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
   onToggleTheme,
 }) => {
   const t = translations[lang];
+  const passwordResetAvailable = usePasswordResetAvailability();
   const [activeTab, setActiveTab] = useState<AuthTab>(() => readAuthTab(window.location.hash, initialTab));
 
   // Sign In State
@@ -126,6 +128,10 @@ export const AuthView: React.FC<AuthViewProps> = ({
     setResetBusy(true);
     try {
       if (resetMode === "request") {
+        if (!passwordResetAvailable) {
+          setError(lang === "ar" ? "استعادة كلمة المرور بالإيميل غير متاحة. تواصل مع إدارة المنصة." : "Email recovery is unavailable. Contact the platform administration.");
+          return;
+        }
         await authService.requestPasswordReset(resetEmail);
         setSuccessMsg(lang === "ar" ? "إذا كان الحساب موجودًا، ستصلك رسالة الاسترجاع." : "If the account exists, a reset email will arrive.");
       } else if (resetMode === "confirm") {
@@ -594,13 +600,16 @@ export const AuthView: React.FC<AuthViewProps> = ({
                   {lang === "ar" ? "تسجيل الدخول للمنصة" : "Sign In to Platform"}
                 </button>
 
-                <button
+                {passwordResetAvailable === true && <button
                   type="button"
                   onClick={() => { setResetMode("request"); setError(""); setSuccessMsg(""); }}
                   style={{ background: "none", border: "none", color: "#059669", cursor: "pointer", fontWeight: 700 }}
                 >
                   {lang === "ar" ? "نسيت كلمة المرور؟" : "Forgot password?"}
-                </button>
+                </button>}
+                {passwordResetAvailable === false && <p style={{ color: "var(--text-muted)", fontSize: "14px" }}>
+                  {lang === "ar" ? "لو نسيت كلمة المرور، تواصل مع إدارة المنصة." : "Forgot your password? Contact the platform administration."}
+                </p>}
 
                 <div style={{ textAlign: "center", marginTop: "8px" }}>
                   <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>

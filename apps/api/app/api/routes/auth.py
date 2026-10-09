@@ -435,13 +435,18 @@ def revoke_all_sessions(user: CurrentUser, db: Db, request: Request) -> None:
     clear_revoked_account_video_slots(user.id)
 
 
+@router.get("/features")
+def auth_features() -> dict[str, bool]:
+    return {"password_reset_enabled": password_reset_mail_configured()}
+
+
 @router.post("/password-reset/request")
 def request_password_reset(
     payload: PasswordResetRequest, db: Db, request: Request
 ) -> dict[str, str]:
     enforce_rate_limit(request, bucket="password_reset_request", limit=5, window_seconds=300)
     if not password_reset_mail_configured():
-        raise HTTPException(status_code=503, detail="Password reset is temporarily unavailable")
+        raise HTTPException(status_code=503, detail="Password reset by email is not enabled")
     # Deliberately generic: account existence must not be exposed to callers.
     from app.services.session_maintenance import enqueue_reset_request
     try:

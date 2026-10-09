@@ -15,6 +15,12 @@ from app.services import auth_service, session_maintenance as maintenance
 from tests.test_security_and_tenancy import make_institution, make_user
 
 
+@pytest.fixture(autouse=True)
+def enable_email_consumers(monkeypatch):
+    from app.core.config import get_settings
+    monkeypatch.setattr(get_settings(), 'email_enabled', True)
+
+
 def owner(db):
     inst = make_institution(db, 'uniform-reset')
     user = make_user(db, inst.id, UserRole.STUDENT, 'uniform')

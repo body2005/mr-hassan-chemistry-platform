@@ -35,6 +35,10 @@ def test_production_blueprint_settings_and_no_public_passwords():
                 assert 'value' not in item, 'Passwords must be secret inputs/references'
         config = Settings(_env_file=None, **{k.lower(): v for k, v in env.items()})
         assert config.app_env == 'production' and config.smtp_port == 465 and config.secure_cookies
+        assert not config.email_enabled
+        if service is api:
+            assert config.email_provider == 'resend'
+        assert not any(item['key'].startswith('SMTP_') for item in service['envVars'])
         values.update(env)
     api_env = {e['key']: e.get('value') for e in api['envVars']}
     assert api_env['ENABLE_DEMO_ACCOUNTS'] == 'false'

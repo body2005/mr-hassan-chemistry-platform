@@ -55,16 +55,13 @@ services:
         value: "false"
       - key: RESET_DEMO_PASSWORDS
         value: "false"
-      - key: SMTP_HOST
-        sync: false
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASSWORD
-        sync: false
-      - key: SMTP_FROM_EMAIL
-        sync: false
-      - key: SMTP_PORT
-        value: "465"
+      # No email/SMS delivery is needed for registration or login.
+      - key: EMAIL_ENABLED
+        value: "false"
+      # Enable after adding a Resend sending key and a verified sender.
+      - key: EMAIL_PROVIDER
+        value: resend
+      # Add RESEND_API_KEY and EMAIL_FROM_EMAIL privately in the dashboard.
       - key: DB_POOL_SIZE
         value: "5"
       - key: DB_MAX_OVERFLOW
@@ -142,16 +139,9 @@ services:
       # Settings validates these in every production process, including workers.
       - key: FRONTEND_ORIGINS
         fromService: {type: web, name: chemistry-platform-api, envVarKey: FRONTEND_ORIGINS}
-      - key: SMTP_HOST
-        fromService: {type: web, name: chemistry-platform-api, envVarKey: SMTP_HOST}
-      - key: SMTP_USER
-        fromService: {type: web, name: chemistry-platform-api, envVarKey: SMTP_USER}
-      - key: SMTP_PASSWORD
-        fromService: {type: web, name: chemistry-platform-api, envVarKey: SMTP_PASSWORD}
-      - key: SMTP_FROM_EMAIL
-        fromService: {type: web, name: chemistry-platform-api, envVarKey: SMTP_FROM_EMAIL}
-      - key: SMTP_PORT
-        value: "465"
+      - key: EMAIL_ENABLED
+        # Reset mail is delivered by API session maintenance, not this worker.
+        value: "false"
       - key: PAYMENT_INSTAPAY_ACCOUNT
         fromService: {type: web, name: chemistry-platform-api, envVarKey: PAYMENT_INSTAPAY_ACCOUNT}
       - key: PAYMENT_VODAFONE_CASH_NUMBER

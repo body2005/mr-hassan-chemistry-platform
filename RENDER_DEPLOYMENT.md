@@ -24,6 +24,55 @@ After the first deployment, sign in again once. Old tokens that point to the
 former ephemeral SQLite database are intentionally rejected and cleared by the
 web client.
 
+## Password recovery with Resend HTTPS (Render Free)
+
+Password recovery is retained. The API can send reset emails through Resend
+over HTTPS, without SMTP or SMS. Create a Resend account, add a domain you own
+and complete its DNS verification, then create a sending API key restricted
+to that domain. Disable click/open tracking for password recovery messages.
+The `resend.dev` test sender cannot be used to email arbitrary students.
+
+On the Render API service, add these environment variables privately:
+
+```dotenv
+EMAIL_ENABLED=true
+EMAIL_PROVIDER=resend
+RESEND_API_KEY=<private Resend sending API key>
+EMAIL_FROM_EMAIL=no-reply@<your verified domain>
+```
+
+Keep `FRONTEND_ORIGINS` set to the actual HTTPS frontend; its first origin is
+used for the reset link. Never place the API key in frontend variables, Git,
+logs or chat. Save and deploy the API, then deploy the updated frontend. Verify
+an actual request, receipt, single-use reset and login with the new password
+using a test account. API acceptance alone does not prove inbox delivery.
+
+The existing API maintenance loop processes and retries the encrypted reset
+outbox; the Celery content worker does not need mail credentials and retains
+`EMAIL_ENABLED=false`. A provider timeout/error leaves the job retryable and
+does not block the HTTP reset request. Retries use a stable Resend idempotency
+key for the same job (provider retention is 24 hours).
+
+Before those credentials are ready, leave `EMAIL_ENABLED=false` (the Blueprint
+default). The site can start without email; recovery is hidden and its request
+API rejects requests without queueing mail. Background mail processing pauses
+while session cleanup remains active. Registration, login and changing a
+password with the current password still work.
+
+Deploy the backend and frontend changes together. Updating an environment
+variable alone does not fix older code that unconditionally requires SMTP.
+
+For hosting that supports SMTP, use `EMAIL_PROVIDER=smtp`, `EMAIL_ENABLED=true`,
+and configure
+`SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, and `SMTP_PORT`
+(implicit TLS, default 465). Keep certificate verification enabled. Render
+Free web services block outbound SMTP on ports 25, 465 and 587, so this SMTP
+mode requires a hosting plan that permits it; do not enter fake credentials.
+
+References: https://resend.com/docs/api-reference/emails/send-email,
+https://resend.com/docs/dashboard/domains/introduction,
+https://render.com/docs/free.
+
 ## Optional isolated demo accounts
 
 The uploaded local SQLite database is not the production PostgreSQL database.

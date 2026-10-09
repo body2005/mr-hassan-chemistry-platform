@@ -7,6 +7,8 @@ from app.core import config, storage
 def production_settings(**overrides: object) -> config.Settings:
     values: dict[str, object] = {
         "app_env": "production",
+        "email_enabled": True,
+        "email_provider": "smtp",
         "secret_key": "qa-config-test-secret-key-not-for-deployment",
         "frontend_origins": "https://chemistry.example.test",
         "storage_backend": "minio",
@@ -54,3 +56,23 @@ def test_production_storage_cannot_silently_fall_back_to_local(monkeypatch):
     monkeypatch.setattr(storage, "S3StorageProvider", fail_storage)
     with pytest.raises(RuntimeError, match="Configured object storage is unavailable"):
         storage.get_storage_provider()
+
+
+@pytest.mark.parametrize('environment', ['production', 'production_like', 'staging'])
+def test_deployment_can_start_without_email(environment):
+    settings = production_settings(app_env=environment, email_enabled=False,
+        smtp_host=None, smtp_user=None, smtp_password=None, smtp_from_email=None)
+    assert settings.deployment_environment and settings.secure_cookies
+
+
+def test_resend_production_needs_no_smtp_but_requires_its_own_credentials():
+    values = dict(email_provider='resend', smtp_host=None, smtp_user=None,
+        smtp_password=None, smtp_from_email=None, email_from_email='reset@example.test',
+        resend_api_key='synthetic-private-key')
+    assert production_settings(**values).email_enabled
+    for name in ('email_from_email', 'resend_api_key'):
+        with pytest.raises(ValidationError, match='RESEND_API_KEY and EMAIL_FROM_EMAIL'):
+            production_settings(**{**values, name: None})
+    with pytest.raises(ValidationError) as error:
+        production_settings(**{**values, 'email_from_email': None})
+    assert 'synthetic-private-key' not in str(error.value)

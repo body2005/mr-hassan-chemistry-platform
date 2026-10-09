@@ -49,6 +49,8 @@ def enqueue_reset_request(db, email, institution_slug):
 
 
 def process_reset_requests(batch_size=25):
+    if not get_settings().email_enabled:
+        return 0
     from app.services.auth_service import request_password_reset
     processed = 0
     for _ in range(min(batch_size, 25)):
@@ -77,6 +79,8 @@ def process_reset_requests(batch_size=25):
 
 
 def deliver_reset_mail(batch_size=5):
+    if not get_settings().email_enabled:
+        return 0
     delivered = 0
     for _ in range(min(batch_size, 25)):
         with SessionLocal() as db:

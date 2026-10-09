@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, SecretStr, model_validator
 from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -20,6 +20,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
     app_name: str = "Learning Website"
@@ -35,6 +36,11 @@ class Settings(BaseSettings):
     refresh_ttl_seconds: int = Field(default=60 * 60 * 24 * 30, ge=60 * 60, le=60 * 60 * 24 * 365)
     password_reset_ttl_minutes: int = Field(default=30, ge=5, le=24 * 60)
     refresh_replay_grace_seconds: int = Field(default=30, ge=1, le=30)
+    # Email is an optional product feature, including in production.
+    email_enabled: bool = False
+    email_provider: Literal['smtp', 'resend'] = 'smtp'
+    email_from_email: str | None = None
+    resend_api_key: SecretStr | None = None
     smtp_host: str | None = None
     smtp_port: int = Field(default=465, ge=1, le=65535)
     smtp_user: str | None = None
@@ -135,11 +141,16 @@ class Settings(BaseSettings):
             not self.cors_origins or any(not origin.startswith("https://") for origin in self.cors_origins)
         ):
             raise ValueError("FRONTEND_ORIGINS must use HTTPS in production")
-        if self.deployment_environment and not all(
+        if self.deployment_environment and self.email_enabled and self.email_provider == 'resend' and (
+            not self.resend_api_key or not self.resend_api_key.get_secret_value().strip()
+            or not self.email_from_email or not self.email_from_email.strip()
+        ):
+            raise ValueError('RESEND_API_KEY and EMAIL_FROM_EMAIL are required when Resend delivery is enabled')
+        if self.deployment_environment and self.email_enabled and self.email_provider == 'smtp' and not all(
             (self.smtp_host, self.smtp_user, self.smtp_password, self.smtp_from_email)
         ):
             raise ValueError("SMTP delivery must be configured before production startup")
-        if self.deployment_environment and not self.smtp_tls_verify:
+        if self.deployment_environment and self.email_enabled and self.email_provider == 'smtp' and not self.smtp_tls_verify:
             raise ValueError("SMTP TLS certificate verification must remain enabled in production")
         if self.deployment_environment and not any(
             (self.payment_instapay_account, self.payment_vodafone_cash_number, self.payment_bank_details)
