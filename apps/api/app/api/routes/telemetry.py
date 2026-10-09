@@ -13,7 +13,7 @@ from app.core.database import get_db
 from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus, Lesson
 from app.models.progress import LessonProgress, VideoEvent
 from app.models.progress import VideoEventType as ModelVideoEventType
-from app.models.user import UserRole
+from app.models.user import User, UserRole
 from app.schemas import VideoTelemetryBatch, VideoTelemetryResponse
 
 router = APIRouter(prefix="/telemetry")
@@ -31,9 +31,14 @@ def ingest_video_events(
     if user.role != UserRole.STUDENT:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Student telemetry only")
 
+    # The user row exists before the first progress/event row. Serialize this
+    # student's writers (including explicit completion) across API workers;
+    # SELECT FOR UPDATE on a nonexistent progress row would not prevent inserts.
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
     accepted = 0
     duplicates = 0
     seen_client_ids: set[str] = set()
+    progress_by_lesson: dict[object, LessonProgress] = {}
     for event in payload.events:
         if event.client_event_id in seen_client_ids:
             duplicates += 1
@@ -78,19 +83,27 @@ def ingest_video_events(
             occurred_at=occurred_at,
         )
         db.add(video_event)
-        progress = db.scalar(
-            select(LessonProgress).where(
-                LessonProgress.student_id == user.id,
-                LessonProgress.lesson_id == event.lesson_id,
+        progress = progress_by_lesson.get(event.lesson_id)
+        if progress is None:
+            progress = db.scalar(
+                select(LessonProgress).where(
+                    LessonProgress.student_id == user.id,
+                    LessonProgress.lesson_id == event.lesson_id,
+                )
             )
-        )
         if progress is None:
             progress = LessonProgress(
                 institution_id=user.institution_id,
                 student_id=user.id,
                 lesson_id=event.lesson_id,
+                # SQLAlchemy column defaults apply on INSERT, not construction.
+                # Browser play/visibility events can precede loadedmetadata.
+                completion_percent=0.0,
             )
             db.add(progress)
+        # SessionLocal has autoflush=False. Reuse pending rows within the same
+        # batch instead of inserting one row for every play/pause/seek event.
+        progress_by_lesson[event.lesson_id] = progress
 
         progress.last_position_seconds = event.position_seconds
         progress.watched_duration_seconds = (

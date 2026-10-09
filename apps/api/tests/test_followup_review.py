@@ -90,11 +90,15 @@ def test_shared_student_grades_and_mastery_are_course_scoped(db):
         question = Question(institution_id=inst.id, author_id=teacher.id, course_id=c.id,
             question_type='essay', prompt='Explain chemistry', points=1, learning_objective='shared-code')
         db.add_all([objective, quiz, question]); db.flush()
+        from app.services.quiz_snapshot import capture_questions
+        link = QuizQuestion(quiz_id=quiz.id, question_id=question.id, points=1, position=1)
+        db.add(link); db.flush()
+        snapshot = capture_questions(db, quiz, [(link, question)])[0]
         attempt = QuizAttempt(institution_id=inst.id, quiz_id=quiz.id, student_id=student.id, status=AttemptStatus.SUBMITTED,
-            attempt_number=1, started_at=now, submitted_at=now)
+            attempt_number=1, started_at=now, submitted_at=now, total_points=1, question_snapshot=[snapshot])
         db.add(attempt); db.flush()
         db.add(QuizAttemptAnswer(attempt_id=attempt.id, question_id=question.id,
-            answer='Synthetic', awarded_points=score, graded_at=now))
+            answer='Synthetic', awarded_points=score, graded_at=now, question_snapshot=snapshot))
     db.commit()
     c = login(TestClient(app), owner, inst.slug)
     grades = c.get(f'/api/v1/grades/students/{student.id}')

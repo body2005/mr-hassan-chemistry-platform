@@ -3,7 +3,7 @@ import { expect, test } from "./qaTest";
 const baseURL = `${process.env.QA_BASE_URL || "http://127.0.0.1:18080"}/api/v1/`;
 
 test("cookie mutations require CSRF and reject an untrusted Origin", async ({ playwright }) => {
-  const context = await playwright.request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true", baseURL });
+  const context = await playwright.request.newContext({ ignoreHTTPSErrors: false, baseURL });
   try {
     const login = await context.post("auth/login", {
       data: { email: "teacher@demo.com", password: "qa-teacher-pass", institution_slug: "demo" },
@@ -36,7 +36,7 @@ test("cookie mutations require CSRF and reject an untrusted Origin", async ({ pl
 });
 
 test("CORS preflight only authorizes the configured QA origin", async ({ playwright }) => {
-  const context = await playwright.request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true", baseURL });
+  const context = await playwright.request.newContext({ ignoreHTTPSErrors: false, baseURL });
   try {
     const headers = { "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type,x-csrf-token" };
     const allowed = await context.fetch("courses", { method: "OPTIONS", headers: { ...headers, Origin: (process.env.QA_BASE_URL || "http://127.0.0.1:18080") } });

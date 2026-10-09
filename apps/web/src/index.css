@@ -447,9 +447,27 @@ html, body {
 }
 
 [data-theme="dark"] .nav-item.active {
-  background: #059669;
+  background: #047857;
   color: #ffffff !important;
 }
+
+.catalog-filters { display: grid; gap: 12px; margin-bottom: 24px; font-size: 1rem; }
+.catalog-filters label { font-size: 1rem; font-weight: 700; }
+.catalog-filters input { min-height: 48px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-main); width: 100%; box-sizing: border-box; font-size: 1rem; }
+.catalog-grades { display: flex; flex-wrap: wrap; gap: 8px; }
+.catalog-grades button { min-height: 44px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border-color); color: var(--text-main); background: var(--bg-surface); font-size: 0.875rem; font-weight: 700; }
+.catalog-grades button[aria-pressed="true"] { background: #0f392b; color: white; border-color: #0f392b; }
+.catalog-empty { padding: 24px; font-size: 1rem; line-height: 1.75; border: 1px solid var(--border-color); border-radius: 12px; }
+.enrollment-intent { margin: 20px auto; padding: 20px; max-width: 1000px; border: 1px solid var(--border-color); border-radius: 14px; background: var(--bg-surface); font-size: 1rem; line-height: 1.7; }
+.enrollment-intent button { margin: 8px; min-height: 44px; }
+.course-progress-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; width: 100%; }
+.course-progress-label { font-size: 0.875rem; font-weight: 700; overflow-wrap: anywhere; }
+.course-progress-inline > div { flex-basis: 100%; max-width: 100%; }
+.history-warning { padding: 16px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-accent); color: var(--text-main); font-size: 1rem; line-height: 1.7; }
+.password-reset-form label { display: block; font-size: 0.875rem; font-weight: 700; margin-bottom: 8px; }
+.password-reset-form input { width: 100%; box-sizing: border-box; min-height: 48px; padding: 12px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface-secondary); color: var(--text-main); font-size: 1rem; }
+.password-reset-form p { font-size: 0.875rem; line-height: 1.6; margin: 8px 0; }
+.password-reset-form [aria-invalid="true"] { border-color: #ef4444; }
 
 .nav-item.active .nav-icon {
   color: #ffffff !important;
@@ -1594,34 +1612,29 @@ img, video, canvas, svg {
 
 /* Toast stack — lightweight transient notices matching user mockup (Image 1) */
 .toast-stack {
-  position: fixed;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 99999;
+  position: relative;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   gap: 10px;
-  pointer-events: none;
-  max-width: min(92vw, 540px);
+  width: 100%;
+  min-width: 0;
 }
 .toast-item {
   pointer-events: auto;
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 24px;
-  border-radius: 9999px;
-  color: #ffffff;
+  padding: 8px 12px;
+  margin-block: 8px;
+  border-radius: 10px;
+  color: var(--text-main);
   font-weight: 600;
   font-size: 0.92rem;
-  line-height: 1.4;
-  text-align: center;
-  background: #18181b;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.45);
-  animation: cw-pop-in 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  line-height: 1.6;
+  text-align: start;
+  background: var(--bg-surface-secondary);
+  border: 1px solid var(--border-color);
 }
 .toast-item .toast-icon {
   display: inline-flex;
@@ -1630,8 +1643,51 @@ img, video, canvas, svg {
   flex-shrink: 0;
 }
 .toast-item .toast-text {
-  color: #ffffff;
-  white-space: nowrap;
+  color: inherit;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  flex: 1;
+  min-width: 0;
+}
+.toast-dismiss { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 44px; height: 44px; border: 0; background: transparent; color: inherit; cursor: pointer; border-radius: 8px; }
+.toast-danger, .toast-warning { border-inline-start: 4px solid #b45309; }
+.toast-danger { border-inline-start-color: #dc2626; }
+.toast-success { border-inline-start: 4px solid #047857; }
+.action-feedback-region { width: 100%; min-width: 0; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+/* A teacher's working sequence, not a sticky toolbar over the question paper. */
+.quiz-editor-journey { margin-block: 16px; color: var(--text-main); }
+.quiz-editor-journey nav { display: flex; gap: 8px; flex-wrap: wrap; }
+.quiz-editor-journey nav button { display: flex; align-items: center; justify-content: center; gap: 8px; flex: 1; min-width: 95px; min-height: 48px; padding: 8px; font: 700 14px var(--font-sans); border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-surface-secondary); color: var(--text-main); cursor: pointer; }
+.quiz-editor-journey nav button[aria-current="step"] { background: #0f392b; color: #fff; border-color: #0f392b; }
+.quiz-editor-journey nav span { font-variant-numeric: tabular-nums; }
+.quiz-editor-journey p { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-block: 12px; font-size: 14px; line-height: 1.7; }
+.quiz-editor-journey p span { color: var(--text-muted); }
+.quiz-editor-error { display: flex; align-items: center; gap: 12px; margin-block: 12px; padding: 12px; border: 1px solid #b45309; border-inline-start-width: 4px; border-radius: 8px; background: var(--bg-surface-secondary); color: var(--text-main); font-size: 16px; line-height: 1.6; }
+.quiz-editor-error span { flex: 1; overflow-wrap: anywhere; }
+.quiz-editor-error button { display: flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; border: 0; border-radius: 8px; color: inherit; background: transparent; cursor: pointer; }
+.quiz-mobile-next, .quiz-desktop-publish { display: none; }
+.quiz-editor input, .quiz-editor select, .quiz-editor textarea { max-width: 100%; min-width: 0; }
+.quiz-editor input, .quiz-editor select { min-height: 44px; }
+.lesson-player-controls-row, .lesson-player-controls-group { flex-wrap: wrap; gap: 8px; min-width: 0; }
+.lesson-player-controls-row button, .lesson-playback-error button { min-width: 44px; min-height: 44px; justify-content: center; }
+.lesson-player-controls { overflow: visible; }
+@media (max-width: 768px) {
+  body:not([data-video-enlarged]) .lesson-video-player { aspect-ratio: auto !important; }
+  body:not([data-video-enlarged]) .lesson-video-player video { height: auto !important; aspect-ratio: 16 / 9; }
+  body:not([data-video-enlarged]) .lesson-player-controls { position: relative !important; opacity: 1 !important; pointer-events: auto !important; padding: 8px 12px !important; }
+  body:not([data-video-enlarged]) .lesson-playback-error { position: relative !important; inset: auto !important; margin: 8px; flex-wrap: wrap; }
+  .quiz-editor-grid { display: flex; flex-direction: column; }
+  .quiz-stage-setup .quiz-publication-fields, .quiz-stage-setup .quiz-question-canvas,
+  .quiz-stage-review .quiz-settings-panel, .quiz-stage-review .quiz-final-publish,
+  .quiz-stage-publish .quiz-setup-fields, .quiz-stage-publish .quiz-question-list,
+  .quiz-stage-publish .quiz-review-next { display: none !important; }
+  .quiz-stage-setup .quiz-setup-next, .quiz-stage-review .quiz-review-next { display: flex; width: 100%; min-height: 48px; margin-top: 16px; justify-content: center; }
+  .quiz-editor-journey nav { gap: 6px; }
+  .quiz-editor-journey nav button { min-width: 80px; font-size: 14px; }
+  .quiz-question-canvas, .quiz-settings-panel { padding: 16px !important; width: 100%; min-width: 0; }
+  .quiz-final-publish { min-height: 48px; width: 100%; }
 }
 
 /* Payments — one flat accent, hairline borders, hierarchy-first metrics. */

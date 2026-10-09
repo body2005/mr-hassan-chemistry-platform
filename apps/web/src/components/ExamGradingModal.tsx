@@ -15,6 +15,7 @@ import {
 import { StudentRecord } from "../types/lms";
 import { apiRequest } from "../services/apiClient";
 import { FormulaRenderer } from "./FormulaRenderer";
+import { assessmentPercent, assessmentBand } from '../services/assessmentOutcome';
 
 interface QuizSolutionQuestion {
   id: string;
@@ -45,7 +46,9 @@ interface QuizSolutionData {
   };
   score: number;
   grading_status?: "pending" | "complete";
-  total_points: number;
+  total_points: number | null;
+  history_state?: 'frozen' | 'legacy-unverified';
+  history_warning?: string | null;
   summary: {
     correct: number;
     wrong: number;
@@ -91,7 +94,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
 
     apiRequest<QuizSolutionData>(`/students/${student.id}/quiz-solution`)
       .then((data) => {
-        if (data && Array.isArray(data.questions) && data.questions.length > 0) {
+        if (data && Array.isArray(data.questions) && (data.questions.length > 0 || data.history_state === 'legacy-unverified')) {
           setSolutionData(data);
         } else {
           setSolutionData(null);
@@ -107,14 +110,14 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
   }, [student]);
 
   if (!student) return null;
-  const awarded = solutionData?.questions.reduce((sum, question) => {
+  const awarded = solutionData?.history_state === 'legacy-unverified' ? solutionData.score : solutionData?.questions.reduce((sum, question) => {
     const proposed = answerGrades[question.id]?.points;
     return sum + (Number.isFinite(proposed) ? proposed : question.awarded);
   }, 0) ?? 0;
-  const score = solutionData && solutionData.total_points > 0 ? awarded / solutionData.total_points * 100 : 0;
+  const score = assessmentPercent(awarded, solutionData?.total_points);
 
   async function handleSave() {
-    if (!student || !solutionData?.attempt || savingGrade) return;
+    if (!student || !solutionData?.attempt || savingGrade || solutionData.history_state === 'legacy-unverified') return;
     setSavingGrade(true);
     setGradeError(null);
     try {
@@ -134,7 +137,9 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
         setGradeError("حُفظت الدرجات المدخلة. توجد إجابات بانتظار التصحيح؛ لم تُعتمد نتيجة نهائية.");
         return;
       }
-      const percent = updated.total_points > 0 ? updated.score / updated.total_points * 100 : 0;
+      const percent = assessmentPercent(updated.score, updated.total_points);
+      if (percent == null)
+        throw new Error('لا يمكن اعتماد النتيجة دون مجموع درجات صحيح وموثق.');
       onApproveGrade(student.id, percent, notes);
       onClose();
     } catch (error) {
@@ -144,14 +149,17 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
     }
   }
 
-  const getStatusText = (val: number) => {
-    if (val >= 85) return { label: "ممتاز (أداء متميز)", color: "#059669", bg: "rgba(5, 150, 105, 0.12)" };
-    if (val >= 70) return { label: "جيد جداً (مستوى جيد)", color: "#0284c7", bg: "rgba(2, 132, 199, 0.12)" };
-    if (val >= 50) return { label: "مقبول (يحتاج تحسين)", color: "#d97706", bg: "rgba(217, 119, 6, 0.12)" };
-    return { label: "دون المتوسط (يحتاج متابعة)", color: "#dc2626", bg: "rgba(220, 38, 38, 0.12)" };
+  const getStatusText = (val: number | null) => {
+    const label = assessmentBand(val);
+    if (val == null) return { label, color: 'var(--text-muted)', bg: 'var(--bg-surface-secondary)' };
+    if (val >= 80) return { label, color: "#047857", bg: "rgba(5, 150, 105, 0.12)" };
+    if (val >= 60) return { label, color: "#b45309", bg: "rgba(217, 119, 6, 0.12)" };
+    return { label, color: "#dc2626", bg: "rgba(220, 38, 38, 0.12)" };
   };
 
-  const status = solutionData?.grading_status === "pending"
+  const status = solutionData?.history_state === 'legacy-unverified'
+    ? { label: 'سجل قديم — لا توجد نسخة أسئلة موثقة', color: 'var(--text-muted)', bg: 'var(--bg-surface-secondary)' }
+    : solutionData?.grading_status === "pending"
     ? { label: "بانتظار التصحيح — غير نهائية", color: "var(--text-muted)", bg: "var(--bg-surface-secondary)" }
     : getStatusText(score);
   const optionLetters = ["أ", "ب", "ج", "د", "هـ"];
@@ -330,6 +338,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
             </div>
 
             {gradeError && <p role="alert">{gradeError}</p>}
+            {solutionData?.history_warning && <p role="alert" className="history-warning">{solutionData.history_warning}</p>}
             {solutionData?.grading_status === "pending" && <p>بانتظار التصحيح — الدرجة الحالية غير نهائية.</p>}
             {loadingSolution ? (
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "36px", gap: "10px", color: "var(--text-muted)" }}>
@@ -672,7 +681,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
                   type="number"
                   min={0}
                   max={100}
-                  value={score}
+                  value={score ?? ''}
                   readOnly
                   style={{
                     width: "120px",
@@ -761,7 +770,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
           <button
             type="button"
             onClick={handleSave}
-            disabled={savingGrade || loadingSolution || !solutionData}
+            disabled={savingGrade || loadingSolution || !solutionData || solutionData.history_state === 'legacy-unverified'}
             style={{
               padding: "9px 22px",
               background: "#059669",

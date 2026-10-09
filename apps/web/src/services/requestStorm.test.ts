@@ -25,6 +25,18 @@ function stubFetch(handler: (input: string, init?: RequestInit) => Response | Pr
 }
 
 describe("apiClient request discipline", () => {
+  it('maps authoritative completion separately from consumed attempts and homework versions', async () => {
+    stubFetch(() => new Response(JSON.stringify({ lessons: [], quizzes: [
+      { id: 'started', title: 'Started', attempts_used: 1, completed: false },
+      { id: 'submitted', title: 'Submitted', attempts_used: 1, completed: true },
+    ], assignments: [{ id: 'file', title: 'Uploaded', completed: true }] }), { status: 200 }));
+    const { courseService } = await import('./lmsService');
+    const refs = await courseService.getCourseAssessmentRefs('selected', { skipCache: true });
+    expect(refs.map(item => [item.id, item.completed])).toEqual([
+      ['started', false], ['submitted', true], ['file', true],
+    ]);
+    expect(refs[0].attemptsUsed).toBe(1);
+  });
   it('never caches or coalesces solve GETs and invalidates results after submission', async () => {
     let attempt = 0;
     const calls = stubFetch(input => new Response(JSON.stringify(input.endsWith('/solve') ? { attempt: ++attempt } : { score: 1 }), { status: 200 }));
@@ -218,21 +230,20 @@ describe("apiClient request discipline", () => {
     expect(await file).toBe('REQUEST_CANCELLED');
   });
 
-  it("does not repopulate composed course cache after an old-account enrichment fails", async () => {
+  it("does not repopulate composed course cache after an old-account catalog response", async () => {
     let finish: (value: Response) => void = () => {};
-    const calls = stubFetch(input => input.includes('/assessments')
-      ? new Promise<Response>(resolve => { finish = resolve; })
-      : new Response(JSON.stringify({ items: [{ id: 'teacher-a-course', code: 'QA', title: 'Private A',
-        status: 'draft', modules: [], grade_level: 'SECONDARY_1' }] }), { status: 200 }));
+    const calls = stubFetch(() => new Promise<Response>(resolve => { finish = resolve; }));
     const { setApiAuthScope } = await import('./apiClient');
     const { courseService } = await import('./lmsService');
     setApiAuthScope('teacher-a');
-    await courseService.getCourses();
-    await vi.waitFor(() => expect(calls.some(c => c.input.includes('/assessments'))).toBe(true));
+    const old = courseService.getCourses().catch(error => error.code);
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
     setApiAuthScope('student-b');
-    finish(new Response(JSON.stringify({ quizzes: [], assignments: [] }), { status: 200 }));
-    await new Promise(resolve => setTimeout(resolve, 10));
+    finish(new Response(JSON.stringify({ items: [{ id: 'teacher-a-course', code: 'QA', title: 'Private A',
+      status: 'draft', modules: [], grade_level: 'SECONDARY_1' }] }), { status: 200 }));
+    expect(await old).toBe('REQUEST_CANCELLED');
     expect(courseService.getCachedCourses()).toEqual([]);
+    expect(calls.some(call => call.input.includes('/assessments'))).toBe(false);
   });
 
   it("does not re-probe /auth/me once the session is known invalid", async () => {

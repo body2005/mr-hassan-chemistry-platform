@@ -60,7 +60,7 @@ test("authenticated dashboard recovers after a failed bootstrap without a reques
 test("real login 429 does not trigger automatic retries", async ({ page, playwright }) => {
   const client = await playwright.request.newContext({
     baseURL: process.env.QA_BASE_URL || "http://127.0.0.1:18080",
-    ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true",
+    ignoreHTTPSErrors: false,
   });
   try {
     let limited = false;

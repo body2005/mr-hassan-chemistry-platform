@@ -8,7 +8,7 @@ Set-Location $qaRoot
 if (!(Test-Path '.qa/audit2/compose.env')) { throw 'Prepare and start the isolated chemistryaudit2 project first; see the role QA report.' }
 $qaStamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
 $env:QA_BASE_URL = 'https://localhost:18543'
-$env:QA_LOCAL_TLS = 'true' # Only the self-signed local QA certificate.
+$env:QA_LOCAL_TLS = 'false'
 $env:QA_REDIS_CONTAINER = 'chemistryaudit2-redis-1'
 $env:QA_DOCKER = $Docker
 $env:QA_PYTHON = $Python # Python with pypdf for inspecting the actual student PDF.
@@ -22,11 +22,8 @@ function Save-RoleResult([string]$Label, [int]$Code) {
     $qaResults.Add(@{ command = $Label; exit_code = $Code; utc = [DateTime]::UtcNow.ToString('o') })
     $qaResults | ConvertTo-Json | Set-Content -LiteralPath ".qa/audit2/role-commands-$qaStamp.json" -Encoding utf8
 }
-Push-Location (Join-Path $qaRoot 'apps/web')
-try {
-    & npx.cmd playwright test --config playwright.qa.config.ts tests/qa/discovery.spec.ts --reporter=list,junit
-    $qaBrowserExit = $LASTEXITCODE
-} finally { Pop-Location }
+& (Join-Path $PSHOME $(if($IsWindows){'pwsh.exe'}else{'pwsh'})) -NoProfile -File (Join-Path $PSScriptRoot 'run-trusted-browser.ps1') -Build -Docker $Docker -SpecPattern tests/qa/discovery.spec.ts
+$qaBrowserExit = $LASTEXITCODE
 Save-RoleResult 'teacher/student discovery (no expected-failure masking)' $qaBrowserExit
 $qaCompose = @('compose', '--env-file', '.qa/audit2/compose.env', '-p', 'chemistryaudit2',
     '-f', 'infra/docker-compose.yml', '-f', 'infra/qa/production.override.yml', '-f', 'infra/video-pipeline.override.yml')

@@ -1,5 +1,6 @@
 import { useEffect, type RefObject } from 'react';
 import Hls from 'hls.js';
+import { playbackFailureMessage } from '../services/playbackFailure';
 
 /** Own one media transport; token admission/renewal remains separate. */
 export function useHlsTransport(
@@ -51,7 +52,7 @@ export function useHlsTransport(
       if (disposed) return;
       if (data.fatal || [401, 403, 429].includes(data.response?.code || 0)) {
         hls.stopLoad();
-        setPlaybackError('توقف البث؛ تحقق من اتصالك أو صلاحية الجلسة ثم أعد المحاولة.');
+        setPlaybackError(playbackFailureMessage({ status: data.response?.code }));
       }
     });
     hls.attachMedia(video);

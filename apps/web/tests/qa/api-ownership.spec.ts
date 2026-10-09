@@ -19,7 +19,7 @@ test("manual quiz and assignment lifecycle enforces student and teacher ownershi
   const otherTeacher = await asUser(playwright.request, "teacher2@example.com", "qa-teacher2-pass");
   const student = await asUser(playwright.request, "student01@demo.com", "qa-student-pass");
   const otherStudent = await asUser(playwright.request, "student02@demo.com", "qa-student-pass");
-  const anonymous = await playwright.request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true", baseURL });
+  const anonymous = await playwright.request.newContext({ ignoreHTTPSErrors: false, baseURL });
   try {
     const code = `QA${Date.now()}`;
     const course = await created(teacher.context, "courses", { code, title: "QA Chemistry" });

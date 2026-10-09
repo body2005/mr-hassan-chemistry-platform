@@ -5,9 +5,18 @@ import type { CourseOption, GeneratedQuestion } from '../types/quiz';
 export const MAX_MCQ_OPTIONS = 26;
 const keys = ['أ', 'ب', 'ج', 'د', 'هـ', 'و', ...Array.from({ length: 20 }, (_, index) => String.fromCharCode(71 + index))];
 
+/** Validate editor labels without renumbering a saved question or OCR binding.
+ * The publication serializer separately emits the API's A..Z keys.
+ */
+export function canonicalEditorOptionKey(value: string): string {
+  const key = value.normalize('NFKC').trim().toUpperCase();
+  const aliases: Record<string, string> = { 'أ': 'A', 'ا': 'A', 'ب': 'B', 'ج': 'C', 'د': 'D', 'هـ': 'E', 'ه': 'E', 'و': 'F' };
+  return aliases[key] ?? key;
+}
+
 export function appendMcqOption(options: CourseOption[]): CourseOption[] {
   if (options.length >= MAX_MCQ_OPTIONS) return options;
-  const key = keys.find(candidate => !options.some(option => option.key === candidate));
+  const key = keys.find(candidate => !options.some(option => canonicalEditorOptionKey(option.key) === canonicalEditorOptionKey(candidate)));
   if (!key) return options;
   return [...options, { key, text: `خيار ${key}`, is_correct: false }];
 }

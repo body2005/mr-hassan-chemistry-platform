@@ -14,7 +14,7 @@ from app.core.storage import LocalStorageProvider
 from app.models.course import Enrollment, EnrollmentStatus, CourseModule, Lesson, LessonKind
 from app.models.extended import LearningObjective
 from app.models.user import UserRole, PasswordResetToken
-from app.models.platform import RefreshSession, RevokedSession, Quiz, QuizQuestion, QuizAttempt, QuizAttemptAnswer, Question, Assignment, AssignmentSubmission, Notification, AuditLog
+from app.models.platform import RefreshSession, RevokedSession, Quiz, QuizStatus, QuizQuestion, QuizAttempt, AttemptStatus, QuizAttemptAnswer, Question, Assignment, AssignmentStatus, AssignmentSubmission, Notification, AuditLog
 from app.models.progress import LessonProgress
 from app.schemas import PasswordResetConfirm, ChangePasswordRequest, QuestionCreateRequest
 from app.services import auth_service
@@ -76,17 +76,19 @@ def test_summary_scope_students_teachers_admins_and_other_tenant(db):
         module = CourseModule(course_id=course.id, title='Summary unit', position=1)
         db.add(module); db.flush()
         lesson = Lesson(module_id=module.id, title='Summary lesson', kind=LessonKind.ARTICLE, position=1)
-        quiz = Quiz(institution_id=inst.id, course_id=course.id, creator_id=teacher.id, title='Summary quiz')
+        quiz = Quiz(institution_id=inst.id, course_id=course.id, creator_id=teacher.id, title='Summary quiz', status=QuizStatus.PUBLISHED)
         question = Question(institution_id=inst.id, author_id=teacher.id, course_id=course.id,
                             question_type='essay', prompt='Synthetic answer', points=100)
         assignment = Assignment(institution_id=inst.id, course_id=course.id, creator_id=teacher.id,
-                                title='Summary assignment', prompt='Synthetic prompt')
+                                title='Summary assignment', prompt='Synthetic prompt', status=AssignmentStatus.PUBLISHED)
         db.add_all([lesson, quiz, question, assignment]); db.flush()
         quizzes_by_course.append(str(quiz.id))
         for number, practice, pending in [(1, False, False), (2, True, False), (3, False, True)]:
             attempt = QuizAttempt(institution_id=inst.id, quiz_id=quiz.id, student_id=student.id,
                 attempt_number=number, started_at=datetime.now(timezone.utc), score=score if number == 1 else 999,
-                is_practice=practice)
+                is_practice=practice, total_points=100,
+                status=AttemptStatus.IN_PROGRESS if pending else AttemptStatus.SUBMITTED,
+                submitted_at=None if pending else datetime.now(timezone.utc))
             db.add(attempt); db.flush()
             db.add(QuizAttemptAnswer(attempt_id=attempt.id, question_id=question.id,
                 awarded_points=score, graded_at=None if pending else datetime.now(timezone.utc)))
@@ -97,7 +99,7 @@ def test_summary_scope_students_teachers_admins_and_other_tenant(db):
     db.commit()
     for viewer, count, quizzes, avg, completion, top in [
         (t1, 1, 1, 10, 100, [quizzes_by_course[0]]), (t2, 2, 1, 90, 0, [quizzes_by_course[1]]),
-        (admin, 3, 2, 50, 50, list(reversed(quizzes_by_course)))]:
+        (admin, 3, 2, 50, 33.33, list(reversed(quizzes_by_course)))]:
         client = TestClient(app); login(client, viewer, inst.slug)
         response = client.get('/api/v1/reports/summary')
         assert response.status_code == 200, response.text
@@ -106,8 +108,8 @@ def test_summary_scope_students_teachers_admins_and_other_tenant(db):
         assert response.json()['lessons_count'] == quizzes
         assert response.json()['assignments_count'] == quizzes
         assert response.json()['quiz_avg_score'] == avg
-        assert response.json()['quiz_completion_rate'] == round(quizzes / count, 2)
-        assert response.json()['assignment_submission_rate'] == round(quizzes / count, 2)
+        assert response.json()['quiz_completion_rate'] == round(quizzes / count * 100, 2)
+        assert response.json()['assignment_submission_rate'] == round(quizzes / count * 100, 2)
         assert response.json()['lesson_completion_rate'] == completion
         assert [q['quiz_id'] for q in response.json()['top_quizzes']] == top
     client = TestClient(app); login(client, students[0], inst.slug)

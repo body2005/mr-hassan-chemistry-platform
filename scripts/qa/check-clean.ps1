@@ -1,4 +1,5 @@
 param(
+    [switch]$BuildOnly,
     [string]$Docker = 'C:\Users\body\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe'
 )
 $ErrorActionPreference = 'Stop'
@@ -18,6 +19,10 @@ function Run-Step([string]$label, [string]$executable, [string[]]$arguments) {
     $results | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $artifacts 'commands.json') -Encoding utf8
     if ($code -ne 0) { throw "Clean gate '$label' failed ($code); retain artifacts and investigate" }
 }
+function Record-Omitted([string]$label) {
+    $results.Add(@{command=$label;exit_code=$null;not_run=$true;reason='Explicit BuildOnly mode; retain previous suite evidence, not a fresh passing test gate';utc=[DateTime]::UtcNow.ToString('o')})
+    $results | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $artifacts 'commands.json') -Encoding utf8
+}
 # Export the existing index only. Do NOT stage unknown files, copy .env,
 # untracked runtime assets or rewrite history. Review the index first.
 Run-Step 'export indexed sources' git @('checkout-index', "--prefix=$snapshotRelative/", '-a')
@@ -28,7 +33,7 @@ $npm = if ($IsWindows) { 'npm.cmd' } else { 'npm' }
 Push-Location (Join-Path $snapshot 'apps/web')
 try {
     Run-Step 'clean npm ci' $npm @('ci')
-    Run-Step 'clean lint' $npm @('run','lint')
+    if($BuildOnly){Record-Omitted 'clean lint'}else{Run-Step 'clean lint' $npm @('run','lint')}
     $env:VITE_API_URL = '/api/v1'
     Run-Step 'clean build' $npm @('run','build')
     # Catch auto-discovery differences caused by Git/ignored snapshot paths.
@@ -56,7 +61,7 @@ try {
     $results | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $artifacts 'commands.json') -Encoding utf8
     if ($different.Count) { throw 'Clean web output differs; retain artifacts and fix source discovery/build inputs' }
     # Keep all suites isolated; limit concurrent jsdom workers on small hosts.
-    Run-Step 'clean frontend unit tests' $npm @('test','--','--maxWorkers=1','--reporter=default','--reporter=junit',"--outputFile=$artifacts/frontend.xml")
+    if($BuildOnly){Record-Omitted 'clean frontend unit tests'}else{Run-Step 'clean frontend unit tests' $npm @('test','--','--maxWorkers=1','--reporter=default','--reporter=junit',"--outputFile=$artifacts/frontend.xml")}
 } finally { Pop-Location }
 Run-Step 'clean API image build (not deployed)' $Docker @('build','-f',"$snapshotRelative/infra/Dockerfile.api",'-t',"chemistryaudit2-clean-api:$stamp","$snapshotRelative/apps/api")
 $env:VIDEO_UPLOAD_PUBLIC_ENDPOINT = 'https://localhost:18544'
@@ -66,6 +71,6 @@ $compose = @('compose','--env-file','.qa/audit2/compose.env','-p','chemistryaudi
     '-f','infra/docker-compose.yml','-f','infra/qa/production.override.yml','-f','infra/video-pipeline.override.yml')
 # The synthetic snapshot (not the user's source checkout) is writable: this
 # application creates uploads at startup. No original storage assets copied.
-Run-Step 'clean API unit tests' $Docker ($compose + @('run','--rm','--no-deps','-v',"${snapshot}:/workspace",'-v',"${artifacts}:/clean-results",
+if($BuildOnly){Record-Omitted 'clean API unit tests'}else{Run-Step 'clean API unit tests' $Docker ($compose + @('run','--rm','--no-deps','-v',"${snapshot}:/workspace",'-v',"${artifacts}:/clean-results",
     '-w','/workspace/apps/api','-e','PYTHONPATH=/workspace/apps/api','-e','STORAGE_DIR=/tmp/qa-clean-storage',
-    'qa-tests','python','-m','pytest','tests','--ignore=tests/integration','-q','--tb=short','-o','cache_dir=/tmp/qa-clean-cache','--junitxml=/clean-results/backend.xml'))
+    'qa-tests','python','-m','pytest','tests','--ignore=tests/integration','-q','--tb=short','-o','cache_dir=/tmp/qa-clean-cache','--junitxml=/clean-results/backend.xml'))}

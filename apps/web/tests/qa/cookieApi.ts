@@ -4,7 +4,7 @@ import { expect } from './qaTest';
 /** CLI test contexts model the browser's cookie + double-submit CSRF policy. */
 export async function cookieApi(request: APIRequest, email: string, password: string) {
   const baseURL = `${process.env.QA_BASE_URL || 'http://127.0.0.1:18080'}/api/v1/`;
-  const options = { baseURL, ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === 'true' };
+  const options = { baseURL, ignoreHTTPSErrors: false };
   const loginContext = await request.newContext(options);
   try {
     const response = await loginContext.post('auth/login', {data:{email, password, institution_slug:'demo'}});

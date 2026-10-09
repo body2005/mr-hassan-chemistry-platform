@@ -29,7 +29,7 @@ test("password reset email completes the browser journey and invalidates the old
   await page.getByRole('button', { name: 'إنشاء حسابي', exact: true }).click();
   await expect(page).toHaveURL(/#mycourses$/);
 
-  const freshContext = await browser.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true" });
+  const freshContext = await browser.newContext({ ignoreHTTPSErrors: false });
   try {
     const resetPage = await freshContext.newPage();
     await resetPage.goto("/#auth");

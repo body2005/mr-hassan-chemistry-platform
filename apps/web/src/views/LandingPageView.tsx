@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useMemo } from "react";
 import {
   Award,
   BookOpen,
@@ -24,10 +24,12 @@ import {
 import { Course } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
 import { useToast } from "../components/ToastProvider";
+import { filterCatalog, readCatalogState, saveCatalogState, type CatalogGrade } from '../services/catalogState';
+import { usePublicCatalog } from '../services/usePublicCatalog';
 
 interface LandingPageViewProps {
-  courses: Course[];
-  onNavigateToAuth: (tab?: "signin" | "register") => void;
+  courses?: Course[];
+  onNavigateToAuth: (tab?: "signin" | "register", course?: Course) => void;
   lang: Language;
   onToggleLang: () => void;
   theme: "light" | "dark";
@@ -46,39 +48,25 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
   const [showYearsDropdown, setShowYearsDropdown] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [mobileYearsOpen, setMobileYearsOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState(() => readCatalogState().query);
+  const [selectedGrade, setSelectedGrade] = useState<CatalogGrade>(() => readCatalogState().grade);
   const t = translations[lang];
+  const catalog = usePublicCatalog(searchQuery, selectedGrade, courses === undefined);
+  const totalCourses = courses === undefined ? catalog.total : undefined;
 
-  // Typewriter Effect for Hero Title
-  const heroFullText = t.landingHeroTitle;
-  const [displayedText, setDisplayedText] = useState("");
-  const [isDeleting, setIsDeleting] = useState(false);
-  const typewriterRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    const typeSpeed = isDeleting ? 20 : 45;
-    const pauseDuration = isDeleting ? 350 : 1500;
-
-    if (!isDeleting && displayedText === heroFullText) {
-      // Finished typing — pause then start deleting
-      typewriterRef.current = setTimeout(() => setIsDeleting(true), pauseDuration);
-    } else if (isDeleting && displayedText === "") {
-      // Finished deleting — pause then start typing
-      typewriterRef.current = setTimeout(() => setIsDeleting(false), pauseDuration);
-    } else {
-      typewriterRef.current = setTimeout(() => {
-        if (isDeleting) {
-          setDisplayedText(heroFullText.slice(0, displayedText.length - 1));
-        } else {
-          setDisplayedText(heroFullText.slice(0, displayedText.length + 1));
-        }
-      }, typeSpeed);
-    }
-
-    return () => {
-      if (typewriterRef.current) clearTimeout(typewriterRef.current);
-    };
-  }, [displayedText, isDeleting, heroFullText]);
+  // A readable, static heading: no typing/deleting timer or blinking cursor.
+  const filteredCourses = useMemo(() => courses === undefined ? catalog.courses : filterCatalog(courses, searchQuery, selectedGrade),
+    [courses, catalog.courses, searchQuery, selectedGrade]);
+  const grades = [
+    { id: '1st_secondary' as const, label: t.firstSecondary },
+    { id: '2nd_secondary' as const, label: t.secondSecondary },
+    { id: '3rd_secondary' as const, label: t.thirdSecondary },
+  ];
+  const changeQuery = (query: string) => { setSearchQuery(query); saveCatalogState(query, selectedGrade); };
+  const changeGrade = (grade: CatalogGrade) => {
+    setSelectedGrade(grade); saveCatalogState(searchQuery, grade);
+    setShowYearsDropdown(false); setMobileYearsOpen(false); setMobileMenuOpen(false);
+  };
 
   // Digital Library materials (starts empty with no mock examples)
   const libraryMaterials: Array<{ id: string; title: string; grade: string; size: string; downloads: number }> = [];
@@ -144,9 +132,11 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
           <div className="landing-topbar-search">
             <input
               type="text"
-              placeholder={lang === "ar" ? "بحث في الدروس أو المواد..." : "Search..."}
+              aria-label={lang === "ar" ? "بحث سريع في المقررات" : "Quick course search"}
+              placeholder={lang === "ar" ? "ابحث عن مقرر..." : "Search courses..."}
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => changeQuery(e.target.value)}
+              maxLength={100}
               style={{
                 background: "transparent",
                 border: "none",
@@ -287,11 +277,12 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
             {/* Academic Years Dropdown Pill Button */}
             <div
               style={{ position: "relative" }}
-              onMouseEnter={() => setShowYearsDropdown(true)}
-              onMouseLeave={() => setShowYearsDropdown(false)}
             >
               <button
                 type="button"
+                onClick={() => setShowYearsDropdown(open => !open)}
+                aria-expanded={showYearsDropdown}
+                aria-controls="catalog-grade-menu"
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -321,6 +312,8 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
 
               {/* Interactive Years Dropdown Menu */}
               <div
+                id="catalog-grade-menu"
+                aria-hidden={!showYearsDropdown}
                 style={{
                   position: "absolute",
                   top: "38px",
@@ -338,19 +331,20 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
                   opacity: showYearsDropdown ? 1 : 0,
                   transform: showYearsDropdown ? "translateY(0) scale(1)" : "translateY(-10px) scale(0.96)",
                   pointerEvents: showYearsDropdown ? "auto" : "none",
+                  visibility: showYearsDropdown ? "visible" : "hidden",
                   transition: "opacity 0.24s cubic-bezier(0.4, 0, 0.2, 1), transform 0.24s cubic-bezier(0.4, 0, 0.2, 1)",
                   transformOrigin: lang === "ar" ? "top right" : "top left",
                 }}
               >
                 {[
-                  { id: "1st", label: t.firstSecondary, sub: lang === "ar" ? "مقررات وشروحات الكيمياء للصف الأول الثانوي" : "1st Secondary Chemistry Curriculum" },
-                  { id: "2nd", label: t.secondSecondary, sub: lang === "ar" ? "مقررات وشروحات الكيمياء للصف الثاني الثانوي" : "2nd Secondary Chemistry Curriculum" },
-                  { id: "3rd", label: t.thirdSecondary, sub: lang === "ar" ? "مقررات وشروحات الكيمياء للصف الثالث الثانوي" : "3rd Secondary Chemistry Curriculum" },
+                  { id: "1st_secondary" as const, label: t.firstSecondary, sub: lang === "ar" ? "مقررات وشروحات الكيمياء للصف الأول الثانوي" : "1st Secondary Chemistry Curriculum" },
+                  { id: "2nd_secondary" as const, label: t.secondSecondary, sub: lang === "ar" ? "مقررات وشروحات الكيمياء للصف الثاني الثانوي" : "2nd Secondary Chemistry Curriculum" },
+                  { id: "3rd_secondary" as const, label: t.thirdSecondary, sub: lang === "ar" ? "مقررات وشروحات الكيمياء للصف الثالث الثانوي" : "3rd Secondary Chemistry Curriculum" },
                 ].map((grade) => (
                   <a
                     key={grade.id}
                     href="#courses"
-                    onClick={() => setShowYearsDropdown(false)}
+                    onClick={() => changeGrade(grade.id)}
                     style={{
                       padding: "9px 12px",
                       borderRadius: "10px",
@@ -557,14 +551,14 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
                 {mobileYearsOpen && (
                   <div style={{ display: "flex", flexDirection: "column", gap: "4px", padding: "6px 8px 6px 12px", marginTop: "4px" }}>
                     {[
-                      { id: "1st", label: t.firstSecondary },
-                      { id: "2nd", label: t.secondSecondary },
-                      { id: "3rd", label: t.thirdSecondary },
+                      { id: "1st_secondary" as const, label: t.firstSecondary },
+                      { id: "2nd_secondary" as const, label: t.secondSecondary },
+                      { id: "3rd_secondary" as const, label: t.thirdSecondary },
                     ].map((grade) => (
                       <a
                         key={grade.id}
                         href="#courses"
-                        onClick={() => setMobileMenuOpen(false)}
+                        onClick={() => changeGrade(grade.id)}
                         style={{
                           padding: "8px 12px",
                           borderRadius: "8px",
@@ -768,18 +762,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
             minHeight: "60px",
           }}
         >
-          {displayedText}
-          <span
-            style={{
-              display: "inline-block",
-              width: "3px",
-              height: "28px",
-              background: "#059669",
-              marginInlineStart: "4px",
-              verticalAlign: "middle",
-              animation: "blink-cursor 0.7s steps(1) infinite",
-            }}
-          />
+          {t.landingHeroTitle}
         </h1>
 
         <p
@@ -820,8 +803,36 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
           </p>
         </div>
 
+        <div className="catalog-filters">
+          <label htmlFor="catalog-search">{lang === 'ar' ? 'ابحث في المقررات' : 'Search courses'}</label>
+          <input id="catalog-search" type="search" value={searchQuery} maxLength={100}
+            onChange={event => changeQuery(event.target.value)}
+            placeholder={lang === 'ar' ? 'اسم المقرر أو وصفه أو رمزه' : 'Course name, description or code'} />
+          <div className="catalog-grades" aria-label={lang === 'ar' ? 'تصفية الصف الدراسي' : 'Filter by grade'}>
+            {[{ id: '' as const, label: lang === 'ar' ? 'كل الصفوف' : 'All grades' }, ...grades].map(grade =>
+              <button key={grade.id} type="button" aria-pressed={selectedGrade === grade.id}
+                onClick={() => changeGrade(grade.id)}>{grade.label}</button>)}
+          </div>
+          <p role="status">{catalog.loading ? (lang === 'ar' ? 'جارٍ تحميل المقررات…' : 'Loading courses…')
+            : catalog.error ? (lang === 'ar' ? 'لم يتم تحميل المقررات.' : 'Courses have not loaded.')
+              : lang === 'ar' ? `${totalCourses ?? filteredCourses.length} مقرر — ${grades.find(g => g.id === selectedGrade)?.label || 'كل الصفوف'}`
+                : `${totalCourses ?? filteredCourses.length} courses — ${grades.find(g => g.id === selectedGrade)?.label || 'All grades'}`}</p>
+          {(searchQuery || selectedGrade) && <button type="button" className="btn-secondary" onClick={() => {
+            setSearchQuery(''); setSelectedGrade(''); saveCatalogState('', '');
+          }}>{lang === 'ar' ? 'مسح البحث والتصفية' : 'Reset search and filters'}</button>}
+        </div>
+        {catalog.error && <div className="catalog-error" role="alert">
+          <p>{catalog.error === 'rate'
+            ? (lang === 'ar' ? 'طلبات كثيرة في وقت قصير. انتظر قليلًا ثم أعد تحميل المقررات.' : 'Too many requests. Wait briefly, then reload courses.')
+            : (lang === 'ar' ? 'تعذر تحميل المقررات. تحقق من اتصالك ثم أعد المحاولة.' : 'Courses could not load. Check your connection, then retry.')}</p>
+          <button type="button" className="btn-secondary" onClick={catalog.retry}>
+            {lang === 'ar' ? 'إعادة تحميل المقررات' : 'Reload courses'}</button>
+        </div>}
+        {!catalog.loading && !catalog.error && filteredCourses.length === 0 && <p className="catalog-empty">{lang === 'ar'
+          ? 'لا توجد مقررات مطابقة. جرّب كلمات أخرى أو غيّر الصف الدراسي.'
+          : 'No matching courses. Try another search or grade.'}</p>}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 320px), 1fr))", gap: "22px" }}>
-          {courses.map((course) => (
+          {filteredCourses.map((course) => (
             <div
               key={course.id}
               style={{
@@ -859,15 +870,23 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
 
                 <button
                   className="btn-primary"
-                  onClick={() => onNavigateToAuth("register")}
+                  onClick={() => onNavigateToAuth("register", course)}
                   style={{ padding: "8px 16px", fontSize: "12px" }}
                 >
-                  <span>{t.addCourseBtn}</span>
+                  <span>{lang === 'ar' ? 'سجّل للاشتراك' : 'Sign up to enroll'}</span>
                 </button>
               </div>
             </div>
           ))}
         </div>
+        {!catalog.loading && !catalog.error && courses === undefined && catalog.pages > 1 &&
+          <nav className="catalog-grades" aria-label={lang === 'ar' ? 'صفحات المقررات' : 'Course pages'} style={{ marginTop: 24 }}>
+            <button type="button" disabled={catalog.page <= 1} onClick={() => catalog.setPage(catalog.page - 1)}>
+              {lang === 'ar' ? 'الصفحة السابقة' : 'Previous page'}</button>
+            <span>{catalog.page} / {catalog.pages}</span>
+            <button type="button" disabled={catalog.page >= catalog.pages} onClick={() => catalog.setPage(catalog.page + 1)}>
+              {lang === 'ar' ? 'الصفحة التالية' : 'Next page'}</button>
+          </nav>}
       </section>
 
       {/* =========================================================================

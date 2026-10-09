@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.security import hash_password
 from app.models.course import Course, CourseStatus, Enrollment
 from app.models.extended import Grade, LearningObjective
-from app.models.platform import Question, Quiz, QuizStatus, QuizAttempt, QuizAttemptAnswer, AttemptStatus
+from app.models.platform import Question, Quiz, QuizQuestion, QuizStatus, QuizAttempt, QuizAttemptAnswer, AttemptStatus
 from app.models.user import User, UserRole
 from .live_helpers import BASE, clear_auth, pg_engine, session
 
@@ -43,12 +43,16 @@ def test_teacher_reads_only_owned_course_evidence_for_shared_student(global_fall
                     prompt='Explain conservation of mass', question_type='essay', points=1, learning_objective=objective_code)
                 quiz = Quiz(institution_id=institution, course_id=c.id, creator_id=teacher.id, title='QA evidence', status=QuizStatus.PUBLISHED)
                 db.add_all([q, quiz]); db.flush()
+                from app.services.quiz_snapshot import capture_questions
+                link = QuizQuestion(quiz_id=quiz.id, question_id=q.id, points=1, position=1)
+                db.add(link); db.flush()
+                snapshot = capture_questions(db, quiz, [(link, q)])[0]
                 attempt = QuizAttempt(institution_id=institution, quiz_id=quiz.id, student_id=student.id,
                     attempt_number=1, status=AttemptStatus.SUBMITTED, started_at=datetime.now(timezone.utc),
-                    submitted_at=datetime.now(timezone.utc))
+                    submitted_at=datetime.now(timezone.utc), total_points=1, question_snapshot=[snapshot])
                 db.add(attempt); db.flush()
                 db.add(QuizAttemptAnswer(attempt_id=attempt.id, question_id=q.id, answer='Synthetic',
-                    awarded_points=score, graded_at=datetime.now(timezone.utc)))
+                    awarded_points=score, graded_at=datetime.now(timezone.utc), question_snapshot=snapshot))
             db.commit()
             ids = [str(c.id) for c in courses]; codes = [c.code for c in courses]
             emails = [u.email for u in users]; student_id = str(student.id)

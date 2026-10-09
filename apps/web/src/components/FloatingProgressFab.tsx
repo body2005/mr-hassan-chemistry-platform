@@ -1,25 +1,34 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Video, FileCheck, CheckCircle2 } from "lucide-react";
 import { Course, CurrentUser } from "../types/lms";
-import { courseService } from "../services/lmsService";
 
 export interface FloatingProgressFabProps {
-  courses: Course[];
+  course: Course | null;
+  completedLessonIds: string[];
+  placement?: 'inline' | 'floating';
   currentUser: CurrentUser | null;
   theme: "light" | "dark";
+  assessmentState?: 'loading' | 'error' | 'ready';
+  onRetryAssessments?: () => void;
 }
 
 export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
-  courses,
+  course,
+  completedLessonIds,
+  placement = 'inline',
   currentUser,
   theme,
+  assessmentState = 'ready',
+  onRetryAssessments,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [coords, setCoords] = useState<{ x: number; y: number } | null>(null);
-  const [completedLessonIds, setCompletedLessonIds] = useState<string[]>([]);
   const [hiddenForVideo, setHiddenForVideo] = useState(false);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const suppressClickRef = useRef(false);
+  const cleanupDragRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => cleanupDragRef.current?.(), []);
   const dragInfoRef = useRef<{
     startX: number;
     startY: number;
@@ -54,40 +63,8 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
     };
   }, []);
 
-  // Determine current student course
-  const studentAcademicYear = currentUser?.role === "student" ? currentUser.academicYear : null;
-  const currentCourse =
-    courses.find((c) => c.academicYear === studentAcademicYear) ||
-    courses[0] ||
-    null;
-
-  // Load lesson progress
-  const studentId = currentUser?.role === "student" ? currentUser.id : null;
-  useEffect(() => {
-    if (!studentId) return;
-    let disposed = false;
-
-    const loadProgress = () => {
-      courseService
-        .getLessonProgress()
-        .then((items) => {
-          if (!disposed) {
-            setCompletedLessonIds(
-              items.filter((item) => item.completion_percent >= 100).map((item) => item.lesson_id)
-            );
-          }
-        })
-        .catch(() => undefined);
-    };
-
-    loadProgress();
-    window.addEventListener("focus", loadProgress);
-
-    return () => {
-      disposed = true;
-      window.removeEventListener("focus", loadProgress);
-    };
-  }, [studentId, currentCourse?.id]);
+  // The owner supplies the actually viewed course and its loaded progress.
+  const currentCourse = course;
 
   // Close popup when clicking outside
   useEffect(() => {
@@ -114,21 +91,25 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
 
   const lessonStats = { done: completedLessonsCount, total: courseLessons.length };
   const assignmentStats = {
-    done: serverAssignments.filter((a) => (a.attemptsUsed ?? 0) > 0).length,
+    done: serverAssignments.filter((a) => a.completed === true).length,
     total: serverAssignments.length,
   };
   const quizStats = {
-    done: serverQuizzes.filter((qz) => (qz.attemptsUsed ?? 0) > 0).length,
+    done: serverQuizzes.filter((qz) => qz.completed === true).length,
     total: serverQuizzes.length,
   };
   const overallDone = lessonStats.done + assignmentStats.done + quizStats.done;
   const overallTotal = lessonStats.total + assignmentStats.total + quizStats.total;
   const overallPercent = overallTotal > 0 ? Math.round((overallDone / overallTotal) * 100) : 0;
+  const assessmentsReady = assessmentState === 'ready';
+  const overallLabel = assessmentsReady ? `${overallPercent}%` : '—';
 
   // Dragging logic
   const handlePointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
     // Only primary button
-    if (e.button !== 0) return;
+    if (placement === 'inline' || e.button !== 0) return;
+    cleanupDragRef.current?.();
+    suppressClickRef.current = false;
 
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -158,22 +139,31 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
       }
     };
 
-    const handlePointerUp = () => {
+    const cleanup = () => {
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
-
-      if (dragInfoRef.current && !dragInfoRef.current.hasMoved) {
-        setIsOpen((prev) => !prev);
-      }
+      window.removeEventListener('pointercancel', handlePointerCancel);
+      cleanupDragRef.current = null;
+    };
+    const handlePointerUp = () => {
+      suppressClickRef.current = Boolean(dragInfoRef.current?.hasMoved);
       dragInfoRef.current = null;
+      cleanup();
+    };
+    const handlePointerCancel = () => {
+      suppressClickRef.current = true;
+      dragInfoRef.current = null;
+      cleanup();
     };
 
+    cleanupDragRef.current = cleanup;
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerCancel);
   };
 
   // Keep hooks in the same order as the session changes.
-  if (!currentUser || currentUser.role !== "student" || hiddenForVideo) {
+  if (!currentCourse || !currentUser || currentUser.role !== "student" || hiddenForVideo) {
     return null;
   }
 
@@ -188,7 +178,9 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
   const alignRight = coords !== null ? coords.x > (typeof window !== "undefined" ? window.innerWidth - 270 : 600) : true;
 
   // Position style: default bottom-right (الكرة عند الطالب على اليمين افتراضياً)
-  const positionStyle: React.CSSProperties = coords
+  const positionStyle: React.CSSProperties = placement === 'inline'
+    ? { position: 'relative', zIndex: 10, maxWidth: '100%' }
+    : coords
     ? {
         position: "fixed",
         left: `${coords.x}px`,
@@ -205,19 +197,25 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
   return (
     <div
       ref={containerRef}
-      className="floating-progress-fab"
+      className={`floating-progress-fab ${placement === 'inline' ? 'course-progress-inline' : ''}`}
       style={{
         ...positionStyle,
         userSelect: "none",
-        touchAction: "none",
+        touchAction: placement === 'inline' ? 'manipulation' : 'none',
       }}
     >
       {/* Circular Progress Button */}
       <button
         type="button"
         onPointerDown={handlePointerDown}
-        aria-label="نسبة إنجاز المقرر"
-        title="نسبة إنجاز المقرر — اضغط للتفاصيل أو اسحب للتحريك"
+        onClick={() => {
+          if (suppressClickRef.current) { suppressClickRef.current = false; return; }
+          setIsOpen(open => !open);
+        }}
+        aria-expanded={isOpen}
+        aria-busy={assessmentState === 'loading'}
+        aria-label={`نسبة إنجاز المقرر: ${currentCourse.title}`}
+        title={placement === 'inline' ? 'اضغط لعرض تفاصيل إنجاز هذا المقرر' : 'اضغط للتفاصيل أو اسحب للتحريك'}
         style={{
           display: "flex",
           alignItems: "center",
@@ -230,7 +228,7 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
             ? "linear-gradient(135deg, #059669, #047857)"
             : "rgba(255, 255, 255, 0.98)",
           color: isDark ? "#ffffff" : "#065f46",
-          cursor: "grab",
+          cursor: placement === 'inline' ? 'pointer' : 'grab',
           boxShadow: isDark
             ? "0 6px 20px rgba(5, 150, 105, 0.55), 0 0 14px rgba(16, 185, 129, 0.35)"
             : "0 6px 20px rgba(0, 0, 0, 0.18)",
@@ -262,22 +260,23 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
             strokeWidth="5"
             strokeLinecap="round"
             strokeDasharray={2 * Math.PI * 27}
-            strokeDashoffset={2 * Math.PI * 27 * (1 - overallPercent / 100)}
+            strokeDashoffset={2 * Math.PI * 27 * (1 - (assessmentsReady ? overallPercent : 0) / 100)}
             style={{ transition: "stroke-dashoffset 0.4s ease" }}
           />
         </svg>
         <strong style={{ fontSize: "14.5px", fontWeight: 900, pointerEvents: "none" }}>
-          {overallPercent}%
+          {overallLabel}
         </strong>
       </button>
+      {placement === 'inline' && <span className="course-progress-label">إنجاز {currentCourse.title}</span>}
 
       {/* Expanded Progress Breakdown Card */}
       {isOpen && (
         <div
           style={{
-            position: "absolute",
-            ...(openDownward ? { top: "72px" } : { bottom: "72px" }),
-            ...(alignRight ? { right: 0 } : { left: 0 }),
+            position: placement === 'inline' ? 'relative' : 'absolute',
+            ...(placement === 'floating' ? (openDownward ? { top: "72px" } : { bottom: "72px" }) : {}),
+            ...(placement === 'floating' ? (alignRight ? { right: 0 } : { left: 0 }) : {}),
             background: isDark ? "#064e3b" : "var(--bg-surface, #ffffff)",
             border: isDark ? "1.5px solid #10b981" : "1px solid var(--border-color, #e2e8f0)",
             borderRadius: "16px",
@@ -285,7 +284,8 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
               ? "0 16px 36px rgba(0,0,0,0.55), 0 0 16px rgba(5, 150, 105, 0.25)"
               : "0 14px 35px rgba(0,0,0,0.18)",
             padding: "16px 18px",
-            minWidth: "245px",
+            minWidth: "min(245px, 100%)",
+            boxSizing: 'border-box',
             zIndex: 10000,
             display: "flex",
             flexDirection: "column",
@@ -312,12 +312,18 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
             </span>
           </div>
 
+          {!assessmentsReady && <div role={assessmentState === 'error' ? 'alert' : 'status'} style={{ color: 'var(--text-main)', fontSize: '13px' }}>
+            <p>{assessmentState === 'error' ? 'تعذر حساب الإنجاز الكامل؛ بيانات التقييمات غير متاحة.' : 'جارٍ تحميل تقييمات المقرر لحساب الإنجاز الكامل…'}</p>
+            {assessmentState === 'error' && onRetryAssessments && <button type="button" className="btn-secondary" onClick={onRetryAssessments}>إعادة تحميل بيانات الإنجاز</button>}
+          </div>}
+
           {([
             { label: "الدروس", icon: <Video size={14} />, done: lessonStats.done, total: lessonStats.total, color: isDark ? "#38bdf8" : "#0f766e" },
             { label: "الواجبات", icon: <FileCheck size={14} />, done: assignmentStats.done, total: assignmentStats.total, color: isDark ? "#fbbf24" : "#d97706" },
             { label: "الكويزات", icon: <CheckCircle2 size={14} />, done: quizStats.done, total: quizStats.total, color: isDark ? "#34d399" : "#059669" },
           ] as const).map((row) => {
             const pct = row.total > 0 ? Math.round((row.done / row.total) * 100) : 0;
+            const known = row.label === 'الدروس' || assessmentsReady;
             return (
               <div key={row.label} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <span style={{ color: row.color, display: "inline-flex" }}>{row.icon}</span>
@@ -336,7 +342,7 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
                   <div
                     style={{
                       height: "100%",
-                      width: `${pct}%`,
+                      width: `${known ? pct : 0}%`,
                       background: row.color,
                       borderRadius: "3px",
                       transition: "width 0.3s ease",
@@ -352,7 +358,7 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
                     textAlign: "center",
                   }}
                 >
-                  ({pct}%) {row.done}/{row.total}
+                  {known ? `(${pct}%) ${row.done}/${row.total}` : '—'}
                 </span>
               </div>
             );
@@ -371,7 +377,7 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
               نسبة المقرر الإجمالية
             </span>
             <strong style={{ fontSize: "15px", fontWeight: 900, color: isDark ? "#34d399" : "#059669" }}>
-              {overallPercent}%
+              {overallLabel}
             </strong>
           </div>
         </div>

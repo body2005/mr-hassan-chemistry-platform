@@ -39,11 +39,14 @@ import { Language, translations } from "../utils/i18n";
 import { EducationalBookItem, RevisionPackageItem } from "./GeneralHomeView";
 import { courseService } from "../services/lmsService";
 import { apiRequest, fetchApiBlob, uploadWithProgress } from "../services/apiClient";
-import { useToast } from "../components/ToastProvider";
+import { useToast, ToastRegion } from "../components/ToastProvider";
 import { FormulaRenderer } from "../components/FormulaRenderer";
 import { PaymentTarget, lessonAccessService } from "../services/paymentService";
 import { VideoLessonPage } from "../components/VideoLessonPage";
 import { FreeCourseCatalog } from "../components/FreeCourseCatalog";
+import { FloatingProgressFab } from '../components/FloatingProgressFab';
+import { assessmentBand, assessmentPercent } from '../services/assessmentOutcome';
+import { useCourseAssessments } from '../services/useCourseAssessments';
 
 export interface DisplayBookItem extends EducationalBookItem {
   fileUrl?: string;
@@ -61,12 +64,14 @@ export type QuizResultPage = {
     attempt_number: number;
     is_practice: boolean;
     score: number;
-    total_points: number;
+    total_points: number | null;
     submitted_at: string | null;
     duration_seconds?: number | null;
   }>;
   score: number;
-  total_points: number;
+  total_points: number | null;
+  history_state?: 'frozen' | 'legacy-unverified';
+  history_warning?: string | null;
   grading_status?: "pending" | "complete";
   summary: { correct: number; wrong: number; skipped: number; pending?: number; total: number };
   questions: Array<{
@@ -125,12 +130,14 @@ export interface CourseQuiz {
 }
 
 interface MyCoursesViewProps {
+  initialCourseId?: string;
   enrolledCourses: Course[];
   onEnrollCourse?: (courseId: string) => Promise<void>;
   onNavigateToCatalog: () => void;
   lang: Language;
   currentUser?: CurrentUser;
   purchasedLessonIds?: string[];
+  accessRevision?: string;
   onCheckout: (target: PaymentTarget) => void;
   onToggleMenu?: () => void;
   menuOpen?: boolean;
@@ -145,12 +152,14 @@ interface MyCoursesViewProps {
 }
 
 export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
+  initialCourseId,
   enrolledCourses,
   onEnrollCourse,
   onNavigateToCatalog,
   lang,
   currentUser,
   purchasedLessonIds = [],
+  accessRevision = '',
   onCheckout,
   onToggleMenu,
   menuOpen = false,
@@ -181,13 +190,15 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     return true;
   });
 
-  const [selectedCourseId, setSelectedCourseId] = useState("");
+  const [selectedCourseId, setSelectedCourseId] = useState(() => initialCourseId || '');
   const [catalogOpen, setCatalogOpen] = useState(false);
   const freeCatalog = onEnrollCourse && <FreeCourseCatalog year={studentYear} enrolledIds={enrolledCourses.map(c => c.id)}
     onEnroll={async id => { await onEnrollCourse(id); setSelectedCourseId(id); }} />;
 
   const activeCourse =
     validEnrolledCourses.find((c) => c.id === selectedCourseId) || validEnrolledCourses[0];
+  const selectedAssessments = useCourseAssessments(activeCourse?.id, isStudent ? currentUser?.id : undefined, accessRevision);
+  const reloadSelectedAssessments = selectedAssessments.retry;
 
   // Sub-tabs: Lessons, Revisions, Assignments, Quizzes, Books
   const [activeContentTab, setActiveContentTab] = useState<"lessons" | "revisions" | "assignments" | "quizzes" | "books">("lessons");
@@ -688,6 +699,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           attemptNumber: submitted.attempt_number,
           gradingStatus: submitted.grading_status,
         });
+        reloadSelectedAssessments();
         setShowQuizSubmitConfirm(false);
       });
     } catch (err) {
@@ -699,7 +711,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     } finally {
       setServerQuizSubmitting(false);
     }
-  }, [serverQuiz, serverQuizRemaining, serverQuizAttempt, serverQuizAnswers, toast]);
+  }, [serverQuiz, serverQuizRemaining, serverQuizAttempt, serverQuizAnswers, toast, reloadSelectedAssessments]);
 
   // Auto-submit exactly once when the timer hits zero (server also enforces).
   useEffect(() => {
@@ -781,6 +793,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       );
       setAssignmentUploadDone({ version: result.version, submittedAt: result.submitted_at });
       setAssignmentFile(null);
+      reloadSelectedAssessments();
       toast({ message: "تم تسليم حل الواجب بنجاح", tone: "success" });
     } catch (err) {
       toast({ message: err instanceof Error ? err.message : "تعذر رفع ملف الحل", tone: "danger" });
@@ -889,8 +902,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   const courseQuizzes: CourseQuiz[] = courseContent?.quizzes || [];
 
   // Server-published assessments (real, scoped to lessons/units, payment-gated).
-  // These come from GET /courses/{id}/assessments via courseService.getCourses.
-  const serverAssessments: CourseAssessmentRef[] = currentCourse?.assessments || [];
+  // Do not wait for assessment hydration of every other enrolled course.
+  const serverAssessments: CourseAssessmentRef[] = isStudent ? selectedAssessments.items : currentCourse?.assessments || [];
   const serverQuizzes = serverAssessments.filter((a) => a.kind === "quiz");
   const serverAssignments = serverAssessments.filter((a) => a.kind === "assignment");
   const lessonTitleById = new Map((currentCourse?.lessons || []).map((l) => [l.id, l.title]));
@@ -1104,6 +1117,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   return (
     <div className="page-container">
+      <ToastRegion label="رسائل المقرر" />
       <button className="btn-secondary" onClick={() => setCatalogOpen(prev => !prev)}>{catalogOpen ? 'إغلاق المقررات المتاحة' : 'استعراض المقررات المجانية'}</button>
       {catalogOpen && freeCatalog}
       {/* Top Urgent Counter */}
@@ -1154,6 +1168,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               {currentCourse.description}
             </p>
           </div>
+          <FloatingProgressFab key={currentCourse.id} course={{ ...currentCourse, assessments: serverAssessments }}
+            completedLessonIds={completedLessonIds} currentUser={currentUser || null}
+            assessmentState={selectedAssessments.loading ? 'loading' : selectedAssessments.error ? 'error' : 'ready'}
+            onRetryAssessments={reloadSelectedAssessments}
+            theme={theme || 'light'} placement="inline" />
         </div>
 
         {/* Content Tabs & Dedicated Search Bar (Matching Image 2 layout) */}
@@ -1801,7 +1820,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       )}
 
       {activeContentTab === "assignments" && (
-        courseAssignments.length === 0 && serverAssignments.length === 0 ? (
+        courseAssignments.length === 0 && serverAssignments.length === 0 && !selectedAssessments.loading && !selectedAssessments.error ? (
           <div style={{ background: "var(--bg-surface)", border: "1.5px dashed var(--border-color)", borderRadius: "18px", padding: "60px 20px", textAlign: "center" }}>
             <FileText size={48} style={{ color: "#059669", margin: "0 auto 12px" }} />
             <h3 style={{ margin: "0 0 6px", fontSize: "18px", fontWeight: 800, color: "var(--text-main)" }}>
@@ -1958,6 +1977,15 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       {/* =========================================================================
           SECTION 3: QUIZZES GRID (في شكل بطاقات زي المقررات مع الـ Deadline)
          ========================================================================= */}
+      {(activeContentTab === 'quizzes' || activeContentTab === 'assignments') && selectedAssessments.loading && (
+        <p role="status">{lang === 'ar' ? 'جارٍ تحميل تقييمات هذا المقرر…' : 'Loading this course’s assessments…'}</p>
+      )}
+      {(activeContentTab === 'quizzes' || activeContentTab === 'assignments') && selectedAssessments.error && (
+        <div role="alert" className="course-hydration-warning">
+          <span>{lang === 'ar' ? 'تعذر تحميل تقييمات هذا المقرر. يمكنك إعادة المحاولة.' : 'This course’s assessments could not load. You can retry.'}</span>
+          <button type="button" onClick={selectedAssessments.retry}>{lang === 'ar' ? 'إعادة تحميل التقييمات' : 'Retry assessments'}</button>
+        </div>
+      )}
       {activeContentTab === "quizzes" && filteredServerQuizzes.length > 0 && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 340px), 1fr))", gap: "20px", marginBottom: "24px" }}>
           {filteredServerQuizzes.map((qz) => (
@@ -2100,7 +2128,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       )}
 
       {activeContentTab === "quizzes" && (
-        courseQuizzes.length === 0 && serverQuizzes.length === 0 ? (
+        courseQuizzes.length === 0 && serverQuizzes.length === 0 && !selectedAssessments.loading && !selectedAssessments.error ? (
           <div style={{ background: "var(--bg-surface)", border: "1.5px dashed var(--border-color)", borderRadius: "18px", padding: "60px 20px", textAlign: "center" }}>
             <HelpCircle size={48} style={{ color: "#059669", margin: "0 auto 12px" }} />
             <h3 style={{ margin: "0 0 6px", fontSize: "18px", fontWeight: 800, color: "var(--text-main)" }}>
@@ -2630,6 +2658,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
             {/* Main card: the current question only */}
             <div style={{ flex: 1, minWidth: 0 }}>
+              <ToastRegion label="رسائل حل الاختبار" />
               {serverQuizLoading && <div style={{ padding: "60px", textAlign: "center", color: "var(--text-muted)" }}>جاري تحميل أسئلة الاختبار…</div>}
 
               {serverQuizError && (
@@ -2762,7 +2791,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         value={serverQuizAnswers[q.id] || ""}
                         onChange={(e) => setServerQuizAnswers({ ...serverQuizAnswers, [q.id]: e.target.value })}
                         placeholder="اكتب إجابتك هنا…"
-                        style={{ width: "100%", padding: "12px 14px", borderRadius: "10px", border: "1px solid var(--border-color)", background: "var(--bg-surface)", color: "var(--text-main)", fontSize: "14px", fontFamily: "inherit", boxSizing: "border-box" }}
+                        style={{ width: "100%", padding: "12px 14px", borderRadius: "10px", border: "1px solid var(--border-color)", background: "var(--bg-surface)", color: "var(--text-main)", fontSize: "16px", lineHeight: 1.6, fontFamily: "inherit", boxSizing: "border-box" }}
                       />
                     )}
 
@@ -3003,6 +3032,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               )}
 
               {/* Actions */}
+              <ToastRegion label="رسائل تسليم الاختبار" />
               <div style={{ display: "flex", gap: "10px" }}>
                 <button
                   type="button"
@@ -3053,10 +3083,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           summary stats + filterable corrected question list (per approved mock).
          ========================================================================= */}
       {(quizResultPage || quizResultLoading || quizResultError) && (() => {
-        const percent = quizResultPage && quizResultPage.total_points > 0
-          ? Math.round((quizResultPage.score / quizResultPage.total_points) * 1000) / 10
-          : 0;
-        const rankLabel = percent >= 90 ? "ممتاز — أنت نجم!" : percent >= 75 ? "جيد جداً — استمر!" : percent >= 50 ? "جيد — يمكنك التحسن" : "تحتاج مراجعة الدرس";
+        const percent = quizResultPage ? assessmentPercent(quizResultPage.score, quizResultPage.total_points) : null;
+        const rankLabel = assessmentBand(percent);
         const filtered = quizResultPage
           ? quizResultPage.questions.filter((q) => quizResultFilter === "all" || q.state === quizResultFilter)
           : [];
@@ -3179,6 +3207,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 const durLabel = dur != null ? `${Math.floor(dur / 60)}:${String(dur % 60).padStart(2, "0")}` : "—";
                 return (
                   <>
+                    {quizResultPage.history_warning && <p role="alert" className="history-warning">{quizResultPage.history_warning}</p>}
                     {/* ── Attempts History Bar: Switch attempts to review mistakes ── */}
                     {quizResultPage.attempts_history && quizResultPage.attempts_history.length > 0 && (
                       <div
@@ -3276,15 +3305,15 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                             <circle cx="65" cy="65" r="56" fill="none" stroke="var(--border-color)" strokeWidth="11" />
                             <circle
                               cx="65" cy="65" r="56" fill="none"
-                              stroke={percent >= 75 ? "#10b981" : percent >= 50 ? "#f59e0b" : "#ef4444"}
+                              stroke={percent == null ? 'var(--text-muted)' : percent >= 80 ? "#10b981" : percent >= 60 ? "#f59e0b" : "#ef4444"}
                               strokeWidth="11" strokeLinecap="round"
-                              strokeDasharray={`${(percent / 100) * 2 * Math.PI * 56} ${2 * Math.PI * 56}`}
+                              strokeDasharray={`${((percent ?? 0) / 100) * 2 * Math.PI * 56} ${2 * Math.PI * 56}`}
                             />
                           </svg>
                           <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-                            <strong style={{ fontSize: "24px", fontWeight: 900, color: "var(--text-main)" }}>{quizResultPage.grading_status === "pending" ? "بانتظار التصحيح" : `${percent}%`}</strong>
+                            <strong style={{ fontSize: "24px", fontWeight: 900, color: "var(--text-main)" }}>{quizResultPage.grading_status === "pending" ? "بانتظار التصحيح" : percent == null ? '—' : `${percent}%`}</strong>
                             <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>
-                              {quizResultPage.score.toLocaleString("ar-EG")} / {quizResultPage.total_points.toLocaleString("ar-EG")} درجة
+                              {quizResultPage.score.toLocaleString("ar-EG")} / {quizResultPage.total_points?.toLocaleString("ar-EG") ?? 'غير موثق'} درجة
                             </span>
                           </div>
                         </div>
@@ -3597,6 +3626,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           </header>
 
           <div style={{ maxWidth: "760px", margin: "0 auto", padding: "26px 20px 70px" }}>
+            <ToastRegion label="رسائل الواجب" />
             {/* ── Breadcrumb lesson context + centered title + countdown chip ── */}
             <div style={{ textAlign: "center", marginBottom: "22px" }}>
               <div style={{ fontSize: "12px", fontWeight: 800, color: "#059669", marginBottom: "6px", display: "inline-flex", alignItems: "center", gap: "6px" }}>

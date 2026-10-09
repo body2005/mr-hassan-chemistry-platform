@@ -94,8 +94,8 @@ class QuestionBank(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 
 class QuestionVersion(UUIDPrimaryKeyMixin, Base):
-    """Immutable snapshot of a question at a point in time. Attempts reference
-    this table so historical grading never changes retroactively."""
+    """Immutable bank revision. Assessments copy the revision identity and full
+    content into their own snapshots, including the assessment-specific weight."""
 
     __tablename__ = "question_versions"
     __table_args__ = (

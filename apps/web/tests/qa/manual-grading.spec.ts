@@ -35,7 +35,7 @@ test(`essay and uploaded homework are submitted and graded through the real UI${
   // The course switcher intentionally appears only with multiple enrollments.
   const secondCourse = await post(page, "courses", { code: `QAMANB${stamp}`, title: `Other Manual ${stamp}` });
   await post(page, `courses/${secondCourse.id}/publish`, {}, 200);
-  const studentContext = await browser.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true" });
+  const studentContext = await browser.newContext({ ignoreHTTPSErrors: false });
   const student = await studentContext.newPage();
   student.setDefaultTimeout(15_000);
   const studentEmail = `qa-manual-${crypto.randomUUID()}@demo.com`;
@@ -95,10 +95,22 @@ test(`essay and uploaded homework are submitted and graded through the real UI${
     // Exercise the real blob helper, multipart preflight, JSON hydration and
     // SSE renewal in two tabs sharing cookies; no direct scripted API helper.
     await student.getByRole('button', { name: 'تحميل PDF', exact: true }).click();
-    await expect(student.getByText('تعذر تحميل ورقة الواجب', { exact: true })).toBeVisible();
+    // The provider deliberately announces the same message in a screen-reader
+    // live region. Check the visible contextual notice AND that announcement,
+    // not an ambiguous page-wide text locator or an arbitrary first match.
+    const homeworkFeedback = student.getByRole('region', { name: 'رسائل الواجب', exact: true });
+    const sheetError = homeworkFeedback.getByText('تعذر تحميل ورقة الواجب', { exact: true });
+    await expect(sheetError).toBeVisible();
+    await expect(sheetError).toBeInViewport();
+    expect(await sheetError.evaluate(node => {
+      const rect = node.getBoundingClientRect();
+      const top = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+      return !!top && (node.contains(top) || top.contains(node));
+    }), 'Visible feedback must not be behind the full-page homework overlay').toBe(true);
+    await expect(student.locator('.sr-only[role="status"]')).toHaveText('تعذر تحميل ورقة الواجب');
     await other.reload();
     await student.getByRole('button', { name: 'إرسال الحل للمعلم' }).click();
-    await expect(student.getByText('تعذر تجديد الجلسة مؤقتًا.', { exact: false }).first()).toBeVisible();
+    await expect(homeworkFeedback.getByText('تعذر تجديد الجلسة مؤقتًا.', { exact: false })).toBeVisible();
     await expect(student.locator('.profile-button')).toHaveCount(1);
     expect(await student.locator('input[type="file"]').evaluate(input => (input as HTMLInputElement).files?.length)).toBe(1);
     expect(transfers).toHaveLength(0);
@@ -120,6 +132,9 @@ test(`essay and uploaded homework are submitted and graded through the real UI${
     await student.getByRole("button", { name: "إرسال الحل للمعلم" }).click();
     await expect(student.getByText("تم إرسال حل الواجب للمعلم بنجاح")).toBeVisible();
     expect(transfers).toHaveLength(1);
+    // One untouched lesson plus two actual submissions:2/3, not a started
+    // attempt counted as complete or a homework always stuck at0.
+    await expect(student.getByRole('button', { name: `نسبة إنجاز المقرر: ${course.title}`, exact: true })).toHaveText('67%');
 
     await page.goto(`${base}/#submissions`);
     if (delayedIdentity) {

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import CurrentUser, OptionalUser, require_roles
 from app.core.database import get_db
-from app.models.user import User, UserRole
+from app.models.user import GradeLevel, User, UserRole
 from app.models.course import Enrollment, EnrollmentStatus
 from app.models.payment import EntitlementType, StudentEntitlement
 from app.schemas import (
@@ -154,10 +154,23 @@ def list_courses(
     page_size: int = Query(default=20, ge=1, le=100),
     search: str | None = Query(default=None, max_length=100),
     sort: Literal["created_at", "title"] = "created_at",
+    grade_level: GradeLevel | None = None,
+    public_only: bool = False,
+    enrolled_only: bool = False,
 ) -> PageResponse[CourseResponse]:
-    courses, total = course_service.list_courses(db, user, page, page_size, search, sort)
+    if enrolled_only:
+        if public_only:
+            raise HTTPException(400, "Public and enrolled catalog filters cannot be combined")
+        if user is None:
+            raise HTTPException(401, "Authentication required")
+        if user.role != UserRole.STUDENT:
+            raise HTTPException(403, "Student identity required")
+    # A public landing view must never hydrate a teacher's private drafts or
+    # lesson content even if an existing cookie accompanies the request.
+    catalog_user = None if public_only else user
+    courses, total = course_service.list_courses(db, catalog_user, page, page_size, search, sort, grade_level, enrolled_only)
     return PageResponse(
-        items=_safe_course_responses(db, user, courses),
+        items=_safe_course_responses(db, catalog_user, courses),
         pagination=PageInfo(
             page=page,
             page_size=page_size,

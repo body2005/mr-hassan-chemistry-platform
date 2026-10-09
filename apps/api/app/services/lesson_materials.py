@@ -18,6 +18,7 @@ from app.models.extended import LessonAsset
 from app.models.user import User
 from app.services.extraction_staging import resolve_course_uuid, resolve_lesson_uuid  # re-export convenience
 from app.services.storage_cleanup import compensate_upload, enqueue_cleanup
+from app.core.storage_async import save_file_async
 
 ALLOWED_MATERIAL_EXT = {
     ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".txt", ".csv",
@@ -132,7 +133,7 @@ async def upload_material(
         if size == 0:
             raise HTTPException(status_code=400, detail="Empty file")
         storage_started = True
-        storage.save_file(staged, object_key)
+        await save_file_async(storage, staged, object_key)
     except BaseException:
         db.rollback()
         if storage_started:

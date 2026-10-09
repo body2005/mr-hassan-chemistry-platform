@@ -122,9 +122,10 @@ class Settings(BaseSettings):
         self.app_env = self.app_env.strip().lower()
         if self.app_env not in {'development', 'test', 'testing', 'production', 'production_like', 'staging'}:
             raise ValueError('Unsupported APP_ENV; do not silently treat a deployment as development')
-        if self.deployment_environment and (len(self.secret_key) < 32 or self.secret_key.lower() in {
+        if self.deployment_environment and (len(self.secret_key.strip()) < 32 or self.secret_key.strip().lower() in {
             'development-only-change-me', 'test-secret-key-that-is-long-enough',
-            'change-me-before-production-please', 'your-secret-key-here-change-this-now'}):
+            'change-me-before-production-please', 'your-secret-key-here-change-this-now',
+            'local-docker-production-secret-key-at-least-32-chars-long'}):
             raise ValueError("SECRET_KEY must be replaced before production startup")
         if self.deployment_environment and not self.secure_cookies:
             raise ValueError('Secure cookies must remain enabled in deployment environments')

@@ -15,10 +15,10 @@ import {
   FileText,
 } from "lucide-react";
 import { Course, CurrentUser, VideoLesson } from "../types/lms";
-import { apiRequest, apiUrl } from "../services/apiClient";
+import { useProtectedPlayback } from "./useProtectedPlayback";
 import { VideoTelemetryTracker } from "../services/videoTelemetry";
 import { lessonAccessService } from "../services/paymentService";
-import { useToast } from "./ToastProvider";
+import { useToast, ToastRegion } from "./ToastProvider";
 import Hls from "hls.js";
 import { useHlsTransport } from "./useHlsTransport";
 import { VideoLessonNavigation } from "./VideoLessonNavigation";
@@ -102,13 +102,9 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   const maxWatchedRef = useRef(0);
 
   // Playback state
-  const [playbackUrl, setPlaybackUrl] = useState("");
-  const [playbackError, setPlaybackError] = useState<string | null>(null);
-  const playbackRenewingRef = useRef(false);
-  const playbackScopeRef = useRef<object | null>(null);
-  const lastPlaybackRenewalRef = useRef(0);
-  const pendingPlaybackResumeRef = useRef<{ time: number; playing: boolean } | null>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const { playbackUrl, playbackError, setPlaybackError, renewProtectedPlayback, pendingPlaybackResumeRef } =
+    useProtectedPlayback(lesson, currentUser?.id, videoElementRef, hlsRef);
   const [qualityOptions, setQualityOptions] = useState<string[]>(["الأصلية"]);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -173,72 +169,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     setIsPlaying(false);
   }, [lesson.id, completedLessonIds, isTeacher, currentUser?.id]);
 
-  // Protected playback token fetching
-  useEffect(() => {
-    let disposed = false;
-    const scope = {};
-    playbackScopeRef.current = scope;
-    playbackRenewingRef.current = false;
-    lastPlaybackRenewalRef.current = 0;
-    pendingPlaybackResumeRef.current = null;
-    setPlaybackUrl("");
-    setPlaybackError(null);
-
-    if (!lesson.videoUrl && !lesson.requiresProtectedPlayback) {
-      setPlaybackError("لا يوجد فيديو جاهز لهذا الدرس بعد. إذا كنت قد رفعته، تحقق من اكتمال الرفع والمعالجة في إدارة الدروس ثم حدّث الصفحة.");
-      return () => {
-        disposed = true;
-        if (playbackScopeRef.current === scope) playbackScopeRef.current = null;
-      };
-    }
-
-    if (!lesson.requiresProtectedPlayback) {
-      setPlaybackUrl(lesson.videoUrl);
-      return () => {
-        disposed = true;
-        if (playbackScopeRef.current === scope) playbackScopeRef.current = null;
-      };
-    }
-
-    void apiRequest<{ stream_url: string }>(`/lessons/${lesson.id}/video-token`, {
-      method: "POST",
-    })
-      .then(({ stream_url }) => {
-        if (!disposed) setPlaybackUrl(apiUrl(stream_url));
-      })
-      .catch(() => {
-        if (!disposed) {
-          setPlaybackError("تعذر تجهيز بث الفيديو المحمي. تأكد من صلاحية الوصول ثم أعد المحاولة.");
-        }
-      });
-
-    return () => {
-      disposed = true;
-      if (playbackScopeRef.current === scope) playbackScopeRef.current = null;
-    };
-  }, [lesson.id, lesson.videoUrl, lesson.requiresProtectedPlayback, currentUser?.id]);
-
   useHlsTransport(playbackUrl, videoElementRef, hlsRef, setQualityOptions, setSelectedQuality, setPlaybackError);
-
-  useEffect(() => {
-    if (!playbackUrl.includes("/hls/") || !lesson.requiresProtectedPlayback) return;
-    let disposed = false;
-    // Renew before expiry without erasing playback position. Finite timer,
-    // failures stop here; no automatic 401/429 renewal/retry loop.
-    const timer = window.setTimeout(() => {
-      const player = videoElementRef.current;
-      void apiRequest<{ stream_url: string }>(`/lessons/${lesson.id}/video-token`, { method: "POST" }).then(({ stream_url }) => {
-        if (disposed) return;
-        pendingPlaybackResumeRef.current = { time: player?.currentTime || 0, playing: Boolean(player && !player.paused) };
-        setPlaybackUrl(apiUrl(stream_url));
-      }).catch(() => {
-        if (disposed) return;
-        hlsRef.current?.stopLoad();
-        setPlaybackError("تعذر تجديد جلسة الفيديو؛ أعد المحاولة بعد التحقق من الاتصال.");
-      });
-    }, 240_000);
-    return () => { disposed = true; window.clearTimeout(timer); };
-  }, [playbackUrl, lesson.id, lesson.requiresProtectedPlayback, currentUser?.id]);
 
   const [isAccessRequested, setIsAccessRequested] = useState(false);
   const [isSubmittingAccessRequest, setIsSubmittingAccessRequest] = useState(false);
@@ -249,17 +180,11 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
       const detail = (e as CustomEvent).detail;
       const targetId = detail?.lesson_id || detail?.resource_id;
       if (targetId && targetId === lesson.id) {
-        setPlaybackError(null);
-        setIsAccessRequested(false);
-        void apiRequest<{ stream_url: string }>(`/lessons/${lesson.id}/video-token`, {
-          method: "POST",
-        })
-          .then(({ stream_url }) => {
-            if (disposed) return;
-            setPlaybackUrl(apiUrl(stream_url));
-            toast({ message: "تمت إتاحة الدرس بنجاح، جاري تشغيل الفيديو!", tone: "success" });
-          })
-          .catch(() => undefined);
+        void renewProtectedPlayback(true).then(ready => {
+          if (disposed || !ready) return;
+          setIsAccessRequested(false);
+          toast({ message: "تمت إتاحة الدرس بنجاح، جاري تشغيل الفيديو!", tone: "success" });
+        });
       }
     };
     window.addEventListener("lms_lesson_unlocked", handleUnlocked);
@@ -267,7 +192,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
       disposed = true;
       window.removeEventListener("lms_lesson_unlocked", handleUnlocked);
     };
-  }, [lesson.id, currentUser?.id, toast]);
+  }, [lesson.id, currentUser?.id, toast, renewProtectedPlayback]);
 
   async function handleRequestLessonAccess() {
     setIsSubmittingAccessRequest(true);
@@ -368,31 +293,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     saveVideoProgressToStorage(currentUser?.id, lesson.id, duration, duration, duration);
   };
 
-  async function renewProtectedPlayback() {
-    const scope = playbackScopeRef.current;
-    if (!scope || !lesson.requiresProtectedPlayback || playbackRenewingRef.current) return;
-    // A broken source should not cause an unbounded token/request loop.
-    if (Date.now() - lastPlaybackRenewalRef.current < 10_000) {
-      setPlaybackError("تعذر تشغيل الفيديو. أعد المحاولة بعد قليل.");
-      return;
-    }
-    lastPlaybackRenewalRef.current = Date.now();
-    playbackRenewingRef.current = true;
-    const player = videoElementRef.current;
-    const resume = { time: player?.currentTime ?? currentTime, playing: isPlaying || Boolean(player && !player.paused) };
-    try {
-      const { stream_url } = await apiRequest<{ stream_url: string }>(`/lessons/${lesson.id}/video-token`, { method: "POST" });
-      if (playbackScopeRef.current !== scope) return;
-      pendingPlaybackResumeRef.current = resume;
-      setPlaybackError(null);
-      setPlaybackUrl(apiUrl(stream_url));
-    } catch {
-      if (playbackScopeRef.current !== scope) return;
-      setPlaybackError("تعذر تجديد رابط الفيديو. تحقق من اتصالك واستحقاقك ثم أعد المحاولة.");
-    } finally {
-      if (playbackScopeRef.current === scope) playbackRenewingRef.current = false;
-    }
-  }
+
 
   const handleLoadedMetadata = () => {
     if (!videoElementRef.current) return;
@@ -651,8 +552,10 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
             }}
           >
             {/* 1. Modern Video Player Container */}
+            <ToastRegion />
             <div
               ref={playerContainerRef}
+              className="lesson-video-player"
               onMouseMove={handleMouseMove}
               style={{
                 position: isWide ? "fixed" : "relative",
@@ -709,9 +612,9 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                   />
 
                   {playbackError && (
-                    <div role="alert" style={{ position: "absolute", top: "12px", left: "12px", right: "12px", zIndex: 3, padding: "10px", borderRadius: "8px", background: "rgba(127, 29, 29, 0.94)", color: "#fff", display: "flex", gap: "12px", alignItems: "center", justifyContent: "space-between" }}>
+                    <div role="alert" className="lesson-playback-error" style={{ position: "absolute", top: "12px", left: "12px", right: "12px", zIndex: 3, padding: "10px", borderRadius: "8px", background: "rgba(127, 29, 29, 0.94)", color: "#fff", display: "flex", gap: "12px", alignItems: "center", justifyContent: "space-between" }}>
                       <span>{playbackError}</span>
-                      <button type="button" onClick={() => { lastPlaybackRenewalRef.current = 0; void renewProtectedPlayback(); }} style={{ color: "#fff", border: "1px solid #fff", borderRadius: "6px", background: "transparent", padding: "5px 8px" }}>إعادة المحاولة</button>
+                      <button type="button" onClick={() => { void renewProtectedPlayback(true); }} style={{ color: "#fff", border: "1px solid #fff", borderRadius: "6px", background: "transparent", padding: "5px 8px" }}>إعادة المحاولة</button>
                     </div>
                   )}
 
@@ -747,6 +650,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                   {/* Sleek YouTube-Style Bottom Controls Bar */}
                   <div
                     dir="ltr"
+                    className="lesson-player-controls"
                     style={{
                       position: "absolute",
                       bottom: 0,
@@ -849,6 +753,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
 
                     {/* Controls Row */}
                     <div
+                      className="lesson-player-controls-row"
                       style={{
                         display: "flex",
                         alignItems: "center",
@@ -857,7 +762,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                       }}
                     >
                       {/* Left Side: Play/Pause, Rewind to start, Volume Capsule, Time */}
-                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                      <div className="lesson-player-controls-group" style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                         {/* Play/Pause Button */}
                         <button
                           type="button"
@@ -911,7 +816,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                             backdropFilter: "blur(4px)",
                             borderRadius: "9999px",
                             padding: "4px 12px",
-                            height: "30px",
+                            height: "48px",
                             boxSizing: "border-box",
                           }}
                         >
@@ -999,7 +904,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                         {/* Time Display (green to match the player accent) */}
                         <span
                           style={{
-                            fontSize: "13px",
+                            fontSize: "14px",
                             fontWeight: 700,
                             color: "#10b981",
                             fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
@@ -1012,7 +917,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                       </div>
 
                       {/* Right Side: Settings, PiP, Fullscreen */}
-                      <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+                      <div className="lesson-player-controls-group" style={{ display: "flex", alignItems: "center", gap: "14px" }}>
                         {/* Settings & Quality Menu */}
                         <div style={{ position: "relative" }}>
                           <button
@@ -1052,7 +957,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                                 boxShadow: "0 8px 20px rgba(0,0,0,0.5)",
                               }}
                             >
-                              <span style={{ fontSize: "10px", color: "#94a3b8", padding: "2px 8px", fontWeight: 700 }}>
+                              <span style={{ fontSize: "14px", color: "#94a3b8", padding: "2px 8px", fontWeight: 700 }}>
                                 جودة الفيديو:
                               </span>
                               {qualityOptions.map((q) => (
@@ -1065,12 +970,12 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                                     setShowQualityMenu(false);
                                   }}
                                   style={{
-                                    background: selectedQuality === q ? "#059669" : "transparent",
+                                    background: selectedQuality === q ? "#047857" : "transparent",
                                     border: "none",
                                     color: "#ffffff",
                                     padding: "5px 8px",
                                     borderRadius: "4px",
-                                    fontSize: "12px",
+                                    fontSize: "14px",
                                     fontWeight: 700,
                                     cursor: "pointer",
                                     textAlign: "right",
@@ -1153,7 +1058,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                   <strong style={{ fontSize: "16px", color: "#ffffff", marginBottom: "6px" }}>
                     {lesson.title}
                   </strong>
-                  <span style={{ fontSize: "13px", opacity: 0.8 }}>
+                  <span style={{ fontSize: "14px", opacity: 0.8 }}>
                     {playbackError || "جاري إعداد مشغل الفيديو التفاعلي..."}
                   </span>
                   {playbackError && lesson.requiresProtectedPlayback && currentUser?.role === "student" && (
@@ -1168,7 +1073,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                             color: "#fbbf24",
                             padding: "8px 18px",
                             borderRadius: "10px",
-                            fontSize: "13px",
+                            fontSize: "14px",
                             fontWeight: 700,
                             border: "1px solid rgba(217, 119, 6, 0.4)",
                           }}
@@ -1186,7 +1091,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                             border: "none",
                             borderRadius: "10px",
                             padding: "10px 22px",
-                            fontSize: "13px",
+                            fontSize: "14px",
                             fontWeight: 700,
                             cursor: isSubmittingAccessRequest ? "not-allowed" : "pointer",
                             boxShadow: "0 4px 14px rgba(2, 132, 199, 0.35)",
@@ -1247,7 +1152,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                     border: "1px solid var(--border-accent, #a7f3d0)",
                     borderRadius: "12px",
                     padding: "8px 18px",
-                    fontSize: "13px",
+                    fontSize: "14px",
                     fontWeight: 800,
                     color: "var(--success-text)",
                     cursor: "pointer",
@@ -1337,7 +1242,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                       >
                         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                           <FileText size={18} style={{ color: "#059669" }} />
-                          <span style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-main)" }}>
+                          <span style={{ fontSize: "14px", fontWeight: 700, color: "var(--text-main)" }}>
                             {mat.title}
                           </span>
                         </div>
@@ -1353,7 +1258,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                               background: "var(--bg-surface)",
                               border: "1px solid var(--border-color)",
                               borderRadius: "8px",
-                              fontSize: "12px",
+                              fontSize: "14px",
                               fontWeight: 700,
                               color: "#059669",
                               cursor: "pointer",
@@ -1530,7 +1435,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "center",
-                    fontSize: "12px",
+                    fontSize: "14px",
                     color: "var(--text-muted, #64748b)",
                   }}
                 >

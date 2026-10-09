@@ -46,7 +46,7 @@ test("student registers from the browser and can sign in again", async ({ page, 
   expect(await page.evaluate(() => localStorage.getItem('lms_session_token'))).toBeNull();
   expect(authorizationHeaders).toEqual([]);
 
-  const freshContext = await browser.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true" });
+  const freshContext = await browser.newContext({ ignoreHTTPSErrors: false });
   try {
     const freshPage = await freshContext.newPage();
     await freshPage.goto("/#auth");

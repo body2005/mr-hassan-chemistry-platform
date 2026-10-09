@@ -1,9 +1,12 @@
 param(
     [ValidateSet('Prepare','Tests','Dependencies','Extract','Storage','Load','Scan','All')][string]$Stage = 'All',
-    [ValidateSet('chemistryprodlocal','chemistryaudit2')][string]$Project = 'chemistryprodlocal',
+    [ValidateSet('chemistryprodlocal','chemistryaudit2')][string]$Project = 'chemistryaudit2',
     [string]$Docker = 'C:\Users\body\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe'
 )
 $ErrorActionPreference = 'Stop'
+if ($Stage -in @('Tests','All') -and $Project -ne 'chemistryaudit2') {
+    throw 'Trusted browser gates require the current chemistryaudit2 QA project.'
+}
 $taskRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 Set-Location $taskRoot
 $folder = if ($Project -eq 'chemistryaudit2') { 'audit2' } else { 'production' }
@@ -54,7 +57,7 @@ if ($Stage -in @('Tests','All')) {
     Invoke-Compose 'API unit tests' @('run','--rm','--no-deps','-e','STORAGE_DIR=/tmp/qa-storage','qa-tests','python','-m','pytest','tests','--ignore=tests/integration','--tb=short','--junitxml=/qa/api-unit-tests.xml','-o','junit_logging=all')
     Invoke-Compose 'live integration tests' @('run','--rm','--no-deps','-e','STORAGE_DIR=/tmp/qa-storage','qa-tests','python','-m','pytest','tests/integration','--tb=short','--junitxml=/qa/api-integration-tests.xml','-o','junit_logging=all')
     $env:QA_BASE_URL = "https://localhost:$httpsPort"
-    $env:QA_LOCAL_TLS = 'true'
+    $env:QA_LOCAL_TLS = 'false'
     $env:QA_MAILPIT_URL = "http://127.0.0.1:$mailPort"
     $env:QA_REDIS_CONTAINER = "$Project-redis-1"
     $env:QA_DOCKER = $Docker
@@ -65,7 +68,7 @@ if ($Stage -in @('Tests','All')) {
         Invoke-Gate 'npm run lint' 'npm.cmd' @('run','lint')
         Invoke-Gate 'npm run build' 'npm.cmd' @('run','build')
         Invoke-Gate 'frontend unit tests' 'npm.cmd' @('run','test','--','--run')
-        Invoke-Gate 'Playwright production HTTPS' 'npx.cmd' @('playwright','test','--config','playwright.qa.config.ts','--reporter=list,junit')
+        Invoke-Gate 'Playwright production HTTPS (trusted isolated browser)' (Join-Path $PSHOME $(if($IsWindows){'pwsh.exe'}else{'pwsh'})) @('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-trusted-browser.ps1'),'-Build','-Docker',$Docker)
         Invoke-Gate 'npm audit' 'npm.cmd' @('audit','--audit-level=high')
     } finally { Pop-Location }
     Invoke-Gate 'git diff --check' 'git' @('diff','--check')

@@ -10,7 +10,7 @@ const baseURL = `${process.env.QA_BASE_URL || "http://127.0.0.1:18080"}/api/v1/`
 test("protected WebM supports browser playback, seeking and byte ranges", async ({ page, playwright }) => {
   test.setTimeout(180_000);
   const teacher = (await cookieApi(playwright.request, 'teacher@demo.com', 'qa-teacher-pass')).context;
-  const student = await playwright.request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true", baseURL });
+  const student = await playwright.request.newContext({ ignoreHTTPSErrors: false, baseURL });
   try {
     const code = `QAV${Date.now()}`;
     const courseResponse = await teacher.post("courses", { data: { code, title: "QA Video Course" } });
@@ -37,7 +37,7 @@ test("protected WebM supports browser playback, seeking and byte ranges", async 
       } });
       expect(identity.status(), await identity.text()).toBe(201);
       const upload = await identity.json();
-      const uploader = await playwright.request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true" });
+      const uploader = await playwright.request.newContext({ ignoreHTTPSErrors: false });
       try {
         for (let number = 1; number <= Math.ceil(media.length / upload.part_bytes); number++) {
           const signed = await (await teacher.post(`video-uploads/${upload.id}/parts/${number}`)).json();
@@ -64,7 +64,7 @@ test("protected WebM supports browser playback, seeking and byte ranges", async 
       const badUpload = await rejected.json();
       const signer = await teacher.post(`video-uploads/${badUpload.id}/parts/1`);
       expect(signer.status()).toBe(200);
-      const direct = await playwright.request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true" });
+      const direct = await playwright.request.newContext({ ignoreHTTPSErrors: false });
       try { expect((await direct.put((await signer.json()).url, { data: invalid })).status()).toBe(200); }
       finally { await direct.dispose(); }
       expect((await teacher.post(`video-uploads/${badUpload.id}/complete`)).status()).toBe(202);
@@ -89,7 +89,7 @@ test("protected WebM supports browser playback, seeking and byte ranges", async 
     expect((await student.post(`courses/${course.id}/enroll`, {
       headers: { "X-CSRF-Token": csrf! },
     })).status()).toBe(200);
-    const unauthorized = await playwright.request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true", baseURL });
+    const unauthorized = await playwright.request.newContext({ ignoreHTTPSErrors: false, baseURL });
     expect((await unauthorized.get(`lessons/${lesson.id}/stream`)).status()).toBe(403);
     expect((await unauthorized.post(`lessons/${lesson.id}/video-token`)).status()).toBe(401);
     await unauthorized.dispose();
@@ -119,7 +119,7 @@ test("protected WebM supports browser playback, seeking and byte ranges", async 
       const playlist = await student.get(playlistUrl);
       expect(playlist.status()).toBe(200);
       rangeUrl = (await playlist.text()).split("\n").find(line => line && !line.startsWith("#"))!;
-      const anonymous = await playwright.request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true", baseURL });
+      const anonymous = await playwright.request.newContext({ ignoreHTTPSErrors: false, baseURL });
       expect((await anonymous.get(rangeUrl)).status()).toBe(403);
       await anonymous.dispose();
     }
@@ -176,8 +176,15 @@ test("protected WebM supports browser playback, seeking and byte ranges", async 
         await page.context().clearCookies({ name: 'matgar_session' });
         // Real HLS retry requires token admission; concurrent tab reload also
         // exercises JSON identity and SSE under the same unavailable cookies.
+        const failedRenewal = page.waitForResponse(response =>
+          new URL(response.url()).pathname === '/api/v1/auth/refresh' && response.status() === 503);
         await page.getByRole('button', { name: 'إعادة المحاولة', exact: true }).click();
-        await expect(page.getByText('تعذر تجديد رابط الفيديو.', { exact: false })).toBeVisible();
+        await failedRenewal;
+        // The extracted playback controller now distinguishes session/403/429
+        // from service/network failure. Do not pin obsolete generic wording or
+        // accept a leftover HLS denial without observing the actual failed503.
+        await expect(page.getByRole('alert').filter({ hasText: 'تعذر الاتصال لتشغيل الفيديو.' }))
+          .toContainText('أعد المحاولة؛ لا يلزم إعادة رفع الملف.');
         await other.reload();
         await page.waitForTimeout(11_000);
         expect(refreshFailures).toBeGreaterThan(0);

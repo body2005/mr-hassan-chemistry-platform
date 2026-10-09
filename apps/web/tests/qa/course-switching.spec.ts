@@ -2,6 +2,11 @@ import { expect, test } from "./qaTest";
 import { cookieApi } from './cookieApi';
 
 test("student can switch between two enrolled courses", async ({ page, playwright }) => {
+  const assessmentCourseIds: string[] = [];
+  page.on('request', request => {
+    const match = new URL(request.url()).pathname.match(/^\/api\/v1\/courses\/([^/]+)\/assessments$/);
+    if (match) assessmentCourseIds.push(match[1]);
+  });
   const teacher = (await cookieApi(playwright.request, 'teacher@demo.com', 'qa-teacher-pass')).context;
   const student = (await cookieApi(playwright.request, 'student03@demo.com', 'qa-student-pass')).context;
   try {
@@ -54,6 +59,10 @@ test("student can switch between two enrolled courses", async ({ page, playwrigh
     await page.getByRole("button", { name: "تسليم الاختبار" }).last().click();
     await page.getByRole("button", { name: "نعم، تأكيد وتسليم الآن" }).click();
     await expect(page.getByText("تم تسليم الاختبار وتصحيحه فورياً")).toBeVisible();
+    await page.getByRole('button', { name: 'العودة إلى المقرر', exact: true }).click();
+    await expect(page.getByRole('button', { name: `نسبة إنجاز المقرر: ${names[0]}`, exact: true })).toHaveText('50%');
+    // Many retained synthetic enrollments must not fan out assessment reads.
+    expect(new Set(assessmentCourseIds)).toEqual(new Set(ids));
   } finally {
     await Promise.all([teacher.dispose(), student.dispose()]);
   }

@@ -133,6 +133,15 @@ for (const scenario of [
       }
     } finally { releaseBootstrap(); }
     if (scenario.label === 'quiz') await assertAccessible(page, test.info(), 'quiz-editor');
+    if ('mobileStates' in scenario) {
+      // Follow the actual mobile journey; do not bypass it to reach a hidden
+      // desktop CTA. Restored questions and scheduling must survive navigation.
+      await page.getByRole('button', { name: 'التالي: مراجعة الأسئلة', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'مراجعة الأسئلة', exact: true })).toHaveAttribute('aria-current', 'step');
+      await expect(page.getByText('Explain conservation of mass.', { exact: true }).first()).toBeVisible();
+      await page.getByRole('button', { name: 'التالي: تحديد الموعد والنشر', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'النشر', exact: true })).toHaveAttribute('aria-current', 'step');
+    }
     await page.getByRole("button", { name: `حفظ ونشر ${kind === "quiz" ? "الاختبار" : "الواجب"} للطلاب`, exact: true }).first().click();
     if (scenario.label === 'quiz') {
       await assertAccessible(page, test.info(), 'quiz-publish-modal');
@@ -211,7 +220,13 @@ for (const scenario of [
       expect(new Date(kind === 'quiz' ? record.ends_at : record.due_at).getTime()).toBe(new Date(`${tomorrow}T18:00:00`).getTime());
     }
     if (notificationFailure) {
-      await expect(page.getByText("تم نشر المحتوى، لكن تعذر إكمال التقويم أو الإشعار. لا تعِد نشره؛ راجع صفحة الإشعارات.").first()).toBeVisible();
+      const warning = page.getByText("تم نشر المحتوى، لكن تعذر إكمال التقويم أو الإشعار. لا تعِد نشره؛ راجع صفحة الإشعارات.", { exact: true });
+      await expect(warning).toHaveCount(1);
+      await expect(warning).toBeVisible();
+      await page.getByRole('button', { name: 'إغلاق تنبيه النشر', exact: true }).click();
+      await expect(warning).toHaveCount(0);
+      await expect(page.getByText(/تم حفظ ونشر الواجب المنزلي للطلاب بنجاح/)).toBeVisible();
+      expect(broadcasts).toEqual([503]); // Dismissal is not a silent retry or new publication.
     } else {
       const notifications = await (await page.request.get(`${base}/api/v1/notifications`)).json();
       expect(notifications.some((item: { title: string; message: string }) => item.title.length <= 200 && item.message.includes(title))).toBe(true);

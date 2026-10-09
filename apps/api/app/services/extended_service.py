@@ -8,10 +8,13 @@ unified error format.
 from __future__ import annotations
 
 import uuid
+import math
+from types import SimpleNamespace
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select, or_
 from sqlalchemy.orm import Session, aliased
+from app.core.question_policy import validate_question_content
 
 UTC = timezone.utc
 
@@ -32,6 +35,7 @@ from app.models.platform import (
     Quiz,
     QuizAttempt,
     QuizAttemptAnswer,
+    AttemptStatus,
 )
 from app.models.user import User, UserRole
 
@@ -150,13 +154,21 @@ def create_question_versioned(
     _ensure_manager(user)
     if course_id is not None:
         _managed_course(db, user, course_id)
+    validate_question_content(SimpleNamespace(question_type=question_type, prompt=prompt,
+        options=options, correct_answer=correct_answer, points=points,
+        learning_objective=learning_objective))
+    if bank_id is not None:
+        bank = db.scalar(select(QuestionBank).where(QuestionBank.id == bank_id,
+            QuestionBank.institution_id == user.institution_id))
+        if bank is None:
+            raise LookupError("Question bank not found")
     question = Question(
         institution_id=user.institution_id,
         author_id=user.id,
         course_id=course_id,
         version=1,
-        question_type=question_type,
-        prompt=prompt,
+        question_type=question_type.strip().lower(),
+        prompt=prompt.strip(),
         options=options,
         correct_answer=correct_answer,
         points=points,
@@ -168,8 +180,8 @@ def create_question_versioned(
     version_row = QuestionVersion(
         question_id=question.id,
         version=1,
-        question_type=question_type,
-        prompt=prompt,
+        question_type=question_type.strip().lower(),
+        prompt=prompt.strip(),
         options=options,
         correct_answer=correct_answer,
         points=points,
@@ -180,16 +192,6 @@ def create_question_versioned(
     )
     db.add(version_row)
 
-    if bank_id is not None:
-        bank = db.scalar(
-            select(QuestionBank).where(
-                QuestionBank.id == bank_id,
-                QuestionBank.institution_id == user.institution_id,
-            )
-        )
-        if bank is None:
-            raise LookupError("Question bank not found")
-
     db.commit()
     db.refresh(version_row)
     return version_row
@@ -198,53 +200,52 @@ def create_question_versioned(
 def update_question_versioned(
     db: Session, user: User, question_id: uuid.UUID, **changes: object
 ) -> QuestionVersion:
-    """Material change => new immutable version; old attempts keep the old row."""
+    """Validate the merged content first; every accepted edit creates a revision."""
     question = db.scalar(
         select(Question).where(
             Question.id == question_id,
             Question.institution_id == user.institution_id,
-        )
+        ).with_for_update()
     )
     if question is None:
         raise LookupError("Question not found")
     _ensure_manager(user)
     _ensure_question_manager(db, user, question)
 
-    material_fields = {"prompt", "options", "correct_answer", "points", "question_type"}
-    material_change = any(field in changes for field in material_fields)
-
-    latest = db.scalar(
-        select(func.max(QuestionVersion.version)).where(
-            QuestionVersion.question_id == question.id
-        )
-    ) or 1
-
-    new_version_number = latest + 1 if material_change else latest
-    if material_change:
-        question.version = new_version_number
-        for field in ("prompt", "options", "correct_answer", "points", "question_type"):
-            if field in changes:
-                setattr(question, field, changes[field])
-
     current = db.scalars(
         select(QuestionVersion)
         .where(QuestionVersion.question_id == question.id)
         .order_by(QuestionVersion.version.desc())
     ).first()
-
+    content_fields = ("prompt", "options", "correct_answer", "points", "question_type")
+    allowed = {*content_fields, "explanation", "difficulty", "topic"}
+    if not changes or not set(changes).issubset(allowed):
+        raise ValueError("Invalid question update fields")
+    merged = {field: changes.get(field, getattr(question, field)) for field in content_fields}
+    merged["learning_objective"] = question.learning_objective
+    validate_question_content(SimpleNamespace(**merged))
+    for field, maximum in (("explanation", 10_000), ("difficulty", 20), ("topic", 200)):
+        value = changes.get(field)
+        if value is not None and (not isinstance(value, str) or len(value) > maximum):
+            raise ValueError(f"Invalid {field}")
+    new_version_number = max(question.version, current.version if current else 0) + 1
     version_row = QuestionVersion(
         question_id=question.id,
         version=new_version_number,
-        question_type=changes.get("question_type", current.question_type),
-        prompt=changes.get("prompt", current.prompt),
-        options=changes.get("options", current.options),
-        correct_answer=changes.get("correct_answer", current.correct_answer),
-        points=changes.get("points", current.points),
-        explanation=changes.get("explanation", current.explanation),
-        difficulty=changes.get("difficulty", current.difficulty),
-        topic=changes.get("topic", current.topic),
-        source=current.source,
+        question_type=merged["question_type"].strip().lower(),
+        prompt=merged["prompt"].strip(),
+        options=merged["options"],
+        correct_answer=merged["correct_answer"],
+        points=merged["points"],
+        explanation=changes.get("explanation", current.explanation if current else None),
+        difficulty=changes.get("difficulty", current.difficulty if current else None),
+        topic=changes.get("topic", current.topic if current else None),
+        source=current.source if current else "manual",
     )
+    # No mapped state was modified before the complete policy passed.
+    question.version = new_version_number
+    for field in content_fields:
+        setattr(question, field, getattr(version_row, field))
     db.add(version_row)
     db.commit()
     db.refresh(version_row)
@@ -450,55 +451,73 @@ def get_report_job(db: Session, user: User, job_id: uuid.UUID) -> ReportJob:
 # ---------------------------------------------------------------------------
 
 def compute_student_mastery(db: Session, user: User, student_id: uuid.UUID) -> list[dict]:
-    """Explainable mastery per learning objective from graded quiz answers."""
+    return compute_student_mastery_report(db, user, student_id)["items"]
+
+
+def compute_student_mastery_report(db: Session, user: User, student_id: uuid.UUID) -> dict:
+    """Latest official, submitted and fully graded evidence, with frozen weights.
+
+    Legacy evidence is reported, not guessed from a question's current weight.
+    Two batched reads replace mutable-bank aggregation; no per-answer query.
+    """
     scope = _student_read_course_scope(db, user, student_id)
-    scoped_objective = aliased(LearningObjective)
-    # Legacy code references resolve to the course-specific objective first.
-    # A global code receives evidence only when no course override exists.
-    course_override = select(scoped_objective.id).where(
-        scoped_objective.institution_id == LearningObjective.institution_id,
-        scoped_objective.code == LearningObjective.code,
-        scoped_objective.course_id == Quiz.course_id,
-    ).correlate(LearningObjective, Quiz).exists()
-    # Aggregate once, with evidence tied to the authoritative quiz course.
-    # Reused objective codes must not merge evidence from another course.
-    query = (select(LearningObjective, func.sum(QuizAttemptAnswer.awarded_points),
-                    func.sum(Question.points), func.count(QuizAttemptAnswer.id))
-        .select_from(LearningObjective)
-        .join(Question, Question.learning_objective == LearningObjective.code)
-        .join(QuizAttemptAnswer, QuizAttemptAnswer.question_id == Question.id)
-        .join(QuizAttempt, QuizAttempt.id == QuizAttemptAnswer.attempt_id)
+    pending = select(QuizAttemptAnswer.id).where(QuizAttemptAnswer.attempt_id == QuizAttempt.id,
+        QuizAttemptAnswer.graded_at.is_(None)).exists()
+    query = (select(QuizAttempt, Quiz.course_id, pending.label("pending"))
         .join(Quiz, Quiz.id == QuizAttempt.quiz_id)
         .join(Course, Course.id == Quiz.course_id)
-        .where(LearningObjective.institution_id == user.institution_id,
-               Question.institution_id == user.institution_id,
+        .where(QuizAttempt.institution_id == user.institution_id,
                Quiz.institution_id == user.institution_id,
                Course.institution_id == user.institution_id,
                QuizAttempt.student_id == student_id,
                QuizAttempt.is_practice.is_(False),
-               QuizAttemptAnswer.graded_at.is_not(None),
-               or_(LearningObjective.course_id == Quiz.course_id,
-                   (LearningObjective.course_id.is_(None) & ~course_override)))
-        .group_by(LearningObjective)
-        .order_by(LearningObjective.code, LearningObjective.id))
+               QuizAttempt.status == AttemptStatus.SUBMITTED,
+               QuizAttempt.submitted_at.is_not(None))
+        .order_by(QuizAttempt.attempt_number.desc(), QuizAttempt.submitted_at.desc(), QuizAttempt.id))
     if scope is not None:
         query = query.where(Quiz.course_id.in_(scope))
-    result: list[dict] = []
-    for objective, earned, total, evidence_count in db.execute(query):
-        earned, total = float(earned or 0), float(total or 0)
-        if total <= 0:
+    latest = {}
+    for attempt, course_id, is_pending in db.execute(query):
+        latest.setdefault(attempt.quiz_id, (attempt, course_id, is_pending))
+    selected = {attempt.id: (attempt, course_id) for attempt, course_id, is_pending in latest.values() if not is_pending}
+    legacy = sum(1 for attempt, _ in selected.values() if attempt.question_snapshot is None)
+    invalid = 0
+    totals = {}
+    answers = db.scalars(select(QuizAttemptAnswer).where(
+        QuizAttemptAnswer.attempt_id.in_(selected), QuizAttemptAnswer.graded_at.is_not(None))).all() if selected else []
+    for answer in answers:
+        attempt, course_id = selected[answer.attempt_id]
+        if attempt.question_snapshot is None:
             continue
-        mastery = round(min(1.0, earned / total), 3)
-        result.append(
-            {
-                "objective_id": str(objective.id),
-                "code": objective.code,
-                "title": objective.title,
-                "mastery": mastery,
-                "evidence_count": evidence_count,
-            }
-        )
-    return result
+        snapshot = answer.question_snapshot
+        if snapshot is None:
+            invalid += 1
+            continue
+        try:
+            earned, total = float(answer.awarded_points), float(snapshot["points"])
+            if (snapshot["question_id"] != str(answer.question_id)
+                    or snapshot["course_id"] != str(course_id)
+                    or not math.isfinite(earned) or not math.isfinite(total)
+                    or total <= 0 or not 0 <= earned <= total):
+                raise ValueError("Invalid frozen evidence")
+        except (KeyError, TypeError, ValueError):
+            invalid += 1
+            continue
+        objective_id = snapshot.get("objective_id")
+        if objective_id is None:
+            continue
+        entry = totals.setdefault(objective_id, dict(objective_id=objective_id,
+            code=snapshot["learning_objective"], title=snapshot["objective_title"],
+            earned=0.0, total=0.0, evidence_count=0))
+        entry["earned"] += earned
+        entry["total"] += total
+        entry["evidence_count"] += 1
+    items = [dict(objective_id=e["objective_id"], code=e["code"], title=e["title"],
+                  mastery=round(e["earned"] / e["total"], 3), evidence_count=e["evidence_count"])
+             for e in sorted(totals.values(), key=lambda e: (e["code"], e["objective_id"]))]
+    return dict(items=items, evidence_policy="frozen/latest-submitted-official/fully-graded/v1",
+        legacy_unverified_count=legacy, invalid_evidence_count=invalid,
+        pending_attempt_count=sum(1 for _, _, is_pending in latest.values() if is_pending))
 
 
 def _student_read_course_scope(db: Session, viewer: User, student_id: uuid.UUID):

@@ -5,8 +5,9 @@ import { VideoLessonPage } from './VideoLessonPage';
 import type { Course, TeacherProfile, VideoLesson } from '../types/lms';
 
 const mocks = vi.hoisted(() => ({ request: vi.fn(), toast: vi.fn() }));
-vi.mock('../services/apiClient', () => ({ apiRequest: mocks.request, apiUrl: (url: string) => url }));
-vi.mock('./ToastProvider', () => ({ useToast: () => mocks.toast }));
+vi.mock('../services/apiClient', () => ({ apiRequest: mocks.request, apiUrl: (url: string) => url,
+  getApiAuthGeneration: () => 0, getApiAuthScope: () => 'teacher' }));
+vi.mock('./ToastProvider', () => ({ useToast: () => mocks.toast, ToastRegion: () => null }));
 vi.mock('../services/videoTelemetry', () => ({
   VideoTelemetryTracker: class { attach() {} detach() {} },
 }));

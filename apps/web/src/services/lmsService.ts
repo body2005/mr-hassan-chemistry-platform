@@ -16,6 +16,7 @@ import {
 import type { StudentEntitlement } from "./paymentService";
 import { assessmentWindow } from "./assessmentSchedule";
 import { canonicalQuestionType } from "./questionType";
+import { canonicalEditorOptionKey } from "./mcqOptions";
 /**
  * ============================================================================
  * MATGAR LMS - UNIFIED DATA ACCESS LAYER (DAL)
@@ -966,8 +967,22 @@ async function validateAssessmentScope(payload: { course_id: string; title: stri
 }
 
 export const courseService = {
+  async getPublicCatalogPage(page: number, search: string, grade: Course['academicYear'] | '', signal?: AbortSignal): Promise<{ courses: Course[]; pages: number; total: number }> {
+    const params = new URLSearchParams({ page: String(page), page_size: '24', public_only: 'true' });
+    if (search) params.set('search', search.normalize('NFKC').trim().slice(0, 100));
+    if (grade) params.set('grade_level', ({ '1st_secondary': 'SECONDARY_1', '2nd_secondary': 'SECONDARY_2', '3rd_secondary': 'SECONDARY_3' } as const)[grade]);
+    const result = await apiRequest<{ items: ApiCourse[]; pagination: { pages: number; total: number } }>(`/courses?${params}`, {
+      signal, skipCache: true, cacheTtlMs: 0,
+    });
+    return { courses: result.items.map(mapApiCourse), pages: result.pagination.pages, total: result.pagination.total };
+  },
   async getCatalogPage(page: number): Promise<{ courses: Course[]; pages: number }> {
     const result = await apiRequest<{ items: ApiCourse[]; pagination: { pages: number } }>(`/courses?page=${page}&page_size=100`);
+    return { courses: result.items.map(mapApiCourse), pages: result.pagination.pages };
+  },
+  async getEnrolledCatalogPage(page: number): Promise<{ courses: Course[]; pages: number }> {
+    const result = await apiRequest<{ items: ApiCourse[]; pagination: { pages: number } }>(
+      `/courses?page=${page}&page_size=100&enrolled_only=true`);
     return { courses: result.items.map(mapApiCourse), pages: result.pagination.pages };
   },
   async getCourses(options?: { skipCache?: boolean }): Promise<Course[]> {
@@ -988,21 +1003,8 @@ export const courseService = {
       if (generation !== getApiAuthGeneration()) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
       setCachedData(composedKey, courses, 60_000);
 
-      // Asynchronously enrich courses with assessments in the background without blocking the course list
-      void Promise.all(
-        courses.map(async (course) => {
-          try {
-            course.assessments = await courseService.getCourseAssessmentRefs(course.id);
-          } catch {
-            course.assessments = [];
-          }
-        }),
-      ).then(() => {
-        // Rejected old-account requests must not repopulate a new account's
-        // separate composed cache through this background catch/then path.
-        if (generation === getApiAuthGeneration()) setCachedData(composedKey, courses, 60_000);
-      });
-
+      // Assessment refs are loaded only for the student's selected course.
+      // Never mutate returned React state in an unobserved background batch.
       return courses;
     })();
 
@@ -1069,7 +1071,7 @@ export const courseService = {
   },
 
   /** Server-side shape of a published assessment the student can attempt. */
-  async getCourseAssessments(courseId: string): Promise<{
+  async getCourseAssessments(courseId: string, options?: { skipCache?: boolean; signal?: AbortSignal }): Promise<{
     course_id: string;
     lessons: Array<{ id: string; title: string; accessible: boolean }>;
     quizzes: Array<{
@@ -1083,6 +1085,7 @@ export const courseService = {
       ends_at: string | null;
       attempts_allowed: number;
       attempts_used: number;
+      completed: boolean;
       accessible: boolean;
     }>;
     assignments: Array<{
@@ -1093,14 +1096,15 @@ export const courseService = {
       lesson_id: string | null;
       due_at: string | null;
       max_score: number;
+      completed: boolean;
       accessible: boolean;
     }>;
   }> {
-    return apiRequest(`/courses/${courseId}/assessments`, { cacheTtlMs: 60_000 });
+    return apiRequest(`/courses/${courseId}/assessments`, { cacheTtlMs: 60_000, ...options });
   },
 
-  async getCourseAssessmentRefs(courseId: string): Promise<CourseAssessmentRef[]> {
-    const data = await courseService.getCourseAssessments(courseId);
+  async getCourseAssessmentRefs(courseId: string, options?: { skipCache?: boolean; signal?: AbortSignal }): Promise<CourseAssessmentRef[]> {
+    const data = await courseService.getCourseAssessments(courseId, options);
     return [
       ...data.quizzes.map((q) => ({
         id: q.id,
@@ -1112,6 +1116,7 @@ export const courseService = {
         dueLabel: q.ends_at,
         attemptsUsed: q.attempts_used,
         attemptsAllowed: q.attempts_allowed,
+        completed: q.completed === true,
         accessible: q.accessible,
       })),
       ...data.assignments.map((a) => ({
@@ -1121,6 +1126,7 @@ export const courseService = {
         lessonId: a.lesson_id,
         moduleId: a.module_id,
         maxScore: a.max_score,
+        completed: a.completed === true,
         dueLabel: a.due_at,
         accessible: a.accessible,
       })),
@@ -1156,12 +1162,17 @@ export const courseService = {
       if (selected.length > 1 && ['multiple_choice', 'true_false'].includes(type)) {
         throw new Error('يلزم تحديد إجابة صحيحة واحدة لكل سؤال.');
       }
-      const answer = ['multiple_choice', 'true_false'].includes(type)
+      let answer = ['multiple_choice', 'true_false'].includes(type)
         ? selected[0]?.text ?? q.correct_answer : q.correct_answer;
+      if (type === 'multiple_choice' && !selected.length && typeof answer === 'string') {
+        answer = q.options?.find(option => option.key.trim() === answer?.trim())?.text ?? answer;
+      }
       if (!['essay', 'short_answer'].includes(type) && !answer?.trim()) {
         throw new Error('يلزم تحديد الإجابة الصحيحة للأسئلة ذات التصحيح التلقائي قبل النشر.');
       }
-      return { question_type: type, prompt: q.question_text, options: q.options ?? null,
+      const options = type === 'multiple_choice'
+        ? q.options?.map(option => ({ ...option, key: canonicalEditorOptionKey(option.key) })) : q.options;
+      return { question_type: type, prompt: q.question_text, options: options ?? null,
         correct_answer: answer ?? null, points: q.points ?? 1 };
     });
     await validateAssessmentScope(payload);

@@ -38,3 +38,16 @@ it('rejects a fill blank with no answer before any network request', async () =>
     .rejects.toThrow('الإجابة الصحيحة');
   expect(fetcher).not.toHaveBeenCalled();
 });
+
+it('serializes Arabic manual-editor labels to valid API keys without changing the editor', async () => {
+  const fetcher = vi.fn<(input: string, init?: RequestInit) => Promise<Response>>(async () => new Response('{"id":"quiz"}', {status:201}));
+  vi.stubGlobal('fetch', fetcher);
+  const { courseService } = await import('./lmsService');
+  const options = [{key:'أ', text:'kg', is_correct:true},{key:'ب', text:'s', is_correct:false}];
+  await courseService.publishQuizToServer({course_id:'course', title:'MCQ', idempotency_key:'qa',
+    questions:[{question_type:'multiple_choice', question_text:'Choose a unit', correct_answer:'kg', options, points:2}]});
+  const sent = JSON.parse(fetcher.mock.calls[0][1]!.body as string).questions[0];
+  expect(sent.options.map((option: {key: string}) => option.key)).toEqual(['A', 'B']);
+  expect(sent.correct_answer).toBe('kg');
+  expect(options.map(option => option.key)).toEqual(['أ', 'ب']);
+});

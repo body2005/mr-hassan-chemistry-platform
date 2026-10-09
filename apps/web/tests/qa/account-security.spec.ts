@@ -27,7 +27,7 @@ test("profile changes password and revokes all browser sessions", async ({ page,
   await page.getByRole('button', { name: 'إنشاء حسابي', exact: true }).click();
   await expect(page).toHaveURL(/#mycourses$/);
 
-  const secondContext = await browser.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true" });
+  const secondContext = await browser.newContext({ ignoreHTTPSErrors: false });
   try {
     const secondPage = await secondContext.newPage();
     await secondPage.goto("/#auth");

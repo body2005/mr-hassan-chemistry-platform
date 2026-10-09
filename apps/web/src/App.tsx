@@ -7,11 +7,11 @@ import { Course, CurrentUser, NotificationItem } from "./types/lms";
 import { useTranslation } from "./utils/i18n";
 
 import { ApiClientError, authService, bootstrapService, courseService, notificationService } from "./services/lmsService";
-import { useConfirm } from "./components/ConfirmWizard";
 import { PaymentTarget, StudentEntitlement, paymentService } from "./services/paymentService";
 import { realtimeService } from "./services/realtimeService";
 import { LessonAccessModal } from "./components/LessonAccessModal";
-import { FloatingProgressFab } from "./components/FloatingProgressFab";
+import { readEnrollmentIntent, saveEnrollmentIntent, type EnrollmentIntent } from './services/catalogState';
+import { authTabHash, readAuthTab } from './services/authNavigation';
 import { bootstrapRetryDelay, type BootstrapFailure } from './utils/bootstrapRecovery';
 
 // Views
@@ -90,7 +90,6 @@ function getTabFromHash(): AllTabs | null {
 export type AuthStatus = "loading" | "authenticated" | "unauthenticated" | "temporarily_unavailable";
 
 function App() {
-  const confirm = useConfirm();
   const cachedUser = useMemo(() => authService.getCachedUser(), []);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(() => cachedUser);
   const [authStatus, setAuthStatus] = useState<AuthStatus>(() => (cachedUser ? "authenticated" : "loading"));
@@ -114,6 +113,9 @@ function App() {
   const [courseScopeReady, setCourseScopeReady] = useState<string | null>(null);
   const [courseHydrationIssue, setCourseHydrationIssue] = useState(false);
   const [enrolledCourseIds, setEnrolledCourseIds] = useState<string[]>([]);
+  const [enrollmentIntent, setEnrollmentIntent] = useState<EnrollmentIntent | null>(readEnrollmentIntent);
+  const [enrollmentBusy, setEnrollmentBusy] = useState(false);
+  const [enrollmentError, setEnrollmentError] = useState('');
   const [entitlements, setEntitlements] = useState<StudentEntitlement[]>([]);
   const [checkoutTarget, setCheckoutTarget] = useState<PaymentTarget | null>(null);
 
@@ -150,30 +152,28 @@ function App() {
           if (bootstrap.user.role === "student") {
             setEnrolledCourseIds(bootstrap.enrolledCourseIds);
             setEntitlements(bootstrap.entitlements);
-            // Bootstrap is intentionally small and does not include assessment
-            // references. Load them for enrolled courses and recover any course
-            // omitted by the bootstrap catalog's first-page limit.
-            void Promise.all(bootstrap.enrolledCourseIds.map(async (courseId) => {
-              try {
-                const course = bootstrap.courses.find((item) => item.id === courseId)
-                  ?? await courseService.getMappedCourseContent(courseId);
-                const assessments = await courseService.getCourseAssessmentRefs(courseId);
-                return { ...course, assessments };
-              } catch {
-                return null;
-              }
-            })).then((enriched) => {
-              if (requestId !== authSyncId.current) return;
-              setCourseHydrationIssue(enriched.some((course) => course === null));
-              const resolved: Course[] = [];
-              for (const course of enriched) if (course) resolved.push(course);
-              if (resolved.length === 0) return;
-              setCourses((existing) => {
-                const byId = new Map(existing.map((course) => [course.id, course]));
-                for (const course of resolved) byId.set(course.id, course);
-                return [...byId.values()];
-              });
-            });
+            // Fill omitted enrolled courses in pages, not one request per
+            // enrollment. Selected-course assessment loading is independent.
+            if (bootstrap.enrolledCourseIds.some(id => !bootstrap.courses.some(course => course.id === id))) {
+              void (async () => {
+                try {
+                  let pages = 1;
+                  for (let page = 1; page <= pages; page++) {
+                    if (requestId !== authSyncId.current) return;
+                    const result = await courseService.getEnrolledCatalogPage(page);
+                    if (requestId !== authSyncId.current) return;
+                    pages = result.pages;
+                    setCourses(existing => {
+                      const byId = new Map(existing.map(course => [course.id, course]));
+                      for (const course of result.courses) byId.set(course.id, course);
+                      return [...byId.values()];
+                    });
+                  }
+                } catch {
+                  if (requestId === authSyncId.current) setCourseHydrationIssue(true);
+                }
+              })();
+            }
           } else {
             setEnrolledCourseIds([]);
             setEntitlements([]);
@@ -200,9 +200,26 @@ function App() {
 
     async function handleCoursesSync() {
       try {
+        if (authService.getCachedUser()?.role === 'student') {
+          // Keep older enrolled courses when a local update arrives; the
+          // general public catalog's first page is not this student's list.
+          const requestId = authSyncId.current;
+          let pages = 1;
+          const enrolled: Course[] = [];
+          for (let page = 1; page <= pages; page++) {
+            const result = await courseService.getEnrolledCatalogPage(page);
+            if (requestId !== authSyncId.current) return;
+            pages = result.pages;
+            enrolled.push(...result.courses);
+          }
+          setCourses(enrolled);
+          setCourseHydrationIssue(false);
+          return;
+        }
         const data = await courseService.getCourses();
         setCourses(data);
       } catch (err) {
+        if (authService.getCachedUser()?.role === 'student') setCourseHydrationIssue(true);
         console.error("Courses sync error", err);
       }
     }
@@ -262,7 +279,7 @@ function App() {
     return "Landing";
   });
 
-  const [authInitialTab, setAuthInitialTab] = useState<"signin" | "register">("signin");
+  const [authInitialTab, setAuthInitialTab] = useState(() => readAuthTab(window.location.hash));
   const [menuOpen, setMenuOpen] = useState(false);
 
   // Navigate to Tab and push to Google Chrome history stack
@@ -427,7 +444,11 @@ function App() {
   async function handleEnrollCourse(courseId: string) {
     try {
       const updated = await courseService.enrollCourse(courseId);
+      if (!updated.includes(courseId)) throw new Error('لم يؤكد الخادم الاشتراك في المقرر. حاول مرة أخرى.');
       setEnrolledCourseIds(updated);
+      if (enrollmentIntent?.id === courseId) {
+        setEnrollmentIntent(null); saveEnrollmentIntent(null); setEnrollmentError('');
+      }
       const course = await courseService.getMappedCourseContent(courseId);
       const assessments = await courseService.getCourseAssessmentRefs(courseId);
       setCourses(existing => [...existing.filter(c => c.id !== courseId), { ...course, assessments }]);
@@ -437,14 +458,11 @@ function App() {
         // to the lesson-only checkout picker instead.
         setCheckoutTarget({ productType: "lesson" });
         navigateToTab("Payments");
-        return;
+        throw new Error('هذا المقرر يحتاج تفعيل المحتوى؛ اختر الدرس المطلوب من صفحة الاشتراكات.');
       }
-      await confirm({
-        title: "تعذر التسجيل في المقرر",
-        message: error instanceof Error ? error.message : "حدث خطأ غير متوقع. حاول مرة أخرى.",
-        cancelLabel: "إغلاق",
-        tone: "warning",
-      });
+      // The caller keeps a persistent error beside its enrollment control.
+      // A rejected enrollment must never look like success to the catalog.
+      throw error;
     }
   }
 
@@ -504,9 +522,15 @@ function App() {
     }
   }
 
-  function handleNavigateToAuth(tab: "signin" | "register" = "signin") {
+  function handleNavigateToAuth(tab: "signin" | "register" = "signin", course?: Course) {
+    if (course) {
+      const selected = { id: course.id, title: course.title, academicYear: course.academicYear };
+      setEnrollmentIntent(selected); saveEnrollmentIntent(selected); setEnrollmentError('');
+    }
     setAuthInitialTab(tab);
     navigateToTab("Auth");
+    // Keep the selected auth tab across reload; enrollment intent is separate.
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${authTabHash(tab)}`);
   }
 
   const enrolledCoursesList = courses.filter((c) => {
@@ -593,7 +617,6 @@ function App() {
           </div>
         )}
         <LandingPageView
-          courses={courses}
           onNavigateToAuth={handleNavigateToAuth}
           lang={lang}
           onToggleLang={handleToggleLang}
@@ -700,16 +723,34 @@ function App() {
               ? 'جارٍ التحقق من الحساب قبل إتاحة المحتوى والتعديل…'
               : 'Verifying your account before enabling content and changes…'}</div>
           ) : <>
+          {currentUser.role === 'student' && enrollmentIntent && !enrolledCourseIds.includes(enrollmentIntent.id) && (
+            <section className="enrollment-intent" aria-label="المقرر المختار للاشتراك">
+              <h2>{enrollmentIntent.title}</h2>
+              <p>احتفظنا بالمقرر الذي اخترته. تسجيل الدخول وحده لا يعني الاشتراك فيه.</p>
+              {enrollmentError && <p role="alert">{enrollmentError}</p>}
+              <button className="btn-primary" disabled={enrollmentBusy} onClick={async () => {
+                setEnrollmentBusy(true); setEnrollmentError('');
+                try { await handleEnrollCourse(enrollmentIntent.id); }
+                catch (error) { setEnrollmentError(error instanceof Error ? error.message : 'تعذر إتمام الاشتراك. حاول مرة أخرى.'); }
+                finally { setEnrollmentBusy(false); }
+              }}>{enrollmentBusy ? 'جارٍ تأكيد الاشتراك…' : 'متابعة الاشتراك في هذا المقرر'}</button>
+              <button className="btn-secondary" onClick={() => {
+                setEnrollmentIntent(null); saveEnrollmentIntent(null); setEnrollmentError('');
+              }} disabled={enrollmentBusy}>إلغاء الاختيار</button>
+            </section>
+          )}
           {/* Dynamic Route Views */}
           {/* Student Views */}
           {activeTab === "MyCourses" && currentUser.role === "student" && (
           <MyCoursesView
+            initialCourseId={enrollmentIntent?.id}
             enrolledCourses={enrolledCoursesList}
             onEnrollCourse={handleEnrollCourse}
             onNavigateToCatalog={() => navigateToTab("Payments")}
             lang={lang}
             currentUser={currentUser}
             purchasedLessonIds={activeEntitlements.filter((item) => item.entitlement_type === "lesson").map((item) => item.resource_id || "")}
+            accessRevision={activeEntitlements.map(item => item.id).sort().join(':')}
             onCheckout={(target) => { setCheckoutTarget(target); navigateToTab("Payments"); }}
             onToggleMenu={() => setMenuOpen(!menuOpen)}
             menuOpen={menuOpen}
@@ -783,15 +824,6 @@ function App() {
       {/* Global Background Upload Manager Widget - strictly for teachers only */}
       {courseScopeReady === currentUser.id && currentUser.role !== "student" && (
         <GlobalUploadWidget currentUser={currentUser} menuOpen={menuOpen} />
-      )}
-
-      {/* Global Student Course Progress FAB: draggable, bottom-right default, appears on all pages, hides when video enlarged */}
-      {courseScopeReady === currentUser.id && currentUser.role === "student" && (
-        <FloatingProgressFab
-          courses={courses}
-          currentUser={currentUser}
-          theme={theme}
-        />
       )}
 
       {/* Lesson Access Approval Modal for Teachers and Students */}

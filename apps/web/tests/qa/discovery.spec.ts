@@ -61,7 +61,7 @@ async function post(page: Page, path: string, data: unknown, status = 201) {
   return response.json();
 }
 async function student(browser: Browser, grade = 'SECONDARY_1') {
-  const context = await browser.newContext({ baseURL: base, ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === 'true' });
+  const context = await browser.newContext({ baseURL: base, ignoreHTTPSErrors: false });
   const page = await context.newPage();
   const email = `qa-discovery-${crypto.randomUUID()}@demo.com`;
   const password = 'qa-discovery-only-pass';
@@ -106,6 +106,128 @@ async function publish(page: Page, kind: string) {
 }
 const mcq: DraftQuestion = { id: 'q1', question_text: 'Choose the mass unit.', question_type: 'multiple_choice', points: 7,
   options: [{ key: 'A', text: 'kilogram QA option', is_correct: true }, { key: 'B', text: 'second QA option', is_correct: false }] };
+
+for (const touch of [false, true]) {
+test(`catalog search, grade selection and enrollment intent work with ${touch ? 'touch' : 'mouse'} without hover`, async ({ page, browser }) => {
+  await teacher(page);
+  const marker = `qa-catalog-${randomUUID().slice(0, 8)}`;
+  const first = await courseWithLesson(page, `${marker} first`, 'SECONDARY_1');
+  const third = await courseWithLesson(page, `${marker} third`, 'SECONDARY_3');
+  const context = await browser.newContext({ baseURL: base, ignoreHTTPSErrors: false,
+    hasTouch: touch, viewport: touch ? { width: 375, height: 812 } : { width: 1440, height: 900 }, timezoneId: 'Africa/Cairo' });
+  const guest = await context.newPage();
+  const activate = async (target: ReturnType<Page['locator']>) => touch ? target.tap() : target.click();
+  try {
+    for (const theme of ['light', 'dark']) {
+      await guest.goto(base);
+      await guest.evaluate(value => localStorage.setItem('lms_theme', value), theme);
+      await guest.reload();
+      await expect(guest.locator('html')).toHaveAttribute('data-theme', theme);
+      const search = guest.getByLabel('ابحث في المقررات', { exact: true });
+      await search.fill(marker);
+      const catalog = guest.locator('#courses');
+      await expect(catalog.locator('h3')).toHaveCount(2);
+      await expect(catalog.getByRole('status')).toContainText('2 مقرر');
+      if (touch) {
+        await activate(guest.getByRole('button', { name: 'القائمة', exact: true }));
+        await activate(guest.getByRole('button', { name: 'السنوات الدراسية', exact: true }).last());
+        await activate(guest.getByRole('link', { name: 'الصف الثالث الثانوي', exact: true }).last());
+      } else {
+        const menu = guest.getByRole('button', { name: 'السنوات الدراسية', exact: true });
+        await activate(menu);
+        await expect(menu).toHaveAttribute('aria-expanded', 'true');
+        await activate(guest.locator('#catalog-grade-menu').getByRole('link', { name: /^الصف الثالث الثانوي/ }));
+        await expect(menu).toHaveAttribute('aria-expanded', 'false');
+      }
+      await expect(catalog.locator('h3')).toHaveText([third.course.title]);
+      await expect(catalog.getByRole('button', { name: 'الصف الثالث الثانوي', exact: true })).toHaveAttribute('aria-pressed', 'true');
+      await guest.reload();
+      await expect(search).toHaveValue(marker);
+      await expect(catalog.locator('h3')).toHaveText([third.course.title]);
+      await search.fill(`${marker}-absent`);
+      await expect(catalog.locator('.catalog-empty')).toBeVisible();
+      await expect(catalog.getByRole('status')).toContainText('0 مقرر');
+      await activate(catalog.getByRole('button', { name: 'مسح البحث والتصفية', exact: true }));
+      await expect(search).toHaveValue('');
+      await search.fill(marker);
+      await expect(catalog.locator('h3')).toHaveCount(2);
+      expect(await guest.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+      await guest.screenshot({ path: test.info().outputPath(`catalog-${touch ? 'touch' : 'mouse'}-${theme}.png`), fullPage: true });
+    }
+    const chosen = guest.locator('#courses h3').filter({ hasText: first.course.title }).locator('..');
+    await activate(chosen.getByRole('button', { name: 'سجّل للاشتراك', exact: true }));
+    await expect(guest.getByRole('heading', { name: 'تسجيل حساب جديد', exact: true })).toBeVisible();
+    const intent = await guest.evaluate(() => JSON.parse(sessionStorage.getItem('lms_catalog_enrollment_intent') || 'null'));
+    expect(intent?.id).toBe(first.course.id);
+    expect(await guest.evaluate(() => localStorage.getItem('lms_session_token'))).toBeNull();
+    await guest.reload();
+    expect(await guest.evaluate(() => JSON.parse(sessionStorage.getItem('lms_catalog_enrollment_intent') || 'null'))).toEqual(intent);
+    await guest.getByLabel('الاسم الأول').fill('أحمد');
+    await guest.getByLabel('الاسم الأوسط').fill('محمد');
+    await guest.getByLabel('الاسم الأخير').fill('حسن');
+    await guest.getByRole('radio', { name: 'ذكر', exact: true }).check();
+    await guest.getByLabel('السنة الدراسية').selectOption('1st_secondary');
+    await activate(guest.getByRole('button', { name: 'التالي', exact: true }));
+    await guest.getByLabel('رقم تليفونك الشخصي').fill('01012345678');
+    await guest.getByLabel('رقم ولي الأمر').fill('01112345678');
+    await guest.getByLabel('المحافظة').selectOption('CAIRO');
+    await guest.getByLabel('المدينة أو المنطقة').fill('منطقة QA');
+    await guest.getByLabel('اسم المدرسة').fill('مدرسة QA المحلية');
+    await guest.getByLabel('البريد الإلكتروني').fill(`qa-catalog-${randomUUID()}@example.com`);
+    await guest.locator('input[name="password"]').fill('Qa-Catalog-Registration-2026!');
+    await guest.getByLabel('تأكيد كلمة المرور').fill('Qa-Catalog-Registration-2026!');
+    const registered = guest.waitForResponse(r => r.request().method() === 'POST' && r.url().endsWith('/auth/register'));
+    await activate(guest.getByRole('button', { name: 'إنشاء حسابي', exact: true }));
+    expect((await registered).status()).toBe(201);
+    const selected = guest.getByRole('region', { name: 'المقرر المختار للاشتراك', exact: true });
+    await expect(selected.getByRole('heading')).toHaveText(first.course.title);
+    expect(await (await guest.request.get(`${base}/api/v1/courses/me/enrollments`)).json()).toEqual([]);
+    const enrolled = guest.waitForResponse(r => r.request().method() === 'POST' && r.url().endsWith(`/courses/${first.course.id}/enroll`));
+    await activate(selected.getByRole('button', { name: 'متابعة الاشتراك في هذا المقرر', exact: true }));
+    expect((await enrolled).status()).toBe(200);
+    await expect(selected).toHaveCount(0);
+    const memberships = await (await guest.request.get(`${base}/api/v1/courses/me/enrollments`)).json();
+    expect(memberships.map((entry: { course_id: string }) => entry.course_id)).toEqual([first.course.id]);
+    expect(await guest.evaluate(() => sessionStorage.getItem('lms_catalog_enrollment_intent'))).toBeNull();
+    await guest.screenshot({ path: test.info().outputPath(`catalog-${touch ? 'touch' : 'mouse'}-registered-enrolled.png`), fullPage: true });
+  } finally {
+    const csrf = (await context.cookies()).find(cookie => cookie.name === 'matgar_csrf')?.value;
+    if (csrf) expect.soft((await guest.request.post(`${base}/api/v1/auth/logout`, { headers: { 'X-CSRF-Token': csrf } })).status()).toBe(204);
+    await context.close();
+  }
+});
+}
+
+test('active navigation keeps real text contrast in both themes and hover states', async ({ page }) => {
+  await teacher(page);
+  await page.goto(`${base}/#quizgen`);
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(value => localStorage.setItem('lms_theme', value), theme);
+    await page.reload();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+    const active = page.locator('.nav-item.active');
+    await expect(active).toHaveCount(1);
+    await page.getByRole('button', { name: 'Open Menu', exact: true }).click();
+    await expect(active).toBeInViewport();
+    for (const hovered of [false, true]) {
+      if (hovered) await active.hover(); else await page.mouse.move(0, 0);
+      const colors = await active.evaluate(element => {
+        const style = getComputedStyle(element);
+        const luminance = (color: string) => {
+          const values = color.match(/[\d.]+/g)?.slice(0, 3).map(Number);
+          if (!values || values.length !== 3) throw new Error('Unknown computed color');
+          return values.map(n => n / 255).map(n => n <= .04045 ? n / 12.92 : ((n + .055) / 1.055) ** 2.4)
+            .reduce((sum, n, i) => sum + n * [.2126, .7152, .0722][i], 0);
+        };
+        const fg = luminance(style.color), bg = luminance(style.backgroundColor);
+        return { foreground: style.color, background: style.backgroundColor,
+          contrast: (Math.max(fg, bg) + .05) / (Math.min(fg, bg) + .05) };
+      });
+      expect(colors.contrast, JSON.stringify({ theme, hovered, ...colors })).toBeGreaterThanOrEqual(4.5);
+    }
+    await page.screenshot({ path: test.info().outputPath(`active-navigation-${theme}.png`), fullPage: true });
+  }
+});
 
 async function observeNativePaymentStream(page: Page) {
   // No successful responses/events are synthesized. This only observes the
@@ -272,6 +394,49 @@ test('immediate quiz practice uses a fresh PostgreSQL attempt without waiting fo
   } finally { await learner.close(); }
 });
 
+test('manual Arabic choices publish from the editor and are graded in the student browser', async ({ page, browser }) => {
+  await teacher(page);
+  const { course, lesson } = await courseWithLesson(page, 'Arabic manual choices');
+  await prepareDraft(page, lesson.id, 'quiz', []);
+  await page.getByRole('button', { name: 'بدء إضافة أسئلة الاختبار يدوياً', exact: true }).click();
+  const card = page.locator('[data-testid^="question-card-"]');
+  await expect(card).toHaveCount(1);
+  await card.locator('[contenteditable="true"]').fill('Choose the SI mass unit.');
+  const choices = ['gram QA Arabic choice', 'kilogram QA Arabic choice', 'metre QA Arabic choice', 'second QA Arabic choice'];
+  for (const [index, key] of ['أ', 'ب', 'ج', 'د'].entries()) {
+    await card.getByRole('textbox', { name: new RegExp(`^نص الخيار ${key} للسؤال `) }).fill(choices[index]);
+  }
+  await card.getByRole('button', { name: /^تعيين الخيار ب إجابة صحيحة للسؤال / }).click();
+  await card.getByRole('button', { name: 'حفظ التعديل', exact: true }).click();
+  const published = page.waitForResponse(r => r.request().method() === 'POST'
+    && new URL(r.url()).pathname === '/api/v1/quizzes/publish-draft');
+  await publish(page, 'quiz');
+  const response = await published;
+  expect(response.status(), await response.text()).toBe(201);
+  const record = await response.json();
+  const sent = response.request().postDataJSON().questions[0];
+  expect(sent.options).toEqual(choices.map((text, index) => ({ key: String.fromCharCode(65 + index), text, is_correct: index === 1 })));
+  expect(sent.correct_answer).toBe(choices[1]);
+  const learner = await student(browser);
+  try {
+    await post(learner.page, `courses/${course.id}/enroll`, {}, 200);
+    await learner.page.reload();
+    if (await learner.page.getByLabel('اختر المقرر').count()) await learner.page.getByLabel('اختر المقرر').selectOption(course.id);
+    await learner.page.getByRole('button', { name: /الاختبارات/ }).first().click();
+    const solve = learner.page.waitForResponse(r => r.url().endsWith(`/quizzes/${record.id}/solve`) && r.status() === 200);
+    await learner.page.getByRole('button', { name: 'بدء حل الاختبار', exact: true }).click();
+    const attempt = (await (await solve).json()).attempt;
+    await learner.page.getByText(choices[1], { exact: true }).click();
+    const submitted = learner.page.waitForResponse(r => r.request().method() === 'POST'
+      && r.url().endsWith(`/quiz-attempts/${attempt.id}/submit`));
+    await learner.page.getByRole('button', { name: /تسليم الاختبار/ }).first().click();
+    await learner.page.getByRole('button', { name: /تأكيد.*تسليم|تسليم الآن/ }).click();
+    const result = await submitted;
+    expect(result.status()).toBe(200);
+    expect((await result.json()).score).toBe(5);
+  } finally { await learner.close(); }
+});
+
 test('reviewed FILL_BLANK Extract question publishes through the teacher interface', async ({ page }) => {
   await teacher(page);
   const { lesson } = await courseWithLesson(page, 'fill blank');
@@ -310,6 +475,7 @@ test('teacher edits segmented Arabic time manually and with options, and publish
   expect(await page.locator('input[type="date"]').first().evaluate(el => parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(18);
   await page.screenshot({ path: test.info().outputPath('segmented-clock-desktop.png'), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('navigation', { name: 'مراحل إعداد الامتحان', exact: true }).getByRole('button', { name: 'النشر', exact: true }).click();
   await page.getByRole('combobox', { name: 'ساعة نهاية الإتاحة', exact: true }).scrollIntoViewIfNeeded();
   await page.screenshot({ path: test.info().outputPath('segmented-clock-mobile.png'), fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -335,7 +501,7 @@ test('ready video job recovers automatically after teacher reload without a repe
   const media = readFileSync(process.env.QA_VIDEO_FILE || '../../.qa/audit2/media/video.webm');
   const session = await post(page, `lessons/${lesson.id}/video-uploads`, { filename: 'qa-resume.webm', content_type: 'video/webm',
     size_bytes: media.length, fingerprint: createHash('sha256').update(media).digest('hex'), request_key: randomUUID() });
-  const direct = await playwright.request.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === 'true' });
+  const direct = await playwright.request.newContext({ ignoreHTTPSErrors: false });
   try {
     for (let number = 1; number <= Math.ceil(media.length / session.part_bytes); number++) {
       const signed = await post(page, `video-uploads/${session.id}/parts/${number}`, {}, 200);
@@ -466,7 +632,19 @@ test('failed quiz publishing is atomic and retry does not duplicate questions', 
   await teacher(page);
   const { course, lesson } = await courseWithLesson(page);
   await prepareDraft(page, lesson.id, 'quiz', [{ id: 'valid', question_text: 'Explain conservation of mass.', question_type: 'essay', points: 5 },
-    { id: 'invalid', question_text: 'x', question_type: 'essay', points: 5 }]);
+    { id: 'second', question_text: 'Explain the unit of mass.', question_type: 'essay', points: 5 }]);
+  // Keep the editor draft valid, then make the FIRST request invalid in transit
+  // to exercise real server-side422/rollback, not bypass client validation or
+  // synthesize a successful response. Retry sends the unchanged valid draft.
+  let corruptFirstRequest = true;
+  await page.route('**/api/v1/quizzes/publish-draft', async route => {
+    if (corruptFirstRequest) {
+      corruptFirstRequest = false;
+      const body = route.request().postDataJSON();
+      body.questions[1].prompt = 'x';
+      await route.continue({ postData: JSON.stringify(body) });
+    } else await route.continue();
+  });
   const outcomes: number[] = [];
   // Publication is now one HTTP transaction; the same invariant remains:
   // rejected drafts and retries must create no question/quiz records.
@@ -483,7 +661,10 @@ test('failed quiz publishing is atomic and retry does not duplicate questions', 
   await expect.poll(() => outcomes.length).toBe(2);
   const afterRetry = await (await page.request.get(`${base}/api/v1/questions?course_id=${course.id}`)).json();
   console.log(JSON.stringify({ case: 'partial-quiz-retry', statuses: outcomes, orphan_count: afterRetry.length }));
-  expect(afterRetry).toHaveLength(0);
+  expect(outcomes).toEqual([422, 201]);
+  expect(afterRetry).toHaveLength(2);
+  const assessments = await (await page.request.get(`${base}/api/v1/courses/${course.id}/assessments`)).json();
+  expect(assessments.quizzes).toHaveLength(1);
 });
 
 test('student PDF retains Latin question text and title present in the server record', async ({ page, browser }) => {

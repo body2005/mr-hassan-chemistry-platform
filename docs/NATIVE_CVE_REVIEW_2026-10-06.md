@@ -5,6 +5,65 @@ distribution, fabricated Debian revision, or claim of complete unreachability.
 This report is a source review plus local binary/configuration evidence, not an
 exploit test for every CVE. Future stable backports must be rebuilt and retested.
 
+## 9 October continuation — current image scans and source-review boundaries
+
+### Fresh post-telemetry-repair scans — 11:53–11:56 UTC
+
+The current API `sha256:659e1c3f204d3b0b080ba48072cc310e20a23061954a3273b88dadd338f06d14`
+and encoder `sha256:b566cdcd0f4d5e499b2a40356c1acca7148cd03d2e274d4cbbe30b0f8bebe8e2`
+were scanned by immutable identity after the selected new browser cases passed.
+Scout:3High/0Critical EACH, each rawExit2/controller1; reports
+`scout-video-{api,video-worker}-20261009-115314.sarif` and matching command JSON.
+Trivy:`trivy-20261009-115547/{api,video-worker}.sarif`,63/79High package findings,
+21/37 unique CVEs, each rawExit1/controller1. Combined union38 unchanged IDs.
+No new CVE versus the reviewed9October set; previous per-ID source/path reviews
+remain relevant, not newly rerun exploit tests or new official package fixes.
+Scout still reports77214/93990 against genuine upstream Expat2.9.0 and85091
+against zlib. Windows temporary-image archive cleanup-lock warnings occurred;
+both complete SARIF reports were saved. No destructive cleanup/suppression.
+The security gate remains OPEN; these results supersede pending-scan statements
+in the historical paragraphs below, not the earlier source-review boundaries.
+
+This section supersedes only freshness/identity statements, not historical raw
+results. The read-only inventory below used API `ebeb4c6e…`, encoder `90c409be…`;
+these became historical after the additional assignment-publication repair.
+The rebuilt current API is `98dfff50…`, encoder `df79b906…` (full identities
+and source equivalence in `QA_REVIEW_PROGRESS_2026-10-09.md`). Read-only inventory
+Exit0 for BOTH: OpenSSL3.5.7-1~deb13u3, native/Python Expat2.9.0,
+Tesseract5.5.0-1+chemistry2 and Python zlib1.3.1; python-docx did not resolve the
+external-entity probe. Evidence `security-runtime-{api,video-worker}-20261009-current.json`.
+Current encoder capability inventory Exit0,
+`native-video-capabilities-20261009-current.json`: RASC/QUIRC absent;
+CFHD/ADX/MACE6/MagicYUV and hqdn3d present. CAF/WTV and several muxers also
+exist; application format/filter/output whitelists are separate restrictions.
+HTTP/HTTPS/TCP/UDP/TLS/RIST are absent, but async/cache/concat/concatf/crypto/
+data/fd/file/md5/pipe/prompeg/shared/subfile/tee remain. Do not claim all network
+or wrapper protocols were compiled out. This inventory is not an exploit test.
+
+Primary tracker pages reread9October for all shared IDs: ncurses69720,
+systemd16742, TIFF36849/52490, ACL54369, Expat66046/76956/76957/93990/77214,
+Tesseract73066/88047/88048/88051/88052/88053, util-linux76642/78408/78409/78410,
+Perl9538 and Scout-only zlib85091. Direct per-ID links and the unchanged
+source/path assessments remain in the tables below. All still lack an official
+fixed trixie candidate; upstream fixes/custom source evidence must not be
+misrepresented as an official fixed Debian package. OpenSSL84782 is different:
+its linked tracker explicitly marks the installed trixie-security revision fixed.
+
+All sixteen encoder ID pages were also reread9October across this continuation;
+the eleven detailed n9.0/n9.0.1 fixing references are in the current progress
+report. The remaining64830/64832/64833/64834 pages retain n9.0 fixing references;
+the RASC58049 CNA page provides no independently verified fixing-content claim.
+Its actual compiled-out decoder is mitigation evidence, not a package-version
+waiver. No third-party exploit was executed merely because a tracker linked it.
+
+The latest COMPLETED raw scans remain earlier API097d7cb…/encodere77017f…:
+Scout3High/0Critical EACH, rawExit2; Trivy63High API/79High encoder, rawExit1
+EACH, union38 unique IDs. Trivy now includes77214 in both images (21 shared
+unique IDs, plus16 encoder IDs); zlib85091 adds the38th through Scout. This is
+not a fresh scan of the current identities. Fresh scans/package indexes wait
+until the final browser gate exits; no scanner overlaps its CPU budget.
+Raw security gates remain OPEN and no alerts were hidden or severity-relabelled.
+
 ## Latest immutable-image Trivy review — 8 October, 10:21 UTC
 
 Fresh pinned Trivy0.69.3 downloaded its current DB and scanned ACTUAL API

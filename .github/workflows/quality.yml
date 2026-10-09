@@ -80,6 +80,8 @@ jobs:
           node-version: 22
       - run: npm ci && npx playwright install --with-deps chromium
         working-directory: apps/web
+      - name: Browser evidence paths exclude private traces and secrets
+        run: python3 -m unittest discover -s scripts/qa/tests -p test_ci_evidence_paths.py -v
       - name: Prepare synthetic local HTTPS stack
         shell: pwsh
         run: ./scripts/qa/prepare-production.ps1 -Docker docker -Project chemistryaudit2
@@ -142,6 +144,9 @@ jobs:
             .qa/audit2/runtime-recovery-*.json
             .qa/audit2/*video*.xml
             .qa/audit2/extract-fidelity-ci.json
+            .qa/audit2/trusted-browser-*/browser.xml
+            .qa/audit2/trusted-browser-*/command.json
+            .qa/audit2/trusted-browser-*/artifacts/**/*.png
             .qa/audit2/video-results-*/**/*.png
             .qa/playwright/results/**/*.png
   secrets:

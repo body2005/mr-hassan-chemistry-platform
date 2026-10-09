@@ -1,9 +1,10 @@
 param(
     [ValidateSet('chemistryaudit2','chemistryprodlocal')][string]$Project='chemistryaudit2',
+    [switch]$DatabaseOnly,
     [string]$Docker='C:\Users\body\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe'
 )
 $ErrorActionPreference='Stop'
-$npxExecutable=if($IsWindows){'npx.cmd'}else{'npx'}
+if($Project -ne 'chemistryaudit2'){throw 'This trusted restore/browser drill targets only the current chemistryaudit2 QA project.'}
 $taskRoot=(Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 Set-Location $taskRoot
 $folder=if($Project -eq 'chemistryaudit2'){'audit2'}else{'production'}
@@ -42,6 +43,33 @@ else: raise SystemExit('HTTPS readiness did not recover')
 '@
 Invoke-Drill 'validate video/storage template' @('config','-q')
 Invoke-Drill 'validate restored application template' @('config','-q') -Restore
+if($DatabaseOnly){
+    # New database migrations need a new restore proof; unchanged S3/encoder
+    # journeys need not be repeated. The default full drill remains unchanged.
+    $databaseFrozen=$false
+    $databaseRestoreStarted=$false
+    try{
+        $databaseFrozen=$true
+        Invoke-Drill 'database-only: freeze ALL application/encoder/upload writers' @('stop','upload-gateway','api','worker','video-worker')
+        Invoke-Drill 'database-only: initialize bounded backup directory' @('run','--rm','--no-deps','backup-permissions')
+        Invoke-Drill 'database-only: snapshot current PostgreSQL schema/data' @('run','--rm','--no-deps','backup-postgres')
+        $dump=Get-ChildItem -LiteralPath ".qa/$folder/backups" -Filter 'postgres-*.dump' | Sort-Object Name | Select-Object -Last 1
+        if(!$dump){throw 'No PostgreSQL dump was produced'}
+        $databaseRestoreStarted=$true
+        Invoke-Drill 'database-only: NEW isolated PostgreSQL volume' @('up','-d','--no-deps','--wait','--wait-timeout','90','postgres-restore')
+        Invoke-Drill 'database-only: restore into EMPTY new database; no clean/drop' @('exec','-T','postgres-restore','pg_restore','--exit-on-error','--no-owner','--no-privileges','-U','lms','-d','restored',"/backups/$($dump.Name)")
+        Invoke-Drill 'database-only: compare EVERY public table and row while writers remain stopped' @('run','--rm','--no-deps','qa-tests','python','-m','scripts.verify_db_restore')
+        Invoke-Drill 'database-only: restored Alembic head' @('exec','-T','postgres-restore','psql','-U','lms','-d','restored','-Atc','SELECT version_num FROM alembic_version')
+    }finally{
+        if($databaseFrozen){
+            Invoke-Drill 'database-only: recover original writers, preserving all volumes' @('up','-d','--no-deps','--wait','--wait-timeout','160','worker','video-worker','api','upload-gateway')
+            Invoke-Drill 'database-only: original trusted HTTPS readiness' @('run','--rm','--no-deps','qa-tests','python','-c',$probe)
+        }
+        if($databaseRestoreStarted){Invoke-Drill 'database-only: stop restore server; PRESERVE volume' @('stop','postgres-restore')}
+    }
+    Write-Output 'Database-only restore complete. No S3/encoder/browser journey repeated; no original data removed.'
+    exit 0
+}
 Invoke-Drill 'original assets and SHA-256' @('run','--rm','--no-deps','qa-tests','python','-m','scripts.verify_video_assets')
 Invoke-Drill 'legacy video/material/receipt and ownership checkpoint' @('run','--rm','--no-deps','qa-tests','python','-m','scripts.storage_drill','verify')
 $frozen=$false
@@ -78,20 +106,17 @@ try{
     # Real browser uploads NEW bytes through the restored upload gateway,
     # waits for the restored encoder, plays/seeks HLS, and checks revocation.
     $env:QA_BASE_URL=if($Project -eq 'chemistryaudit2'){'https://localhost:18543'}else{'https://localhost:18443'}
-    $env:QA_LOCAL_TLS='true'
+    $env:QA_LOCAL_TLS='false'
     $env:QA_REDIS_CONTAINER="$Project-redis-1"
     $env:QA_DOCKER=$Docker
     $env:QA_VIDEO_FILE=Join-Path $taskRoot ".qa/$folder/media/video.webm"
     $env:PLAYWRIGHT_JUNIT_OUTPUT_FILE=Join-Path $taskRoot ".qa/$folder/restored-video-$($env:QA_RESTORE_RUN_ID).xml"
     $env:QA_PLAYWRIGHT_OUTPUT=Join-Path $taskRoot ".qa/$folder/restored-video-$($env:QA_RESTORE_RUN_ID)"
-    Push-Location (Join-Path $taskRoot 'apps/web')
-    try{
-        & $npxExecutable playwright test --config playwright.qa.config.ts tests/qa/video-playback.spec.ts --reporter=list,junit
-        $code=$LASTEXITCODE
-        $results.Add(@{command='actual browser NEW upload/encode/playback on restored stores';exit_code=$code;utc=[DateTime]::UtcNow.ToString('o')})
-        $results | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $taskRoot ".qa/$folder/video-storage-$($env:QA_RESTORE_RUN_ID).json") -Encoding utf8
-        if($code -ne 0){throw "Restored browser failed: Exit $code"}
-    }finally{Pop-Location}
+    & (Join-Path $PSHOME $(if($IsWindows){'pwsh.exe'}else{'pwsh'})) -NoProfile -File (Join-Path $PSScriptRoot 'run-trusted-browser.ps1') -Build -Docker $Docker -SpecPattern tests/qa/video-playback.spec.ts
+    $code=$LASTEXITCODE
+    $results.Add(@{command='actual browser NEW upload/encode/playback on restored stores';exit_code=$code;utc=[DateTime]::UtcNow.ToString('o')})
+    $results | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $taskRoot ".qa/$folder/video-storage-$($env:QA_RESTORE_RUN_ID).json") -Encoding utf8
+    if($code -ne 0){throw "Restored browser failed: Exit $code"}
 }finally{
     if($frozen){
         Invoke-Drill 'return original DB/S3/ALL writer configuration' @('up','-d','--no-deps','--force-recreate','--wait','--wait-timeout','160','worker','video-worker','api','upload-gateway')

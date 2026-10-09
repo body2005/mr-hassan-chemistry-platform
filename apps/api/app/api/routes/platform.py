@@ -496,8 +496,9 @@ async def upload_lesson_video(
     storage = get_storage_provider()
     storage_key = generate_safe_object_key(f"lesson_videos/{lesson.id}", filename)
     try:
-        stored_path = storage.save_file(filepath, storage_key, file.content_type or mimetypes.guess_type(filename)[0])
-    except Exception as exc:
+        from app.core.storage_async import save_file_async
+        stored_path = await save_file_async(storage, filepath, storage_key, file.content_type or mimetypes.guess_type(filename)[0])
+    except BaseException as exc:
         # Safe operational evidence: do not log exception messages, which may
         # contain signed object URLs or credentials from a storage SDK.
         logging.getLogger(__name__).error(
@@ -507,6 +508,8 @@ async def upload_lesson_video(
         from app.services.storage_cleanup import compensate_upload
         db.rollback()
         compensate_upload(db, storage_key)
+        if not isinstance(exc, Exception):
+            raise
         from boto3.exceptions import S3UploadFailedError
         from botocore.exceptions import BotoCoreError, ClientError
         if isinstance(exc, (S3UploadFailedError, BotoCoreError, ClientError)):
@@ -779,6 +782,9 @@ def my_progress(user: Student, db: Db) -> list[LessonProgressResponse]:
 @router.post("/progress/lessons/{lesson_id}/complete", response_model=LessonProgressResponse)
 def complete_lesson(lesson_id: uuid.UUID, user: Student, db: Db) -> LessonProgressResponse:
     _require_lesson_access(db, user, lesson_id)
+    # Share the existing-user lock with video telemetry, including the first
+    # progress insertion. Different students do not block each other.
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
     progress = db.scalar(
         select(LessonProgress)
         .join(Lesson, Lesson.id == LessonProgress.lesson_id)
@@ -1662,6 +1668,18 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
         .where(Quiz.course_id == course_id, Quiz.institution_id == user.institution_id,
                QuizAttempt.student_id == user.id, QuizAttempt.is_practice.is_(False))
         .group_by(QuizAttempt.quiz_id)).all()) if user.role == UserRole.STUDENT else {}
+    # Consuming an attempt (including merely starting it) is not completion.
+    # Two set queries keep this independent of the number of assessments.
+    completed_quizzes = set(db.scalars(select(QuizAttempt.quiz_id).join(Quiz, Quiz.id == QuizAttempt.quiz_id)
+        .where(Quiz.course_id == course_id, Quiz.institution_id == user.institution_id,
+               QuizAttempt.institution_id == user.institution_id, QuizAttempt.student_id == user.id,
+               QuizAttempt.is_practice.is_(False), QuizAttempt.status == AttemptStatus.SUBMITTED,
+               QuizAttempt.submitted_at.is_not(None)).distinct())) if user.role == UserRole.STUDENT else set()
+    completed_assignments = set(db.scalars(select(AssignmentSubmission.assignment_id)
+        .join(Assignment, Assignment.id == AssignmentSubmission.assignment_id)
+        .where(Assignment.course_id == course_id, Assignment.institution_id == user.institution_id,
+               AssignmentSubmission.institution_id == user.institution_id,
+               AssignmentSubmission.student_id == user.id).distinct())) if user.role == UserRole.STUDENT else set()
     course_access = user.role != UserRole.STUDENT or enrolled is not None
 
     def quiz_item(q: Quiz) -> dict:
@@ -1677,6 +1695,7 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
             "ends_at": q.ends_at.isoformat() if q.ends_at else None,
             "attempts_allowed": q.attempts_allowed,
             "attempts_used": attempt_counts.get(q.id, 0),
+            "completed": q.id in completed_quizzes,
             # Unscoped quizzes fall back to: any enrolled student can try.
             "accessible": course_access and (q.lesson_id is None or q.lesson_id in accessible_lessons),
         }
@@ -1691,6 +1710,7 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
             "lesson_id": str(a.lesson_id) if a.lesson_id else None,
             "due_at": a.due_at.isoformat() if a.due_at else None,
             "max_score": float(a.max_score or 0),
+            "completed": a.id in completed_assignments,
             "accessible": course_access and (a.lesson_id is None or a.lesson_id in accessible_lessons),
         }
 
@@ -1753,14 +1773,6 @@ def get_quiz_solve_view(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
         if _as_utc(quiz.ends_at) and _as_utc(quiz.ends_at) <= now:
             raise HTTPException(status_code=403, detail="Quiz is closed")
 
-    rows = db.execute(
-        select(QuizQuestion, Question)
-        .join(Question, Question.id == QuizQuestion.question_id)
-        .where(QuizQuestion.quiz_id == quiz.id, Question.is_active.is_(True))
-        .order_by(QuizQuestion.position)
-    ).all()
-    total_points = sum(qq.points for qq, _q in rows)
-
     # The attempt clock starts when the student opens the solving page (or
     # resumes the already-running attempt) — otherwise duration_seconds would
     # never constrain anything. The countdown must be server-authoritative.
@@ -1777,6 +1789,10 @@ def get_quiz_solve_view(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         if attempt.expires_at is not None:
             expires_at_iso = attempt.expires_at.isoformat()
+
+    from app.services.quiz_snapshot import question_rows
+    rows = question_rows(db, quiz, attempt)
+    total_points = attempt.total_points if attempt is not None else sum(qq.points for qq, _ in rows)
 
     def _safe_options(raw: object) -> object:
         """Strip answer-revealing flags (is_correct) from stored options."""
@@ -1842,16 +1858,15 @@ def grade_quiz_answer(attempt_id: uuid.UUID, question_id: uuid.UUID, payload: Gr
         raise HTTPException(404, "Attempt not found") from exc
     if attempt.status != AttemptStatus.SUBMITTED:
         raise HTTPException(409, "Only submitted attempts can be graded")
-    row = db.execute(select(QuizAttemptAnswer, QuizQuestion, Question)
-                     .join(Question, Question.id == QuizAttemptAnswer.question_id)
-                     .join(QuizQuestion, (QuizQuestion.question_id == Question.id) & (QuizQuestion.quiz_id == attempt.quiz_id))
-                     .where(QuizAttemptAnswer.attempt_id == attempt.id, Question.id == question_id)).first()
-    if not row:
+    answer = db.scalar(select(QuizAttemptAnswer).where(QuizAttemptAnswer.attempt_id == attempt.id,
+        QuizAttemptAnswer.question_id == question_id))
+    if answer is None:
         raise HTTPException(404, "Answer not found")
-    answer, link, question = row
-    if question.question_type not in {"essay", "short_answer"}:
+    if answer.question_snapshot is None:
+        raise HTTPException(409, "Legacy answer has no frozen rubric; historical evidence review is required")
+    if answer.question_snapshot["question_type"] not in {"essay", "short_answer"}:
         raise HTTPException(422, "This question is automatically graded")
-    if payload.awarded_points > link.points:
+    if payload.awarded_points > answer.question_snapshot["points"]:
         raise HTTPException(422, "Grade exceeds the question's points")
     answer.awarded_points = payload.awarded_points
     answer.feedback = payload.feedback
@@ -1916,12 +1931,8 @@ def get_quiz_result_view(
     else:
         attempt = all_attempts[0]
 
-    rows = db.execute(
-        select(QuizQuestion, Question)
-        .join(Question, Question.id == QuizQuestion.question_id)
-        .where(QuizQuestion.quiz_id == quiz.id, Question.is_active.is_(True))
-        .order_by(QuizQuestion.position)
-    ).all()
+    from app.services.quiz_snapshot import question_rows
+    rows = question_rows(db, quiz, attempt)
 
     answer_rows = {
         item.question_id: item
@@ -2024,7 +2035,7 @@ def get_quiz_result_view(
                 "attempt_number": att.attempt_number,
                 "is_practice": bool(att.is_practice),
                 "score": float(att.score or 0.0),
-                "total_points": float(att.total_points or possible),
+                "total_points": float(att.total_points) if att.total_points is not None else None,
                 "submitted_at": att.submitted_at.isoformat() if att.submitted_at else None,
                 "duration_seconds": max(0, int((_as_utc(att.submitted_at) - _as_utc(att.started_at)).total_seconds())) if att.submitted_at and att.started_at else None,
             }
@@ -2032,7 +2043,10 @@ def get_quiz_result_view(
         ],
         "score": float(attempt.score or 0.0),
         "grading_status": "pending" if pending_count else "complete",
-        "total_points": float(attempt.total_points or possible),
+        "total_points": float(attempt.total_points) if attempt.total_points is not None else None,
+        "history_state": "frozen" if attempt.question_snapshot is not None else "legacy-unverified",
+        "history_warning": (None if attempt.question_snapshot is not None else
+            "لا توجد نسخة تاريخية موثقة للأسئلة؛ الدرجة المحفوظة لم تتغير، وتفاصيل الأسئلة تحتاج مراجعة المدرس."),
         "summary": {
             "correct": correct_count,
             "wrong": wrong_count,
@@ -2080,12 +2094,8 @@ def get_student_quiz_solution(
     if quiz is None:
         raise HTTPException(status_code=404, detail="Quiz not found")
 
-    rows = db.execute(
-        select(QuizQuestion, Question)
-        .join(Question, Question.id == QuizQuestion.question_id)
-        .where(QuizQuestion.quiz_id == quiz.id, Question.is_active.is_(True))
-        .order_by(QuizQuestion.position)
-    ).all()
+    from app.services.quiz_snapshot import question_rows
+    rows = question_rows(db, quiz, attempt)
 
     answer_rows = {
         item.question_id: item
@@ -2180,6 +2190,9 @@ def get_student_quiz_solution(
     return {
         "student_id": str(student_id),
         "student_name": target_student.display_name,
+        "history_state": "frozen" if attempt.question_snapshot is not None else "legacy-unverified",
+        "history_warning": (None if attempt.question_snapshot is not None else
+            "لا توجد نسخة تاريخية موثقة للأسئلة؛ الدرجة المحفوظة لم تتغير، وتفاصيل الأسئلة تحتاج مراجعة المدرس."),
         "grading_status": "pending" if pending_count else "complete",
         "quiz": {"id": str(quiz.id), "title": quiz.title},
         "attempt": {
@@ -2189,7 +2202,7 @@ def get_student_quiz_solution(
             "duration_seconds": duration_seconds,
         },
         "score": float(attempt.score or 0.0),
-        "total_points": float(attempt.total_points or possible),
+        "total_points": float(attempt.total_points) if attempt.total_points is not None else None,
         "summary": {
             "correct": correct_count,
             "wrong": wrong_count,
@@ -2413,12 +2426,15 @@ async def upload_assignment_submission_file(
         if size == 0:
             raise HTTPException(status_code=400, detail="Empty file")
         try:
-            storage.save_file(staged, object_key)
-        except Exception:
+            from app.core.storage_async import save_file_async
+            await save_file_async(storage, staged, object_key)
+        except BaseException as exc:
             from app.services.storage_cleanup import compensate_upload
             db.rollback()
             compensate_upload(db, object_key)
-            raise HTTPException(503, "Submission storage temporarily unavailable")
+            if not isinstance(exc, Exception):
+                raise
+            raise HTTPException(503, "Submission storage temporarily unavailable") from exc
     finally:
         if os.path.exists(staged):
             try:

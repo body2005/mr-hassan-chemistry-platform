@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -98,16 +98,23 @@ class QuestionExtCreateRequest(BaseModel):
     explanation: str | None = Field(default=None, max_length=10_000)
     source: str = Field(default="manual", max_length=40)
 
+    @model_validator(mode="after")
+    def validate_content(self) -> "QuestionExtCreateRequest":
+        from app.core.question_policy import validate_question_content
+        validate_question_content(self)
+        return self
+
 
 class QuestionUpdateRequest(BaseModel):
-    prompt: str | None = None
+    model_config = ConfigDict(extra="forbid")
+    prompt: str | None = Field(default=None, min_length=2, max_length=10_000)
     options: list | None = None
     correct_answer: object | None = None
-    points: float | None = None
-    question_type: str | None = None
-    difficulty: str | None = None
-    topic: str | None = None
-    explanation: str | None = None
+    points: float | None = Field(default=None, gt=0, le=1000, allow_inf_nan=False)
+    question_type: str | None = Field(default=None, min_length=2, max_length=40)
+    difficulty: str | None = Field(default=None, max_length=20)
+    topic: str | None = Field(default=None, max_length=200)
+    explanation: str | None = Field(default=None, max_length=10_000)
 
 
 class QuestionVersionResponse(BaseModel):
@@ -237,7 +244,9 @@ def create_question_versioned(payload: QuestionExtCreateRequest, db: Db, user: M
 
 @router.post("/questions/{question_id}/versions", response_model=QuestionVersionResponse, status_code=201)
 def update_question(question_id: uuid.UUID, payload: QuestionUpdateRequest, db: Db, user: Manager):
-    changes = {k: v for k, v in payload.model_dump().items() if v is not None}
+    # Omitted fields retain their value; an explicit null clears only nullable
+    # content/metadata after the complete merged question passes validation.
+    changes = payload.model_dump(exclude_unset=True)
     if not changes:
         raise ApiError("BAD_REQUEST", "No fields to update", 400)
     try:
@@ -318,6 +327,6 @@ def read_report_job(job_id: uuid.UUID, db: Db, user: CurrentUser):
 @router.get("/analytics/students/{student_id}/mastery")
 def student_mastery(student_id: uuid.UUID, db: Db, user: CurrentUser):
     try:
-        return {"items": extended_service.compute_student_mastery(db, user, student_id)}
+        return extended_service.compute_student_mastery_report(db, user, student_id)
     except Exception as exc:
         _translate(exc)

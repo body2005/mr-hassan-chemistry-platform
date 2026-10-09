@@ -247,6 +247,8 @@ class QuizQuestion(UUIDPrimaryKeyMixin, Base):
     )
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     points: Mapped[float] = mapped_column(Float, nullable=False)
+    # NULL identifies legacy exams without verifiable publication evidence.
+    question_snapshot: Mapped[dict | None] = mapped_column(JSON)
 
 
 class QuizAttempt(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -273,6 +275,7 @@ class QuizAttempt(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     score: Mapped[float | None] = mapped_column(Float)
     total_points: Mapped[float | None] = mapped_column(Float)
+    question_snapshot: Mapped[list | None] = mapped_column(JSON)
     submission_key: Mapped[str | None] = mapped_column(String(100), unique=True)
     # Practice attempts (self-training beyond the official one) are graded for
     # the student but never surface in teacher-facing listings or analytics.
@@ -303,6 +306,7 @@ class QuizAttemptAnswer(UUIDPrimaryKeyMixin, Base):
         ForeignKey("questions.id", ondelete="RESTRICT"), index=True, nullable=False
     )
     answer: Mapped[object | None] = mapped_column(JSON)
+    question_snapshot: Mapped[dict | None] = mapped_column(JSON)
     awarded_points: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     feedback: Mapped[str | None] = mapped_column(Text)
     graded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

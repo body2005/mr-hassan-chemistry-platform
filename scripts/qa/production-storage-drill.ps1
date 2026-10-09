@@ -1,5 +1,5 @@
 param([string]$Docker = 'C:\Users\body\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe',
-      [ValidateSet('chemistryprodlocal','chemistryaudit2')][string]$Project = 'chemistryprodlocal')
+      [ValidateSet('chemistryprodlocal','chemistryaudit2')][string]$Project = 'chemistryaudit2')
 $ErrorActionPreference = 'Stop'
 $taskRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 Set-Location $taskRoot

@@ -7,10 +7,28 @@ import asyncio
 import json
 
 import pytest
+from fastapi import HTTPException
+from redis.exceptions import ConnectionError as RedisConnectionError, TimeoutError as RedisTimeoutError
 
 from app.core import leases
 from app.core.concurrency import AdmissionMiddleware
 from app.core.upload_limits import UploadBudgetMiddleware
+
+
+@pytest.mark.parametrize('error_type', [RedisTimeoutError, RedisConnectionError, RuntimeError])
+def test_acquire_failure_is_fail_closed_with_safe_reason_only(monkeypatch, caplog, error_type):
+    class Backend:
+        def eval(self, *_args):
+            raise error_type('private-backend-value-must-not-appear')
+
+    monkeypatch.setattr(leases, '_get_redis_client', lambda: Backend())
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(leases.ResourceLease([('private-client-reservation', 1)]).acquire())
+    assert caught.value.status_code == 503
+    assert caught.value.headers == {'Retry-After': '2'}
+    assert 'Admission reservation failed' in caplog.text and error_type.__name__ in caplog.text
+    assert 'private-backend-value-must-not-appear' not in caplog.text
+    assert 'private-client-reservation' not in caplog.text
 
 
 def scenario(monkeypatch, kind, *, started=False, unrelated=False):

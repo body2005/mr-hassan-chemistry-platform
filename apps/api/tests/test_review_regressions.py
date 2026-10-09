@@ -50,7 +50,8 @@ def test_versioned_question_answers_are_private(db, viewer):
     a, b, owner, foreign, colleague, student, course = setup_domain(db)
     c = client(owner, b.slug)
     created = post(c, "/api/v1/questions/versioned", dict(course_id=str(course.id),
-                   question_type="mcq", prompt="Private question", correct_answer="C", explanation="Private answer"))
+                   question_type="mcq", prompt="Private question", options=["First", "Second", "Third"],
+                   correct_answer="C", explanation="Private answer"))
     assert created.status_code == 201, created.text
     path = f'/api/v1/questions/{created.json()["question_id"]}/versions'
     assert c.get(path).status_code == 200

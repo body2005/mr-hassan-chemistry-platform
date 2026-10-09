@@ -62,6 +62,9 @@ class ResourceLease:
                                              self.token, LEASE_SECONDS, *self.limits)
         except Exception as exc:
             # Never multiply local budgets during a production Redis outage.
+            # Class only: connection strings, keys and backend messages can
+            # contain private identity/credentials and must not reach logs.
+            logger.warning("Admission reservation failed (reason=%s)", type(exc).__name__)
             raise HTTPException(503, "Admission service temporarily unavailable", headers={"Retry-After": "2"}) from exc
         if denied:
             raise HTTPException(503 if denied == self.global_index else 429,

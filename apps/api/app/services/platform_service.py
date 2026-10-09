@@ -202,6 +202,7 @@ def create_question(db: Session, user: User, payload: QuestionCreateRequest) -> 
     if user.role == UserRole.TEACHER and payload.course_id:
         course = course_for_user(db, user, payload.course_id)
         ensure_course_manager(user, course)
+    _validate_quiz_question(payload)
     question = Question(
         institution_id=user.institution_id,
         author_id=user.id,
@@ -236,42 +237,8 @@ def _validate_assessment_scope(db: Session, course, module_id: uuid.UUID | None,
 
 
 def _validate_quiz_question(question, points: float | None = None) -> None:
-    if (len((question.prompt or '').strip()) < 2
-            or question.learning_objective == 'محتوى غير مفهرس'):
-        raise ValueError('Invalid question content')
-    score = float(question.points if points is None else points)
-    if not math.isfinite(score) or score <= 0:
-        raise ValueError('Question points must be positive and finite')
-    kind = question.question_type.strip().lower()
-    if kind not in {'mcq', 'multiple_choice', 'true_false', 'essay', 'short_answer', 'fill_in_blank', 'ordering', 'matching'}:
-        raise ValueError('Unsupported question type; review the draft before publication')
-    if kind not in {'essay', 'short_answer'}:
-        answer = question.correct_answer
-        if answer is None or (isinstance(answer, (str, list, dict)) and not answer):
-            raise ValueError('An automatically graded question requires a correct answer')
-        if isinstance(answer, str) and not answer.strip():
-            raise ValueError('Correct answer cannot be blank')
-    if kind in {'mcq', 'multiple_choice'}:
-        if question.options and len(question.options) > 26:
-            raise ValueError('Multiple-choice questions support at most 26 options (A–Z)')
-        if not question.options or len(question.options) < 2:
-            raise ValueError('Multiple-choice questions require at least two options')
-        keys, accepted = [], []
-        for index, option in enumerate(question.options):
-            if isinstance(option, str) and option.strip():
-                key = chr(65 + index)
-                accepted.extend([key, option.strip()])
-            elif (isinstance(option, dict) and isinstance(option.get('text'), str)
-                  and option['text'].strip() and option.get('key')):
-                key = str(option['key'])
-                accepted.extend([key, option['text'].strip()])
-            else:
-                raise ValueError('Invalid question option')
-            keys.append(key)
-        if len(keys) != len(set(keys)):
-            raise ValueError('Option keys must be unique')
-        if not any(_answers_equal(question.correct_answer, value) for value in accepted):
-            raise ValueError('Correct answer must identify an available option')
+    from app.core.question_policy import validate_question_content
+    validate_question_content(question, points)
 
 
 def publish_quiz_atomic(db: Session, user: User, payload: QuizPublishRequest) -> Quiz:
@@ -316,6 +283,9 @@ def publish_quiz_atomic(db: Session, user: User, payload: QuizPublishRequest) ->
             db.add(question)
             db.flush()
             db.add(QuizQuestion(quiz_id=quiz.id, question_id=question.id, position=position, points=item.points))
+        db.flush()
+        from app.services.quiz_snapshot import freeze_exam
+        freeze_exam(db, quiz)
         db.commit()
     except Exception:
         db.rollback()
@@ -399,6 +369,8 @@ def publish_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> Quiz:
                 or (user.role == UserRole.TEACHER and question.author_id != user.id)):
             raise ValueError('Quiz contains an unavailable question')
         _validate_quiz_question(question, points)
+    from app.services.quiz_snapshot import freeze_exam
+    freeze_exam(db, quiz)
     quiz.status = QuizStatus.PUBLISHED
     quiz.published_at = datetime.now(UTC)
     db.commit()
@@ -435,6 +407,8 @@ def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
             active.status = AttemptStatus.EXPIRED
             db.flush()
         else:
+            if active.question_snapshot is None:
+                raise ValueError("Legacy attempt has no frozen question evidence; teacher review is required")
             return active
     attempt_number = (
         db.scalar(
@@ -449,6 +423,8 @@ def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
     expires_at = now + timedelta(seconds=quiz.duration_seconds) if quiz.duration_seconds else None
     # Only attempt 1 is official; any subsequent attempt is self-training.
     is_practice = attempt_number > 1
+    from app.services.quiz_snapshot import freeze_exam
+    snapshots = freeze_exam(db, quiz, origin="legacy-exam-frozen-at-new-attempt")
     attempt = QuizAttempt(
         institution_id=user.institution_id,
         quiz_id=quiz.id,
@@ -457,10 +433,8 @@ def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
         started_at=now,
         expires_at=expires_at,
         is_practice=is_practice,
-        total_points=db.scalar(
-            select(func.sum(QuizQuestion.points)).where(QuizQuestion.quiz_id == quiz.id)
-        )
-        or 0,
+        total_points=sum(item["points"] for item in snapshots),
+        question_snapshot=snapshots,
     )
     db.add(attempt)
     db.commit()
@@ -494,10 +468,10 @@ def submit_quiz(
     require_assessment_access(db, user, db.get(Quiz, attempt.quiz_id), writing=True)
     if attempt.status != AttemptStatus.IN_PROGRESS:
         return attempt
-    quiz_questions = list(
-        db.scalars(select(QuizQuestion).where(QuizQuestion.quiz_id == attempt.quiz_id)).all()
-    )
-    allowed = {item.question_id: item.points for item in quiz_questions}
+    if attempt.question_snapshot is None:
+        raise ValueError("Legacy attempt has no frozen question evidence; teacher review is required")
+    from types import SimpleNamespace
+    allowed = {uuid.UUID(item["question_id"]): item for item in attempt.question_snapshot}
     answers_by_question: dict[uuid.UUID, QuizAnswerInput] = {}
     for answer in payload.answers:
         if answer.question_id not in allowed:
@@ -506,11 +480,10 @@ def submit_quiz(
             raise ValueError("Duplicate question answer")
         answers_by_question[answer.question_id] = answer
     score = 0.0
-    for question_id, points in allowed.items():
+    for question_id, snapshot in allowed.items():
         input_answer = answers_by_question.get(question_id)
-        question = db.get(Question, question_id)
-        if question is None:
-            continue
+        question = SimpleNamespace(**snapshot)
+        points = snapshot["points"]
         awarded = (
             points
             if question.question_type not in {"essay", "short_answer"} and input_answer and _answers_equal(input_answer.answer, question.correct_answer)
@@ -523,6 +496,7 @@ def submit_quiz(
                 attempt_id=attempt.id,
                 question_id=question_id,
                 answer=input_answer.answer if input_answer else None,
+                question_snapshot=snapshot,
                 awarded_points=awarded,
                 graded_at=now if question.question_type not in {"essay", "short_answer"} else None,
             )
@@ -536,12 +510,30 @@ def submit_quiz(
     return attempt
 
 
+def _validate_assignment_content(assignment) -> None:
+    # Publication must also validate legacy rows, not trust the create schema.
+    for name, maximum in (("title", 200), ("prompt", 20_000)):
+        value = getattr(assignment, name, None)
+        if not isinstance(value, str) or not 2 <= len(value.strip()) <= maximum:
+            raise ValueError(f"Assignment {name} must contain 2–{maximum} non-blank characters")
+    try:
+        maximum_score = float(assignment.max_score)
+    except (TypeError, ValueError):
+        raise ValueError("Assignment maximum score must be positive and finite") from None
+    if not math.isfinite(maximum_score) or not 0 < maximum_score <= 100_000:
+        raise ValueError("Assignment maximum score must be positive, finite and at most 100000")
+    for value in (assignment.starts_at, assignment.due_at):
+        if value is not None and not isinstance(value, datetime):
+            raise ValueError("Assignment dates must be valid timestamps")
+    if assignment.starts_at and assignment.due_at and _as_utc(assignment.starts_at) >= _as_utc(assignment.due_at):
+        raise ValueError("Assignment deadline must be after its start")
+
+
 def create_assignment(db: Session, user: User, payload: AssignmentCreateRequest) -> Assignment:
     course = course_for_user(db, user, payload.course_id)
     ensure_course_manager(user, course)
+    _validate_assignment_content(payload)
     module_id, lesson_id = _validate_assessment_scope(db, course, payload.module_id, payload.lesson_id)
-    if payload.starts_at and payload.due_at and _as_utc(payload.starts_at) >= _as_utc(payload.due_at):
-        raise ValueError("Assignment deadline must be after its start")
     assignment = Assignment(
         institution_id=course.institution_id,
         course_id=course.id,
@@ -564,7 +556,7 @@ def publish_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> Ass
     assignment = db.scalar(
         select(Assignment).where(
             Assignment.id == assignment_id, Assignment.institution_id == user.institution_id
-        )
+        ).with_for_update()
     )
     if assignment is None:
         raise LookupError("Assignment not found")
@@ -572,6 +564,12 @@ def publish_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> Ass
     if course is None:
         raise LookupError("Course not found")
     ensure_course_manager(user, course)
+    _validate_assignment_content(assignment)
+    module_id, lesson_id = _validate_assessment_scope(db, course, assignment.module_id, assignment.lesson_id)
+    # No mapped fields change until all content/scope checks have passed.
+    assignment.title = assignment.title.strip()
+    assignment.prompt = assignment.prompt.strip()
+    assignment.module_id, assignment.lesson_id = module_id, lesson_id
     assignment.status = AssignmentStatus.PUBLISHED
     db.commit()
     db.refresh(assignment)

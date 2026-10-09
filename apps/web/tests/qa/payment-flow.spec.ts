@@ -52,7 +52,7 @@ test("receipt review grants only the paying student access and sends notificatio
       multipart: { receipt: { name: "fake.png", mimeType: "image/png", buffer: Buffer.from("not a PNG") } },
     });
     expect(fake.status(), await fake.text()).toBe(422);
-    const studentBrowser = await browser.newContext({ ignoreHTTPSErrors: process.env.QA_LOCAL_TLS === "true" });
+    const studentBrowser = await browser.newContext({ ignoreHTTPSErrors: false });
     try {
       const studentPage = await studentBrowser.newPage();
       await studentPage.goto("/#auth");
@@ -66,7 +66,8 @@ test("receipt review grants only the paying student access and sends notificatio
       await studentPage.locator('input[name="method"]').first().check();
       await studentPage.locator('input[type="file"]').setInputFiles({ name: "real.png", mimeType: "image/png", buffer: validPng });
       await studentPage.getByRole("button", { name: /إرسال الإيصال وتأكيد الدفع/ }).click();
-      await expect(studentPage.getByText("تم إرسال الإيصال للمراجعة")).toBeVisible();
+      await expect(studentPage.locator('.toast-stack').getByText("تم إرسال الإيصال للمراجعة", { exact: false })).toBeVisible();
+      await expect(studentPage.locator('.sr-only[role="status"]')).toContainText('تم إرسال الإيصال للمراجعة');
     } finally {
       await studentBrowser.close();
     }

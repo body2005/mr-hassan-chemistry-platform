@@ -17,6 +17,7 @@ import { CurrentUser } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
 import { authService } from "../services/lmsService";
 import { RegistrationWizard } from "../components/RegistrationWizard";
+import { authTabHash, readAuthTab, type AuthTab } from "../services/authNavigation";
 
 
 
@@ -40,7 +41,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
   onToggleTheme,
 }) => {
   const t = translations[lang];
-  const [activeTab, setActiveTab] = useState<"signin" | "register">(initialTab);
+  const [activeTab, setActiveTab] = useState<AuthTab>(() => readAuthTab(window.location.hash, initialTab));
 
   // Sign In State
   const [signInEmail, setSignInEmail] = useState("");
@@ -55,16 +56,31 @@ export const AuthView: React.FC<AuthViewProps> = ({
   const [resetPassword, setResetPassword] = useState("");
   const [resetConfirmPassword, setResetConfirmPassword] = useState("");
   const [resetBusy, setResetBusy] = useState(false);
+  const [resetErrors, setResetErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const syncResetLink = () => {
       const token = new URLSearchParams(window.location.hash.split("?", 2)[1] || "").get("reset_token") || "";
       setResetToken(token);
-      if (token) { setResetMode("confirm"); setActiveTab("signin"); }
+      setActiveTab(readAuthTab(window.location.hash));
+      setResetMode(token ? "confirm" : "none");
     };
     window.addEventListener("hashchange", syncResetLink);
-    return () => window.removeEventListener("hashchange", syncResetLink);
+    window.addEventListener("popstate", syncResetLink);
+    return () => {
+      window.removeEventListener("hashchange", syncResetLink);
+      window.removeEventListener("popstate", syncResetLink);
+    };
   }, []);
+
+  function selectTab(tab: AuthTab) {
+    setActiveTab(tab);
+    setResetMode("none");
+    setResetToken("");
+    setError("");
+    setSuccessMsg("");
+    window.location.hash = authTabHash(tab);
+  }
 
 
 
@@ -98,10 +114,15 @@ export const AuthView: React.FC<AuthViewProps> = ({
     e.preventDefault();
     setError("");
     setSuccessMsg("");
-    if (resetMode === "confirm" && resetPassword !== resetConfirmPassword) {
-      setError(lang === "ar" ? "كلمتا المرور غير متطابقتين" : "Passwords do not match");
-      return;
-    }
+    const invalid: Record<string, string> = {};
+    if (resetMode === 'request' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(resetEmail.trim()))
+      invalid.email = lang === 'ar' ? 'أدخل بريدًا إلكترونيًا صحيحًا.' : 'Enter a valid email address.';
+    if (resetMode === 'confirm' && (resetPassword.length < 10 || resetPassword.length > 128))
+      invalid.password = lang === 'ar' ? 'كلمة المرور يجب أن تكون من 10 إلى 128 حرفًا.' : 'Use 10–128 characters.';
+    if (resetMode === 'confirm' && resetPassword !== resetConfirmPassword)
+      invalid.confirm = lang === 'ar' ? 'كلمتا المرور غير متطابقتين.' : 'Passwords do not match.';
+    setResetErrors(invalid);
+    if (Object.keys(invalid).length) return;
     setResetBusy(true);
     try {
       if (resetMode === "request") {
@@ -139,7 +160,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
 
   const registrationView = (
     <RegistrationWizard embedded lang={lang} theme={theme} onToggleLang={onToggleLang}
-      onToggleTheme={onToggleTheme} onSignIn={() => setActiveTab("signin")}
+      onToggleTheme={onToggleTheme} onSignIn={() => selectTab("signin")}
       onBack={onBackToLanding} onSuccess={onLoginSuccess} />
   );
 
@@ -304,7 +325,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                 type="button"
                 aria-pressed={activeTab === "signin"}
                 onClick={() => {
-                  setActiveTab("signin");
+                  selectTab("signin");
                   setError("");
                 }}
                 style={{
@@ -332,7 +353,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                 type="button"
                 aria-pressed={activeTab === "register"}
                 onClick={() => {
-                  setActiveTab("register");
+                  selectTab("register");
                   setError("");
                 }}
                 style={{
@@ -376,6 +397,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
             {/* Error & Success Messages */}
             {error && (
               <div
+                id="auth-error"
                 role="alert"
                 style={{
                   background: "#fef2f2",
@@ -412,37 +434,61 @@ export const AuthView: React.FC<AuthViewProps> = ({
 
             {/* ===================== VIEW A: SIGN IN FORM ===================== */}
             {activeTab === "signin" && resetMode !== "none" ? (
-              <form onSubmit={handlePasswordReset} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+              <form className="password-reset-form" noValidate onSubmit={handlePasswordReset}
+                aria-describedby={error ? 'auth-error' : undefined}
+                style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
                 <h3>{resetMode === "request" ? (lang === "ar" ? "استرجاع كلمة المرور" : "Reset your password") : (lang === "ar" ? "كلمة مرور جديدة" : "Set a new password")}</h3>
                 {resetMode === "request" ? (
-                  <input
+                  <div>
+                  <label htmlFor="reset-email">{lang === 'ar' ? 'بريد الاسترجاع' : 'Reset email'}</label>
+                  <input id="reset-email"
                     aria-label={lang === "ar" ? "بريد الاسترجاع" : "Reset email"}
                     type="email"
                     required
                     value={resetEmail}
                     onChange={(event) => setResetEmail(event.target.value)}
                     autoComplete="email"
+                    dir="ltr"
+                    aria-invalid={Boolean(resetErrors.email)}
+                    aria-describedby={resetErrors.email ? 'reset-email-error' : undefined}
                   />
+                  {resetErrors.email && <p id="reset-email-error" role="alert">{resetErrors.email}</p>}
+                  </div>
                 ) : (
                   <>
-                    <input
+                    <div>
+                    <label htmlFor="reset-password">{lang === 'ar' ? 'كلمة المرور الجديدة' : 'New password'}</label>
+                    <p id="reset-password-help">{lang === 'ar' ? 'استخدم من 10 إلى 128 حرفًا، واختر كلمة لا تستخدمها في مواقع أخرى.' : 'Use 10–128 characters and a password unique to this site.'}</p>
+                    <input id="reset-password"
                       aria-label={lang === "ar" ? "كلمة المرور الجديدة" : "New password"}
                       type="password"
                       required
                       minLength={10}
+                      maxLength={128}
                       value={resetPassword}
                       onChange={(event) => setResetPassword(event.target.value)}
                       autoComplete="new-password"
+                      aria-invalid={Boolean(resetErrors.password)}
+                      aria-describedby={`reset-password-help${resetErrors.password ? ' reset-password-error' : ''}`}
                     />
-                    <input
+                    {resetErrors.password && <p id="reset-password-error" role="alert">{resetErrors.password}</p>}
+                    </div>
+                    <div>
+                    <label htmlFor="reset-confirm">{lang === 'ar' ? 'تأكيد كلمة المرور الجديدة' : 'Confirm new password'}</label>
+                    <input id="reset-confirm"
                       aria-label={lang === "ar" ? "تأكيد كلمة المرور الجديدة" : "Confirm new password"}
                       type="password"
                       required
                       minLength={10}
+                      maxLength={128}
                       value={resetConfirmPassword}
                       onChange={(event) => setResetConfirmPassword(event.target.value)}
                       autoComplete="new-password"
+                      aria-invalid={Boolean(resetErrors.confirm)}
+                      aria-describedby={resetErrors.confirm ? 'reset-confirm-error' : undefined}
                     />
+                    {resetErrors.confirm && <p id="reset-confirm-error" role="alert">{resetErrors.confirm}</p>}
+                    </div>
                   </>
                 )}
                 <button type="submit" className="btn-primary" disabled={resetBusy}>
@@ -453,6 +499,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                   setResetToken("");
                   setResetMode("none");
                   setError("");
+                  setResetErrors({});
                 }}>
                   {lang === "ar" ? "العودة لتسجيل الدخول" : "Back to sign in"}
                 </button>
@@ -562,7 +609,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      setActiveTab("register");
+                      selectTab("register");
                       setError("");
                     }}
                     style={{

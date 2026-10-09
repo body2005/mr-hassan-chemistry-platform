@@ -114,6 +114,8 @@ export interface CourseAssessmentRef {
   dueLabel?: string | null;
   /** Total attempts this student has already consumed on this quiz. */
   attemptsUsed?: number;
+  /** Server-confirmed official quiz or homework submission; starting is not completion. */
+  completed?: boolean;
   /** Maximum attempts the teacher allows (undefined = unlimited display). */
   attemptsAllowed?: number;
   /** False when the lesson it belongs to is not paid/unlocked for this student. */

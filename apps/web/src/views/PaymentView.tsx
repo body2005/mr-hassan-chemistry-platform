@@ -30,7 +30,7 @@ import {
   StudentEntitlement,
   paymentService,
 } from "../services/paymentService";
-import { useToast } from "../components/ToastProvider";
+import { useToast, ToastRegion } from "../components/ToastProvider";
 
 interface PaymentViewProps {
   courses: Course[];
@@ -435,6 +435,7 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
 
             {/* CTA */}
             <div style={{ marginTop: "22px", paddingTop: "18px", borderTop: "1px solid var(--border-color)" }}>
+              <ToastRegion />
               <button
                 type="button"
                 onClick={submitPayment}

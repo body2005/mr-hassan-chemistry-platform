@@ -5,6 +5,9 @@ param(
     [string]$Docker = 'C:\Users\body\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe'
 )
 $ErrorActionPreference = 'Stop'
+if ($Stage -in @('Tests','Browser','All') -and $Project -ne 'chemistryaudit2') {
+    throw 'Trusted browser gates are restricted to the current chemistryaudit2 QA project.'
+}
 $taskRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 Set-Location $taskRoot
 $folder = if ($Project -eq 'chemistryaudit2') { 'audit2' } else { 'production' }
@@ -122,7 +125,7 @@ if ($Stage -in @('Tests','Browser','All')) {
     Save-Results
     if (!$mailReady) { throw 'QA SMTP inbox is unavailable; do not skip the reset-email tests.' }
     $env:QA_BASE_URL = "https://localhost:$httpsPort"
-    $env:QA_LOCAL_TLS = 'true'
+    $env:QA_LOCAL_TLS = 'false'
     $env:QA_MAILPIT_URL = "http://127.0.0.1:$mailPort"
     $env:QA_REDIS_CONTAINER = "$Project-redis-1"
     $env:QA_DOCKER = $Docker
@@ -143,10 +146,10 @@ if ($Stage -in @('Tests','Browser','All')) {
         Invoke-Step 'frontend unit tests' $npmExecutable @('test','--','--maxWorkers=1',
             '--reporter=default','--reporter=junit',"--outputFile=$frontendResults")
         if ($Stage -eq 'Browser') {
-            Invoke-Step 'all frontend browser journeys on production template' $npxExecutable @('playwright','test','--config','playwright.qa.config.ts','--reporter=list,junit')
+            Invoke-Step 'all browser journeys with trusted isolated QA certificate (no TLS bypass)' (Join-Path $PSHOME $(if ($IsWindows) { 'pwsh.exe' } else { 'pwsh' })) @('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-trusted-browser.ps1'),'-Docker',$Docker,'-Build')
             Invoke-Step 'npm dependency audit' $npmExecutable @('audit','--audit-level=high')
         } else {
-            Invoke-Step 'publication/resumption/playback browser tests' $npxExecutable @('playwright','test','--config','playwright.qa.config.ts','tests/qa/publication.spec.ts','tests/qa/video-playback.spec.ts','--reporter=list,junit')
+            Invoke-Step 'publication/resumption/playback browser tests (TLS validated)' (Join-Path $PSHOME $(if ($IsWindows) { 'pwsh.exe' } else { 'pwsh' })) @('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-trusted-browser.ps1'),'-Docker',$Docker,'-SpecPattern','tests/qa/publication.spec.ts,tests/qa/video-playback.spec.ts','-Build')
         }
     } finally { Pop-Location }
     Invoke-Step 'diff check' 'git' @('-c','core.safecrlf=false','diff','--check')

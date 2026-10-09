@@ -449,8 +449,8 @@ class QuestionCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_option_limit(self) -> "QuestionCreateRequest":
-        if self.question_type.strip().lower() in {"mcq", "multiple_choice"} and self.options and len(self.options) > 26:
-            raise ValueError("Multiple-choice questions support at most 26 options (A–Z)")
+        from app.core.question_policy import validate_question_content
+        validate_question_content(self)
         return self
 
 
@@ -579,6 +579,12 @@ class AssignmentCreateRequest(BaseModel):
     module_id: uuid.UUID | None = None
     lesson_id: uuid.UUID | None = None
     max_score: float = Field(default=100.0, gt=0, le=100_000)
+
+    @field_validator("prompt", mode="before")
+    @classmethod
+    def normalize_prompt(cls, value: Any) -> Any:
+        # Length must apply to meaningful content, not surrounding whitespace.
+        return value.strip() if isinstance(value, str) else value
 
     @model_validator(mode="before")
     @classmethod

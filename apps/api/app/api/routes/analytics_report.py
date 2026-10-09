@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import math
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -12,7 +13,8 @@ from app.api.dependencies import CurrentUser, require_roles
 from app.core.database import get_db
 from app.core.rate_limit import enforce_rate_limit
 from app.models.course import Course, CourseModule, Lesson, Enrollment, EnrollmentStatus
-from app.models.platform import Assignment, AssignmentSubmission, Quiz, QuizAttempt, QuizAttemptAnswer
+from app.models.platform import (Assignment, AssignmentStatus, AssignmentSubmission, Quiz,
+    QuizStatus, QuizAttempt, QuizAttemptAnswer, AttemptStatus)
 from app.models.progress import LessonProgress
 from app.models.user import User, UserRole
 
@@ -35,6 +37,13 @@ class AnalyticsSummary(BaseModel):
     risk_students_count: int = 0
     top_quizzes: list[dict[str, Any]] = []
     assignments_on_time_rate: float | None = None
+    metric_policy: str = "percent/latest-submitted-official/enrollment-pairs/v1"
+    quiz_eligible_count: int = 0
+    quiz_completed_count: int = 0
+    quiz_scored_count: int = 0
+    invalid_score_count: int = 0
+    assignment_eligible_count: int = 0
+    lesson_eligible_count: int = 0
 
 
 @router.get("/reports/summary", response_model=AnalyticsSummary)
@@ -69,42 +78,72 @@ async def get_analytics_summary(
     quizzes_count = db.scalar(select(func.count(Quiz.id)).where(Quiz.institution_id == user.institution_id, Quiz.course_id.in_(courses))) or 0
     assignments_count = db.scalar(select(func.count(Assignment.id)).where(Assignment.institution_id == user.institution_id, Assignment.course_id.in_(courses))) or 0
 
-    # Practice (self-training) attempts are the student's private business:
-    # teacher analytics only ever see official attempts.
-    attempts = db.execute(
-        select(QuizAttempt).join(Quiz, Quiz.id == QuizAttempt.quiz_id).where(
+    # Denominators are eligible student/content pairs, not all students times
+    # all content, and not the count of retries or existing progress rows.
+    enrollment_filter = (Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+                         Enrollment.student_id.in_(students), Enrollment.course_id.in_(courses))
+    quiz_filter = (Quiz.institution_id == user.institution_id,
+                   Quiz.status.in_([QuizStatus.PUBLISHED, QuizStatus.CLOSED]))
+    assignment_filter = (Assignment.institution_id == user.institution_id,
+                         Assignment.status.in_([AssignmentStatus.PUBLISHED, AssignmentStatus.CLOSED]))
+    quiz_eligible_count = db.scalar(select(func.count()).select_from(Enrollment).join(
+        Quiz, Quiz.course_id == Enrollment.course_id).where(*enrollment_filter, *quiz_filter)) or 0
+    assignment_eligible_count = db.scalar(select(func.count()).select_from(Enrollment).join(
+        Assignment, Assignment.course_id == Enrollment.course_id).where(*enrollment_filter, *assignment_filter)) or 0
+    lesson_eligible_count = db.scalar(select(func.count()).select_from(Enrollment).join(
+        CourseModule, CourseModule.course_id == Enrollment.course_id).join(
+        Lesson, Lesson.module_id == CourseModule.id).where(*enrollment_filter)) or 0
+    pending = select(QuizAttemptAnswer.id).where(QuizAttemptAnswer.attempt_id == QuizAttempt.id,
+        QuizAttemptAnswer.graded_at.is_(None)).exists()
+    rows = db.execute(
+        select(QuizAttempt, pending.label("pending")).join(Quiz, Quiz.id == QuizAttempt.quiz_id).join(
+            Enrollment, (Enrollment.course_id == Quiz.course_id) &
+                        (Enrollment.student_id == QuizAttempt.student_id)).where(
             QuizAttempt.institution_id == user.institution_id,
-            Quiz.course_id.in_(courses), QuizAttempt.student_id.in_(students),
+            *enrollment_filter, *quiz_filter,
             QuizAttempt.is_practice.is_(False),
-            ~select(QuizAttemptAnswer.id).where(QuizAttemptAnswer.attempt_id == QuizAttempt.id,
-                                               QuizAttemptAnswer.graded_at.is_(None)).exists(),
-        )
-    ).scalars().all()
-    if attempts:
-        quiz_avg_score = round(sum(a.score or 0 for a in attempts) / len(attempts), 2)
-        quiz_completion_rate = round(len(attempts) / max(students_count, 1), 2)
-    else:
-        quiz_avg_score = None
-        quiz_completion_rate = None
+            QuizAttempt.status == AttemptStatus.SUBMITTED,
+            QuizAttempt.submitted_at.is_not(None),
+        ).order_by(QuizAttempt.attempt_number.desc(), QuizAttempt.submitted_at.desc(), QuizAttempt.id)
+    ).all()
+    latest = {}
+    for attempt, is_pending in rows:
+        latest.setdefault((attempt.student_id, attempt.quiz_id), (attempt, is_pending))
+    attempts = [attempt for attempt, is_pending in latest.values() if not is_pending]
+    scored = []
+    invalid_score_count = 0
+    for attempt in attempts:
+        score, total = attempt.score, attempt.total_points
+        if (score is None or total is None or not math.isfinite(score) or not math.isfinite(total)
+                or total <= 0 or not 0 <= score <= total):
+            invalid_score_count += 1
+            continue
+        scored.append((attempt, score / total * 100))
+    quiz_avg_score = round(sum(percent for _, percent in scored) / len(scored), 2) if scored else None
+    quiz_completion_rate = round(len(attempts) / quiz_eligible_count * 100, 2) if quiz_eligible_count else None
 
     submissions = db.scalars(select(AssignmentSubmission).join(Assignment, Assignment.id == AssignmentSubmission.assignment_id)
+        .join(Enrollment, (Enrollment.course_id == Assignment.course_id) &
+                         (Enrollment.student_id == AssignmentSubmission.student_id))
         .where(AssignmentSubmission.institution_id == user.institution_id,
-               Assignment.course_id.in_(courses), AssignmentSubmission.student_id.in_(students))).all()
-    if submissions:
-        assignment_submission_rate = round(len(submissions) / max(students_count, 1), 2)
-    else:
-        assignment_submission_rate = None
+               *enrollment_filter, *assignment_filter,
+               AssignmentSubmission.submitted_at.is_not(None))).all()
+    submitted_pairs = {(row.student_id, row.assignment_id) for row in submissions}
+    assignment_submission_rate = (round(len(submitted_pairs) / assignment_eligible_count * 100, 2)
+                                  if assignment_eligible_count else None)
 
-    progresses = db.execute(select(LessonProgress).join(Lesson, LessonProgress.lesson_id == Lesson.id).join(CourseModule, Lesson.module_id == CourseModule.id).join(Course, CourseModule.course_id == Course.id).where(Course.id.in_(courses), LessonProgress.student_id.in_(students), LessonProgress.institution_id == user.institution_id)).scalars().all()
-    if progresses:
-        completed_count = sum(1 for p in progresses if p.completed_at is not None or (p.completion_percent or 0) >= 90.0)
-        lesson_completion_rate = round((completed_count / max(len(progresses), 1)) * 100, 2)
-    else:
-        lesson_completion_rate = None
+    progresses = db.execute(select(LessonProgress).join(Lesson, LessonProgress.lesson_id == Lesson.id)
+        .join(CourseModule, Lesson.module_id == CourseModule.id).join(Enrollment,
+            (Enrollment.course_id == CourseModule.course_id) &
+            (Enrollment.student_id == LessonProgress.student_id))
+        .where(*enrollment_filter, LessonProgress.institution_id == user.institution_id)).scalars().all()
+    completed_pairs = {(row.student_id, row.lesson_id) for row in progresses
+                       if row.completed_at is not None or (row.completion_percent or 0) >= 90}
+    lesson_completion_rate = (round(len(completed_pairs) / lesson_eligible_count * 100, 2)
+                              if lesson_eligible_count else None)
 
     mastery_distribution = {"ممتاز": 0, "جيد جداً": 0, "جيد": 0, "مقبول": 0, "ضعيف": 0}
-    for a in attempts:
-        score = a.score or 0
+    for _, score in scored:
         if score >= 90:
             mastery_distribution["ممتاز"] += 1
         elif score >= 80:
@@ -117,9 +156,11 @@ async def get_analytics_summary(
             mastery_distribution["ضعيف"] += 1
 
     top_quizzes = []
-    if attempts:
-        top = sorted(attempts, key=lambda a: a.score or 0, reverse=True)[:5]
-        top_quizzes = [{"quiz_id": str(a.quiz_id), "score": a.score, "submitted_at": a.submitted_at.isoformat() if a.submitted_at else None} for a in top]
+    if scored:
+        top = sorted(scored, key=lambda item: (-item[1], str(item[0].id)))[:5]
+        top_quizzes = [{"quiz_id": str(a.quiz_id), "score": round(percent, 2),
+            "raw_score": a.score, "total_points": a.total_points, "submitted_at": a.submitted_at.isoformat()}
+            for a, percent in top]
 
     return AnalyticsSummary(
         course_id=None,
@@ -135,4 +176,10 @@ async def get_analytics_summary(
         risk_students_count=0,
         top_quizzes=top_quizzes,
         assignments_on_time_rate=None,
+        quiz_eligible_count=quiz_eligible_count,
+        quiz_completed_count=len(attempts),
+        quiz_scored_count=len(scored),
+        invalid_score_count=invalid_score_count,
+        assignment_eligible_count=assignment_eligible_count,
+        lesson_eligible_count=lesson_eligible_count,
     )
