@@ -442,7 +442,12 @@ def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
     return attempt
 
 
-def _answers_equal(answer: object, correct: object) -> bool:
+def _answers_equal(answer: object, correct: object, *, question=None) -> bool:
+    if question is not None and question.question_type in {'mcq', 'multiple_choice'}:
+        from app.core.mcq_answers import option_index
+        chosen = option_index(answer, question.options)
+        expected = option_index(correct, question.options)
+        return chosen is not None and expected is not None and chosen == expected
     if isinstance(answer, str) and isinstance(correct, str):
         return answer.strip().casefold() == correct.strip().casefold()
     return answer == correct
@@ -486,7 +491,7 @@ def submit_quiz(
         points = snapshot["points"]
         awarded = (
             points
-            if question.question_type not in {"essay", "short_answer"} and input_answer and _answers_equal(input_answer.answer, question.correct_answer)
+            if question.question_type not in {"essay", "short_answer"} and input_answer and _answers_equal(input_answer.answer, question.correct_answer, question=question)
             else 0.0
         )
         if question.question_type not in {"essay", "short_answer"}:
@@ -1067,11 +1072,15 @@ def course_analytics(db: Session, user: User, course_id: uuid.UUID) -> dict[str,
     )
     progress_rows = list(
         db.execute(
-            select(LessonProgress.completion_percent).join(
+            select(LessonProgress.completion_percent)
+            .join(Lesson, Lesson.id == LessonProgress.lesson_id)
+            .join(CourseModule, CourseModule.id == Lesson.module_id).join(
                 Enrollment,
                 (Enrollment.student_id == LessonProgress.student_id)
-                & (Enrollment.course_id == course.id),
-            )
+                & (Enrollment.course_id == CourseModule.course_id),
+            ).where(CourseModule.course_id == course.id,
+                    LessonProgress.institution_id == course.institution_id,
+                    Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]))
         )
         .scalars()
         .all()

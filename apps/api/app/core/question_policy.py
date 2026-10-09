@@ -8,6 +8,8 @@ from __future__ import annotations
 import math
 import string
 
+from app.core.mcq_answers import option_index
+
 
 QUESTION_TYPES = {"mcq", "multiple_choice", "true_false", "essay", "short_answer",
                   "fill_in_blank", "ordering", "matching"}
@@ -40,7 +42,7 @@ def validate_question_content(question, points: float | None = None) -> None:
         raise ValueError("Multiple-choice questions support at most 26 options (A–Z)")
     if not isinstance(options, list) or not 2 <= len(options) <= 26:
         raise ValueError("Multiple-choice questions require 2–26 options (A–Z)")
-    keys, accepted = [], []
+    keys = []
     for index, option in enumerate(options):
         if isinstance(option, str) and option.strip():
             key, text = string.ascii_uppercase[index], option.strip()
@@ -53,8 +55,7 @@ def validate_question_content(question, points: float | None = None) -> None:
         else:
             raise ValueError("Invalid question option")
         keys.append(key)
-        accepted.extend([key.casefold(), text.casefold()])
     if len(keys) != len(set(keys)):
         raise ValueError("Option keys must be unique")
-    if not isinstance(answer, str) or answer.strip().casefold() not in accepted:
+    if option_index(answer, options) is None:
         raise ValueError("Correct answer must identify an available option")

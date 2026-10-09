@@ -15,6 +15,7 @@ from app.models.progress import LessonProgress, VideoEvent
 from app.models.progress import VideoEventType as ModelVideoEventType
 from app.models.user import User, UserRole
 from app.schemas import VideoTelemetryBatch, VideoTelemetryResponse
+from app.services.payment_service import can_access_lesson_content
 
 router = APIRouter(prefix="/telemetry")
 Db = Annotated[Session, Depends(get_db)]
@@ -59,6 +60,9 @@ def ingest_video_events(
         )
         if lesson_access is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lesson not found")
+        if not can_access_lesson_content(db, user, event.lesson_id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="Purchase or active entitlement is required")
 
         already_recorded = db.scalar(
             select(VideoEvent.id).where(

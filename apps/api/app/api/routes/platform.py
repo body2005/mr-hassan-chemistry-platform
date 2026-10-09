@@ -1448,14 +1448,14 @@ def list_users(user: Manager, db: Db, role: UserRole | None = None) -> list[Mana
         QuizAttempt.student_id.in_(ids),
         QuizAttempt.institution_id == user.institution_id,
         QuizAttempt.status == AttemptStatus.SUBMITTED,
+        QuizAttempt.is_practice.is_(False),
     )
     if user.role == UserRole.TEACHER:
         attempts_query = attempts_query.where(Course.teacher_id == user.id)
     attempts = db.scalars(attempts_query).all()
-    pending_ids = set(db.scalars(select(QuizAttemptAnswer.attempt_id).join(Question).where(
+    pending_ids = set(db.scalars(select(QuizAttemptAnswer.attempt_id).where(
         QuizAttemptAnswer.attempt_id.in_([attempt.id for attempt in attempts]),
         QuizAttemptAnswer.graded_at.is_(None),
-        Question.question_type.in_(["essay", "short_answer"]),
     )).all())
     by_student = defaultdict(list)
     for attempt in attempts:
@@ -1987,16 +1987,9 @@ def get_quiz_result_view(
                 opt_texts.append(_normalize(opt.get("text", "")))
             else:
                 opt_texts.append(_normalize(opt))
-        chosen_letter = None
-        for idx, t in enumerate(opt_texts):
-            if t and t == given_text.strip():
-                chosen_letter = idx
-                break
-        correct_letter = None
-        for idx, t in enumerate(opt_texts):
-            if t and t == correct_text.strip():
-                correct_letter = idx
-                break
+        from app.core.mcq_answers import option_index
+        chosen_letter = option_index(given.answer, options) if given else None
+        correct_letter = option_index(question.correct_answer, options)
         items.append(
             {
                 "id": str(question.id),
@@ -2152,17 +2145,11 @@ def get_student_quiz_solution(
             else:
                 opt_texts.append(_normalize(opt))
 
-        chosen_letter = None
-        for idx, t in enumerate(opt_texts):
-            if t and t == given_text.strip():
-                chosen_letter = chr(65 + idx)
-                break
-
-        correct_letter = None
-        for idx, t in enumerate(opt_texts):
-            if t and t == correct_text.strip():
-                correct_letter = chr(65 + idx)
-                break
+        from app.core.mcq_answers import option_index
+        chosen_index = option_index(given.answer, options) if given else None
+        correct_index = option_index(question.correct_answer, options)
+        chosen_letter = chr(65 + chosen_index) if chosen_index is not None else None
+        correct_letter = chr(65 + correct_index) if correct_index is not None else None
 
         items.append(
             {

@@ -19,6 +19,7 @@ from app.core.config import get_settings
 from app.core.database import engine
 from app.core.metrics import record_request
 from app.core.upload_limits import UploadBudgetMiddleware
+from app.core.upload_auth import UploadAuthenticationMiddleware
 from app.core.rate_limit import enforce_rate_limit
 from app.core.response_security import ResponseSecurityHeadersMiddleware
 
@@ -245,8 +246,11 @@ async def security_middleware(request, call_next):
 # Register CORS outside admission and the auth middleware. It must be the
 # single source of CORS headers; manually writing a wildcard
 # Access-Control-Allow-Headers breaks credentialed Authorization preflights.
-app.add_middleware(AdmissionMiddleware, classify=classify_rate_limit_category)
 app.add_middleware(UploadBudgetMiddleware)
+app.add_middleware(UploadAuthenticationMiddleware, classify=classify_rate_limit_category)
+# Bound authentication work too, while keeping body/spool upload reservations
+# inside the identity guard. Neither layer reads an unauthorized upload body.
+app.add_middleware(AdmissionMiddleware, classify=classify_rate_limit_category)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
