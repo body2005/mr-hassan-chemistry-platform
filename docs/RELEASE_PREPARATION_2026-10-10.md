@@ -157,6 +157,13 @@ sessions completed without request failures. This remains a failed capacity
 gate. Actual API/encoder image scans retained 63/79 HIGH findings respectively
 (zero CRITICAL); the current distribution repositories offered no upgrades.
 The native review remains open, even where source backports are documented.
+An additional scan of the actual Nginx web image found CVE-2026-103111 in
+PCRE2 10.48-r0, with stable 10.49-r0 available from Alpine v3.24 main. The web
+runtime and the proxy/upload-gateway Dockerfile now install that exact fixed
+package. Both rebuilt images scanned with zero HIGH/CRITICAL (Exit 0), and
+nginx configuration checks passed. The original vulnerable scan is retained;
+the API/encoder's separate 63/79 HIGH findings remain open. Frontend Docker
+builds also exclude .env files instead of copying environment secrets.
 
 Large frontend bundles remain a performance improvement, distinct from
 authorization/storage/recovery blockers. Marketing counts should be backed by

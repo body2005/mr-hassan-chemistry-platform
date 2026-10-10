@@ -1,0 +1,3 @@
+FROM nginx:1.30.5-alpine3.24-slim@sha256:32463212baf0e7d91aded2e9b843a4f2b9e017804b8c9d5bae7b51dcef64389c
+# CVE-2026-103111: keep the actual proxy/upload runtime on the fixed package.
+RUN apk add --no-cache pcre2=10.49-r0

@@ -54,7 +54,9 @@ services:
       s3-init: {condition: service_completed_successfully}
     networks: [private]
   upload-gateway:
-    image: nginx:1.30.5-alpine3.24-slim@sha256:32463212baf0e7d91aded2e9b843a4f2b9e017804b8c9d5bae7b51dcef64389c
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
     restart: unless-stopped
     ports: ["${VIDEO_UPLOAD_BIND:-127.0.0.1}:${VIDEO_UPLOAD_PORT:-18544}:443"]
     environment:
