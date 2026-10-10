@@ -47,6 +47,24 @@ it('distinguishes an explicit zero from unmarked and calls the server release ac
   expect(request.mock.calls.some(([path])=>path==='/quiz-attempts/attempt/approve')).toBe(true);
   expect(approve).toHaveBeenCalledWith('student',0,''); expect(close).toHaveBeenCalledTimes(1);
 });
+it('approves newly marked answers even when a previous pending solution is cached', async () => {
+  const cachedPending = solution();
+  const original = request.getMockImplementation()!;
+  request.mockImplementation((path: string, init?: { skipCache?: boolean }) => {
+    // The real API client caches GETs for 15 seconds. A first approval with
+    // an unmarked essay must not make the next successful marking look stale.
+    if (path.includes('/quiz-solution') && !init?.skipCache)
+      return Promise.resolve(cachedPending);
+    return original(path, init);
+  });
+  await render(); await save();
+  expect(close).not.toHaveBeenCalled();
+  await markZero(); await save();
+  expect(request.mock.calls.filter(([path]) => path.endsWith('/grade'))).toHaveLength(1);
+  expect(request.mock.calls.filter(([path]) => path.endsWith('/approve'))).toHaveLength(1);
+  expect(approve).toHaveBeenCalledWith('student',0,'');
+  expect(close).toHaveBeenCalledTimes(1);
+});
 it('does not report approval when the server rejects release', async () => {
   const original=request.getMockImplementation()!;
   request.mockImplementation((path:string, ...args:unknown[]) => path.endsWith('/approve') ? Promise.reject(new Error('Release failed')) : original(path,...args));

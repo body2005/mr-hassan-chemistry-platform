@@ -2659,7 +2659,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     style={{ width: "100%", justifyContent: "center", gap: "7px", padding: "13px" }}
                   >
                     <CheckCircle2 size={17} />
-                    <span>{serverQuizRemaining === 0 ? "انتهى الوقت" : serverQuizSubmitting ? "جاري التصحيح…" : "تسليم الاختبار"}</span>
+                    <span>{serverQuizRemaining === 0 ? "انتهى الوقت" : serverQuizSubmitting ? "جاري التسليم…" : "تسليم الاختبار"}</span>
                   </button>
                   {serverQuiz && Object.keys(serverQuizAnswers).length < serverQuiz.questions.length && (
                     <p style={{ margin: 0, fontSize: "11.5px", color: "var(--text-muted)", textAlign: "center" }}>
@@ -2715,7 +2715,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       }}
                     >
                       <Eye size={17} />
-                      <span>عرض تصحيح هذه المحاولة والأخطاء</span>
+                      <span>{serverQuizResult.score === null ? "عرض حالة هذه المحاولة" : "عرض تصحيح هذه المحاولة والأخطاء"}</span>
                     </button>
                     <button
                       type="button"
@@ -2909,7 +2909,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     تأكيد تسليم الاختبار
                   </h3>
                   <p style={{ margin: 0, fontSize: "13px", color: "var(--text-muted)", lineHeight: 1.5 }}>
-                    هل أنت متأكد من رغبتك في إنهاء وتسليم الاختبار؟ سيتم تصحيح إجاباتك فورياً وحساب النتيجة.
+                    هل أنت متأكد من رغبتك في إنهاء وتسليم الاختبار؟ سيتم حفظ إجاباتك وتسليمها للمراجعة.
                   </p>
                 </div>
                 <button
@@ -3348,7 +3348,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       <div style={{ flex: 1, minWidth: "280px", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "12px" }}>
                         {[
                           { label: "الإجابات الصحيحة", value: `${quizResultPage.summary.correct} من ${quizResultPage.summary.total}`, color: "#059669", icon: <CheckCircle2 size={17} /> },
-                          { label: "الإجابات الخاطئة", value: `${quizResultPage.summary.wrong} من ${quizResultPage.summary.total}`, color: "#dc2626", icon: <XCircle size={17} /> },
+                          { label: "أسئلة دون الدرجة الكاملة", value: `${quizResultPage.summary.wrong} من ${quizResultPage.summary.total}`, color: "#dc2626", icon: <XCircle size={17} /> },
                           { label: "الوقت المستغرق", value: durLabel, color: "var(--text-main)", icon: <Clock size={17} /> },
                           { label: "الترتيب بالصف", value: "—", color: "var(--text-main)", icon: <Award size={17} /> },
                         ].map((s) => (
@@ -3389,14 +3389,14 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                                   }}
                                 >
                                   <span>{String(qIdx + 1).padStart(2, "0")}</span>
-                                  <span style={{ fontSize: "9px", lineHeight: 1 }}>{q.state === "correct" ? "✓" : q.state === "wrong" ? "✕" : "—"}</span>
+                                  <span style={{ fontSize: "9px", lineHeight: 1 }}>{q.state === "correct" ? "✓" : q.state === "wrong" ? (q.awarded > 0 ? "◐" : "✕") : "—"}</span>
                                 </button>
                               );
                             })}
                           </div>
                           <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "14px", paddingTop: "12px", borderTop: "1px solid var(--border-color)", fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>
                             <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "3px", background: "#059669", border: "1.5px solid #059669" }} /> صحيح ({quizResultPage.summary.correct})</span>
-                            <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "3px", background: "#dc2626", border: "1.5px solid #dc2626" }} /> خطأ ({quizResultPage.summary.wrong})</span>
+                            <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "3px", background: "#dc2626", border: "1.5px solid #dc2626" }} /> دون الدرجة الكاملة ({quizResultPage.summary.wrong})</span>
                             <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "3px", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)" }} /> متروك ({quizResultPage.summary.skipped})</span>
                           </div>
                         </div>
@@ -3418,7 +3418,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                                 color: quizResultFilter === f ? "#ffffff" : "var(--text-main)",
                               }}
                             >
-                              {f === "all" ? `جميع الأسئلة (${quizResultPage.questions.length})` : f === "correct" ? `الأسئلة الصحيحة (${quizResultPage.summary.correct})` : `الأسئلة الخاطئة (${quizResultPage.summary.wrong})`}
+                              {f === "all" ? `جميع الأسئلة (${quizResultPage.questions.length})` : f === "correct" ? `الأسئلة الصحيحة (${quizResultPage.summary.correct})` : `دون الدرجة الكاملة (${quizResultPage.summary.wrong})`}
                             </button>
                           ))}
                         </div>
@@ -3432,7 +3432,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                                 <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
                                   <span style={{ fontSize: "13.5px", fontWeight: 900, color: "var(--text-main)" }}>السؤال {ORDINAL_AR[qIdx] || qIdx + 1}</span>
                                   <span style={{ fontSize: "11.5px", fontWeight: 800, color: c.fg, background: c.bg, border: `1px solid ${c.border}`, padding: "3px 10px", borderRadius: "8px" }}>
-                                    {q.state === "correct" ? "✓ " : q.state === "wrong" ? "✕ " : ""}{stateLabel[q.state]}
+                                    {q.state === "wrong" && q.awarded > 0 ? "◐ درجة جزئية" : <>{q.state === "correct" ? "✓ " : q.state === "wrong" ? "✕ " : ""}{stateLabel[q.state]}</>}
                                   </span>
                                 </div>
                                 <span style={{ fontSize: "11.5px", fontWeight: 800, color: "var(--text-muted)" }}>

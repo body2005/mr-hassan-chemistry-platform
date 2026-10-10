@@ -130,6 +130,34 @@ switch after reconciliation. Restoring an older backup can lose later writes.
 
 ## Deferred improvements and limits
 
+The restored browser journey on 10 October exposed a real grading UI defect:
+an immediate read after marking could reuse a pending solution cached for 15
+seconds, reset the displayed marks, and prevent approval on that click. Both
+solution reads now bypass that cache. The regression covers an unmarked
+approval followed by an explicit zero and a single successful approval action.
+Submission copy no longer promises immediate official correction. Results
+with awarded partial points are labelled partial, rather than wholly wrong.
+Account changes also clear the previous account's notices and delayed error
+notifications; navigation within the same account still preserves errors.
+The complete frontend suite passed 265 tests in 40 files on the pinned Node 22
+image, with lint and production build Exit 0. Four existing lint warnings and
+the large-chunk warning remain; neither was suppressed. The interrupted/failed
+Windows test runs are retained separately rather than reported as passes.
+
+Actual Render readiness returned HTTP 503 after startup. Its project listed
+the API, PostgreSQL and Valkey, with no Celery worker listed in that project.
+The deployed source defaults to Celery ingestion, so a missing/unconnected
+worker is a plausible cause; names-only settings inspection cannot establish
+the exact failing dependency. Local-directory storage was also reported by
+the running service. Do not disable readiness checks to hide these failures.
+
+The current local mixed-load run stopped at ten sessions after S3 memory
+exceeded its unchanged 1 GiB safety threshold for three samples. One and five
+sessions completed without request failures. This remains a failed capacity
+gate. Actual API/encoder image scans retained 63/79 HIGH findings respectively
+(zero CRITICAL); the current distribution repositories offered no upgrades.
+The native review remains open, even where source backports are documented.
+
 Large frontend bundles remain a performance improvement, distinct from
 authorization/storage/recovery blockers. Marketing counts should be backed by
 real data before public publication. Biology OCR accuracy remains deferred;

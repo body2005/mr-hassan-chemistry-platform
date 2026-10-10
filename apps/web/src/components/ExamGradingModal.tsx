@@ -93,7 +93,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
     setAnswerGrades({});
     setLoadingSolution(true);
 
-    apiRequest<QuizSolutionData>(`/students/${student.id}/quiz-solution`)
+    apiRequest<QuizSolutionData>(`/students/${student.id}/quiz-solution`, { skipCache: true })
       .then((data) => {
         if (data && Array.isArray(data.questions) && (data.questions.length > 0 || data.history_state === 'legacy-unverified')) {
           setSolutionData(data);
@@ -131,7 +131,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
           method: "POST", body: JSON.stringify({ awarded_points: grade.points, feedback: grade.feedback || notes }),
         });
       }
-      const updated = await apiRequest<QuizSolutionData>(`/students/${student.id}/quiz-solution?quiz_id=${solutionData.quiz?.id}`);
+      const updated = await apiRequest<QuizSolutionData>(`/students/${student.id}/quiz-solution?quiz_id=${solutionData.quiz?.id}`, { skipCache: true });
       setSolutionData(updated);
       setAnswerGrades({});
       if (updated.grading_status === "pending") {

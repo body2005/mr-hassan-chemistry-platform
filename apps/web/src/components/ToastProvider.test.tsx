@@ -49,6 +49,17 @@ it('keeps errors visible across page and action-region changes', async () => {
   await render(); await click('تحذير'); await render(false);
   expect(document.body.querySelector('.toast-item')).not.toBeNull();
 });
+it('clears the previous account notices and delayed request errors on account change', async () => {
+  await render(); await click('تحذير'); await click('نجاح');
+  await act(async () => reportRequestError(new Error('Previous account request')));
+  await act(async () => window.dispatchEvent(new Event('lms_auth_scope_updated')));
+  expect(document.body.querySelector('.toast-item')).toBeNull();
+  expect(document.body.querySelector('[role="status"]')).toBeNull();
+  await act(async () => vi.advanceTimersByTime(60000));
+  expect(document.body.textContent).not.toContain('Previous account request');
+  await click('معلومة');
+  expect(document.body.querySelector('.toast-item')?.textContent).toContain('تم تحديث البيانات');
+});
 it('does not announce an empty or already dismissed action beside page loading status', async () => {
   await render();
   expect(document.body.querySelectorAll('[role="status"]')).toHaveLength(0);

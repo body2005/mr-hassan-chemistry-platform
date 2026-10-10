@@ -60,6 +60,16 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const timers = new Set<number>();
+    const clearAccountFeedback = () => {
+      timers.forEach(timer => window.clearTimeout(timer));
+      timers.clear();
+      errorRevision.current++;
+      itemsRef.current = [];
+      setItems([]);
+      setAnnouncement("");
+      setPaused(false);
+    };
+    window.addEventListener('lms_auth_scope_updated', clearAccountFeedback);
     const unsubscribe = subscribeToRequestErrors(message => {
       const revision = errorRevision.current;
       // Give the form a chance to supply a more specific recovery message.
@@ -73,7 +83,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       }, 100);
       timers.add(timer);
     });
-    return () => { unsubscribe(); timers.forEach(timer => window.clearTimeout(timer)); };
+    return () => {
+      unsubscribe();
+      timers.forEach(timer => window.clearTimeout(timer));
+      window.removeEventListener('lms_auth_scope_updated', clearAccountFeedback);
+    };
   }, [push]);
 
   // Persistent warnings/errors; only one transient notice at a time.
