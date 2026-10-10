@@ -295,3 +295,27 @@ def test_hls_authentication_checks_every_manifest_and_segment(db, world, monkeyp
     assert TestClient(app).get(url).status_code == 403
     browser.post("/api/v1/auth/logout", headers=_csrf(browser))
     assert browser.get(url).status_code == 403
+
+
+def test_course_returns_only_latest_processing_summary_to_managers(db, world):
+    from app.api.routes.courses import _safe_course_responses
+    from app.models.course import Course, CourseModule
+
+    _, teacher, student, _, lesson, _, _ = world
+    course = db.get(Course, db.get(CourseModule, lesson.module_id).course_id)
+    now = datetime.now(timezone.utc)
+    for offset, status in [(0, "processing"), (-60, "failed")]:
+        db.add(VideoUpload(lesson_id=lesson.id, owner_id=teacher.id, request_key=uuid.uuid4().hex,
+            filename="private-name.mp4", content_type="video/mp4", size_bytes=100,
+            fingerprint="a" * 64, object_key="secret/source-key", status=status,
+            error_code="secret-worker-error", created_at=now + timedelta(seconds=offset),
+            expires_at=now + timedelta(hours=48)))
+    db.commit()
+    managed = _safe_course_responses(db, teacher, [course])[0].modules[0].lessons[0]
+    assert managed.video_upload.status == "processing"
+    assert set(managed.video_upload.model_dump()) == {"id", "status", "created_at"}
+    assert "secret/" not in managed.model_dump_json()
+    assert "secret-worker-error" not in managed.model_dump_json()
+    for viewer in (student, None):
+        public = _safe_course_responses(db, viewer, [course])[0].modules[0].lessons[0]
+        assert public.video_upload is None

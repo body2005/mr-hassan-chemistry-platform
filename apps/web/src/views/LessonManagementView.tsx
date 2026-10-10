@@ -16,10 +16,12 @@ import {
 } from "lucide-react";
 import { Course, CurrentUser, VideoLesson } from "../types/lms";
 import { VideoLessonPage } from "../components/VideoLessonPage";
+import { LessonVideoAction } from '../components/LessonVideoAction';
+import { lessonVideoState } from '../services/lessonVideoState';
 import { exportToDocx, exportToExcel, exportToPrintPdf } from "../utils/exportEngine";
 import { courseService } from "../services/lmsService";
-import { uploadManager } from "../services/uploadManager";
-import { fetchApiBlob } from "../services/apiClient";
+import { uploadManager, type UploadTask } from "../services/uploadManager";
+import { fetchApiBlob, getApiAuthScope } from "../services/apiClient";
 import { useConfirm } from "../components/ConfirmWizard";
 import { useTranslation } from "../utils/i18nContext";
 import { useToast } from '../components/ToastProvider';
@@ -66,6 +68,29 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   void isDark;
 
   const [courses, setCourses] = useState<Course[]>(availableCourses);
+  const [uploadTasks, setUploadTasks] = useState<UploadTask[]>(() => [...uploadManager.getTasks()]);
+  useEffect(() => uploadManager.subscribe(setUploadTasks), []);
+  const hasPendingServerVideo = courses.some(course => course.lessons.some(lesson =>
+    lesson.videoUpload && ['creating', 'uploading', 'completing', 'queued', 'processing'].includes(lesson.videoUpload.status)));
+  useEffect(() => {
+    if (!hasPendingServerVideo) return;
+    let stopped = false;
+    let refreshing = false;
+    const scope = getApiAuthScope();
+    const timer = window.setInterval(async () => {
+      if (refreshing || document.hidden || scope !== getApiAuthScope()) return;
+      refreshing = true;
+      try {
+        const refreshed = await courseService.getCourses({ skipCache: true });
+        if (!stopped && scope === getApiAuthScope()) {
+          setCourses(refreshed);
+          onCoursesChanged(refreshed);
+        }
+      } catch { /* A later bounded poll can recover a temporary read failure. */ }
+      finally { refreshing = false; }
+    }, 15_000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [hasPendingServerVideo, onCoursesChanged]);
   React.useEffect(() => setCourses(availableCourses), [availableCourses]);
   const confirm = useConfirm();
   const notify = useToast();
@@ -122,7 +147,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     targetLessonIdForVideoRef.current = lessonId;
     individualVideoInputRef.current?.click();
   }
-  void triggerAttachVideoToLesson;
 
   async function handleIndividualVideoChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -130,14 +154,12 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     if (file && lessonId) {
       const lesson = activeLessons.find((l) => l.id === lessonId);
       const lessonTitle = lesson?.title || "الدرس";
-      uploadManager.enqueueVideoUpload({
-        lessonId,
-        lessonTitle,
-        file,
-        courseId: lesson?.courseId || activeCourse?.id,
-      });
-      notify(`جاري رفع وتحديث فيديو "${lessonTitle}" في الخلفية إلى السحابة... يمكنك الاستمرار بالعمل بحرية.`);
-      e.target.value = "";
+      try {
+        uploadManager.enqueueVideoUpload({ lessonId, lessonTitle, file, courseId: lesson?.courseId || activeCourse?.id });
+        notify(`جاري رفع وتحديث فيديو "${lessonTitle}" في الخلفية إلى السحابة... يمكنك الاستمرار بالعمل بحرية.`);
+      } catch (error) {
+        notify(error instanceof Error ? error.message : 'تعذر بدء رفع الفيديو', 'danger');
+      } finally { e.target.value = ""; }
     }
   }
 
@@ -1193,7 +1215,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 310px), 1fr))", gap: "20px" }}>
               {filteredLessons.map((lesson, idx) => {
-                const hasLessonVideo = Boolean(lesson.hasUploadedVideo || lesson.videoUrl);
+                const videoState = lessonVideoState(lesson, uploadTasks, getApiAuthScope());
+                const hasLessonVideo = videoState.phase === 'ready';
 
                 return (
                   <div
@@ -1212,7 +1235,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                   >
                     {/* Lesson Card Media Header (Dark Emerald — Matches Image 1) */}
                     <div
-                      onClick={() => setActiveLessonModal(lesson)}
+                      onClick={() => { if (hasLessonVideo) setActiveLessonModal(lesson); }}
                       style={{
                         height: "150px",
                         background: "#0f392b",
@@ -1220,10 +1243,10 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                         display: "flex",
                         flexDirection: "column",
                         justifyContent: "space-between",
-                        cursor: "pointer",
+                        cursor: hasLessonVideo ? "pointer" : "default",
                         position: "relative",
                       }}
-                      title="انقر لمشاهدة الفيديو والرد على استفسارات وتعليقات الطلاب"
+                      title={hasLessonVideo ? 'انقر لمشاهدة الفيديو والرد على استفسارات وتعليقات الطلاب' : videoState.label}
                     >
                       {/* Top Badges */}
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1269,7 +1292,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                             boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
                           }}
                         >
-                          <Play size={22} fill="#0f392b" style={{ marginInlineStart: "2px" }} />
+                          {hasLessonVideo ? <Play size={22} fill="#0f392b" style={{ marginInlineStart: "2px" }} /> : <Upload size={22} />}
                         </div>
                       </div>
 
@@ -1302,7 +1325,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                               borderRadius: "4px",
                             }}
                           >
-                            مرفق ملفات
+                            {videoState.phase === 'missing' ? 'مرفق ملفات' : videoState.phase === 'error' ? 'تعذر تجهيز الفيديو' : 'الرفع قيد التنفيذ'}
                           </span>
                         )}
                       </div>
@@ -1336,23 +1359,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                             ملفات ومذكرات: {(lesson.materials || []).length || 1}
                           </span>
 
-                          <button
-                            type="button"
-                            onClick={() => setActiveLessonModal(lesson)}
-                            className="btn-primary"
-                            style={{ fontSize: "12px", padding: "7px 14px", display: "inline-flex", alignItems: "center", gap: "6px" }}
-                          >
-                            <Play size={13} fill="currentColor" />
-                            <span>مشاهدة الدرس</span>
-                          </button>
-                          {hasLessonVideo && <button type="button" className="btn-secondary" onClick={async () => {
-                            try {
-                              await uploadManager.prepareVideo(lesson.id, lesson.title, lesson.courseId);
-                              notify('بدأ تجهيز الجودات في الخلفية. الفيديو الحالي يظل متاحًا حتى اكتمال المعالجة.');
-                            } catch (error) {
-                              notify(error instanceof Error ? error.message : 'تعذر بدء تجهيز الجودات', 'danger');
-                            }
-                          }}>تجهيز الجودات</button>}
+                          <LessonVideoAction state={videoState} onWatch={() => setActiveLessonModal(lesson)}
+                            onUpload={() => triggerAttachVideoToLesson(lesson.id)} />
                         </div>
 
                         {/* Teacher Management Toolbar */}

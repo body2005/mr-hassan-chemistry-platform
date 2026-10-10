@@ -93,10 +93,27 @@ def _safe_course_responses(db: Session, user: User | None, courses: list) -> lis
             )
 
     if user and user.role != UserRole.STUDENT:
+        # One bulk read restores processing state after navigation or reload;
+        # never expose source keys, worker errors, or jobs to the public catalog.
+        from app.models.video_upload import VideoUpload
+        from app.schemas import VideoProcessingSummary
+
+        latest_uploads = {}
+        if all_lesson_ids:
+            uploads = db.execute(
+                select(VideoUpload.lesson_id, VideoUpload.id, VideoUpload.status, VideoUpload.created_at)
+                .where(VideoUpload.lesson_id.in_(all_lesson_ids))
+                .order_by(VideoUpload.created_at.desc(), VideoUpload.id.desc())
+            ).all()
+            for upload in uploads:
+                latest_uploads.setdefault(upload.lesson_id, VideoProcessingSummary(
+                    id=upload.id, status=upload.status, created_at=upload.created_at,
+                ))
         for course in responses:
             for module in course.modules:
                 for lesson in module.lessons:
                     lesson.materials = materials_by_lesson.get(lesson.id, [])
+                    lesson.video_upload = latest_uploads.get(lesson.id)
                     orm_lesson = orm_lessons_by_id.get(lesson.id)
                     if orm_lesson is not None:
                         lesson.has_video, lesson.video_url = _video_playback_fields(orm_lesson, allow_external=True)

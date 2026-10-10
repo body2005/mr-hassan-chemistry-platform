@@ -1,11 +1,41 @@
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
-vi.mock('./lmsService', () => ({ courseService: {} }));
+vi.mock('./lmsService', () => ({ courseService: { uploadLessonVideo: vi.fn() } }));
 const stored = (ownerScope?: string) => ({ id: 'task', title: 'QA video', type: 'lesson_video', fileName: 'qa.webm',
   fileSizeBytes: 100, formattedSize: '100 B', progress: 99, uploadPercent: 100, status: 'processing',
   lessonId: 'lesson', videoUploadId: 'job', createdAt: Date.now(), ownerScope });
 const response = (status: string) => new Response(JSON.stringify({ id: 'job', status }), { status: 200 });
 beforeEach(() => { vi.resetModules(); localStorage.clear(); });
 afterEach(() => vi.unstubAllGlobals());
+
+it('automatically waits for encoded renditions after a standard upload instead of completing at 100 percent bytes', async () => {
+  let completeUpload!: (value: Awaited<ReturnType<typeof import('./lmsService').courseService.uploadLessonVideo>>) => void;
+  let completeProcessing!: (value: Response) => void;
+  const { courseService } = await import('./lmsService');
+  vi.mocked(courseService.uploadLessonVideo).mockImplementation((_id, _file, progress) => {
+    progress?.(100);
+    return new Promise(resolve => { completeUpload = resolve; });
+  });
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith('/auth/me')) return new Response('{}', { status: 200 });
+    if (url.endsWith('/video-upload-capabilities')) return new Response('{"direct_upload":false}', { status: 200 });
+    if (url.endsWith('/video-uploads/job')) return new Promise<Response>(resolve => { completeProcessing = resolve; });
+    throw new Error(`Unexpected request: ${url}`);
+  }));
+  const api = await import('./apiClient'); api.setApiAuthScope('teacher-a');
+  const { UploadManager } = await import('./uploadManager'); const manager = new UploadManager();
+  const onSuccess = vi.fn();
+  manager.enqueueVideoUpload({ lessonId: 'lesson', lessonTitle: 'الكيمياء', file: new File(['video'], 'lesson.mp4', { type: 'video/mp4' }), onSuccess });
+  await vi.waitFor(() => expect(completeUpload).toBeTypeOf('function'));
+  expect(manager.getTasks()[0]).toMatchObject({ status: 'processing', uploadPercent: 100 });
+  completeUpload({ id: 'lesson', video_url: '/protected', filename: 'lesson.mp4', video_upload_id: 'job' });
+  await vi.waitFor(() => expect(completeProcessing).toBeTypeOf('function'));
+  expect(onSuccess).not.toHaveBeenCalled();
+  expect(manager.getTasks()[0].status).toBe('processing');
+  completeProcessing(response('ready'));
+  await vi.waitFor(() => expect(manager.getTasks()[0].status).toBe('completed'));
+  expect(onSuccess).toHaveBeenCalledTimes(1);
+});
 
 it('announces a background material failure with its reason instead of failing silently', async () => {
   const api = await import('./apiClient'); api.setApiAuthScope('teacher-a');

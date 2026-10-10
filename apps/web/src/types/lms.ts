@@ -95,6 +95,8 @@ export interface VideoLesson {
   requiresProtectedPlayback?: boolean;
   /** Public availability metadata only, independent of playback permission. */
   hasUploadedVideo?: boolean;
+  /** Manager-only processing state; contains no private storage information. */
+  videoUpload?: { id: string; status: string; createdAt: string };
   thumbnailUrl?: string;
   price?: number; // Per-lesson price decided by teacher (0 = free)
   materials: UploadedMaterial[];

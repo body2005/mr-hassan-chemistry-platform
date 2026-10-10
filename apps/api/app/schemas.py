@@ -247,6 +247,12 @@ class LessonMaterialSummary(BaseModel):
     created_at: datetime
 
 
+class VideoProcessingSummary(BaseModel):
+    id: uuid.UUID
+    status: str
+    created_at: datetime
+
+
 class LessonResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -260,6 +266,7 @@ class LessonResponse(BaseModel):
     has_video: bool = False
     # Public availability metadata; never grants playback access.
     has_uploaded_video: bool = False
+    video_upload: VideoProcessingSummary | None = None
     video_url: str | None = None
     video_duration_seconds: int | None
     materialization_status: MaterializationStatus = MaterializationStatus.NOT_INDEXED

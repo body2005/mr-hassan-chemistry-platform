@@ -86,9 +86,10 @@ it.each(['teacher', 'institution_admin', 'platform_admin'] as const)('allows %s 
   const video = host.querySelector('video')!;
   Object.defineProperty(video, 'duration', { configurable: true, value: 60 });
   await act(async () => video.dispatchEvent(new Event('loadedmetadata')));
-  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="تقديم 10 ثواني"]')!.click());
+  expect(host.querySelector('.lesson-seek-button')).toBeNull();
+  await act(async () => host.querySelector('.lesson-video-player')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })));
   expect(video.currentTime).toBe(10);
-  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="رجوع 10 ثواني"]')!.click());
+  await act(async () => host.querySelector('.lesson-video-player')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })));
   expect(video.currentTime).toBe(0);
   video.currentTime = 45;
   await act(async () => video.dispatchEvent(new Event('timeupdate')));
@@ -103,6 +104,8 @@ it('preserves the student forward-seek restriction', async () => {
   await act(async () => video.dispatchEvent(new Event('timeupdate')));
   expect(video.currentTime).toBe(0);
   expect(host.querySelector('[aria-label="تقديم 10 ثواني"]')).toBeNull();
+  await act(async () => host.querySelector('.lesson-video-player')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })));
+  expect(video.currentTime).toBe(0);
 });
 
 it('updates an initially unknown WebM duration when the browser discovers its end', async () => {
@@ -113,9 +116,31 @@ it('updates an initially unknown WebM duration when the browser discovers its en
   expect(host.textContent).not.toContain('Infinity');
   Object.defineProperty(video, 'duration', { configurable: true, value: 20 });
   await act(async () => video.dispatchEvent(new Event('durationchange')));
-  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="تقديم 10 ثواني"]')!.click());
+  await act(async () => host.querySelector('.lesson-video-player')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })));
   expect(video.currentTime).toBe(10);
   expect(host.textContent).toContain('00:20');
+});
+
+it('does not intercept arrow keys in inputs or outside the player and clamps keyboard seeking', async () => {
+  await render('first'); await resolve(0, '/teacher.mp4');
+  const video = host.querySelector('video')!;
+  Object.defineProperty(video, 'duration', { configurable: true, value: 15 });
+  await act(async () => video.dispatchEvent(new Event('loadedmetadata')));
+  const player = host.querySelector('.lesson-video-player')!;
+  const range = player.querySelector('input')!;
+  const nativeArrow = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true });
+  await act(async () => range.dispatchEvent(nativeArrow));
+  expect(nativeArrow.defaultPrevented).toBe(false);
+  await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })));
+  expect(video.currentTime).toBe(0);
+  for (const key of ['ArrowRight', 'ArrowRight']) {
+    await act(async () => player.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })));
+  }
+  expect(video.currentTime).toBe(15);
+  for (const key of ['ArrowLeft', 'ArrowLeft']) {
+    await act(async () => player.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })));
+  }
+  expect(video.currentTime).toBe(0);
 });
 
 it.each(['resolve', 'reject'] as const)('ignores a late manual renewal %s after switching lessons', async outcome => {

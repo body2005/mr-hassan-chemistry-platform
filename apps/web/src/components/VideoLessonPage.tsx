@@ -560,6 +560,22 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
             <div
               ref={playerContainerRef}
               className="lesson-video-player"
+              tabIndex={0}
+              aria-label="مشغل الفيديو؛ استخدم السهمين للتقديم والرجوع"
+              onPointerDown={(event) => {
+                if (!(event.target as HTMLElement).closest('input, textarea, select, button, [contenteditable="true"]')) {
+                  event.currentTarget.focus({ preventScroll: true });
+                }
+              }}
+              onKeyDown={(event) => {
+                if (event.altKey || event.ctrlKey || event.metaKey ||
+                  (event.target as HTMLElement).closest('input, textarea, select, [contenteditable="true"], [role="menu"]')) return;
+                if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                  event.preventDefault();
+                  handleSkip(event.key === 'ArrowRight' ? 10 : -10);
+                  handleMouseMove();
+                }
+              }}
               onMouseMove={handleMouseMove}
               style={{
                 position: isWide ? "fixed" : "relative",
@@ -771,10 +787,6 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                     >
                       {/* Left Side: Play/Pause, Rewind to start, Volume Capsule, Time */}
                       <div className="lesson-player-controls-group" style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                        {isTeacher && <>
-                          <button type="button" className="lesson-seek-button" aria-label="رجوع 10 ثواني" onClick={() => handleSkip(-10)}>−10</button>
-                          <button type="button" className="lesson-seek-button" aria-label="تقديم 10 ثواني" onClick={() => handleSkip(10)}>+10</button>
-                        </>}
                         {/* Play/Pause Button */}
                         <button
                           type="button"
