@@ -85,3 +85,30 @@ it('removes stage buttons and repeats the reason when an invalid publish is retr
   await act(async () => action('حفظ ونشر الاختبار').click());
   expect(document.body.querySelector('.toast-danger')?.textContent).toContain('اسم الاختبار');
 });
+
+it('saves and restores multiple units and lessons from the separate dropdowns', async () => {
+  const populated = {...course, lessons: [
+    {id:'one', moduleId:'unit-one', unitTitle:'الوحدة الأولى', title:'الدرس الأول'},
+    {id:'two', moduleId:'unit-two', unitTitle:'الوحدة الثانية', title:'الدرس الثاني'},
+  ]} as Course;
+  await render([populated]);
+  await title('اختبار متعدد الدروس والوحدات');
+  for (const field of host.querySelectorAll('.assessment-scope-field')) {
+    await act(async () => field.querySelector('summary')!.click());
+    for (const checkbox of field.querySelectorAll<HTMLInputElement>('input')) {
+      await act(async () => checkbox.click());
+    }
+  }
+  const saved = JSON.parse(localStorage.getItem(key)!);
+  expect(saved.selectedLessonIds).toEqual(['one','two']);
+  expect(saved.selectedModuleIds).toEqual(['unit-one','unit-two']);
+  expect(saved.selectedCourseId).toBe(course.id);
+  await act(async () => root.unmount());
+  root = createRoot(host);
+  await render([populated]);
+  const fields = host.querySelectorAll('.assessment-scope-field');
+  expect(fields[0].querySelectorAll('li')).toHaveLength(2);
+  expect(fields[1].querySelectorAll('li')).toHaveLength(2);
+  expect([...fields[0].querySelectorAll('input')].every(input => input.checked)).toBe(true);
+  expect([...fields[1].querySelectorAll('input')].every(input => input.checked)).toBe(true);
+});
