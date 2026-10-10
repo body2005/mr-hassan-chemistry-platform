@@ -99,6 +99,8 @@ class Settings(BaseSettings):
     # Max simultaneous video playback sessions per (account, lesson) pair.
     video_max_concurrent_sessions: int = Field(default=2, ge=1, le=10)
     video_direct_upload_enabled: bool = False
+    # Enable only after a separate FFmpeg video worker is running.
+    video_processing_enabled: bool = False
     video_upload_public_endpoint: str | None = None
     video_drm_required: bool = False
 

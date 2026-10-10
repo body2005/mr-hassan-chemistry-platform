@@ -32,14 +32,14 @@ GOVERNORATE_CODES = frozenset({
 
 
 def _normalize_digits(value: str) -> str:
-    return value.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+    return value.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789"))
 
 
 def _normalize_phone(value: str | None) -> str | None:
     if value is None or not value.strip():
         return None
-    normalized = _normalize_digits(value).replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
-    if not normalized.isdigit() or len(normalized) > 20:
+    normalized = _normalize_digits(value)
+    if not normalized.isascii() or not normalized.isdigit() or len(normalized) > 20:
         raise ValueError("Phone number must contain at most 20 digits")
     return normalized
 
@@ -106,6 +106,14 @@ class RegisterRequest(BaseModel):
     school_name: str = Field(min_length=2, max_length=200)
     gender: Gender
     religion: Religion | None = None
+
+    @field_validator("display_name")
+    @classmethod
+    def validate_person_name(cls, value: str) -> str:
+        import unicodedata
+        if not all(c == " " or unicodedata.category(c)[0] in {"L", "M"} for c in value) or not any(c.isalpha() for c in value):
+            raise ValueError("الاسم يجب أن يحتوي على حروف ومسافات فقط")
+        return value
 
     @field_validator("display_name", "school_name", mode="before")
     @classmethod
@@ -250,6 +258,8 @@ class LessonResponse(BaseModel):
     # The raw storage key is never serialized: it is a private-path secret and
     # clients only need the boolean plus the token-gated stream URL.
     has_video: bool = False
+    # Public availability metadata; never grants playback access.
+    has_uploaded_video: bool = False
     video_url: str | None = None
     video_duration_seconds: int | None
     materialization_status: MaterializationStatus = MaterializationStatus.NOT_INDEXED
@@ -469,7 +479,12 @@ class QuestionResponse(BaseModel):
     created_at: datetime
 
 
-class QuizCreateRequest(BaseModel):
+class AssessmentScopeRequest(BaseModel):
+    lesson_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
+    module_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
+
+
+class QuizCreateRequest(AssessmentScopeRequest):
     course_id: uuid.UUID
     title: str = Field(default="", max_length=200)
     quiz_title: str | None = Field(default=None, max_length=200)
@@ -502,7 +517,7 @@ class QuizPublishRequest(QuizCreateRequest):
     idempotency_key: str = Field(min_length=8, max_length=100)
 
 
-class QuizResponse(BaseModel):
+class QuizResponse(AssessmentScopeRequest):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
@@ -568,7 +583,7 @@ class QuizAttemptSubmitRequest(BaseModel):
     answers: list[QuizAnswerInput] = Field(max_length=200)
 
 
-class AssignmentCreateRequest(BaseModel):
+class AssignmentCreateRequest(AssessmentScopeRequest):
     course_id: uuid.UUID
     title: str = Field(default="", max_length=200)
     assignment_title: str | None = Field(default=None, max_length=200)
@@ -600,7 +615,7 @@ class AssignmentCreateRequest(BaseModel):
         return data
 
 
-class AssignmentResponse(BaseModel):
+class AssignmentResponse(AssessmentScopeRequest):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID

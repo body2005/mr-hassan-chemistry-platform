@@ -9,7 +9,8 @@ from test_security_and_tenancy import make_institution, make_user, make_course, 
 
 
 @pytest.mark.parametrize('authenticated', [False, True])
-def test_public_only_catalog_filters_before_pagination_and_redacts_lesson(db, authenticated):
+@pytest.mark.parametrize('asset_key', ['private/key.mp4', None, 'https://legacy.example.test/private.mp4'])
+def test_public_only_catalog_filters_before_pagination_and_redacts_lesson(db, authenticated, asset_key):
     inst = make_institution(db, 'public-catalog')
     teacher = make_user(db, inst.id, UserRole.TEACHER, 'owner')
     first = make_course(db, inst, teacher)
@@ -26,7 +27,7 @@ def test_public_only_catalog_filters_before_pagination_and_redacts_lesson(db, au
     db.add(module)
     db.flush()
     lesson = Lesson(module_id=module.id, title='Public lesson title', kind=LessonKind.ARTICLE,
-                    content='PRIVATE LESSON CONTENT', position=1, video_asset_key='private/key.mp4')
+                    content='PRIVATE LESSON CONTENT', position=1, video_asset_key=asset_key, price_egp=125)
     db.add(lesson)
     db.commit()
     client = TestClient(app)
@@ -41,6 +42,8 @@ def test_public_only_catalog_filters_before_pagination_and_redacts_lesson(db, au
     assert 'PRIVATE' not in response.text and 'private/key' not in response.text
     stored_lesson = body['items'][0]['modules'][0]['lessons'][0]
     assert stored_lesson['content'] is None and not stored_lesson['has_video']
+    assert stored_lesson['has_uploaded_video'] == (asset_key == 'private/key.mp4')
+    assert stored_lesson['price_egp'] == 125
     assert stored_lesson['video_url'] is None and stored_lesson['materials'] == []
     assert client.get('/api/v1/courses?public_only=true&grade_level=unknown').status_code == 422
 

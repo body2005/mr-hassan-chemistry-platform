@@ -1,5 +1,6 @@
 """Owner-scoped resumable upload control plane (S3 multipart, not wire tus)."""
 import uuid
+import re
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -17,6 +18,23 @@ from app.services import platform_service, video_uploads as service
 
 router = APIRouter()
 Db = Annotated[Session, Depends(get_db)]
+
+
+def bounded_quality_manifest(manifest: str) -> str:
+    lines, pending = [], None
+    for line in manifest.splitlines():
+        if line.startswith("#EXT-X-STREAM-INF:"):
+            pending = line
+        elif pending is not None and line and not line.startswith("#"):
+            resolution = re.search(r"RESOLUTION=\d+x(\d+)", pending)
+            named = re.match(r"(\d+)p/", line)
+            height = int(resolution.group(1)) if resolution else int(named.group(1)) if named else 0
+            if height <= 1080:
+                lines.extend([pending, line])
+            pending = None
+        else:
+            lines.append(line)
+    return "\n".join(lines) + "\n"
 
 
 class CreateUpload(BaseModel):
@@ -62,6 +80,16 @@ def create_upload(lesson_id: uuid.UUID, payload: CreateUpload, user: CurrentUser
     # initialize commits; refresh/relock before interpreting ListParts failure.
     upload = service.owned(db, upload.id, user, lock=True)
     return service.summary(upload, service.recover_parts(db, upload) if upload.status == "uploading" else [])
+
+
+@router.post("/lessons/{lesson_id}/prepare-video", status_code=202)
+def prepare_stored_video(lesson_id: uuid.UUID, user: CurrentUser, db: Db, request: Request, response: Response):
+    response.headers["Cache-Control"] = "private, no-store"
+    enforce_rate_limit(request, bucket="video-prepare", limit=5, window_seconds=60)
+    lesson = manager(db, user, lesson_id)
+    upload = service.enqueue_published_source(db, user, lesson)
+    db.commit()
+    return service.summary(upload)
 
 
 @router.get("/video-uploads/{upload_id}")
@@ -142,10 +170,14 @@ def hls(lesson_id: uuid.UUID, upload_id: uuid.UUID, name: str, request: Request,
         raise HTTPException(404, "Video generation is no longer current")
     if name.startswith("/") or ".." in name.split("/") or "\\" in name:
         raise HTTPException(404, "Video part not found")
+    rendition = re.match(r"(\d+)p/", name)
+    if rendition and int(rendition.group(1)) > 1080:
+        raise HTTPException(404, "Video part not found")
     prefix = posixpath.dirname(upload.manifest_key)
     key = f"{prefix}/{name}"
     if key not in upload.outputs:
         raise HTTPException(404, "Video part not found")
+    db.close()
     provider = get_storage_provider()
     headers = {"Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer",
         "X-Content-Type-Options": "nosniff", "Cross-Origin-Resource-Policy": "same-origin"}
@@ -155,6 +187,8 @@ def hls(lesson_id: uuid.UUID, upload_id: uuid.UUID, name: str, request: Request,
             if size > 1024 * 1024:
                 raise HTTPException(503, "Video manifest unavailable")
             manifest = b"".join(provider.open_stream(key, length=size)).decode("utf-8")
+            if name == "master.m3u8":
+                manifest = bounded_quality_manifest(manifest)
             lines = []
             for line in manifest.splitlines():
                 if line and not line.startswith("#"):

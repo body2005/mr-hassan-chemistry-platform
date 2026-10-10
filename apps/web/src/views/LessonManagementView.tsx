@@ -22,6 +22,7 @@ import { uploadManager } from "../services/uploadManager";
 import { fetchApiBlob } from "../services/apiClient";
 import { useConfirm } from "../components/ConfirmWizard";
 import { useTranslation } from "../utils/i18nContext";
+import { useToast } from '../components/ToastProvider';
 
 /** Tracks the app-wide light/dark theme by watching the `data-theme`
  * attribute on <html>, so inline styles can pick theme-aware colors. */
@@ -37,18 +38,6 @@ function useDataTheme(): "light" | "dark" {
     return () => observer.disconnect();
   }, []);
   return theme;
-}
-
-/** Lightweight in-app toast — replaces window.alert for transient notices. */
-function useWizardToast() {
-  const [toast, setToast] = useState<string | null>(null);
-  const timer = React.useRef<number | null>(null);
-  function notify(message: string) {
-    setToast(message);
-    if (timer.current) window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => setToast(null), 3200);
-  }
-  return { toast, notify };
 }
 
 interface SelectedMaterialFile {
@@ -79,7 +68,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   const [courses, setCourses] = useState<Course[]>(availableCourses);
   React.useEffect(() => setCourses(availableCourses), [availableCourses]);
   const confirm = useConfirm();
-  const { toast, notify } = useWizardToast();
+  const notify = useToast();
   const [selectedYear, setSelectedYear] = useState<"1st_secondary" | "2nd_secondary" | "3rd_secondary">("1st_secondary");
   const [selectedCourseId, setSelectedCourseId] = useState('');
   const selectedGradeLevel = selectedYear === "1st_secondary"
@@ -106,7 +95,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
-  const [courseModules, setCourseModules] = useState<Array<{ id: string; title: string }>>([]);
+  const [courseModules, setCourseModules] = useState<Array<{ id: string; title: string; courseId: string }>>([]);
   const [selectedModuleId, setSelectedModuleId] = useState<string>("auto");
   const [newModuleTitle, setNewModuleTitle] = useState("");
   const [isRevision, setIsRevision] = useState(false);
@@ -145,7 +134,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         lessonId,
         lessonTitle,
         file,
-        courseId: activeCourse?.id,
+        courseId: lesson?.courseId || activeCourse?.id,
       });
       notify(`جاري رفع وتحديث فيديو "${lessonTitle}" في الخلفية إلى السحابة... يمكنك الاستمرار بالعمل بحرية.`);
       e.target.value = "";
@@ -168,7 +157,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       const lessonTitle = lesson?.title || "الدرس";
       uploadManager.enqueueKnowledgeBatchUpload({
         files: Array.from(files),
-        courseId: activeCourse.id,
+        courseId: lesson?.courseId || activeCourse.id,
         gradeLevel: selectedGradeLevel,
         lessonId,
         lessonTitle,
@@ -189,30 +178,34 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   const materialsInputRef = useRef<HTMLInputElement>(null);
 
   const gradeCourses = courses.filter(c => c.academicYear === selectedYear);
-  const activeCourse = gradeCourses.find(c => c.id === selectedCourseId) || gradeCourses[0];
+  const activeCourse = gradeCourses.find(c => c.id === courseModules.find(module => module.id === selectedModuleId)?.courseId)
+    || gradeCourses.find(c => c.id === selectedCourseId) || gradeCourses[0];
   // Reverse order so the latest uploaded video/lesson is always displayed at the top
   const activeLessons: VideoLesson[] = React.useMemo(() => {
-    if (!activeCourse?.lessons) return [];
-    return [...activeCourse.lessons].reverse();
-  }, [activeCourse]);
+    return courses.filter(course => course.academicYear === selectedYear).flatMap(course => course.lessons).reverse();
+  }, [courses, selectedYear]);
 
   // Load modules (units) for the active course
   useEffect(() => {
-    if (!activeCourse?.id) {
+    const matching = courses.filter(course => course.academicYear === selectedYear);
+    let cancelled = false;
+    if (!matching.length) {
       setCourseModules([]);
       return;
     }
-    courseService
-      .getCourseContent(activeCourse.id)
-      .then((content) => {
-        const mods = (content.modules || []).map((m) => ({ id: m.id, title: m.title }));
+    Promise.all(matching.map(course => courseService.getCourseContent(course.id).then(content =>
+      (content.modules || []).map(m => ({ id: m.id, title: m.title, courseId: course.id })))))
+      .then((contents) => {
+        if (cancelled) return;
+        const mods = contents.flat();
         setCourseModules(mods);
         if (mods.length > 0) {
-          setSelectedModuleId((current) => current === "auto" || !current ? mods[0].id : current);
+          setSelectedModuleId((current) => current === 'new' || mods.some(module => module.id === current) ? current : mods[0].id);
         }
       })
       .catch(() => undefined);
-  }, [activeCourse?.id, courses]);
+    return () => { cancelled = true; };
+  }, [selectedYear, courses]);
 
   // Video & Lesson Search State
   const [videoSearchQuery, setVideoSearchQuery] = useState("");
@@ -242,7 +235,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 5 * 1024 ** 3) {
-      notify("حد الفيديو 5 GiB (5,368,709,120 بايت).");
+      notify("حد الفيديو 5 GiB (5,368,709,120 بايت).", 'danger');
       e.target.value = "";
       return;
     }
@@ -272,7 +265,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     const files = e.target.files;
     if (files && files.length > 0) {
       if (Array.from(files).some((file) => file.size > 1024 ** 3)) {
-        notify("حد كل مادة درس 1 GiB (1,073,741,824 بايت).");
+        notify("حد كل مادة درس 1 GiB (1,073,741,824 بايت).", 'danger');
         e.target.value = "";
         return;
       }
@@ -308,7 +301,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       URL.revokeObjectURL(objectUrl);
       notify(`تم تنزيل المذكرة: ${filename}`);
     } catch {
-      notify("تعذر تنزيل المذكرة. تحقق من الاتصال والصلاحيات ثم أعد المحاولة.");
+      notify("تعذر تنزيل المذكرة. تحقق من الاتصال والصلاحيات ثم أعد المحاولة.", 'danger');
     }
   }
 
@@ -320,8 +313,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       tone: "danger",
     });
     if (confirmed) {
-      const lesson = activeCourse?.lessons.find((item) => item.id === lessonId);
-      if (!activeCourse || !lesson?.moduleId) {
+      const lesson = activeLessons.find((item) => item.id === lessonId);
+      if (!lesson?.moduleId) {
         await confirm({
           title: "خطأ",
           message: "تعذر تحديد وحدة الدرس على الخادم.",
@@ -350,13 +343,13 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   async function handleUploadLesson(e: React.FormEvent) {
     e.preventDefault();
     if (!lessonTitle.trim()) {
-      notify("يرجى كتابة عنوان الدرس أولاً.");
+      notify("يرجى كتابة عنوان الدرس أولاً.", 'danger');
       return;
     }
 
     const hasVideo = Boolean(selectedVideo);
     if (!hasVideo && attachedFiles.length === 0) {
-      notify("يجب اختيار ملف فيديو أو مذكرة للدرس لإتمام عملية الرفع.");
+      notify("يجب اختيار ملف فيديو أو مذكرة للدرس لإتمام عملية الرفع.", 'danger');
       return;
     }
 
@@ -475,7 +468,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       setCourses(refreshed);
       onCoursesChanged(refreshed);
     } catch (error) {
-      notify(error instanceof Error ? error.message : "تعذر حفظ الدرس على الخادم");
+      notify(error instanceof Error ? error.message : "تعذر حفظ الدرس على الخادم", 'danger');
       setIsUploading(false);
       return;
     }
@@ -526,7 +519,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     return (
       <VideoLessonPage
         lesson={activeLessonModal}
-        course={activeCourse}
+        course={gradeCourses.find(course => course.id === activeLessonModal.courseId) || activeCourse}
         currentUser={currentUser}
         completedLessonIds={[]}
         onToggleCompleteLesson={() => {}}
@@ -658,11 +651,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       </div>
 
       {/* Main 2-Column Layout: Lesson Upload Form + Per-Lesson Detailed Archive */}
-      {gradeCourses.length > 0 && <label style={{display: 'block', marginBottom: '16px'}}>المقرر الدراسي
-        <select aria-label="اختر المقرر" value={activeCourse?.id || ''} onChange={e => {setSelectedCourseId(e.target.value); setSelectedModuleId('');}}>
-          {gradeCourses.map(course => <option key={course.id} value={course.id}>{course.title}</option>)}
-        </select>
-      </label>}
+
       <div className="responsive-split-grid">
         {/* Upload Form */}
         <div style={{ background: "var(--bg-surface, #ffffff)", border: "1px solid var(--border-color, #e2e8f0)", borderRadius: "16px", padding: "20px" }}>
@@ -684,7 +673,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
               </label>
               <select
                 value={selectedModuleId}
-                onChange={(e) => setSelectedModuleId(e.target.value)}
+                onChange={(e) => { setSelectedModuleId(e.target.value); const module = courseModules.find(module => module.id === e.target.value); if (module) setSelectedCourseId(module.courseId); }}
                 style={{
                   width: "100%",
                   padding: "9px 12px",
@@ -992,7 +981,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                   onCoursesChanged(updated);
                   notify("تم نشر المقرر للطلاب بنجاح. يلزم اكتمال رفع الملفات قبل تشغيلها.");
                 } catch (error) {
-                  notify(error instanceof Error ? error.message : "تعذر نشر المقرر");
+                  notify(error instanceof Error ? error.message : "تعذر نشر المقرر", 'danger');
                 }
               }}>نشر المقرر للطلاب</button>
             )}
@@ -1204,7 +1193,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 310px), 1fr))", gap: "20px" }}>
               {filteredLessons.map((lesson, idx) => {
-                const hasLessonVideo = Boolean(lesson.videoUrl || lesson.requiresProtectedPlayback);
+                const hasLessonVideo = Boolean(lesson.hasUploadedVideo || lesson.videoUrl);
 
                 return (
                   <div
@@ -1356,6 +1345,14 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                             <Play size={13} fill="currentColor" />
                             <span>مشاهدة الدرس</span>
                           </button>
+                          {hasLessonVideo && <button type="button" className="btn-secondary" onClick={async () => {
+                            try {
+                              await uploadManager.prepareVideo(lesson.id, lesson.title, lesson.courseId);
+                              notify('بدأ تجهيز الجودات في الخلفية. الفيديو الحالي يظل متاحًا حتى اكتمال المعالجة.');
+                            } catch (error) {
+                              notify(error instanceof Error ? error.message : 'تعذر بدء تجهيز الجودات', 'danger');
+                            }
+                          }}>تجهيز الجودات</button>}
                         </div>
 
                         {/* Teacher Management Toolbar */}
@@ -1470,11 +1467,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         style={{ display: "none" }}
       />
 
-      {toast && (
-        <div className="wizard-toast" role="status">
-          {toast}
-        </div>
-      )}
     </div>
   );
 };

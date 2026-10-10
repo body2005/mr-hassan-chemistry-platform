@@ -1,19 +1,15 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
   Award,
-  BookOpen,
   CheckCircle2,
   ChevronDown,
   Clock,
-  Download,
-  FileText,
   GraduationCap,
   Grid,
   Mail,
   Menu,
   Moon,
   Phone,
-  Search,
   ShieldCheck,
   Sparkles,
   Sun,
@@ -48,28 +44,29 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
   const [showYearsDropdown, setShowYearsDropdown] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [mobileYearsOpen, setMobileYearsOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState(() => readCatalogState().query);
   const [selectedGrade, setSelectedGrade] = useState<CatalogGrade>(() => readCatalogState().grade);
   const t = translations[lang];
-  const catalog = usePublicCatalog(searchQuery, selectedGrade, courses === undefined);
-  const totalCourses = courses === undefined ? catalog.total : undefined;
+  const catalog = usePublicCatalog('', selectedGrade, courses === undefined);
 
   // A readable, static heading: no typing/deleting timer or blinking cursor.
-  const filteredCourses = useMemo(() => courses === undefined ? catalog.courses : filterCatalog(courses, searchQuery, selectedGrade),
-    [courses, catalog.courses, searchQuery, selectedGrade]);
+  const filteredCourses = useMemo(() => courses === undefined ? catalog.courses : filterCatalog(courses, '', selectedGrade),
+    [courses, catalog.courses, selectedGrade]);
   const grades = [
     { id: '1st_secondary' as const, label: t.firstSecondary },
     { id: '2nd_secondary' as const, label: t.secondSecondary },
     { id: '3rd_secondary' as const, label: t.thirdSecondary },
   ];
-  const changeQuery = (query: string) => { setSearchQuery(query); saveCatalogState(query, selectedGrade); };
   const changeGrade = (grade: CatalogGrade) => {
-    setSelectedGrade(grade); saveCatalogState(searchQuery, grade);
+    setSelectedGrade(grade); saveCatalogState('', grade);
     setShowYearsDropdown(false); setMobileYearsOpen(false); setMobileMenuOpen(false);
   };
 
-  // Digital Library materials (starts empty with no mock examples)
-  const libraryMaterials: Array<{ id: string; title: string; grade: string; size: string; downloads: number }> = [];
+  const subscriptions = filteredCourses.flatMap(course => course.lessons
+    .filter(lesson => lesson.hasUploadedVideo)
+    .map(lesson => ({ course, lesson })));
+  useEffect(() => {
+    if (catalog.error) toast(lang === 'ar' ? 'تعذر تحميل الاشتراكات. أعد المحاولة.' : 'Subscriptions could not load. Please retry.', 'danger');
+  }, [catalog.error, toast, lang]);
 
   return (
     <div style={{ minHeight: "100vh", background: "var(--bg-primary)", color: "var(--text-main)", display: "flex", flexDirection: "column" }}>
@@ -128,26 +125,6 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
 
         {/* Center/End Utility: Search Bar, Language, Theme, and Auth Links */}
         <div className="landing-topbar-actions" style={{ display: "flex", alignItems: "center", gap: "10px", marginInlineStart: "auto" }}>
-          {/* Search Box in Top Bar (Hidden on mobile) */}
-          <div className="landing-topbar-search">
-            <input
-              type="text"
-              aria-label={lang === "ar" ? "بحث سريع في المقررات" : "Quick course search"}
-              placeholder={lang === "ar" ? "ابحث عن مقرر..." : "Search courses..."}
-              value={searchQuery}
-              onChange={(e) => changeQuery(e.target.value)}
-              maxLength={100}
-              style={{
-                background: "transparent",
-                border: "none",
-                outline: "none",
-                color: "#ffffff",
-                fontSize: "11px",
-                width: "100%",
-              }}
-            />
-            <Search size={13} style={{ color: "rgba(255,255,255,0.8)" }} />
-          </div>
 
           {/* Theme Toggle Button */}
           <button
@@ -378,22 +355,6 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
               {t.landingNavTeacher}
             </a>
 
-            {/* Library / المكتبة */}
-            <a
-              href="#library"
-              style={{
-                padding: "7px 12px",
-                color: "var(--text-muted)",
-                textDecoration: "none",
-                borderRadius: "10px",
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "4px",
-              }}
-            >
-              <BookOpen size={14} style={{ color: "#059669" }} />
-              <span>{t.landingNavLibrary}</span>
-            </a>
           </nav>
 
           {/* Left Actions (Mobile Menu Button + CTA Button) */}
@@ -617,26 +578,6 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
                 <span>{t.landingNavTeacher}</span>
               </a>
 
-              {/* Library & Summaries Link */}
-              <a
-                href="#library"
-                onClick={() => setMobileMenuOpen(false)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  padding: "11px 14px",
-                  borderRadius: "12px",
-                  color: "var(--text-main)",
-                  textDecoration: "none",
-                  fontSize: "13px",
-                  fontWeight: 800,
-                  background: "var(--bg-surface-secondary)",
-                }}
-              >
-                <BookOpen size={16} style={{ color: "#059669" }} />
-                <span>{t.landingNavLibrary}</span>
-              </a>
             </div>
 
             {/* Contact Information in Sidebar (Phone & Email) */}
@@ -791,96 +732,42 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
           boxSizing: "border-box",
         }}
       >
-        <div style={{ textAlign: "center", marginBottom: "32px" }}>
-          <span style={{ fontSize: "11px", fontWeight: 800, color: "var(--text-main)", background: "var(--bg-accent)", padding: "4px 10px", borderRadius: "6px" }}>
-            {t.catalogBadge}
-          </span>
-          <h2 style={{ margin: "8px 0 6px", fontSize: "26px", color: "var(--text-main)" }}>
-            {t.landingFeaturedCoursesTitle}
-          </h2>
-          <p style={{ margin: 0, color: "var(--text-muted)", fontSize: "14px" }}>
-            {t.landingFeaturedCoursesSubtitle}
-          </p>
+        <div className="catalog-grades" aria-label={lang === 'ar' ? 'تصفية الصف الدراسي' : 'Filter by grade'}>
+          {[{ id: '' as const, label: lang === 'ar' ? 'كل الصفوف' : 'All grades' }, ...grades].map(grade =>
+            <button key={grade.id} type="button" aria-pressed={selectedGrade === grade.id}
+              onClick={() => changeGrade(grade.id)}>{grade.label}</button>)}
         </div>
-
-        <div className="catalog-filters">
-          <label htmlFor="catalog-search">{lang === 'ar' ? 'ابحث في المقررات' : 'Search courses'}</label>
-          <input id="catalog-search" type="search" value={searchQuery} maxLength={100}
-            onChange={event => changeQuery(event.target.value)}
-            placeholder={lang === 'ar' ? 'اسم المقرر أو وصفه أو رمزه' : 'Course name, description or code'} />
-          <div className="catalog-grades" aria-label={lang === 'ar' ? 'تصفية الصف الدراسي' : 'Filter by grade'}>
-            {[{ id: '' as const, label: lang === 'ar' ? 'كل الصفوف' : 'All grades' }, ...grades].map(grade =>
-              <button key={grade.id} type="button" aria-pressed={selectedGrade === grade.id}
-                onClick={() => changeGrade(grade.id)}>{grade.label}</button>)}
-          </div>
-          <p role="status">{catalog.loading ? (lang === 'ar' ? 'جارٍ تحميل المقررات…' : 'Loading courses…')
-            : catalog.error ? (lang === 'ar' ? 'لم يتم تحميل المقررات.' : 'Courses have not loaded.')
-              : lang === 'ar' ? `${totalCourses ?? filteredCourses.length} مقرر — ${grades.find(g => g.id === selectedGrade)?.label || 'كل الصفوف'}`
-                : `${totalCourses ?? filteredCourses.length} courses — ${grades.find(g => g.id === selectedGrade)?.label || 'All grades'}`}</p>
-          {(searchQuery || selectedGrade) && <button type="button" className="btn-secondary" onClick={() => {
-            setSearchQuery(''); setSelectedGrade(''); saveCatalogState('', '');
-          }}>{lang === 'ar' ? 'مسح البحث والتصفية' : 'Reset search and filters'}</button>}
-        </div>
+        <h2 className="subscriptions-heading">{lang === 'ar' ? 'الاشتراكات' : 'Subscriptions'}</h2>
+        {catalog.loading && <p role="status">{lang === 'ar' ? 'جارٍ تحميل الاشتراكات…' : 'Loading subscriptions…'}</p>}
         {catalog.error && <div className="catalog-error" role="alert">
           <p>{catalog.error === 'rate'
-            ? (lang === 'ar' ? 'طلبات كثيرة في وقت قصير. انتظر قليلًا ثم أعد تحميل المقررات.' : 'Too many requests. Wait briefly, then reload courses.')
-            : (lang === 'ar' ? 'تعذر تحميل المقررات. تحقق من اتصالك ثم أعد المحاولة.' : 'Courses could not load. Check your connection, then retry.')}</p>
+            ? (lang === 'ar' ? 'طلبات كثيرة في وقت قصير. انتظر قليلًا ثم أعد المحاولة.' : 'Too many requests. Wait briefly, then retry.')
+            : (lang === 'ar' ? 'تعذر تحميل الاشتراكات. تحقق من اتصالك ثم أعد المحاولة.' : 'Subscriptions could not load. Check your connection, then retry.')}</p>
           <button type="button" className="btn-secondary" onClick={catalog.retry}>
-            {lang === 'ar' ? 'إعادة تحميل المقررات' : 'Reload courses'}</button>
+            {lang === 'ar' ? 'إعادة تحميل الاشتراكات' : 'Reload subscriptions'}</button>
         </div>}
-        {!catalog.loading && !catalog.error && filteredCourses.length === 0 && <p className="catalog-empty">{lang === 'ar'
-          ? 'لا توجد مقررات مطابقة. جرّب كلمات أخرى أو غيّر الصف الدراسي.'
-          : 'No matching courses. Try another search or grade.'}</p>}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 320px), 1fr))", gap: "22px" }}>
-          {filteredCourses.map((course) => (
-            <div
-              key={course.id}
-              style={{
-                background: "var(--bg-surface)",
-                border: "1px solid var(--border-color)",
-                borderRadius: "16px",
-                padding: "22px",
-                display: "flex",
-                flexDirection: "column",
-                boxShadow: "var(--card-shadow)",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "10px" }}>
-                <span style={{ fontSize: "11px", fontWeight: 800, color: "var(--text-main)", background: "var(--bg-accent)", padding: "3px 8px", borderRadius: "6px" }}>
-                  {course.academicYearLabel}
-                </span>
-                <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                  {course.enrolledStudentsCount} {t.enrolledStudentsCount}
-                </span>
+        {!catalog.loading && !catalog.error && subscriptions.length === 0 && <p className="catalog-empty">{lang === 'ar'
+          ? 'لا توجد اشتراكات منشورة في هذا الصف حاليًا.' : 'No subscriptions are published for this grade yet.'}</p>}
+        <div className="subscription-grid">
+          {subscriptions.map(({ course, lesson }) => <article className="subscription-card" key={lesson.id}>
+            <span className="subscription-grade">{course.academicYearLabel}</span>
+            <h3>{lesson.title}</h3>
+            {lesson.durationFormatted && <p className="subscription-duration"><Clock size={16} aria-hidden="true" />{lesson.durationFormatted}</p>}
+            <div className="subscription-actions">
+              <div>
+                <strong>{(lesson.price || course.price)
+                  ? `${(lesson.price || course.price || 0).toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-US')} ${lang === 'ar' ? 'ج.م' : 'EGP'}`
+                  : (lang === 'ar' ? 'مجاني' : 'Free')}</strong>
+                {!lesson.price && Boolean(course.price) && <small className="subscription-price-note">
+                  {lang === 'ar' ? 'ضمن اشتراك الصف' : 'Included in the course subscription'}</small>}
               </div>
-
-              <h3 style={{ margin: "0 0 8px", fontSize: "17px", color: "var(--text-main)" }}>
-                {course.title}
-              </h3>
-
-              <p style={{ margin: "0 0 16px", color: "var(--text-muted)", fontSize: "13px", lineHeight: "1.5", flex: 1 }}>
-                {course.description}
-              </p>
-
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: "14px", borderTop: "1px solid var(--border-color)" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--text-muted)", fontSize: "12px" }}>
-                  <Clock size={14} />
-                  <span>{course.lessonsCount} {lang === "ar" ? "دروس" : "lessons"}</span>
-                </div>
-
-                <button
-                  className="btn-primary"
-                  onClick={() => onNavigateToAuth("register", course)}
-                  style={{ padding: "8px 16px", fontSize: "12px" }}
-                >
-                  <span>{lang === 'ar' ? 'سجّل للاشتراك' : 'Sign up to enroll'}</span>
-                </button>
-              </div>
+              <button type="button" className="btn-primary" onClick={() => onNavigateToAuth('signin', course)}>
+                {lang === 'ar' ? 'اشترك الآن' : 'Subscribe now'}</button>
             </div>
-          ))}
+          </article>)}
         </div>
         {!catalog.loading && !catalog.error && courses === undefined && catalog.pages > 1 &&
-          <nav className="catalog-grades" aria-label={lang === 'ar' ? 'صفحات المقررات' : 'Course pages'} style={{ marginTop: 24 }}>
+          <nav className="catalog-grades" aria-label={lang === 'ar' ? 'صفحات الاشتراكات' : 'Subscription pages'} style={{ marginTop: 24 }}>
             <button type="button" disabled={catalog.page <= 1} onClick={() => catalog.setPage(catalog.page - 1)}>
               {lang === 'ar' ? 'الصفحة السابقة' : 'Previous page'}</button>
             <span>{catalog.page} / {catalog.pages}</span>
@@ -984,113 +871,6 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
               ))}
             </div>
           </div>
-        </div>
-      </section>
-
-      {/* =========================================================================
-          DIGITAL LIBRARY & REVISION SHEETS (المكتبة الرقمية)
-         ========================================================================= */}
-      <section
-        id="library"
-        style={{
-          padding: "50px 24px 70px",
-          background: "var(--bg-surface)",
-          borderTop: "1px solid var(--border-color)",
-          borderBottom: "1px solid var(--border-color)",
-        }}
-      >
-        <div style={{ maxWidth: "1100px", margin: "0 auto" }}>
-          <div style={{ textAlign: "center", marginBottom: "36px" }}>
-            <span style={{ fontSize: "11px", fontWeight: 800, color: "var(--text-main)", background: "var(--bg-accent)", padding: "4px 10px", borderRadius: "6px" }}>
-              {t.landingNavLibrary}
-            </span>
-            <h2 style={{ margin: "8px 0 6px", fontSize: "26px", color: "var(--text-main)" }}>
-              {t.landingLibraryTitle}
-            </h2>
-            <p style={{ margin: 0, color: "var(--text-muted)", fontSize: "14px" }}>
-              {t.landingLibrarySubtitle}
-            </p>
-          </div>
-
-          {libraryMaterials.length === 0 ? (
-            <div
-              style={{
-                textAlign: "center",
-                padding: "48px 24px",
-                background: "var(--bg-surface-secondary)",
-                borderRadius: "18px",
-                border: "1px dashed var(--border-color)",
-              }}
-            >
-              <FileText size={44} style={{ color: "#059669", margin: "0 auto 12px", opacity: 0.8 }} />
-              <h3 style={{ margin: "0 0 6px", fontSize: "16px", color: "var(--text-main)", fontWeight: 800 }}>
-                {lang === "ar" ? "المكتبة الرقمية جاهزة لرفع المذكرات ونماذج الامتحانات" : "Digital Library is Ready"}
-              </h3>
-              <p style={{ margin: 0, fontSize: "13px", color: "var(--text-muted)", maxWidth: "520px", marginInline: "auto", lineHeight: "1.6" }}>
-                {lang === "ar"
-                  ? "لا توجد ملفات أو مذكرات منشورة حالياً. سيتم عرض المذكرات ونماذج الامتحانات المعتمدة هنا بمجرد رفعها من قبل المعلم."
-                  : "No files published yet. Certified summaries and exam papers will appear here once uploaded by the instructor."}
-              </p>
-            </div>
-          ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", gap: "20px" }}>
-              {libraryMaterials.map((mat) => (
-                <div
-                  key={mat.id}
-                  style={{
-                    background: "var(--bg-surface-secondary)",
-                    border: "1px solid var(--border-color)",
-                    borderRadius: "14px",
-                    padding: "20px",
-                    display: "flex",
-                    flexDirection: "column",
-                    justifyContent: "space-between",
-                  }}
-                >
-                  <div>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-                      <span style={{ fontSize: "11px", fontWeight: 800, color: "var(--text-main)", background: "var(--bg-accent)", padding: "3px 8px", borderRadius: "6px" }}>
-                        {mat.grade}
-                      </span>
-                      <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                        {mat.size}
-                      </span>
-                    </div>
-
-                    <h3 style={{ margin: "0 0 10px", fontSize: "15px", color: "var(--text-main)", display: "flex", alignItems: "flex-start", gap: "8px" }}>
-                      <FileText size={18} style={{ color: "#059669", flexShrink: 0, marginTop: "2px" }} />
-                      <span>{mat.title}</span>
-                    </h3>
-                  </div>
-
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "14px", paddingTop: "12px", borderTop: "1px solid var(--border-color)" }}>
-                    <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                      {mat.downloads} {lang === "ar" ? "عملية تنزيل" : "downloads"}
-                    </span>
-                    <button
-                      onClick={() => toast({ message: `تنزيل: ${mat.title}`, tone: "info" })}
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "6px",
-                        background: "#0f392b",
-                        color: "white",
-                        border: "none",
-                        padding: "7px 14px",
-                        borderRadius: "8px",
-                        fontSize: "12px",
-                        fontWeight: 700,
-                        cursor: "pointer",
-                      }}
-                    >
-                      <Download size={13} />
-                      <span>{t.downloadMaterial}</span>
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       </section>
 

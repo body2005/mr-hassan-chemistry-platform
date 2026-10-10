@@ -26,6 +26,11 @@ export const emptyRegistration: RegistrationData = {
   city: '', schoolName: '', email: '', password: '', confirmation: '',
 };
 export type RegistrationErrors = Partial<Record<keyof RegistrationData, string>>;
+export function sanitizeRegistrationField(key: keyof RegistrationData, value: string): string {
+  if (['firstName', 'middleName', 'lastName'].includes(key)) return value.replace(/[^\p{L}\p{M} ]/gu, '');
+  if (['studentPhone', 'guardianPhone', 'motherPhone'].includes(key)) return normalizePhone(value).replace(/[^0-9]/g, '');
+  return value;
+}
 export function normalizePhone(value: string): string {
   return value.replace(/[٠-٩۰-۹]/g, digit => String('٠١٢٣٤٥٦٧٨٩'.includes(digit)
     ? '٠١٢٣٤٥٦٧٨٩'.indexOf(digit) : '۰۱۲۳۴۵۶۷۸۹'.indexOf(digit)))
@@ -36,7 +41,7 @@ export function validateRegistration(data: RegistrationData, step: 1 | 2 | 'all'
   const message = (ar: string, en: string) => arabic ? ar : en;
   if (step === 1 || step === 'all') {
     for (const field of ['firstName', 'middleName', 'lastName'] as const) {
-      if (!/^[\p{L}\p{M}][\p{L}\p{M}\s'-]{1,49}$/u.test(data[field].trim()))
+      if (!/^[\p{L}][\p{L}\p{M} ]{1,49}$/u.test(data[field].trim()))
         errors[field] = message('أدخل اسمًا صحيحًا من حرفين إلى 50 حرفًا', 'Enter a valid name (2–50 characters)');
     }
     if (!data.gender) errors.gender = message('اختر النوع', 'Select gender');

@@ -13,6 +13,13 @@ export function useProtectedPlayback(lesson: VideoLesson, userId: string | undef
   const scopeRef = useRef<{ controller: AbortController; generation: number } | null>(null);
   const renewing = useRef(false);
   const lastRenewal = useRef(0);
+  const automaticDenied = useRef(false);
+  const retryAllowedAt = useRef(0);
+  const recordDenial = (error: unknown) => {
+    const failure = error as { status?: number; retryAfterMs?: number } | null;
+    if (failure && [401, 403, 429].includes(failure.status || 0)) automaticDenied.current = true;
+    if (failure?.status === 429) retryAllowedAt.current = Date.now() + Math.max(1000, failure.retryAfterMs ?? 30000);
+  };
   const pendingPlaybackResumeRef = useRef<{ time: number; playing: boolean } | null>(null);
 
   useEffect(() => {
@@ -38,6 +45,8 @@ export function useProtectedPlayback(lesson: VideoLesson, userId: string | undef
     scopeRef.current = scope;
     renewing.current = false;
     lastRenewal.current = 0;
+    automaticDenied.current = false;
+    retryAllowedAt.current = 0;
     pendingPlaybackResumeRef.current = null;
     setPlaybackUrl('');
     setPlaybackError(null);
@@ -50,7 +59,7 @@ export function useProtectedPlayback(lesson: VideoLesson, userId: string | undef
     } else {
       void apiRequest<{ stream_url: string }>(`/lessons/${lesson.id}/video-token`, { method: 'POST', signal: scope.controller.signal })
         .then(({ stream_url }) => { if (scopeRef.current === scope) setPlaybackUrl(apiUrl(stream_url)); })
-        .catch(error => { if (scopeRef.current === scope) setPlaybackError(playbackFailureMessage(error)); });
+        .catch(error => { if (scopeRef.current === scope) { recordDenial(error); setPlaybackError(playbackFailureMessage(error)); } });
     }
     return () => {
       scope.controller.abort();
@@ -61,6 +70,7 @@ export function useProtectedPlayback(lesson: VideoLesson, userId: string | undef
   const renewProtectedPlayback = useCallback(async (manual = false): Promise<boolean> => {
     const scope = scopeRef.current;
     if (!scope || getApiAuthScope() === 'anonymous' || !lesson.requiresProtectedPlayback || renewing.current) return false;
+    if (Date.now() < retryAllowedAt.current || (!manual && automaticDenied.current)) return false;
     if (!manual && Date.now() - lastRenewal.current < 10000) {
       setPlaybackError('تعذر تشغيل الفيديو. أعد المحاولة بعد قليل.');
       return false;
@@ -73,11 +83,14 @@ export function useProtectedPlayback(lesson: VideoLesson, userId: string | undef
       const { stream_url } = await apiRequest<{ stream_url: string }>(`/lessons/${lesson.id}/video-token`, { method: 'POST', signal: scope.controller.signal });
       if (scopeRef.current !== scope || scope.generation !== getApiAuthGeneration()) return false;
       pendingPlaybackResumeRef.current = resume;
+      automaticDenied.current = false;
+      retryAllowedAt.current = 0;
       setPlaybackError(null);
       setPlaybackUrl(apiUrl(stream_url));
       return true;
     } catch (error) {
       if (scopeRef.current !== scope) return false;
+      recordDenial(error);
       hlsRef.current?.stopLoad();
       setPlaybackError(playbackFailureMessage(error));
       return false;

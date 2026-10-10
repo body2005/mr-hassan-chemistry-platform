@@ -14,7 +14,10 @@ const courses = [
   { id: 'beta', title: 'مقرر التفاعل', academicYear: '3rd_secondary', academicYearLabel: 'الثالث الثانوي' },
 ].map(c => ({ ...c, subject: 'Chemistry', teacherName: 'Synthetic', teacherTitle: 'Teacher',
   description: 'شرح مقرر الكيمياء', thumbnailColor: '#0f392b', lessonsCount: 0,
-  totalDurationFormatted: '0', lessons: [], assessments: [], enrolledStudentsCount: 0 })) as Course[];
+  totalDurationFormatted: '0', lessons: [{ id: `${c.id}-lesson`, courseId: c.id, academicYear: c.academicYear,
+    title: c.title, description: '', durationMinutes: 10, durationFormatted: '10 دقائق', videoUrl: '',
+    materials: [], uploadedByTeacherName: 'Synthetic', uploadedAt: '', order: 1,
+    price: 125, hasUploadedVideo: true }], assessments: [], enrolledStudentsCount: 0 })) as Course[];
 let root: Root, host: HTMLDivElement;
 const navigate = vi.fn();
 beforeEach(() => {
@@ -49,7 +52,7 @@ it('loads the public server catalog without private cached courses or a false em
   expect(courseService.getPublicCatalogPage).toHaveBeenCalledTimes(1);
   await act(async () => complete({ courses, pages: 2, total: 26 }));
   expect(host.querySelectorAll('#courses h3')).toHaveLength(2);
-  expect(host.querySelector('#courses [role="status"]')?.textContent).toContain('26 مقرر');
+  expect(host.querySelector('#courses')?.textContent).not.toContain('26 مقرر');
   expect(button('الصفحة التالية')).toBeDefined();
 });
 
@@ -61,54 +64,43 @@ it('stops after a catalog failure and retries only by user action', async () => 
   expect(host.querySelector('.catalog-empty')).toBeNull();
   await finishDebounce();
   expect(courseService.getPublicCatalogPage).toHaveBeenCalledTimes(1);
-  await act(async () => button('إعادة تحميل المقررات').click()); await finishDebounce();
+  await act(async () => button('إعادة تحميل الاشتراكات').click()); await finishDebounce();
   expect(courseService.getPublicCatalogPage).toHaveBeenCalledTimes(2);
   expect(host.querySelectorAll('#courses h3')).toHaveLength(2);
 });
 
-it('sends search and grade to the server and rejects a late response from the old query', async () => {
+it('filters by grade and rejects a late response for the previous grade', async () => {
   let stale!: (value: { courses: Course[]; pages: number; total: number }) => void;
   vi.mocked(courseService.getPublicCatalogPage).mockImplementationOnce(() => new Promise(resolve => { stale = resolve; }))
     .mockResolvedValue({ courses: [courses[1]], pages: 1, total: 1 });
   await publicLanding(); await finishDebounce();
-  await typeSearch('التفاعل');
-  await act(async () => button(translations.ar.thirdSecondary).click());
-  await finishDebounce();
-  expect(courseService.getPublicCatalogPage).toHaveBeenLastCalledWith(1, 'التفاعل', '3rd_secondary', expect.any(AbortSignal));
+  await act(async () => button(translations.ar.thirdSecondary).click()); await finishDebounce();
+  expect(courseService.getPublicCatalogPage).toHaveBeenLastCalledWith(1, '', '3rd_secondary', expect.any(AbortSignal));
   await act(async () => stale({ courses, pages: 1, total: 2 }));
   expect(host.querySelectorAll('#courses h3')).toHaveLength(1);
   expect(host.querySelector('#courses')!.textContent).not.toContain('مقرر الذرة');
 });
 
-it('loads only the requested page and starts a changed search on page one', async () => {
+it('loads only the requested page and resets pagination when the grade changes', async () => {
   vi.mocked(courseService.getPublicCatalogPage).mockResolvedValue({ courses, pages: 3, total: 50 });
   await publicLanding(); await finishDebounce();
   await act(async () => button('الصفحة التالية').click()); await finishDebounce();
   expect(courseService.getPublicCatalogPage).toHaveBeenLastCalledWith(2, '', '', expect.any(AbortSignal));
-  expect(courseService.getPublicCatalogPage).toHaveBeenCalledTimes(2);
-  await typeSearch('الذرة'); await finishDebounce();
-  expect(courseService.getPublicCatalogPage).toHaveBeenLastCalledWith(1, 'الذرة', '', expect.any(AbortSignal));
-  expect(courseService.getPublicCatalogPage).toHaveBeenCalledTimes(3);
+  await act(async () => button(translations.ar.firstSecondary).click()); await finishDebounce();
+  expect(courseService.getPublicCatalogPage).toHaveBeenLastCalledWith(1, '', '1st_secondary', expect.any(AbortSignal));
 });
-async function typeSearch(value: string) {
-  const input = host.querySelector('#catalog-search') as HTMLInputElement;
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-}
 
-it('filters actual courses, explains empty results and resets both filters', async () => {
-  await landing(); await typeSearch('التفاعل');
-  expect(host.querySelector('#courses')!.textContent).not.toContain('مقرر الذرة');
-  expect(host.querySelector('#courses')!.textContent).toContain('مقرر التفاعل');
-  await act(async () => button(translations.ar.firstSecondary).click());
-  expect(host.querySelector('.catalog-empty')!.textContent).toContain('لا توجد مقررات مطابقة');
-  expect(host.querySelector('.catalog-filters [role="status"]')!.textContent).toContain('0 مقرر');
-  await act(async () => button('مسح البحث والتصفية').click());
-  expect(host.querySelector('#courses')!.textContent).toContain('مقرر الذرة');
-  expect(host.querySelector('#courses')!.textContent).toContain('مقرر التفاعل');
-  expect(window.location.search).toBe('');
+it('shows only uploaded subscriptions with real prices, without a search or library', async () => {
+  await landing();
+  expect(host.querySelector('#catalog-search')).toBeNull();
+  expect(host.querySelector('#library')).toBeNull();
+  expect(host.querySelector('a[href="#library"]')).toBeNull();
+  expect(host.querySelector('.subscription-actions strong')?.textContent).toContain('١٢٥');
+  expect(host.querySelector('#courses h2')?.textContent).toBe('الاشتراكات');
+  await act(async () => button(translations.ar.secondSecondary).click());
+  expect(host.querySelector('.catalog-empty')?.textContent).toContain('لا توجد اشتراكات');
+  await act(async () => button('كل الصفوف').click());
+  expect(host.querySelectorAll('.subscription-card')).toHaveLength(2);
 });
 
 it('opens the grade menu by click without hover and applies its choice', async () => {
@@ -123,25 +115,35 @@ it('opens the grade menu by click without hover and applies its choice', async (
   expect(toggle.getAttribute('aria-expanded')).toBe('false');
 });
 
-it('restores catalog state and preserves unrelated URL/routing state', async () => {
-  window.history.replaceState({}, '', '/?catalog_grade=3rd_secondary&catalog_search=التفاعل&keep=yes#landing');
+it('restores grade while ignoring removed search and preserves unrelated routing state', async () => {
+  window.history.replaceState({}, '', '/?catalog_grade=3rd_secondary&catalog_search=irrelevant&keep=yes#landing');
   await landing();
-  expect((host.querySelector('#catalog-search') as HTMLInputElement).value).toBe('التفاعل');
-  await typeSearch('الكيمياء');
+  expect(host.querySelectorAll('.subscription-card')).toHaveLength(1);
+  await act(async () => button(translations.ar.firstSecondary).click());
   const params = new URLSearchParams(window.location.search);
   expect(params.get('keep')).toBe('yes');
-  expect(params.get('catalog_grade')).toBe('3rd_secondary');
+  expect(params.get('catalog_grade')).toBe('1st_secondary');
+  expect(params.has('catalog_search')).toBe(false);
   expect(window.location.hash).toBe('#landing');
 });
 
-it('shows the full static headline and passes the exact selected course to registration', async () => {
+it('shows the full static headline and passes the exact selected course to sign in', async () => {
   await landing();
   expect(host.querySelector('h1')!.textContent).toBe(translations.ar.landingHeroTitle);
   expect(host.querySelector('h1 span')).toBeNull();
-  const actions = [...host.querySelectorAll('#courses button')].filter(b => b.textContent === 'سجّل للاشتراك');
+  const actions = [...host.querySelectorAll('#courses button')].filter(b => b.textContent === 'اشترك الآن');
   await act(async () => (actions[1] as HTMLButtonElement).click());
-  expect(navigate).toHaveBeenCalledWith('register', courses[1]);
+  expect(navigate).toHaveBeenCalledWith('signin', courses[1]);
   expect(host.querySelector('#courses')!.textContent).not.toContain('أضف المقرر');
+});
+
+it('explains the paid course subscription instead of calling an included lesson free', async () => {
+  const paid = { ...courses[0], price: 300, lessons: [{ ...courses[0].lessons[0], price: 0 }] };
+  await act(async () => root.render(<LandingPageView courses={[paid]} lang="ar" theme="light"
+    onNavigateToAuth={navigate} onToggleLang={vi.fn()} onToggleTheme={vi.fn()} />));
+  expect(host.querySelector('.subscription-actions')?.textContent).toContain('٣٠٠');
+  expect(host.querySelector('.subscription-price-note')?.textContent).toBe('ضمن اشتراك الصف');
+  expect(host.querySelector('.subscription-actions')?.textContent).not.toContain('مجاني');
 });
 
 const student = { id: 'synthetic-student', role: 'student', academicYear: '1st_secondary' } as CurrentUser;

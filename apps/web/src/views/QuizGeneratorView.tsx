@@ -35,7 +35,7 @@ import { QuizPublishConfirmation } from "../components/QuizPublishConfirmation";
 import { appendMcqOption, removeMcqOption } from "../services/mcqOptions";
 import { McqOptionsEditor } from "../components/McqOptionsEditor";
 import { QuestionSourceReview } from "../components/QuestionSourceReview";
-import { QuizEditorJourney } from "../components/QuizEditorJourney";
+import { AssessmentScopePicker } from "../components/AssessmentScopePicker";
 import { validateAssessmentPublication, type EditorStage } from "../services/assessmentPublication";
 
 const QUIZ_DRAFT_STORAGE_KEY_PREFIX = "lms_quiz_maker_unuploaded_draft_v2";
@@ -141,6 +141,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   const [selectedAcademicYear, setSelectedAcademicYear] = useState<"1st_secondary" | "2nd_secondary" | "3rd_secondary">(
     () => initialDraft?.selectedAcademicYear || "1st_secondary"
   );
+  const [selectedModuleIds, setSelectedModuleIds] = useState<string[]>(() => initialDraft?.selectedModuleIds || []);
   const [selectedCourseId, setSelectedCourseId] = useState<string>(() => initialDraft?.selectedCourseId || '');
   const gradeCourses = courses.filter(c => c.academicYear === selectedAcademicYear);
   const currentCourse = gradeCourses.find(c => c.id === selectedCourseId) ||
@@ -280,7 +281,11 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     return DEFAULT_MANUAL_QUESTIONS;
   });
 
-  const [error, setError] = useState<string | null>(null);
+  const [error, setErrorState] = useState<string | null>(null);
+  function setError(message: string | null) {
+    setErrorState(message);
+    if (message) toast(message, 'danger');
+  }
   const [draft, setDraft] = useState<QuizDraftResponse | null>(() => initialDraft?.draft || null);
   const [approved, setApproved] = useState(false);
   const [publicationWarning, setPublicationWarning] = useState<string | null>(null);
@@ -292,7 +297,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   };
 
   const quizTitleHasError = (attemptedSubmit || touchedFields.quizTitle) && !quizTitle.trim();
-  const lessonHasError = (attemptedSubmit || touchedFields.lesson) && !selectedLessonIds[0];
+  const lessonHasError = (attemptedSubmit || touchedFields.lesson) && !selectedLessonIds[0] && !selectedModuleIds[0];
   const durationHasError = assessmentType === "quiz" && (attemptedSubmit || touchedFields.duration) && (!quizDurationMinutes || Number(quizDurationMinutes) <= 0);
   const publishStartHasError = (attemptedSubmit || touchedFields.publishStart) && (!publishStartDate || !publishStartTime.trim());
   const closeDeadlineHasError = (attemptedSubmit || touchedFields.closeDeadline) && (!closeDeadlineDate || !closeDeadlineTime.trim());
@@ -335,6 +340,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       selectedAcademicYear,
       selectedCourseId: currentCourse?.id,
       selectedLessonIds,
+      selectedModuleIds,
       assessmentType,
       quizDurationMinutes,
       publishStartDate,
@@ -373,6 +379,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     selectedAcademicYear,
     currentCourse?.id,
     selectedLessonIds,
+    selectedModuleIds,
     assessmentType,
     quizDurationMinutes,
     publishStartDate,
@@ -713,7 +720,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   // ================= PUBLISH & SCHEDULE HANDLER (AI & MANUAL) =================
   function publicationProblem() {
     return validateAssessmentPublication({
-      title: quizTitle, lessonId: selectedLessonIds[0], isQuiz: assessmentType === "quiz",
+      title: quizTitle, lessonId: selectedLessonIds[0] || selectedModuleIds[0], isQuiz: assessmentType === "quiz",
       duration: quizDurationMinutes, startDate: publishStartDate, startTime: publishStartTime,
       endDate: closeDeadlineDate, endTime: closeDeadlineTime, questions: activeQuestionsList(),
     });
@@ -801,18 +808,19 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
         throw new Error("اختر المقرر الدراسي أولاً قبل النشر ليستلمه الطلاب.");
       }
       const scopeLessonId = selectedLessonIds[0];
-      if (!scopeLessonId) {
+      if (!scopeLessonId && !selectedModuleIds.length) {
         throw new Error("يلزم اختيار الدرس الذي يتبعه " + (isQuiz ? "الاختبار" : "الواجب") + " — لن يراه الطلاب بدون ربطه بدرس مفعّل.");
       }
       const startIso = publishStartDate && publishStartTime ? `${publishStartDate}T${publishStartTime}:00` : null;
       const endIso = closeDeadlineDate && closeDeadlineTime ? `${closeDeadlineDate}T${closeDeadlineTime}:00` : null;
-      const publicationDigest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({titleToPublish, currentQuestions, scopeLessonId, startIso, endIso, quizDurationMinutes})));
+      const publicationDigest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({titleToPublish, currentQuestions, selectedLessonIds, selectedModuleIds, startIso, endIso, quizDurationMinutes})));
       const retryKey = `${publicationKey}-${Array.from(new Uint8Array(publicationDigest).slice(0, 16), b => b.toString(16).padStart(2, '0')).join('')}`;
       if (isQuiz) {
         await courseService.publishQuizToServer({
           idempotency_key: retryKey,
           course_id: currentCourse.id,
-          lesson_id: scopeLessonId,
+          lesson_ids: selectedLessonIds,
+          module_ids: selectedModuleIds,
           title: titleToPublish,
           duration_minutes: Number(quizDurationMinutes) || 45,
           starts_at: startIso,
@@ -828,7 +836,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       } else {
         await courseService.publishAssignmentToServer({
           course_id: currentCourse.id,
-          lesson_id: scopeLessonId,
+          lesson_ids: selectedLessonIds,
+          module_ids: selectedModuleIds,
           title: titleToPublish,
           prompt: currentQuestions.map((q, index) => `${index + 1}. ${q.question_text}${q.options?.length ? '\n' + q.options.map(option => `(${option.key}) ${option.text}`).join('\n') : ''}`).join("\n\n"),
           max_score: totalPointsCount,
@@ -856,6 +865,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
         questions: currentQuestions,
         courseId: currentCourse?.id,
         selectedLessonIds,
+        selectedModuleIds,
       });
 
       setPublicationWarning("تم نشر المحتوى؛ جارٍ تحديث التقويم والإشعار...");
@@ -887,6 +897,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   function handleLoadQuizIntoEditor(quizRecord: PublishedQuizRecord) {
     setAssessmentType(quizRecord.assessmentType);
     setSelectedAcademicYear(quizRecord.academicYear);
+    setSelectedCourseId(quizRecord.courseId || '');
+    setSelectedLessonIds(quizRecord.selectedLessonIds || []);
+    setSelectedModuleIds(quizRecord.selectedModuleIds || []);
     setQuizTitle(quizRecord.title);
     setQuestions(quizRecord.questions);
     if (quizRecord.publishStartDate) setPublishStartDate(quizRecord.publishStartDate);
@@ -1027,7 +1040,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       {draftSaveConflict && <div role="alert" style={{ padding: '12px', marginBottom: '16px', border: '1px solid var(--border-color)', borderRadius: '10px', background: 'var(--bg-surface-secondary)', color: 'var(--text-main)' }}>
         توجد مسودة أحدث في تبويب آخر. لن نستبدلها أو نحذفها تلقائيًا. انسخ تعديلاتك الحالية ثم حدّث الصفحة لاستعادة المسودة الأحدث.
       </div>}
-      <QuizEditorJourney stage={editorStage} questionCount={displayedQuestions.length} points={totalPointsCount} onStageChange={setEditorStage} />
+
       <ToastRegion />
       {error && !showPublishConfirmModal && <div role="alert" className="quiz-editor-error">
         <AlertCircle size={20} aria-hidden="true" /><span>{error}</span>
@@ -1101,7 +1114,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                 <button
                   key={y.id}
                   type="button"
-                  onClick={() => setSelectedAcademicYear(y.id)}
+                  onClick={() => { setSelectedAcademicYear(y.id); setSelectedLessonIds([]); setSelectedModuleIds([]); setSelectedCourseId(''); }}
                   style={{
                     padding: "8px 2px",
                     borderRadius: "8px",
@@ -1122,11 +1135,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                 </button>
               ))}
             </div>
-            {gradeCourses.length > 0 && <label style={{display: 'block', marginTop: '12px'}}>المقرر الدراسي
-              <select aria-label="اختر المقرر" value={currentCourse?.id || ''} onChange={e => {setSelectedCourseId(e.target.value); setSelectedLessonIds([]);}}>
-                {gradeCourses.map(course => <option key={course.id} value={course.id}>{course.title}</option>)}
-              </select>
-            </label>}
+
 
 
           </div>
@@ -1277,53 +1286,12 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
             )}
           </div>
 
-          {/* Lesson scope (REQUIRED): the quiz/assignment attaches to one lesson
-              so students find it inside that lesson and payment gates it. */}
-          <div style={{ marginBottom: "14px", background: "var(--bg-surface-secondary, #f8fafc)", border: lessonHasError ? "1.5px solid #ef4444" : "1.5px solid var(--border-color, #e2e8f0)", borderRadius: "10px", padding: "14px" }}>
-            <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, marginBottom: "6px", color: "var(--text-main)" }}>
-              الدرس/الوحدة المرتبط {assessmentType === "quiz" ? "بالاختبار" : "بالواجب"}:
-            </label>
-            {courseLessons.length === 0 ? (
-              <div style={{ fontSize: "14px", color: "#b45309", fontWeight: 700 }}>
-                لا توجد دروس في هذا المقرر — أضف درساً أولاً ليُربط {assessmentType === "quiz" ? "الاختبار" : "الواجب"} به.
-              </div>
-            ) : (
-              <>
-                <select
-                  aria-label="الدرس المرتبط بالتقييم"
-                  required
-                  value={selectedLessonIds[0] || ""}
-                  onChange={(e) => setSelectedLessonIds(e.target.value ? [e.target.value] : [])}
-                  onBlur={() => markTouched("lesson")}
-                  style={{
-                    width: "100%",
-                    padding: "9px 12px",
-                    border: lessonHasError ? "1.5px solid #ef4444" : selectedLessonIds[0] ? "1px solid var(--border-color-strong)" : "1px solid var(--border-color)",
-                    boxShadow: lessonHasError ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
-                    borderRadius: "8px",
-                    fontSize: "14px",
-                    fontWeight: 700,
-                    background: "var(--bg-surface)",
-                    color: "var(--text-main)",
-                  }}
-                >
-                  <option value="">-- اضغط لاختيار الدرس/الوحدة المرتبط --</option>
-                  {courseLessons.map((lesson) => (
-                    <option key={lesson.id} value={lesson.id}>{lesson.title}</option>
-                  ))}
-                </select>
-                {lessonHasError && (
-                  <div style={{ display: "flex", alignItems: "center", gap: "5px", marginTop: "6px", color: "#ef4444", fontSize: "11.5px", fontWeight: 700 }}>
-                    <AlertCircle size={13} style={{ flexShrink: 0 }} />
-                    <span>يلزم ادخاله</span>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
+          <AssessmentScopePicker courses={gradeCourses} courseId={currentCourse?.id}
+            lessonIds={selectedLessonIds} moduleIds={selectedModuleIds}
+            onChange={(id, lessons, modules) => { setSelectedCourseId(id); setSelectedLessonIds(lessons); setSelectedModuleIds(modules); markTouched('lesson'); }} />
+          {lessonHasError && <p className="registration-error">اختَر درسًا أو وحدة واحدة على الأقل.</p>}
 
           {/* Schedule & Timing Configuration */}
-          <button type="button" className="btn-primary quiz-mobile-next quiz-setup-next" onClick={() => setEditorStage('review')}>التالي: مراجعة الأسئلة</button>
           </div>
           <div className="quiz-publication-fields" style={{ marginBottom: "18px", background: "var(--bg-surface-secondary, #f8fafc)", border: "1.5px solid var(--border-color, #e2e8f0)", borderRadius: "10px", padding: "14px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "12px" }}>
@@ -2333,7 +2301,6 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                     </div>
                   </div>
                 )}
-                {!approved && <button type="button" className="btn-primary quiz-mobile-next quiz-review-next" onClick={() => setEditorStage('publish')}>التالي: تحديد الموعد والنشر</button>}
               </div>
             )}
           </div>

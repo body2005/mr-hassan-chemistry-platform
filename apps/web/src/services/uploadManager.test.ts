@@ -7,6 +7,21 @@ const response = (status: string) => new Response(JSON.stringify({ id: 'job', st
 beforeEach(() => { vi.resetModules(); localStorage.clear(); });
 afterEach(() => vi.unstubAllGlobals());
 
+it('announces a background material failure with its reason instead of failing silently', async () => {
+  const api = await import('./apiClient'); api.setApiAuthScope('teacher-a');
+  const { UploadManager } = await import('./uploadManager'); const manager = new UploadManager();
+  const listener = vi.fn();
+  window.addEventListener('lms_toast_notification', listener);
+  try {
+    manager.enqueueKnowledgeBatchUpload({ files: [new File(['%PDF'], 'notes.pdf')], lessonTitle: 'بنية الذرة' });
+    expect(manager.getTasks()[0].status).toBe('error');
+    expect(listener).toHaveBeenCalledTimes(1);
+    const detail = (listener.mock.calls[0][0] as CustomEvent).detail;
+    expect(detail.tone).toBe('danger');
+    expect(detail.message).toContain('لا يمكن رفع المذكرات بدون تحديد الدرس');
+  } finally { window.removeEventListener('lms_toast_notification', listener); }
+});
+
 it('recovers a ready legacy job after reload without any POST or re-upload, invalidating stale courses', async () => {
   localStorage.setItem('lms_global_upload_tasks_v3', JSON.stringify([stored()]));
   const fetcher = vi.fn(async () => response('ready')); vi.stubGlobal('fetch', fetcher);
@@ -44,6 +59,21 @@ it('stops on 429 rather than creating a retry loop', async () => {
   const { UploadManager } = await import('./uploadManager'); const manager = new UploadManager();
   await manager.reconcileVideos();
   expect(manager.getTasks()[0].status).toBe('error'); expect(fetcher).toHaveBeenCalledTimes(1);
+});
+
+it('prepares an existing stored video without a file transfer and completes from the server job', async () => {
+  const calls: Array<{ url: string; method: string }> = [];
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push({ url, method: init?.method || 'GET' });
+    return new Response(JSON.stringify({ id: 'prepared', status: 'ready', size_bytes: 1234 }), { status: 200 });
+  }));
+  const api = await import('./apiClient'); api.setApiAuthScope('teacher-a');
+  const { UploadManager } = await import('./uploadManager'); const manager = new UploadManager();
+  await manager.prepareVideo('lesson', 'Saved video', 'course');
+  await vi.waitFor(() => expect(manager.getTasks()[0].status).toBe('completed'));
+  expect(calls.map(call => call.method)).toEqual(['POST', 'GET']);
+  expect(calls[0].url).toContain('/lessons/lesson/prepare-video');
+  expect(calls[1].url).toContain('/video-uploads/prepared');
 });
 
 it('shows complete byte transfer separately from processing, then completes when the worker is ready', async () => {

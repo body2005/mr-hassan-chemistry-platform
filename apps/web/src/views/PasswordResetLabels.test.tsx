@@ -1,11 +1,13 @@
+import { ToastProvider } from '../components/ToastProvider';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { AuthView } from './AuthView';
-const mocks = vi.hoisted(() => ({ request: vi.fn(), confirm: vi.fn(), features: vi.fn() }));
+const mocks = vi.hoisted(() => ({ request: vi.fn(), confirm: vi.fn(), features: vi.fn(), login: vi.fn() }));
 vi.mock('../services/lmsService', () => ({ authService: {
   requestPasswordReset: mocks.request, confirmPasswordReset: mocks.confirm,
   getFeatures: mocks.features,
+  login: mocks.login,
 } }));
 let root: Root, host: HTMLDivElement;
 const originalScrollTo = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTo');
@@ -14,6 +16,7 @@ beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   window.history.replaceState({}, '', '/#auth');
   mocks.request.mockReset(); mocks.confirm.mockReset();
+  mocks.login.mockReset();
   mocks.features.mockReset().mockResolvedValue({ password_reset_enabled: true });
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
@@ -23,9 +26,22 @@ afterEach(async () => {
   else Reflect.deleteProperty(Element.prototype, 'scrollTo');
 });
 async function render() {
-  await act(async () => root.render(<AuthView lang="ar" theme="dark" onLoginSuccess={vi.fn()}
-    onToggleLang={vi.fn()} onToggleTheme={vi.fn()} />));
+  await act(async () => root.render(<ToastProvider><AuthView lang="ar" theme="dark" onLoginSuccess={vi.fn()}
+    onToggleLang={vi.fn()} onToggleTheme={vi.fn()} /></ToastProvider>));
 }
+
+it('starts with an email placeholder and shows rejected student sign-in in the global toast', async () => {
+  await render();
+  const identity = host.querySelector<HTMLInputElement>('#auth-signin-identity')!;
+  expect(identity.value).toBe('');
+  expect(identity.placeholder).toBe('teacher@demo.com');
+  mocks.login.mockResolvedValueOnce({ success: false, error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة.' });
+  await fill('auth-signin-identity', 'student01@demo.com');
+  await fill('auth-signin-password', 'Synthetic-invalid-password');
+  await act(async () => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  expect(document.body.querySelector('.toast-danger')?.textContent).toContain('كلمة المرور غير صحيحة');
+  expect(host.querySelector('.toast-stack')).toBeNull();
+});
 async function fill(id: string, value: string) {
   const input = host.querySelector('#' + id)!;
   await act(async () => {

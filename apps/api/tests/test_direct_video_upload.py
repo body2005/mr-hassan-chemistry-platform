@@ -164,9 +164,102 @@ def test_part_signatures_are_upload_only_exact_size_and_short_lived(world, monke
 
 
 def test_ladder_does_not_upscale():
-    assert [height for height, _ in renditions(720)] == [360, 480, 720]
-    assert [height for height, _ in renditions(240)] == [240]
-    assert [height for height, _ in renditions(2160)] == [360, 480, 720, 1080, 2160]
+    assert [height for height, _ in renditions(720)] == [144, 240, 360, 480, 720]
+    assert [height for height, _ in renditions(240)] == [144, 240]
+    assert [height for height, _ in renditions(2160)] == [144, 240, 360, 480, 720, 1080]
+    assert [height for height, _ in renditions(120)] == [120]
+
+
+def test_existing_hls_manifest_is_limited_to_1080p():
+    from app.api.routes.video_uploads import bounded_quality_manifest
+    master = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=10,RESOLUTION=1920x1080\n1080p/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=20,RESOLUTION=3840x2160\n2160p/index.m3u8\n'
+    output = bounded_quality_manifest(master)
+    assert '1080p/index.m3u8' in output
+    assert '2160' not in output and 'BANDWIDTH=20' not in output
+
+
+def test_prepare_existing_video_is_idempotent_and_retains_playable_source(db, world, monkeypatch):
+    from app.models.storage_cleanup import StorageCleanup
+    from sqlalchemy import select
+    _, teacher, _, _, lesson, provider, client = world
+    monkeypatch.setattr(get_settings(), "video_processing_enabled", True)
+    monkeypatch.setattr(service, "get_storage_provider", lambda: provider)
+    client.head_object.return_value = {"ContentLength": 1234}
+    lesson.video_asset_key = "s3://test/lesson_videos/saved.mp4"
+    db.commit()
+    job = service.enqueue_published_source(db, teacher, lesson)
+    db.commit()
+    assert service.enqueue_published_source(db, teacher, lesson).id == job.id
+    assert job.status == "queued" and job.object_key == "lesson_videos/saved.mp4"
+    assert lesson.video_asset_key == "s3://test/lesson_videos/saved.mp4"
+    service.enqueue_source_cleanup(db, job)
+    db.flush()
+    assert not db.scalars(select(StorageCleanup)).all()
+    # Once a complete HLS generation replaces the source, retirement is safe.
+    lesson.video_asset_key = "s3://test/video-assets/ready/master.m3u8"
+    service.enqueue_source_cleanup(db, job)
+    db.flush()
+    assert [row.object_key for row in db.scalars(select(StorageCleanup))] == [job.object_key]
+
+
+def test_prepare_video_checks_manager_and_configuration(db, world, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    inst, teacher, student, other, lesson, provider, client = world
+    browser = TestClient(app)
+    _login(browser, student, inst.slug)
+    path = f"/api/v1/lessons/{lesson.id}/prepare-video"
+    assert browser.post(path, headers=_csrf(browser)).status_code == 403
+    _login(browser, other, inst.slug)
+    assert browser.post(path, headers=_csrf(browser)).status_code == 403
+    _login(browser, teacher, inst.slug)
+    assert browser.post(path, headers=_csrf(browser)).status_code == 503
+    monkeypatch.setattr(get_settings(), "video_processing_enabled", True)
+    monkeypatch.setattr(service, "get_storage_provider", lambda: provider)
+    client.head_object.return_value = {"ContentLength": 1234}
+    lesson.video_asset_key = "s3://test/lesson_videos/saved.mp4"
+    db.commit()
+    first = browser.post(path, headers=_csrf(browser))
+    assert first.status_code == 202, first.text
+    second = browser.post(path, headers=_csrf(browser))
+    assert second.json()["id"] == first.json()["id"]
+    assert "object_key" not in first.text
+
+
+def test_prepare_replacement_does_not_reuse_a_job_for_an_older_source(db, world, monkeypatch):
+    _, teacher, _, _, lesson, provider, client = world
+    monkeypatch.setattr(get_settings(), "video_processing_enabled", True)
+    monkeypatch.setattr(service, "get_storage_provider", lambda: provider)
+    client.head_object.return_value = {"ContentLength": 1234}
+    lesson.video_asset_key = "s3://test/lesson_videos/old.mp4"
+    db.commit()
+    service.enqueue_published_source(db, teacher, lesson)
+    db.commit()
+    lesson.video_asset_key = "s3://test/lesson_videos/new.mp4"
+    with pytest.raises(HTTPException) as result:
+        service.enqueue_published_source(db, teacher, lesson)
+    assert result.value.status_code == 409
+
+
+def test_standard_upload_queues_quality_preparation_when_enabled(db, world, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    inst, teacher, _, _, lesson, provider, client = world
+    monkeypatch.setattr(get_settings(), "video_processing_enabled", True)
+    monkeypatch.setattr(service, "get_storage_provider", lambda: provider)
+    monkeypatch.setattr("app.api.routes.platform.get_storage_provider", lambda: provider)
+    video = b"\x00\x00\x00\x18ftypisom" + b"synthetic-video-container"
+    client.head_object.return_value = {"ContentLength": len(video)}
+    monkeypatch.setattr(provider, "save_file", lambda path, key, content_type=None: f"s3://test/{key}")
+    browser = TestClient(app)
+    _login(browser, teacher, inst.slug)
+    response = browser.post(f"/api/v1/lessons/{lesson.id}/video", headers=_csrf(browser),
+        files={"file": ("lecture.mp4", video, "video/mp4")})
+    assert response.status_code == 200, response.text
+    job = db.get(VideoUpload, uuid.UUID(response.json()["video_upload_id"]))
+    assert job.status == "queued" and job.lesson_id == lesson.id
+    db.refresh(lesson)
+    assert lesson.video_asset_key == f"s3://test/{job.object_key}"
 
 
 def test_hls_authentication_checks_every_manifest_and_segment(db, world, monkeypatch):

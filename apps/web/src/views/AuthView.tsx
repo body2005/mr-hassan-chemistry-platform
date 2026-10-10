@@ -18,6 +18,7 @@ import { Language, translations } from "../utils/i18n";
 import { authService } from "../services/lmsService";
 import { RegistrationWizard } from "../components/RegistrationWizard";
 import { usePasswordResetAvailability } from "../hooks/usePasswordResetAvailability";
+import { useToast } from '../components/ToastProvider';
 import { authTabHash, readAuthTab, type AuthTab } from "../services/authNavigation";
 
 
@@ -42,6 +43,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
   onToggleTheme,
 }) => {
   const t = translations[lang];
+  const toast = useToast();
   const passwordResetAvailable = usePasswordResetAvailability();
   const [activeTab, setActiveTab] = useState<AuthTab>(() => readAuthTab(window.location.hash, initialTab));
 
@@ -50,7 +52,11 @@ export const AuthView: React.FC<AuthViewProps> = ({
   const [signInPassword, setSignInPassword] = useState("");
   const [showSignInPassword, setShowSignInPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setErrorState] = useState("");
+  function setError(message: string) {
+    setErrorState(message);
+    if (message) toast(message, 'danger');
+  }
   const [successMsg, setSuccessMsg] = useState("");
   const [resetToken, setResetToken] = useState(() => new URLSearchParams(window.location.hash.split("?", 2)[1] || "").get("reset_token") || "");
   const [resetMode, setResetMode] = useState<"none" | "request" | "confirm">(resetToken ? "confirm" : "none");
@@ -124,7 +130,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
     if (resetMode === 'confirm' && resetPassword !== resetConfirmPassword)
       invalid.confirm = lang === 'ar' ? 'كلمتا المرور غير متطابقتين.' : 'Passwords do not match.';
     setResetErrors(invalid);
-    if (Object.keys(invalid).length) return;
+    if (Object.keys(invalid).length) { toast(Object.values(invalid).join(' '), 'danger'); return; }
     setResetBusy(true);
     try {
       if (resetMode === "request") {
@@ -511,7 +517,11 @@ export const AuthView: React.FC<AuthViewProps> = ({
                 </button>
               </form>
             ) : activeTab === "signin" ? (
-              <form onSubmit={handleSignIn} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+              <form onSubmit={handleSignIn} onInvalid={event => {
+                toast((event.target as HTMLInputElement).id === 'auth-signin-identity'
+                  ? (lang === 'ar' ? 'أدخل البريد الإلكتروني أو اسم المستخدم.' : 'Enter your email or username.')
+                  : (lang === 'ar' ? 'أدخل كلمة المرور.' : 'Enter your password.'), 'danger');
+              }} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
                 <div>
                   <label htmlFor="auth-signin-identity" style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "5px", textTransform: "uppercase" }}>
                     {lang === "ar" ? "البريد الإلكتروني أو اسم المستخدم" : "Email or Username"}
@@ -523,7 +533,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                     required
                     value={signInEmail}
                     onChange={(e) => setSignInEmail(e.target.value)}
-                    placeholder={lang === "ar" ? "مثال: teacher@demo.com أو اسم المستخدم" : "e.g. teacher@demo.com or username"}
+                    placeholder="teacher@demo.com"
                     style={{
                       width: "100%",
                       padding: "11px 14px",

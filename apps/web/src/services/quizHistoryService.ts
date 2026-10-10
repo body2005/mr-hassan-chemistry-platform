@@ -22,6 +22,7 @@ export interface PublishedQuizRecord {
   questions: GeneratedQuestion[];
   courseId?: string;
   selectedLessonIds?: string[];
+  selectedModuleIds?: string[];
   status: "active" | "closed" | "scheduled";
 }
 

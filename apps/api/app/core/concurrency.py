@@ -58,6 +58,7 @@ def _resolve_concurrency_key(request: Request) -> str:
 async def concurrency_guard(
     request: Request,
     is_heavy: bool = False,
+    pool: str = "client",
 ) -> AsyncGenerator[ResourceLease | None, None]:
     """Admission control context manager rejecting excess concurrent work before execution."""
     if os.getenv("APP_ENV") == "test" and os.getenv("DISABLE_RATE_LIMITING", "").lower() in {"1", "true", "yes"}:
@@ -65,7 +66,10 @@ async def concurrency_guard(
         return
 
     key = _resolve_concurrency_key(request)
-    resources = [(f"admission:client:{key}", MAX_CONCURRENT_PER_CLIENT)]
+    # Long-lived video/SSE responses have independent finite budgets. They
+    # must not consume all the slots needed to login, solve or renew a session.
+    pool_limit = {"video": 8, "realtime": 5}.get(pool, MAX_CONCURRENT_PER_CLIENT)
+    resources = [(f"admission:{pool}:{key}", pool_limit)]
     if is_heavy:
         resources += [(f"admission:heavy:{key}", MAX_CONCURRENT_HEAVY_PER_CLIENT),
                       ("admission:heavy:global", MAX_GLOBAL_HEAVY)]
@@ -79,8 +83,9 @@ async def concurrency_guard(
         return
 
     with _lock:
-        current_client_total = _active_per_client[key]
-        if current_client_total >= MAX_CONCURRENT_PER_CLIENT:
+        local_key = f"{pool}:{key}"
+        current_client_total = _active_per_client[local_key]
+        if current_client_total >= pool_limit:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Too many concurrent requests. Please wait for current requests to finish.",
@@ -105,15 +110,15 @@ async def concurrency_guard(
             _active_heavy_per_client[key] += 1
             _global_heavy_count += 1
 
-        _active_per_client[key] += 1
+        _active_per_client[local_key] += 1
 
     try:
         yield
     finally:
         with _lock:
-            _active_per_client[key] = max(0, _active_per_client[key] - 1)
-            if _active_per_client[key] == 0:
-                _active_per_client.pop(key, None)
+            _active_per_client[local_key] = max(0, _active_per_client[local_key] - 1)
+            if _active_per_client[local_key] == 0:
+                _active_per_client.pop(local_key, None)
 
             if is_heavy:
                 _active_heavy_per_client[key] = max(0, _active_heavy_per_client[key] - 1)
@@ -142,7 +147,11 @@ class AdmissionMiddleware:
             return await self.app(scope, receive, send)
         request = Request(scope)
         category = self.classify(scope["method"], scope["path"])
-        guard = concurrency_guard(request, is_heavy=category in {"heavy_query", "upload", "quiz_extraction"})
+        path = scope["path"].rstrip("/")
+        pool = ("realtime" if path.endswith("/realtime/stream") else
+                "video" if scope["method"] in {"GET", "HEAD"} and "/lessons/" in path
+                and (path.endswith(("/stream", "/video")) or "/hls/" in path) else "client")
+        guard = concurrency_guard(request, is_heavy=category in {"heavy_query", "upload", "quiz_extraction"}, pool=pool)
         try:
             lease = await guard.__aenter__()
         except HTTPException as exc:

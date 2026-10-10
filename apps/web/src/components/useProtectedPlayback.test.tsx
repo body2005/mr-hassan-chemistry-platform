@@ -31,7 +31,7 @@ afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi
 
 it.each([401, 403, 429, 503, 0])('distinguishes token failure %s without automatic replay', async status => {
   await render(); await act(async () => pending[0].reject({ status, code: status === 0 ? 'NETWORK_ERROR' : undefined }));
-  expect(host.textContent).toContain(status === 401 ? 'انتهت جلسة' : status === 403 ? 'لا تملك صلاحية' : status === 429 ? 'طلبات كثيرة' : 'تعذر الاتصال');
+  expect(host.textContent).toContain(status === 401 ? 'انتهت جلسة' : status === 403 ? 'لا تملك صلاحية' : status === 429 ? 'تعذر بدء التشغيل مؤقتًا' : 'تعذر الاتصال');
   await act(async () => vi.advanceTimersByTime(600000));
   expect(fake.request).toHaveBeenCalledTimes(1);
 });

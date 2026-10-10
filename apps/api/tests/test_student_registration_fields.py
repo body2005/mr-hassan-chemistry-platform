@@ -14,8 +14,8 @@ def payload(**changes: object) -> dict[str, object]:
         "password": "a-strong-password",
         "institution_slug": "registration-test",
         "grade_level": "SECONDARY_3",
-        "student_phone": "٠١٠ ١٢٣٤-٥٦٧٨",
-        "guardian_phone": "011-1234-5678",
+        "student_phone": "٠١٠١٢٣٤٥٦٧٨",
+        "guardian_phone": "01112345678",
         "national_id": "30301010101010",
         "governorate": "CAIRO",
         "school_name": "  مدرسة تجريبية 2 الثانوية  ",
@@ -65,6 +65,10 @@ def test_registration_rejects_unknown_and_invalid_sensitive_values() -> None:
     assert client.post("/api/v1/auth/register", json=payload(email="religion@example.com", religion="UNKNOWN")).status_code == 422
     assert client.post("/api/v1/auth/register", json=payload(email="id@example.com", national_id="1234")).status_code == 422
     assert client.post("/api/v1/auth/register", json=payload(email="extra@example.com", ignored_by_server="no")).status_code == 422
+    for name in ("أحمد123", "أحمد!", "Ahmed-Smith", "123"):
+        assert client.post("/api/v1/auth/register", json=payload(display_name=name)).status_code == 422
+    for phone in ("010abc56789", "+201012345678", "010-12345678", "(010)12345678"):
+        assert client.post("/api/v1/auth/register", json=payload(student_phone=phone)).status_code == 422
 
 
 def test_duplicate_national_id_is_conflict_only_inside_same_institution(db) -> None:

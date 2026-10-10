@@ -93,6 +93,8 @@ export interface VideoLesson {
   videoUrl: string;
   /** Native videos are resolved only after the viewer obtains a scoped token. */
   requiresProtectedPlayback?: boolean;
+  /** Public availability metadata only, independent of playback permission. */
+  hasUploadedVideo?: boolean;
   thumbnailUrl?: string;
   price?: number; // Per-lesson price decided by teacher (0 = free)
   materials: UploadedMaterial[];
@@ -108,10 +110,13 @@ export interface CourseAssessmentRef {
   kind: "quiz" | "assignment";
   title: string;
   lessonId?: string | null;
+  lessonIds?: string[];
+  moduleIds?: string[];
   moduleId?: string | null;
   durationMinutes?: number;
   maxScore?: number;
   dueLabel?: string | null;
+  startsAt?: string | null;
   /** Total attempts this student has already consumed on this quiz. */
   attemptsUsed?: number;
   /** Server-confirmed official quiz or homework submission; starting is not completion. */

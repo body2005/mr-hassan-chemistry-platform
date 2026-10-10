@@ -1,3 +1,4 @@
+import { ToastProvider } from '../components/ToastProvider';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -19,7 +20,7 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
 
 function login() {
-  return <AuthView lang="ar" theme="dark" onLoginSuccess={vi.fn()} onToggleLang={vi.fn()} onToggleTheme={vi.fn()} />;
+  return <ToastProvider><AuthView lang="ar" theme="dark" onLoginSuccess={vi.fn()} onToggleLang={vi.fn()} onToggleTheme={vi.fn()} /></ToastProvider>;
 }
 const recoveryButtons = () => [...host.querySelectorAll('button')].filter(button => button.textContent?.includes('نسيت'));
 

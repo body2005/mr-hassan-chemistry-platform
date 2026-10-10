@@ -1,47 +1,34 @@
-import { createContext, useContext, useState, useCallback, useRef, useEffect, useId, type ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, useRef, useEffect, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { CheckCircle2, AlertTriangle, XCircle, X } from "lucide-react";
+import { CheckCircle2, AlertTriangle, X } from "lucide-react";
+import { subscribeToRequestErrors } from '../services/errorFeedback';
+import { ToastLayerContext } from './ToastLayerContext';
 
 export type ToastTone = "info" | "warning" | "danger" | "success";
 export type Toast = { id: number; message: string; tone?: ToastTone };
 export type ToastPush = (toast: string | Omit<Toast, "id">, tone?: ToastTone) => void;
-type OwnedToast = Toast & { regionId?: string };
 
 const ToastContext = createContext<ToastPush | null>(null);
-const RegionContext = createContext<((id: string, node: HTMLElement | null) => void) | null>(null);
 
 export function noticeDuration(message: string): number {
   return Math.min(14000, Math.max(4500, 2500 + message.length * 65));
 }
 
-/** Keep feedback in document flow beside the action, never over its controls. */
+/** Compatibility anchor for forms; all feedback uses one viewport host. */
 export function ToastRegion({ label }: { label?: string }) {
-  const register = useContext(RegionContext);
-  const id = useId();
-  const attach = useCallback((node: HTMLDivElement | null) => register?.(id, node), [id, register]);
-  return <div ref={attach} className="action-feedback-region" role={label ? 'region' : undefined} aria-label={label} />;
+  return <div className="action-feedback-region" role={label ? 'region' : undefined} aria-label={label} />;
 }
 
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const [items, setItems] = useState<OwnedToast[]>([]);
-  const itemsRef = useRef<OwnedToast[]>([]);
+  const [items, setItems] = useState<Toast[]>([]);
+  const itemsRef = useRef<Toast[]>([]);
   const counter = useRef(0);
   const [announcement, setAnnouncement] = useState("");
-  const [regions, setRegions] = useState<Map<string, HTMLElement>>(() => new Map());
-  const regionsRef = useRef<Map<string, HTMLElement>>(new Map());
+  const errorRevision = useRef(0);
   const [paused, setPaused] = useState(false);
-  const register = useCallback((id: string, node: HTMLElement | null) => {
-    const prev = regionsRef.current;
-    if (prev.get(id) === node || (!node && !prev.has(id))) return;
-    const next = new Map(prev);
-    if (node) next.set(id, node); else next.delete(id);
-    regionsRef.current = next;
-    setRegions(next);
-    if (!node && itemsRef.current.some(item => item.regionId === id)) {
-      itemsRef.current = itemsRef.current.filter(item => item.regionId !== id);
-      setItems(itemsRef.current);
-      if (!itemsRef.current.length) setAnnouncement("");
-    }
+  const [modalHosts, setModalHosts] = useState<HTMLElement[]>([]);
+  const registerModal = useCallback((host: HTMLElement, open: boolean) => {
+    setModalHosts(current => open ? [...current.filter(node => node !== host), host] : current.filter(node => node !== host));
   }, []);
   const dismiss = useCallback((id: number) => {
     itemsRef.current = itemsRef.current.filter(item => item.id !== id);
@@ -52,13 +39,42 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const push = useCallback<ToastPush>((toast, tone) => {
     const item: Omit<Toast, "id"> =
       typeof toast === "string" ? { message: toast, tone: tone ?? "success" } : toast;
-    const regionId = [...regionsRef.current.keys()].at(-1);
-    if (!item.message.trim() || itemsRef.current.some(old => old.message === item.message && old.tone === (item.tone ?? "success") && old.regionId === regionId)) return;
-    const next = { ...item, tone: item.tone ?? "success", id: ++counter.current, regionId };
+    if (item.tone === 'danger' || item.tone === 'warning') errorRevision.current++;
+    if (!item.message.trim() || itemsRef.current.some(old => old.message === item.message && old.tone === (item.tone ?? "success"))) return;
+    const next = { ...item, tone: item.tone ?? "success", id: ++counter.current };
     itemsRef.current = [...itemsRef.current, next];
     setItems(itemsRef.current);
     setAnnouncement(item.message);
   }, []);
+
+  useEffect(() => {
+    const receive = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      if (typeof detail?.message !== 'string') return;
+      const tone: ToastTone = ['info', 'warning', 'danger', 'success'].includes(detail.tone) ? detail.tone : 'info';
+      push(detail.message, tone);
+    };
+    window.addEventListener('lms_toast_notification', receive);
+    return () => window.removeEventListener('lms_toast_notification', receive);
+  }, [push]);
+
+  useEffect(() => {
+    const timers = new Set<number>();
+    const unsubscribe = subscribeToRequestErrors(message => {
+      const revision = errorRevision.current;
+      // Give the form a chance to supply a more specific recovery message.
+      const timer = window.setTimeout(() => {
+        timers.delete(timer);
+        if (revision === errorRevision.current) {
+          push(message, 'danger');
+          // Another simultaneous request failure must still be shown.
+          errorRevision.current = revision;
+        }
+      }, 100);
+      timers.add(timer);
+    });
+    return () => { unsubscribe(); timers.forEach(timer => window.clearTimeout(timer)); };
+  }, [push]);
 
   // Persistent warnings/errors; only one transient notice at a time.
   const transient = items.find(item => item.tone === "info" || item.tone === "success");
@@ -68,16 +84,16 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     return () => window.clearTimeout(timer);
   }, [transient, paused, dismiss]);
   const visible = items.filter(item => item.tone === "danger" || item.tone === "warning" || item.id === transient?.id);
-  const host = [...regions.values()].at(-1);
 
   return (
     <ToastContext.Provider value={push}>
-      <RegionContext.Provider value={register}>
-      <span className="sr-only" role={announcement ? "status" : undefined} aria-live="polite" aria-atomic="true">{announcement}</span>
-      {!host && notices()}
+      <ToastLayerContext.Provider value={registerModal}>
       {children}
-      {host && createPortal(notices(), host)}
-      </RegionContext.Provider>
+      {createPortal(<>
+        <span className="sr-only" role={announcement ? "status" : undefined} aria-live="polite" aria-atomic="true">{announcement}</span>
+        {notices()}
+      </>, modalHosts.at(-1) ?? document.body)}
+      </ToastLayerContext.Provider>
     </ToastContext.Provider>
   );
 
@@ -85,15 +101,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     return <div className="toast-stack" onPointerEnter={() => setPaused(true)} onPointerLeave={() => setPaused(false)}>
         {visible.map((item) => (
           <div key={item.id} className={`toast-item toast-${item.tone ?? "success"}`}>
-            <span className="toast-icon" aria-hidden="true">
-              {item.tone === "danger" ? (
-                <XCircle size={20} />
-              ) : item.tone === "warning" ? (
+            {item.tone !== "danger" && <span className="toast-icon" aria-hidden="true">
+              {item.tone === "warning" ? (
                 <AlertTriangle size={20} />
               ) : (
                 <CheckCircle2 size={20} />
               )}
-            </span>
+            </span>}
             <span className="toast-text">{item.message}</span>
             <button type="button" className="toast-dismiss" aria-label="إغلاق الرسالة" onClick={() => dismiss(item.id)}><X size={20} /></button>
           </div>

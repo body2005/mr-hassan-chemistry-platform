@@ -57,6 +57,13 @@ def _safe_course_responses(db: Session, user: User | None, courses: list) -> lis
         for module in getattr(course, "modules", [])
         for lesson in getattr(module, "lessons", [])
     }
+
+    for course in responses:
+        for module in course.modules:
+            for lesson in module.lessons:
+                source = orm_lessons_by_id.get(lesson.id)
+                key = source.video_asset_key if source else None
+                lesson.has_uploaded_video = bool(key and not key.startswith(("http://", "https://")))
     
     # Collect all lesson IDs across returned courses
     all_lesson_ids = [lesson.id for course in responses for module in course.modules for lesson in module.lessons]

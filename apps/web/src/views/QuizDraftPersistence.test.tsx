@@ -72,3 +72,16 @@ it('does not overwrite a newer other-tab draft on late course hydration and repo
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('مسودة أحدث');
   expect(host.querySelector<HTMLInputElement>('input[placeholder="أدخل اسم الاختبار هنا..."]')?.value).toBe('Older own draft');
 });
+
+it('removes stage buttons and repeats the reason when an invalid publish is retried', async () => {
+  await render([course]);
+  expect(host.querySelector('.quiz-editor-journey button')).toBeNull();
+  const action = (text: string) => [...host.querySelectorAll('button')].find(button => button.textContent?.includes(text))!;
+  await act(async () => action('بدء إضافة أسئلة').click());
+  await act(async () => action('حفظ ونشر الاختبار').click());
+  expect(document.body.querySelector('.toast-danger')?.textContent).toContain('اسم الاختبار');
+  await act(async () => document.body.querySelector<HTMLButtonElement>('.toast-dismiss')!.click());
+  expect(document.body.querySelector('.toast-danger')).toBeNull();
+  await act(async () => action('حفظ ونشر الاختبار').click());
+  expect(document.body.querySelector('.toast-danger')?.textContent).toContain('اسم الاختبار');
+});

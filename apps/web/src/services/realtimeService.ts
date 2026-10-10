@@ -85,7 +85,7 @@ class RealTimeService {
       es.onerror = (err) => {
         console.debug("[RealTime] SSE stream error or closed, scheduling reconnect", err);
         this.cleanupEventSource();
-        this.scheduleReconnect();
+        this.scheduleReconnect(30000);
       };
     } catch (err) {
       if (generation !== this.connectionGeneration) return;
@@ -96,7 +96,8 @@ class RealTimeService {
       }
       console.warn("[RealTime] Failed to instantiate EventSource", err);
       this.cleanupEventSource();
-      this.scheduleReconnect();
+      this.scheduleReconnect(err instanceof ApiClientError && [429, 503].includes(err.status)
+        ? Math.max(30000, err.retryAfterMs ?? 0) : 0);
     }
   }
 
@@ -126,7 +127,7 @@ class RealTimeService {
     this.isConnecting = false;
   }
 
-  private scheduleReconnect(): void {
+  private scheduleReconnect(minimumDelay = 0): void {
     if (!this.active) return;
     if (this.reconnectTimer) return;
 
@@ -138,7 +139,7 @@ class RealTimeService {
     }
     // Bounded exponential backoff with randomized jitter to prevent reconnect storms
     const jitter = Math.random() * 800;
-    const delayMs = Math.min(25000, 1000 * Math.pow(1.5, Math.min(this.reconnectAttempts, 8)) + jitter);
+    const delayMs = Math.max(minimumDelay, Math.min(25000, 1000 * Math.pow(1.5, Math.min(this.reconnectAttempts, 8)) + jitter));
 
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;

@@ -524,11 +524,19 @@ async def upload_lesson_video(
     lesson.video_asset_key = stored_path
     lesson.materialization_status = MaterializationStatus.NOT_INDEXED
     lesson.indexing_error = None
+    quality_job = None
     from app.services.storage_cleanup import compensate_upload, enqueue_cleanup
     if previous_asset != stored_path:
         enqueue_cleanup(db, previous_asset)
     try:
+        if get_settings().video_processing_enabled:
+            from app.services.video_uploads import enqueue_published_source
+            quality_job = enqueue_published_source(db, user, lesson)
         db.commit()
+    except HTTPException:
+        db.rollback()
+        compensate_upload(db, stored_path)
+        raise
     except SQLAlchemyError as exc:
         db.rollback()
         compensate_upload(db, stored_path)
@@ -539,6 +547,7 @@ async def upload_lesson_video(
         "id": str(lesson.id),
         "video_url": video_url,
         "filename": filename,
+        "video_upload_id": str(quality_job.id) if quality_job else None,
         "message": "Video uploaded successfully as a protected playback asset.",
     }
 
@@ -550,6 +559,7 @@ def stream_lesson_video(lesson_id: uuid.UUID, request: Request, user: CurrentUse
         raise HTTPException(status_code=403, detail="Student playback requires a video stream token")
     enforce_rate_limit(request, bucket="lesson-video-preview", category="read")
     lesson, _ = _require_lesson_access(db, user, lesson_id)
+    db.close()
     if lesson.video_asset_key and not lesson.video_asset_key.startswith("/api/"):
         media_type = mimetypes.guess_type(lesson.video_asset_key)[0] or "video/mp4"
         return _stream_stored_media(request, lesson.video_asset_key, f"lesson-{lesson.id}", media_type)
@@ -694,6 +704,9 @@ def _authorize_video_stream(
 @router.get("/lessons/{lesson_id}/stream")
 def stream_lesson_authenticated_range(lesson_id: uuid.UUID, request: Request, db: Db, token: str | None = None) -> Response:
     lesson = _authorize_video_stream(lesson_id, request, db, token)
+    # Authentication is complete; do not hold a DB connection while a student
+    # watches a long video or the browser buffers parallel byte ranges.
+    db.close()
     if lesson.video_asset_key and lesson.video_asset_key.endswith("/master.m3u8"):
         raise HTTPException(409, "Adaptive video requires HLS playback")
     if lesson.video_asset_key and not lesson.video_asset_key.startswith("/api/"):
@@ -1682,6 +1695,11 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
                AssignmentSubmission.student_id == user.id).distinct())) if user.role == UserRole.STUDENT else set()
     course_access = user.role != UserRole.STUDENT or enrolled is not None
 
+    def scope_accessible(assessment):
+        required = set(assessment.lesson_ids)
+        required.update(lesson.id for lesson in lessons if lesson.module_id in assessment.module_ids)
+        return course_access and required.issubset(accessible_lessons)
+
     def quiz_item(q: Quiz) -> dict:
         return {
             "id": str(q.id),
@@ -1690,6 +1708,8 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
             "course_id": str(q.course_id),
             "module_id": str(q.module_id) if q.module_id else None,
             "lesson_id": str(q.lesson_id) if q.lesson_id else None,
+            "lesson_ids": [str(value) for value in q.lesson_ids],
+            "module_ids": [str(value) for value in q.module_ids],
             "duration_seconds": q.duration_seconds,
             "starts_at": q.starts_at.isoformat() if q.starts_at else None,
             "ends_at": q.ends_at.isoformat() if q.ends_at else None,
@@ -1697,7 +1717,7 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
             "attempts_used": attempt_counts.get(q.id, 0),
             "completed": q.id in completed_quizzes,
             # Unscoped quizzes fall back to: any enrolled student can try.
-            "accessible": course_access and (q.lesson_id is None or q.lesson_id in accessible_lessons),
+            "accessible": scope_accessible(q),
         }
 
     def assignment_item(a: Assignment) -> dict:
@@ -1708,10 +1728,12 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
             "course_id": str(a.course_id),
             "module_id": str(a.module_id) if a.module_id else None,
             "lesson_id": str(a.lesson_id) if a.lesson_id else None,
+            "lesson_ids": [str(value) for value in a.lesson_ids],
+            "module_ids": [str(value) for value in a.module_ids],
             "due_at": a.due_at.isoformat() if a.due_at else None,
             "max_score": float(a.max_score or 0),
             "completed": a.id in completed_assignments,
-            "accessible": course_access and (a.lesson_id is None or a.lesson_id in accessible_lessons),
+            "accessible": scope_accessible(a),
         }
 
     return {

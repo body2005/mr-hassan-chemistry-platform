@@ -1,3 +1,5 @@
+import { reportRequestError } from './errorFeedback';
+
 const API_BASE_URL = (import.meta.env.VITE_API_URL || "/api/v1").replace(/\/$/, "");
 let sessionInvalidationDispatched = false;
 let sessionKnownInvalid = false;
@@ -421,6 +423,9 @@ async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retrie
       checkRefreshFailure(refreshed);
     }
     if (response.status === 401) clearStaleSession(path);
+    if (response.status === 401 && path.replace(/^\/api\/v1/, '') === '/auth/login') {
+      message = 'البريد الإلكتروني أو كلمة المرور غير صحيحة. تأكد من بيانات الحساب.';
+    }
     throw new ApiClientError(code, message, response.status, {
       retryAfterMs: retryAfterMilliseconds(response.headers.get('Retry-After')),
     });
@@ -455,9 +460,14 @@ export async function apiRequest<T>(path: string, init: ApiRequestInit = {}, ret
 
   // Mutations bypass cache, are never deduplicated, and invalidate related cache entries on completion
   if (!isSafeMethod) {
-    const result = await executeRequest<T>(path, init, retriedAfterRefresh);
-    autoInvalidateOnMutation(path);
-    return result;
+    try {
+      const result = await executeRequest<T>(path, init, retriedAfterRefresh);
+      autoInvalidateOnMutation(path);
+      return result;
+    } catch (error) {
+      if (!/^\/(?:api\/v1\/)?auth\/(?:logout|refresh)(?:[/?]|$)/.test(path)) reportRequestError(error);
+      throw error;
+    }
   }
 
   const normalizedUrl = apiUrl(path);
@@ -550,7 +560,7 @@ export async function uploadWithProgress<T>(
       settled = true;
       activeRequestControllers.delete(controller);
       controller.signal.removeEventListener('abort', abortUpload);
-      if (error !== undefined) reject(error);
+      if (error !== undefined) { reportRequestError(error); reject(error); }
       else resolve(value as T);
     };
     const abortUpload = () => {

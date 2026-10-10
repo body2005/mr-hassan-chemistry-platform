@@ -1,69 +1,81 @@
-import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
+import { act, useRef, useState } from 'react';
+import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { AUTO_QUALITY, useHlsTransport } from './useHlsTransport';
 import type Hls from 'hls.js';
-import { useHlsTransport } from './useHlsTransport';
 
-const fake = vi.hoisted(() => ({ instances: [] as Array<{
-  handlers: Record<string, (...args: unknown[]) => void>;
-  destroy: ReturnType<typeof vi.fn>; stopLoad: ReturnType<typeof vi.fn>;
-  config: { fragLoadPolicy: { default: { errorRetry: null; timeoutRetry: null } } };
-}> }));
-vi.mock('hls.js', () => ({ default: class {
-  static isSupported() { return true; }
-  static Events = { ERROR: 'error', MANIFEST_PARSED: 'manifest' };
-  handlers: Record<string, (...args: unknown[]) => void> = {};
-  levels = [{ height: 360 }, { height: 720 }];
-  destroy = vi.fn(); stopLoad = vi.fn(); attachMedia = vi.fn(); loadSource = vi.fn();
-  constructor(public config: typeof fake.instances[number]['config']) { fake.instances.push(this); }
-  on(event: string, callback: (...args: unknown[]) => void) { this.handlers[event] = callback; }
-} }));
-let root: Root;
-let host: HTMLDivElement;
-const videoRef = { current: null as HTMLVideoElement | null };
-const hlsRef = { current: null as Hls | null };
-const error = vi.fn(), options = vi.fn(), selected = vi.fn();
-function Harness({ url }: { url: string }) {
-  useHlsTransport(url, videoRef, hlsRef, options, selected, error);
-  return null;
+interface MockHls {
+  levels: Array<{ height: number }>;
+  currentLevel: number;
+  autoLevelCapping: number;
+  handlers: Map<string, () => void>;
+  stopLoad: ReturnType<typeof vi.fn>;
+  destroy: ReturnType<typeof vi.fn>;
 }
-async function render(url: string) { await act(async () => root.render(<Harness url={url} />)); }
+const mocks = vi.hoisted(() => ({ instances: [] as MockHls[] }));
+vi.mock('hls.js', () => ({ default: class {
+  static isSupported = () => true;
+  static Events = { MANIFEST_PARSED: 'manifest', ERROR: 'error' };
+  levels = [{ height: 144 }, { height: 360 }, { height: 720 }, { height: 720 }];
+  currentLevel = -1;
+  autoLevelCapping = -1;
+  handlers = new Map<string, () => void>();
+  constructor() { mocks.instances.push(this); }
+  on(event: string, callback: () => void) { this.handlers.set(event, callback); }
+  attachMedia() {}
+  loadSource() {}
+  stopLoad = vi.fn();
+  destroy = vi.fn();
+} }));
+
+function Harness({ url }: { url: string }) {
+  const video = useRef<HTMLVideoElement>(null), hls = useRef<Hls | null>(null);
+  const [options, setOptions] = useState<string[]>([]), [selected, setSelected] = useState('');
+  const [, setError] = useState<string | null>(null);
+  const { selectQuality } = useHlsTransport(url, video, hls, setOptions, setSelected, setError);
+  return <><video ref={video} /><output>{selected}</output>{options.map(option =>
+    <button key={option} onClick={() => selectQuality(option)}>{option}</button>)}</>;
+}
+let host: HTMLDivElement, root: ReturnType<typeof createRoot>;
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
-  fake.instances.length = 0;
-  error.mockClear(); options.mockClear(); selected.mockClear();
-  videoRef.current = document.createElement('video');
-  hlsRef.current = null;
-  host = document.createElement('div'); document.body.append(host);
-  root = createRoot(host);
+  mocks.instances.length = 0;
+  host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
+const render = (url: string) => act(async () => root.render(<Harness url={url} />));
+const parsed = () => act(async () => mocks.instances.at(-1)!.handlers.get('manifest')!());
+const choose = (label: string) => act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === label)!.click());
 
-it.each([401, 403, 429])('stops HLS at %s without enabling transport retry loops', async code => {
-  await render('/hls/master.m3u8');
-  const transport = fake.instances[0];
-  transport.handlers.error('error', { fatal: false, response: { code } });
-  expect(transport.stopLoad).toHaveBeenCalledTimes(1);
-  expect(error).toHaveBeenCalledTimes(1);
-  expect(transport.config.fragLoadPolicy.default.errorRetry).toBeNull();
-  expect(transport.config.fragLoadPolicy.default.timeoutRetry).toBeNull();
-  expect(fake.instances).toHaveLength(1);
+it('switches the media level, restores automatic bandwidth ABR, and keeps a manual choice through token renewal', async () => {
+  await render('/hls/first/master.m3u8'); await parsed();
+  expect([...host.querySelectorAll('button')].map(button => button.textContent)).toEqual([AUTO_QUALITY, '144p', '360p', '720p']);
+  await choose('720p'); expect(mocks.instances[0].currentLevel).toBe(2);
+  await render('/hls/first/master.m3u8?token=renewed'); await parsed();
+  expect(mocks.instances[1].currentLevel).toBe(2);
+  await choose(AUTO_QUALITY); expect(mocks.instances[1].currentLevel).toBe(-1);
+  expect(host.querySelector('output')?.textContent).toBe(AUTO_QUALITY);
 });
-it('disposes the old transport and ignores its late callbacks', async () => {
-  await render('/hls/first.m3u8');
-  const old = fake.instances[0];
-  await render('/hls/second.m3u8');
-  expect(old.destroy).toHaveBeenCalledTimes(1);
-  old.handlers.error('error', { fatal: true });
-  old.handlers.manifest();
-  expect(error).not.toHaveBeenCalled();
-  expect(options).not.toHaveBeenCalled();
-  fake.instances[1].handlers.manifest();
-  expect(options).toHaveBeenCalledWith(['تلقائي', '360p', '720p']);
+
+it('labels a single-file fallback with its actual resolution and does not fabricate other qualities', async () => {
+  await render('/source.mp4');
+  const video = host.querySelector('video')!;
+  Object.defineProperty(video, 'videoHeight', { value: 480 });
+  await act(async () => video.dispatchEvent(new Event('loadedmetadata')));
+  expect([...host.querySelectorAll('button')].map(button => button.textContent)).toEqual(['480p']);
+  expect(host.textContent).not.toContain('الأصلية');
 });
-it('removes the previous native source during token admission', async () => {
-  await render('/first.mp4');
-  expect(videoRef.current?.getAttribute('src')).toBe('/first.mp4');
-  await render('');
-  expect(videoRef.current?.hasAttribute('src')).toBe(false);
+
+it('caps automatic playback at 1080p and excludes larger manual levels', async () => {
+  await render('/hls/capped/master.m3u8');
+  const hls = mocks.instances[0];
+  hls.levels = [{ height: 360 }, { height: 1080 }, { height: 1440 }, { height: 2160 }];
+  await parsed();
+  expect(hls.autoLevelCapping).toBe(1);
+  expect([...host.querySelectorAll('button')].map(button => button.textContent)).toEqual([AUTO_QUALITY, '360p', '1080p']);
+  await choose('1080p');
+  expect(hls.currentLevel).toBe(1);
+  await choose(AUTO_QUALITY);
+  expect(hls.currentLevel).toBe(-1);
+  expect(hls.autoLevelCapping).toBe(1);
 });

@@ -5,6 +5,7 @@ Completion uses storage's list-parts, NOT client-declared ETags/sizes. Queue sta
 commits in PostgreSQL, so broker outages cannot lose a processing job.
 """
 import math
+import hashlib
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -25,6 +26,63 @@ from app.services.storage_cleanup import enqueue_cleanup
 PART_BYTES = 32 * 1024 * 1024
 EXTENSIONS = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm"}
 ACTIVE_STATES = ("creating", "uploading", "completing", "queued", "processing")
+
+
+def enqueue_published_source(db: Session, owner: User, lesson: Lesson) -> VideoUpload:
+    """Prepare adaptive copies of a stored video without uploading it again.
+
+    The playable source stays attached until the worker atomically publishes
+    a complete HLS generation. Callers commit this intent with their mutation.
+    """
+    if not get_settings().video_processing_enabled:
+        raise HTTPException(503, "معالج جودات الفيديو غير مفعّل على الاستضافة بعد.")
+    if get_settings().video_drm_required:
+        raise HTTPException(503, "Licensed DRM packaging is required")
+    provider = get_storage_provider()
+    if not isinstance(provider, S3StorageProvider):
+        raise HTTPException(503, "Video quality processing requires object storage")
+    with db.no_autoflush:
+        db.scalar(select(User.id).where(User.id == owner.id).with_for_update())
+        # Match direct uploads' user -> lesson lock order before flushing a
+        # legacy upload's replacement asset.
+        db.scalar(select(Lesson.id).where(Lesson.id == lesson.id).with_for_update())
+    active = db.scalar(select(VideoUpload).where(VideoUpload.lesson_id == lesson.id,
+        VideoUpload.status.in_(ACTIVE_STATES)).order_by(VideoUpload.created_at.desc()).limit(1))
+    if active:
+        if active.owner_id != owner.id or lesson.video_asset_key != f"s3://{provider.bucket_name}/{active.object_key}":
+            raise HTTPException(409, "Video preparation is already active")
+        return active
+    key = lesson.video_asset_key or ""
+    prefix = f"s3://{provider.bucket_name}/"
+    if not key.startswith(prefix) or key.endswith(".m3u8"):
+        raise HTTPException(409, "Choose a stored source video that has not already been prepared")
+    raw_key = key[len(prefix):]
+    ext = "." + raw_key.rsplit(".", 1)[-1].lower()
+    if ext not in EXTENSIONS:
+        raise HTTPException(422, "Unsupported stored video format")
+    size = provider.get_size(raw_key)
+    if not 0 < size <= MAX_VIDEO_BYTES:
+        raise HTTPException(413, "Video limit is 5 GiB")
+    count = db.scalar(select(func.count()).select_from(VideoUpload).where(
+        VideoUpload.owner_id == owner.id, VideoUpload.status.in_(ACTIVE_STATES))) or 0
+    if count >= 3:
+        raise HTTPException(409, "Three videos are already being prepared; wait for completion")
+    job = VideoUpload(id=uuid.uuid4(), owner_id=owner.id, lesson_id=lesson.id,
+        request_key=uuid.uuid4().hex, filename=f"{lesson.id}{ext}", content_type=EXTENSIONS[ext],
+        size_bytes=size, fingerprint=hashlib.sha256(raw_key.encode()).hexdigest(),
+        object_key=raw_key, status="queued", outputs=[], expires_at=datetime.now(timezone.utc) + timedelta(hours=48))
+    db.add(job)
+    db.flush()
+    return job
+
+
+def enqueue_source_cleanup(db: Session, upload: VideoUpload) -> None:
+    """Failed preparation must never delete a still-playable source."""
+    lesson = db.get(Lesson, upload.lesson_id) if upload.lesson_id else None
+    key = lesson.video_asset_key if lesson else None
+    if key == upload.object_key or (key and key.startswith("s3://") and key.split("/", 3)[-1] == upload.object_key):
+        return
+    enqueue_cleanup(db, upload.object_key)
 
 
 def storage() -> S3StorageProvider:
@@ -199,14 +257,14 @@ def complete(db: Session, upload: VideoUpload) -> None:
 def abort(db: Session, upload: VideoUpload) -> None:
     if upload.status in {"ready", "processing"}:
         raise HTTPException(409, "An already-processing video cannot be cancelled")
-    provider = storage()
+    provider = storage() if upload.multipart_id else get_storage_provider()
     if upload.multipart_id:
         try:
             provider._get_client().abort_multipart_upload(Bucket=provider.bucket_name, Key=upload.object_key, UploadId=upload.multipart_id)
         except ClientError as exc:
             if exc.response["Error"]["Code"] != "NoSuchUpload":
                 raise
-    enqueue_cleanup(db, upload.object_key)
+    enqueue_source_cleanup(db, upload)
     upload.status = "cancelled"
     db.commit()
 

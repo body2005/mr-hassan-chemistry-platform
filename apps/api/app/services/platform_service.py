@@ -236,6 +236,23 @@ def _validate_assessment_scope(db: Session, course, module_id: uuid.UUID | None,
     return module_id, lesson_id
 
 
+def _apply_assessment_scope(db, course, assessment, payload):
+    from app.models.platform import QuizLessonLink, QuizModuleLink, AssignmentLessonLink, AssignmentModuleLink
+    lessons = list(dict.fromkeys(([payload.lesson_id] if payload.lesson_id else []) + payload.lesson_ids))
+    legacy_modules = [payload.module_id] if payload.module_id and not lessons else []
+    modules = list(dict.fromkeys(legacy_modules + payload.module_ids))
+    for lesson_id in lessons:
+        _validate_assessment_scope(db, course, None, lesson_id)
+    for module_id in modules:
+        _validate_assessment_scope(db, course, module_id, None)
+    lesson_link, module_link = (QuizLessonLink, QuizModuleLink) if isinstance(assessment, Quiz) else (AssignmentLessonLink, AssignmentModuleLink)
+    assessment.lesson_links = [lesson_link(lesson_id=value) for value in lessons]
+    assessment.module_links = [module_link(module_id=value) for value in modules]
+    # Legacy fields remain readable for older clients, without losing the list.
+    assessment.lesson_id = lessons[0] if lessons else None
+    assessment.module_id = modules[0] if modules else None
+
+
 def _validate_quiz_question(question, points: float | None = None) -> None:
     from app.core.question_policy import validate_question_content
     validate_question_content(question, points)
@@ -273,6 +290,7 @@ def publish_quiz_atomic(db: Session, user: User, payload: QuizPublishRequest) ->
                 status=QuizStatus.PUBLISHED, published_at=datetime.now(UTC),
                 publication_key=payload.idempotency_key, publication_hash=digest)
     try:
+        _apply_assessment_scope(db, course, quiz, payload)
         db.add(quiz)
         db.flush()
         for position, item in enumerate(payload.questions, 1):
@@ -311,6 +329,7 @@ def create_quiz(db: Session, user: User, payload: QuizCreateRequest) -> Quiz:
         module_id=module_id,
         lesson_id=lesson_id,
     )
+    _apply_assessment_scope(db, course, quiz, payload)
     db.add(quiz)
     db.flush()
     if payload.question_ids:
@@ -356,6 +375,10 @@ def publish_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> Quiz:
     if len(quiz.title.strip()) < 2:
         raise ValueError('Quiz title is invalid')
     _validate_assessment_scope(db, course, quiz.module_id, quiz.lesson_id)
+    for value in quiz.lesson_ids:
+        _validate_assessment_scope(db, course, None, value)
+    for value in quiz.module_ids:
+        _validate_assessment_scope(db, course, value, None)
     if quiz.starts_at and quiz.ends_at and _as_utc(quiz.starts_at) >= _as_utc(quiz.ends_at):
         raise ValueError('Quiz end must be after its start')
     rows = db.execute(select(Question, QuizQuestion.points).join(
@@ -421,6 +444,8 @@ def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
     if attempt_number > quiz.attempts_allowed and not quiz.allow_practice_attempts:
         raise PermissionError("Attempt limit reached")
     expires_at = now + timedelta(seconds=quiz.duration_seconds) if quiz.duration_seconds else None
+    if quiz.ends_at:
+        expires_at = min(expires_at, _as_utc(quiz.ends_at)) if expires_at else _as_utc(quiz.ends_at)
     # Only attempt 1 is official; any subsequent attempt is self-training.
     is_practice = attempt_number > 1
     from app.services.quiz_snapshot import freeze_exam
@@ -551,6 +576,7 @@ def create_assignment(db: Session, user: User, payload: AssignmentCreateRequest)
         module_id=module_id,
         lesson_id=lesson_id,
     )
+    _apply_assessment_scope(db, course, assignment, payload)
     db.add(assignment)
     db.commit()
     db.refresh(assignment)
@@ -571,6 +597,10 @@ def publish_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> Ass
     ensure_course_manager(user, course)
     _validate_assignment_content(assignment)
     module_id, lesson_id = _validate_assessment_scope(db, course, assignment.module_id, assignment.lesson_id)
+    for value in assignment.lesson_ids:
+        _validate_assessment_scope(db, course, None, value)
+    for value in assignment.module_ids:
+        _validate_assessment_scope(db, course, value, None)
     # No mapped fields change until all content/scope checks have passed.
     assignment.title = assignment.title.strip()
     assignment.prompt = assignment.prompt.strip()

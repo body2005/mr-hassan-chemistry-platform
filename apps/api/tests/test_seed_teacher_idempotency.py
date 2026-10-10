@@ -5,6 +5,61 @@ from pathlib import Path
 from app.core.security import hash_password, verify_password
 from app.models.institution import Institution
 from app.models.user import User, UserRole
+from app.models.user import GradeLevel
+
+
+def test_preview_students_are_opt_in_private_and_idempotent_in_production(db, monkeypatch):
+    seed = _seed_module()
+    institution = Institution(name="Preview test", slug="preview-test")
+    db.add(institution)
+    db.commit()
+    monkeypatch.setenv("INITIAL_INSTITUTION_SLUG", institution.slug)
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("SEED_PREVIEW_STUDENTS", "false")
+    seed.seed()
+    assert db.query(User).count() == 0
+    monkeypatch.setenv("SEED_PREVIEW_STUDENTS", "true")
+    monkeypatch.setenv("DEMO_STUDENT_PASSWORD", "short")
+    with pytest.raises(RuntimeError, match="private DEMO_STUDENT_PASSWORD"):
+        seed.seed()
+    assert db.query(User).count() == 0
+    monkeypatch.setenv("DEMO_STUDENT_PASSWORD", "Private-test-secret!2026")
+    seed.seed()
+    students = db.query(User).order_by(User.username).all()
+    assert len(students) == 3
+    assert [u.email for u in students] == [f"student{n:02d}@demo.com" for n in range(1, 4)]
+    assert [u.grade_level for u in students] == [g.value for g in GradeLevel]
+    assert all(u.role == UserRole.STUDENT and verify_password("Private-test-secret!2026", u.password_hash) for u in students)
+    from fastapi.testclient import TestClient
+    from app.main import app
+    for student in students:
+        with TestClient(app) as client:
+            response = client.post("/api/v1/auth/login", json={"email": student.email,
+                "password": "Private-test-secret!2026", "institution_slug": institution.slug})
+            assert response.status_code == 200
+            assert response.json()["user"]["grade_level"] == student.grade_level
+            assert client.get("/api/v1/auth/me").status_code == 200
+    hashes = [u.password_hash for u in students]
+    monkeypatch.setenv("DEMO_STUDENT_PASSWORD", "Different-private-test-secret")
+    seed.seed()
+    assert [u.password_hash for u in db.query(User).order_by(User.username)] == hashes
+
+
+def test_preview_students_do_not_repurpose_existing_accounts(db, monkeypatch):
+    seed = _seed_module()
+    inst = Institution(name="Collision test", slug="collision-test")
+    db.add(inst)
+    db.flush()
+    db.add(User(institution_id=inst.id, email="student03@demo.com", username="existing-teacher",
+        display_name="Teacher", password_hash=hash_password("Existing-private-secret"), role=UserRole.TEACHER))
+    db.commit()
+    monkeypatch.setenv("SEED_PREVIEW_STUDENTS", "true")
+    monkeypatch.setenv("INITIAL_INSTITUTION_SLUG", inst.slug)
+    monkeypatch.setenv("DEMO_STUDENT_PASSWORD", "Private-test-secret!2026")
+    with pytest.raises(RuntimeError, match="conflicts"):
+        seed.seed()
+    assert db.query(User).count() == 1
+    assert db.query(User).one().role == UserRole.TEACHER
 
 
 def _seed_module():

@@ -125,6 +125,42 @@ def _seed_account(
     print(f"{label} created: {email}")
 
 
+def _seed_preview_students(db) -> None:
+    """Opt-in student-only previews, with private credentials even in production.
+
+    This does not enable the legacy demo teacher or change any existing login.
+    """
+    if not _env_flag("SEED_PREVIEW_STUDENTS"):
+        return
+    password = os.getenv("DEMO_STUDENT_PASSWORD", "")
+    if len(password) < 12:
+        raise RuntimeError("Preview students require a private DEMO_STUDENT_PASSWORD of at least 12 characters")
+    slug = os.getenv("INITIAL_INSTITUTION_SLUG", os.getenv("DEMO_INSTITUTION_SLUG", "demo")).strip().lower()
+    institution = db.query(Institution).filter(Institution.slug == slug).first()
+    if institution is None:
+        raise RuntimeError("Preview students require an existing institution")
+    # Validate all collisions before creating any account. Never repurpose a user.
+    specifications = []
+    for number, grade in enumerate(GradeLevel, start=1):
+        email, username = f"student{number:02d}@demo.com", f"student{number:02d}"
+        existing = db.query(User).filter(User.institution_id == institution.id,
+            (User.email == email) | (User.username == username)).all()
+        if existing and (len(existing) != 1 or existing[0].email != email
+                or existing[0].username != username or existing[0].role != UserRole.STUDENT):
+            raise RuntimeError("Preview student identity conflicts with an existing account")
+        specifications.append((number, grade, email, username, bool(existing)))
+    for number, grade, email, username, exists in specifications:
+        if exists:
+            continue
+        db.add(User(institution_id=institution.id, email=email, username=username,
+            display_name=f"طالب تجريبي {number}", password_hash=hash_password(password),
+            role=UserRole.STUDENT, is_active=True, grade_level=grade.value,
+            governorate="CAIRO", school_name="Demo Secondary School",
+            gender=Gender.MALE, religion=Religion.PREFER_NOT_TO_SAY))
+    db.commit()
+    print("Three preview student identities checked; existing credentials preserved.")
+
+
 def seed() -> None:
     teacher_email = os.getenv("INITIAL_TEACHER_EMAIL", "").strip().lower()
     teacher_password = os.getenv("INITIAL_TEACHER_PASSWORD", "")
@@ -157,6 +193,8 @@ def seed() -> None:
                 "Initial teacher seed skipped: set INITIAL_TEACHER_EMAIL "
                 "and INITIAL_TEACHER_PASSWORD."
             )
+
+        _seed_preview_students(db)
 
         if not demo_enabled:
             print("Demo account seed disabled.")

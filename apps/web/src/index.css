@@ -973,6 +973,27 @@ input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="
 }
 [data-theme="dark"] { color-scheme: dark; }
 
+/* Override older per-page inline radii so every single-choice select agrees. */
+select:not([multiple]) {
+  border-radius: 999px !important;
+  min-height: 44px;
+  max-width: 100%;
+  padding-block: 10px;
+  padding-inline: 16px;
+  border: 1px solid var(--input-border);
+  font: inherit;
+}
+input::placeholder { color: var(--text-muted); opacity: .7; }
+.subscriptions-heading { margin: 28px 0 20px; font-size: 26px; }
+.subscription-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 22px; }
+.subscription-card { display: flex; flex-direction: column; gap: 16px; padding: 24px; border: 1px solid var(--border-color); border-radius: 16px; background: var(--bg-surface); box-shadow: var(--card-shadow); }
+.subscription-grade { color: var(--text-muted); font-size: 13px; }
+.subscription-card h3 { margin: 0; font-size: 19px; overflow-wrap: anywhere; }
+.subscription-duration { display: flex; gap: 8px; align-items: center; margin: 0; color: var(--text-muted); }
+.subscription-actions { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between; margin-top: auto; padding-top: 16px; border-top: 1px solid var(--border-color); }
+.subscription-actions button { min-height: 44px; }
+.subscription-price-note { display: block; margin-top: 4px; color: var(--text-muted); font-size: 12px; }
+
 .security-primary-button {
   display: inline-flex; align-items: center; justify-content: center; gap: 9px;
   background: #0f766e; color: #fff; border: 1px solid #0f766e;
@@ -1589,36 +1610,23 @@ img, video, canvas, svg {
   border-color: var(--danger-action-bg) !important;
 }
 
-/* In-app toast (replaces window.alert for transient notices) */
-.wizard-toast {
+/* One app-wide feedback host, fixed at the bottom center of the viewport. */
+.toast-stack {
   position: fixed;
-  bottom: 26px;
+  z-index: 2147483640;
+  bottom: max(20px, env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%);
-  z-index: 10000;
-  max-width: min(92vw, 480px);
-  padding: 12px 20px;
-  border-radius: 12px;
-  font-size: 0.9rem;
-  font-weight: 500;
-  color: #fff;
-  background: rgba(15, 57, 43, 0.95);
-  box-shadow: 0 10px 34px rgba(2, 12, 27, 0.35);
-  animation: cw-pop-in 0.2s ease-out;
-}
-[data-theme="dark"] .wizard-toast {
-  background: rgba(5, 150, 105, 0.92);
-}
-
-/* Toast stack — lightweight transient notices matching user mockup (Image 1) */
-.toast-stack {
-  position: relative;
+  pointer-events: none;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 10px;
-  width: 100%;
+  width: min(560px, calc(100vw - 32px));
   min-width: 0;
+  max-height: 45dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .toast-item {
   pointer-events: auto;
@@ -1626,7 +1634,7 @@ img, video, canvas, svg {
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  margin-block: 8px;
+  margin-block: 0;
   border-radius: 10px;
   color: var(--text-main);
   font-weight: 600;
@@ -1635,6 +1643,7 @@ img, video, canvas, svg {
   text-align: start;
   background: var(--bg-surface-secondary);
   border: 1px solid var(--border-color);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 18%);
 }
 .toast-item .toast-icon {
   display: inline-flex;
@@ -1658,10 +1667,14 @@ img, video, canvas, svg {
 
 /* A teacher's working sequence, not a sticky toolbar over the question paper. */
 .quiz-editor-journey { margin-block: 16px; color: var(--text-main); }
-.quiz-editor-journey nav { display: flex; gap: 8px; flex-wrap: wrap; }
-.quiz-editor-journey nav button { display: flex; align-items: center; justify-content: center; gap: 8px; flex: 1; min-width: 95px; min-height: 48px; padding: 8px; font: 700 14px var(--font-sans); border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-surface-secondary); color: var(--text-main); cursor: pointer; }
-.quiz-editor-journey nav button[aria-current="step"] { background: #0f392b; color: #fff; border-color: #0f392b; }
-.quiz-editor-journey nav span { font-variant-numeric: tabular-nums; }
+.assessment-scope-picker { min-width: 0; margin-block: 16px; padding: 14px; border: 1px solid var(--border-color); border-radius: 12px; }
+.assessment-scope-picker legend { padding-inline: 6px; font-weight: 700; }
+.assessment-scope-picker p { font-size: 14px; line-height: 1.7; color: var(--text-muted); }
+.assessment-scope-unit { display: grid; gap: 4px; margin-block: 10px; }
+.assessment-scope-unit label { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 8px; border-radius: 8px; cursor: pointer; overflow-wrap: anywhere; }
+.assessment-scope-unit label:has(input:checked) { background: var(--bg-surface-secondary); }
+.assessment-scope-unit label:has(input:disabled) { opacity: .55; cursor: default; }
+.assessment-scope-unit input { flex-shrink: 0; width: 18px; height: 18px; accent-color: #0f766e; }
 .quiz-editor-journey p { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-block: 12px; font-size: 14px; line-height: 1.7; }
 .quiz-editor-journey p span { color: var(--text-muted); }
 .quiz-editor-error { display: flex; align-items: center; gap: 12px; margin-block: 12px; padding: 12px; border: 1px solid #b45309; border-inline-start-width: 4px; border-radius: 8px; background: var(--bg-surface-secondary); color: var(--text-main); font-size: 16px; line-height: 1.6; }
@@ -1673,17 +1686,15 @@ img, video, canvas, svg {
 .lesson-player-controls-row, .lesson-player-controls-group { flex-wrap: wrap; gap: 8px; min-width: 0; }
 .lesson-player-controls-row button, .lesson-playback-error button { min-width: 44px; min-height: 44px; justify-content: center; }
 .lesson-player-controls { overflow: visible; }
+.lesson-quality-menu { right: 0; }
 @media (max-width: 768px) {
+  .lesson-quality-menu { left: 0; right: auto; }
   body:not([data-video-enlarged]) .lesson-video-player { aspect-ratio: auto !important; }
   body:not([data-video-enlarged]) .lesson-video-player video { height: auto !important; aspect-ratio: 16 / 9; }
   body:not([data-video-enlarged]) .lesson-player-controls { position: relative !important; opacity: 1 !important; pointer-events: auto !important; padding: 8px 12px !important; }
   body:not([data-video-enlarged]) .lesson-playback-error { position: relative !important; inset: auto !important; margin: 8px; flex-wrap: wrap; }
   .quiz-editor-grid { display: flex; flex-direction: column; }
-  .quiz-stage-setup .quiz-publication-fields, .quiz-stage-setup .quiz-question-canvas,
-  .quiz-stage-review .quiz-settings-panel, .quiz-stage-review .quiz-final-publish,
-  .quiz-stage-publish .quiz-setup-fields, .quiz-stage-publish .quiz-question-list,
-  .quiz-stage-publish .quiz-review-next { display: none !important; }
-  .quiz-stage-setup .quiz-setup-next, .quiz-stage-review .quiz-review-next { display: flex; width: 100%; min-height: 48px; margin-top: 16px; justify-content: center; }
+  /* One continuous editor on mobile too, without hidden stage-navigation dependencies. */
   .quiz-editor-journey nav { gap: 6px; }
   .quiz-editor-journey nav button { min-width: 80px; font-size: 14px; }
   .quiz-question-canvas, .quiz-settings-panel { padding: 16px !important; width: 100%; min-width: 0; }

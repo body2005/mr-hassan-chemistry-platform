@@ -3,9 +3,10 @@ import { ArrowLeft, ArrowRight, Check, Eye, EyeOff, GraduationCap, Moon, Phone, 
 import { authService } from '../services/lmsService';
 import type { CurrentUser } from '../types/lms';
 import type { Language } from '../utils/i18n';
-import { emptyRegistration, GOVERNORATES, normalizePhone, validateRegistration } from '../utils/registration';
+import { emptyRegistration, GOVERNORATES, normalizePhone, sanitizeRegistrationField, validateRegistration } from '../utils/registration';
 import type { RegistrationData, RegistrationErrors } from '../utils/registration';
 import './RegistrationWizard.css';
+import { useToast } from './ToastProvider';
 
 type Props = {
   lang: Language; theme: 'light' | 'dark'; onToggleLang: () => void;
@@ -16,11 +17,13 @@ type Props = {
 
 export function RegistrationWizard({ lang, theme, onToggleLang, onToggleTheme, onSignIn, onBack, onSuccess, embedded = false }: Props) {
   const ar = lang === 'ar';
+  const toast = useToast();
   const tr = (arabic: string, english: string) => ar ? arabic : english;
   const [step, setStep] = useState(1);
   const [data, setData] = useState<RegistrationData>({ ...emptyRegistration });
   const [errors, setErrors] = useState<RegistrationErrors>({});
   const [serverError, setServerError] = useState('');
+  useEffect(() => { if (serverError) toast(serverError, 'danger'); }, [serverError, toast]);
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
   const [visible, setVisible] = useState({ password: false, confirmation: false });
@@ -50,10 +53,10 @@ export function RegistrationWizard({ lang, theme, onToggleLang, onToggleTheme, o
         <input id={id(key)} name={key} value={data[key]} type={password ? (visible[key] ? 'text' : 'password') : options.type || 'text'}
           required={!options.optional} maxLength={options.max || (password ? 128 : 100)}
           autoComplete={options.autocomplete} dir={options.type === 'email' || options.type === 'tel' || password ? 'ltr' : undefined}
-          inputMode={options.type === 'tel' ? 'tel' : undefined}
+          inputMode={options.type === 'tel' ? 'numeric' : undefined}
           list={options.suggestions?.length ? id(key) + '-suggestions' : undefined}
           aria-invalid={!!errors[key]} aria-describedby={description(key)}
-          onChange={event => update(key, event.target.value as RegistrationData[typeof key])} />
+          onChange={event => update(key, sanitizeRegistrationField(key, event.target.value))} />
         {password && <button className="registration-eye" type="button"
           aria-label={visible[key] ? tr('إخفاء كلمة المرور', 'Hide password') : tr('إظهار كلمة المرور', 'Show password')}
           aria-pressed={visible[key]} onClick={() => setVisible(previous => ({ ...previous, [key]: !previous[key] }))}>
@@ -81,6 +84,7 @@ export function RegistrationWizard({ lang, theme, onToggleLang, onToggleTheme, o
     const nextErrors = validateRegistration(data, step === 1 ? 1 : 'all', ar);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) {
+      toast(Object.values(nextErrors).find(Boolean) || tr('راجع البيانات المطلوبة.', 'Check the required fields.'), 'danger');
       document.getElementById(id(Object.keys(nextErrors)[0] as keyof RegistrationData))?.focus();
       return;
     }

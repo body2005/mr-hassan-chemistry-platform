@@ -70,6 +70,20 @@ export class UploadManager {
   private isProcessingQueue = false;
   private running = new Set<string>();
 
+  public async prepareVideo(lessonId: string, title: string, courseId: string): Promise<void> {
+    const ownerScope = getApiAuthScope();
+    const generation = getApiAuthGeneration();
+    const session = await apiRequest<VideoUploadSession>(`/lessons/${lessonId}/prepare-video`, { method: 'POST' });
+    if (generation !== getApiAuthGeneration() || ownerScope !== getApiAuthScope()) return;
+    if (this.tasks.some(task => task.videoUploadId === session.id)) return;
+    this.tasks.unshift({ id: crypto.randomUUID(), title, fileName: title, fileSizeBytes: session.size_bytes,
+      formattedSize: formatFileSize(session.size_bytes), progress: 100, uploadPercent: 100,
+      status: 'processing', statusDetail: 'جارٍ تجهيز جودات الفيديو المحفوظ دون إعادة رفعه.',
+      type: 'lesson_video', lessonId, courseId, createdAt: Date.now(), videoUploadId: session.id, ownerScope });
+    this.persistTasks(); this.notify();
+    void this.reconcileVideos();
+  }
+
   private owns(task: UploadTask): boolean {
     return !!task.ownerScope && task.ownerScope === getApiAuthScope() && task.ownerScope !== 'anonymous';
   }
@@ -225,6 +239,13 @@ export class UploadManager {
     this.listeners.forEach((listener) => listener([...this.tasks]));
   }
 
+  private notifyFailure(task: UploadTask) {
+    if (typeof window === 'undefined') return;
+    window.dispatchEvent(new CustomEvent('lms_toast_notification', { detail: {
+      message: `فشل رفع ${task.title}: ${task.error}`, tone: 'danger',
+    } }));
+  }
+
   public getTasks(): UploadTask[] {
     return this.tasks;
   }
@@ -350,7 +371,7 @@ export class UploadManager {
       if (capabilities.direct_upload || task.videoUploadId) {
         await this.startDirectVideoUpload(task, active);
       } else {
-        await courseService.uploadLessonVideo(
+        const uploaded = await courseService.uploadLessonVideo(
         task.lessonId!,
         task.file!,
         (percent) => {
@@ -366,6 +387,16 @@ export class UploadManager {
           task.xhr = xhr;
         }
         );
+        if (uploaded.video_upload_id && active()) {
+          task.videoUploadId = uploaded.video_upload_id;
+          task.status = 'processing';
+          task.statusDetail = 'تم حفظ الفيديو؛ جارٍ تجهيز جودات البث.';
+          this.notify(); this.persistTasks();
+          await waitForVideo(uploaded.video_upload_id, active, session => {
+            task.statusDetail = session.status === 'ready' ? 'الفيديو جاهز للمشاهدة.' : 'جارٍ تجهيز جودات الفيديو.';
+            this.notify();
+          });
+        }
       }
       if (!active()) return;
       this.completeVideo(task);
@@ -484,6 +515,7 @@ export class UploadManager {
     if (!task.lessonId) {
       task.status = "error";
       task.error = "لا يمكن رفع المذكرات بدون تحديد الدرس.";
+      this.notifyFailure(task);
       this.notify();
       this.persistTasks();
       return;
@@ -537,6 +569,7 @@ export class UploadManager {
         task.status = "error";
         const detail = err instanceof ApiClientError ? err.message : (err as Error)?.message;
         task.error = detail || "تعذر رفع الملفات. تأكد من سرعة الاتصال وحجم الملفات.";
+        this.notifyFailure(task);
         this.notify();
         this.persistTasks();
         this.processQueue();
@@ -612,6 +645,7 @@ export class UploadManager {
     if (!task || !this.owns(task) || this.running.has(task.id)) return;
     if (!task.file && !task.files?.length && !task.videoUploadId) {
       task.error = "اختر الملف مجددًا قبل إعادة المحاولة.";
+      this.notifyFailure(task);
       this.notify();
       return;
     }

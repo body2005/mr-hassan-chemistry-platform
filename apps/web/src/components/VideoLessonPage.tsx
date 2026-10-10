@@ -105,7 +105,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   const hlsRef = useRef<Hls | null>(null);
   const { playbackUrl, playbackError, setPlaybackError, renewProtectedPlayback, pendingPlaybackResumeRef } =
     useProtectedPlayback(lesson, currentUser?.id, videoElementRef, hlsRef);
-  const [qualityOptions, setQualityOptions] = useState<string[]>(["الأصلية"]);
+  const [qualityOptions, setQualityOptions] = useState<string[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -113,7 +113,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showControls, setShowControls] = useState(true);
-  const [selectedQuality, setSelectedQuality] = useState("الأصلية");
+  const [selectedQuality, setSelectedQuality] = useState("");
   const [showQualityMenu, setShowQualityMenu] = useState(false);
   // Wide/theater mode: video fills the entire viewport instead of the column.
   const [isWide, setIsWide] = useState(false);
@@ -169,7 +169,11 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     setIsPlaying(false);
   }, [lesson.id, completedLessonIds, isTeacher, currentUser?.id]);
 
-  useHlsTransport(playbackUrl, videoElementRef, hlsRef, setQualityOptions, setSelectedQuality, setPlaybackError);
+  const { selectQuality } = useHlsTransport(playbackUrl, videoElementRef, hlsRef, setQualityOptions, setSelectedQuality, setPlaybackError);
+
+  useEffect(() => {
+    if (playbackError) toast(playbackError, 'danger');
+  }, [playbackError, toast]);
 
   const [isAccessRequested, setIsAccessRequested] = useState(false);
   const [isSubmittingAccessRequest, setIsSubmittingAccessRequest] = useState(false);
@@ -612,10 +616,11 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                   />
 
                   {playbackError && (
-                    <div role="alert" className="lesson-playback-error" style={{ position: "absolute", top: "12px", left: "12px", right: "12px", zIndex: 3, padding: "10px", borderRadius: "8px", background: "rgba(127, 29, 29, 0.94)", color: "#fff", display: "flex", gap: "12px", alignItems: "center", justifyContent: "space-between" }}>
-                      <span>{playbackError}</span>
-                      <button type="button" onClick={() => { void renewProtectedPlayback(true); }} style={{ color: "#fff", border: "1px solid #fff", borderRadius: "6px", background: "transparent", padding: "5px 8px" }}>إعادة المحاولة</button>
-                    </div>
+                    <button type="button" onClick={() => { void renewProtectedPlayback(true); }}
+                      style={{ position: 'absolute', top: 12, insetInlineEnd: 12, zIndex: 30, color: '#fff',
+                        border: '1px solid #64748b', borderRadius: 8, background: 'rgba(15,23,42,.9)', padding: '8px 12px' }}>
+                      استئناف الفيديو
+                    </button>
                   )}
 
                   {/* Center Glass Play Button (Shows when paused) */}
@@ -934,16 +939,19 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                               transition: "transform 0.15s ease",
                             }}
                             title="الإعدادات والجودة"
+                            aria-expanded={showQualityMenu}
+                            aria-controls="lesson-quality-options"
                           >
                             <Settings size={19} />
                           </button>
 
                           {showQualityMenu && (
                             <div
+                              id="lesson-quality-options"
+                              className="lesson-quality-menu"
                               style={{
                                 position: "absolute",
                                 bottom: "36px",
-                                right: 0,
                                 background: "rgba(15, 23, 42, 0.95)",
                                 backdropFilter: "blur(8px)",
                                 border: "1px solid rgba(255, 255, 255, 0.2)",
@@ -952,21 +960,19 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                                 display: "flex",
                                 flexDirection: "column",
                                 gap: "4px",
-                                minWidth: "105px",
+                                minWidth: "140px",
+                                maxHeight: "min(300px, 50vh)",
+                                overflowY: "auto",
                                 zIndex: 40,
                                 boxShadow: "0 8px 20px rgba(0,0,0,0.5)",
                               }}
                             >
-                              <span style={{ fontSize: "14px", color: "#94a3b8", padding: "2px 8px", fontWeight: 700 }}>
-                                جودة الفيديو:
-                              </span>
                               {qualityOptions.map((q) => (
                                 <button
                                   key={q}
                                   type="button"
                                   onClick={() => {
-                                    setSelectedQuality(q);
-                                    if (hlsRef.current) hlsRef.current.currentLevel = q === "تلقائي" ? -1 : hlsRef.current.levels.findIndex(level => `${level.height}p` === q);
+                                    selectQuality(q);
                                     setShowQualityMenu(false);
                                   }}
                                   style={{

@@ -23,7 +23,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
@@ -233,6 +233,23 @@ class Quiz(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
 
 
+    lesson_links: Mapped[list["QuizLessonLink"]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin")
+
+    @property
+    def lesson_ids(self) -> list[uuid.UUID]:
+        return list(dict.fromkeys(([self.lesson_id] if self.lesson_id else []) + [link.lesson_id for link in self.lesson_links]))
+
+    module_links: Mapped[list["QuizModuleLink"]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin")
+
+    @property
+    def module_ids(self) -> list[uuid.UUID]:
+        # Legacy module_id described the selected lesson's parent, not a whole-unit scope.
+        legacy = [self.module_id] if self.module_id and not self.lesson_id else []
+        return list(dict.fromkeys(legacy + [link.module_id for link in self.module_links]))
+
+
 class QuizQuestion(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "quiz_questions"
     __table_args__ = (
@@ -342,6 +359,22 @@ class Assignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
 
 
+    lesson_links: Mapped[list["AssignmentLessonLink"]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin")
+
+    @property
+    def lesson_ids(self) -> list[uuid.UUID]:
+        return list(dict.fromkeys(([self.lesson_id] if self.lesson_id else []) + [link.lesson_id for link in self.lesson_links]))
+
+    module_links: Mapped[list["AssignmentModuleLink"]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin")
+
+    @property
+    def module_ids(self) -> list[uuid.UUID]:
+        legacy = [self.module_id] if self.module_id and not self.lesson_id else []
+        return list(dict.fromkeys(legacy + [link.module_id for link in self.module_links]))
+
+
 class AssignmentAttempt(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "assignment_attempts"
     __table_args__ = (
@@ -448,3 +481,27 @@ class LessonComment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ForeignKey("lesson_comments.id", ondelete="CASCADE"), index=True
     )
     body: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class QuizLessonLink(Base):
+    __tablename__ = "quiz_lesson_links"
+    assessment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("quizzes.id", ondelete="CASCADE"), primary_key=True)
+    lesson_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("lessons.id", ondelete="CASCADE"), primary_key=True)
+
+
+class QuizModuleLink(Base):
+    __tablename__ = "quiz_module_links"
+    assessment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("quizzes.id", ondelete="CASCADE"), primary_key=True)
+    module_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("course_modules.id", ondelete="CASCADE"), primary_key=True)
+
+
+class AssignmentLessonLink(Base):
+    __tablename__ = "assignment_lesson_links"
+    assessment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assignments.id", ondelete="CASCADE"), primary_key=True)
+    lesson_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("lessons.id", ondelete="CASCADE"), primary_key=True)
+
+
+class AssignmentModuleLink(Base):
+    __tablename__ = "assignment_module_links"
+    assessment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assignments.id", ondelete="CASCADE"), primary_key=True)
+    module_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("course_modules.id", ondelete="CASCADE"), primary_key=True)

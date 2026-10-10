@@ -100,6 +100,7 @@ type ApiCourse = {
       content: string | null;
       /** The private storage key is never serialized by the API. */
       has_video?: boolean;
+      has_uploaded_video?: boolean;
       video_url?: string | null;
       video_duration_seconds: number | null;
       price_egp?: number;
@@ -260,8 +261,13 @@ function mapApiCourse(course: ApiCourse): Course {
             // storage key. External URLs entered by the teacher stay as-is;
             // native uploads resolve through the short-lived token endpoint.
             videoUrl: lesson.video_url || "",
+            hasUploadedVideo: Boolean(lesson.has_uploaded_video),
+            // A student's catalog can redact playback fields for a locked
+            // video. Ask the admission endpoint for the actual access result
+            // instead of treating that redaction as a missing upload.
             requiresProtectedPlayback: Boolean(
-              lesson.has_video && lesson.video_url && lesson.video_url.startsWith("/api/v1/lessons/"),
+              lesson.video_url?.startsWith("/api/v1/lessons/") ||
+              (!lesson.video_url && (lesson.kind === "video" || lesson.has_uploaded_video)),
             ),
             price: Number(lesson.price_egp || 0),
             materials: (lesson.materials || []).map((m) => ({
@@ -648,7 +654,7 @@ export const authService = {
 
   async login(email: string, pass: string, institutionSlug = "demo"): Promise<{ success: boolean; user?: CurrentUser; error?: string }> {
     const cleanEmail = (email || "").trim().toLowerCase();
-    const cleanPass = (pass || "").trim();
+    const cleanPass = pass || "";
 
     try {
       const result = await apiRequest<{ user: ApiUser; expires_at: string }>("/auth/login", {
@@ -958,14 +964,15 @@ function parseScheduleClock(value: string): string {
 // ============================================================================
 let composedCoursesInFlight: { generation: number; promise: Promise<Course[]> } | null = null;
 
-async function validateAssessmentScope(payload: { course_id: string; title: string; lesson_id?: string; module_id?: string }) {
+async function validateAssessmentScope(payload: { course_id: string; title: string; lesson_id?: string; module_id?: string; lesson_ids?: string[]; module_ids?: string[] }) {
   if (payload.title.trim().length < 2 || payload.title.length > 200) {
     throw new Error('اسم النشاط يجب أن يحتوي على حرفين إلى 200 حرف.');
   }
-  if (!payload.lesson_id && !payload.module_id) return;
+  const lessonIds = [...(payload.lesson_ids || []), ...(payload.lesson_id ? [payload.lesson_id] : [])];
+  const moduleIds = [...(payload.module_ids || []), ...(payload.module_id ? [payload.module_id] : [])];
+  if (!lessonIds.length && !moduleIds.length) return;
   const course = await apiRequest<ApiCourse>(`/courses/${payload.course_id}`, { skipCache: true });
-  const modules = payload.module_id ? course.modules.filter(module => module.id === payload.module_id) : course.modules;
-  if (!modules.length || (payload.lesson_id && !modules.some(module => module.lessons.some(lesson => lesson.id === payload.lesson_id)))) {
+  if (moduleIds.some(id => !course.modules.some(module => module.id === id)) || lessonIds.some(id => !course.modules.some(module => module.lessons.some(lesson => lesson.id === id)))) {
     throw new Error('الدرس المرتبط بالمسودة لم يعد موجودًا في هذا المقرر. اختر الدرس من القائمة مجددًا قبل النشر.');
   }
 }
@@ -1084,6 +1091,8 @@ export const courseService = {
       title: string;
       module_id: string | null;
       lesson_id: string | null;
+      lesson_ids?: string[];
+      module_ids?: string[];
       duration_seconds: number | null;
       starts_at: string | null;
       ends_at: string | null;
@@ -1098,6 +1107,8 @@ export const courseService = {
       title: string;
       module_id: string | null;
       lesson_id: string | null;
+      lesson_ids?: string[];
+      module_ids?: string[];
       due_at: string | null;
       max_score: number;
       completed: boolean;
@@ -1115,9 +1126,12 @@ export const courseService = {
         kind: "quiz" as const,
         title: q.title,
         lessonId: q.lesson_id,
+        lessonIds: q.lesson_ids,
+        moduleIds: q.module_ids,
         moduleId: q.module_id,
         durationMinutes: q.duration_seconds ? Math.ceil(q.duration_seconds / 60) : undefined,
         dueLabel: q.ends_at,
+        startsAt: q.starts_at,
         attemptsUsed: q.attempts_used,
         attemptsAllowed: q.attempts_allowed,
         completed: q.completed === true,
@@ -1128,6 +1142,8 @@ export const courseService = {
         kind: "assignment" as const,
         title: a.title,
         lessonId: a.lesson_id,
+        lessonIds: a.lesson_ids,
+        moduleIds: a.module_ids,
         moduleId: a.module_id,
         maxScore: a.max_score,
         completed: a.completed === true,
@@ -1143,6 +1159,8 @@ export const courseService = {
     course_id: string;
     module_id?: string;
     lesson_id?: string;
+    lesson_ids?: string[];
+    module_ids?: string[];
     title: string;
     duration_minutes?: number;
     starts_at?: string | null;
@@ -1187,6 +1205,8 @@ export const courseService = {
         quiz_title: payload.title,
         module_id: payload.module_id || null,
         lesson_id: payload.lesson_id || null,
+        lesson_ids: payload.lesson_ids || [],
+        module_ids: payload.module_ids || [],
         duration_seconds: payload.duration_minutes ? payload.duration_minutes * 60 : null,
         starts_at: schedule.startsAt,
         ends_at: schedule.endsAt,
@@ -1203,6 +1223,8 @@ export const courseService = {
     course_id: string;
     module_id?: string;
     lesson_id?: string;
+    lesson_ids?: string[];
+    module_ids?: string[];
     title: string;
     prompt: string;
     starts_at?: string | null;
@@ -1222,6 +1244,8 @@ export const courseService = {
         max_score: payload.max_score ?? 100,
         module_id: payload.module_id || null,
         lesson_id: payload.lesson_id || null,
+        lesson_ids: payload.lesson_ids || [],
+        module_ids: payload.module_ids || [],
       }),
     });
     await apiRequest(`/assignments/${created.id}/publish`, {
@@ -1264,10 +1288,10 @@ export const courseService = {
     file: File,
     onProgress?: (percent: number) => void,
     onXhrCreated?: (xhr: XMLHttpRequest) => void
-  ): Promise<{ id: string; video_url: string; filename: string }> {
+  ): Promise<{ id: string; video_url: string; filename: string; video_upload_id?: string | null }> {
     const formData = new FormData();
     formData.append("file", file);
-    return uploadWithProgress<{ id: string; video_url: string; filename: string }>(
+    return uploadWithProgress<{ id: string; video_url: string; filename: string; video_upload_id?: string | null }>(
       `/lessons/${lessonId}/video`,
       formData,
       onProgress,

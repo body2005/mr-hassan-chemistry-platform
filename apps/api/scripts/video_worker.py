@@ -23,6 +23,7 @@ from app.models.course import Lesson
 from app.models.video_upload import VideoUpload
 from app.services.storage_cleanup import enqueue_cleanup
 from app.services.video_processing import InvalidVideo, encode
+from app.services.video_uploads import enqueue_source_cleanup
 
 logger = logging.getLogger("video-worker")
 
@@ -51,7 +52,7 @@ def process(identity):
                                 raise
                     for name in job.outputs:
                         enqueue_cleanup(db, name)
-                    enqueue_cleanup(db, job.object_key)
+                    enqueue_source_cleanup(db, job)
                     job.status = "expired"
                     db.commit()
                     return
@@ -59,7 +60,7 @@ def process(identity):
                     return
                 if job.attempts >= 3:
                     job.status, job.error_code = "failed", "VIDEO_WORKER_RETRY_EXHAUSTED"
-                    enqueue_cleanup(db, job.object_key)
+                    enqueue_source_cleanup(db, job)
                     for name in job.outputs:
                         enqueue_cleanup(db, name)
                     db.commit()
@@ -138,7 +139,7 @@ def process(identity):
                     job.status = "failed" if isinstance(exc, InvalidVideo) else "queued"
                     job.error_code = str(exc) if isinstance(exc, InvalidVideo) else "VIDEO_PROCESSING_TEMPORARILY_UNAVAILABLE"
                     if job.status == "failed":
-                        enqueue_cleanup(db, job.object_key)
+                        enqueue_source_cleanup(db, job)
                     for name in job.outputs:
                         enqueue_cleanup(db, name)
                     job.outputs = []

@@ -9,10 +9,18 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.course import Course, Enrollment, EnrollmentStatus
+from app.models.course import Course, CourseModule, Lesson, Enrollment, EnrollmentStatus
 from app.models.platform import Assignment, AssignmentStatus, Quiz, QuizStatus
 from app.models.user import User, UserRole
 from app.services.payment_service import can_access_lesson_content
+
+
+def assessment_lesson_ids(db, assessment) -> set:
+    result = set(assessment.lesson_ids)
+    if assessment.module_ids:
+        result.update(db.scalars(select(Lesson.id).join(CourseModule, Lesson.module_id == CourseModule.id).where(
+            CourseModule.course_id == assessment.course_id, CourseModule.id.in_(assessment.module_ids))))
+    return result
 
 
 def require_assessment_access(
@@ -41,7 +49,7 @@ def require_assessment_access(
     ))
     if enrolled is None:
         raise HTTPException(403, "Not enrolled")
-    if assessment.lesson_id is not None and not can_access_lesson_content(db, user, assessment.lesson_id):
+    if any(not can_access_lesson_content(db, user, lesson_id) for lesson_id in assessment_lesson_ids(db, assessment)):
         raise HTTPException(403, "Lesson not unlocked")
     # Question sheets are content, not results: a future assignment is sealed
     # even for reads. Legacy assignments without starts_at remain accessible.

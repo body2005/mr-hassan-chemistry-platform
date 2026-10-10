@@ -98,6 +98,29 @@ it('fetches fresh playback when the account changes on the same lesson', async (
   expect(host.querySelector('video')?.getAttribute('src')).toBe('/new-account.mp4');
 });
 
+it('shows an access denial rather than a missing-upload message when admission rejects playback', async () => {
+  await render('locked-paid-video');
+  await act(async () => pending[0].reject(Object.assign(new Error('Lesson not unlocked'), { status: 403 })));
+  expect(host.textContent).toContain('لا تملك صلاحية مشاهدة هذا الدرس');
+  expect(host.textContent).not.toContain('لا يوجد فيديو جاهز');
+  expect(host.querySelector('video')).toBeNull();
+  expect(pending).toHaveLength(1);
+});
+
+it('honors Retry-After and stops automatic token retries after a rate-limit response', async () => {
+  await render('first');
+  await resolve(0, '/first.mp4');
+  await act(async () => host.querySelector('video')!.dispatchEvent(new Event('error')));
+  await act(async () => pending[1].reject(Object.assign(new Error('Limit'), { status: 429, retryAfterMs: 60000 })));
+  expect(host.querySelector('.lesson-playback-error')).toBeNull();
+  expect(host.textContent).not.toContain('طلبات كثيرة');
+  await act(async () => {
+    host.querySelector('video')!.dispatchEvent(new Event('error'));
+    [...host.querySelectorAll('button')].find(button => button.textContent?.trim() === 'استئناف الفيديو')!.click();
+  });
+  expect(pending).toHaveLength(2);
+});
+
 it('does not fabricate view counts or a publication date for missing metadata', async () => {
   await render('first');
   expect(host.textContent).not.toContain('ألف مشاهدة');

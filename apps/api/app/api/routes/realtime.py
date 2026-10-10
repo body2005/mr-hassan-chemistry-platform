@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import anyio
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
@@ -12,6 +13,21 @@ from app.core.events import event_broker, sse_event_generator
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/realtime", tags=["realtime"])
+
+
+class RealtimeResponse(StreamingResponse):
+    def __init__(self, *args, subscription_id, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.subscription_id = subscription_id
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # Covers failure/disconnect while sending headers, before the
+            # generator starts and its own finally can release the SSE slot.
+            with anyio.CancelScope(shield=True):
+                await event_broker.unregister(self.subscription_id)
 
 
 @router.get("/stream")
@@ -40,8 +56,9 @@ async def realtime_event_stream(
             except Exception:
                 return False
 
-    return StreamingResponse(
+    return RealtimeResponse(
         sse_event_generator(sub, still_authorized),
+        subscription_id=sub.id,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
