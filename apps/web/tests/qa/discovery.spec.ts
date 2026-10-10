@@ -376,8 +376,8 @@ test('immediate quiz practice uses a fresh PostgreSQL attempt without waiting fo
     await learner.page.getByRole('button', { name: /تأكيد.*تسليم|تسليم الآن/ }).click();
     const firstResult = await submitted;
     expect(firstResult.status()).toBe(200);
-    expect((await firstResult.json()).score).toBe(7);
-    await expect(learner.page.getByText('تم تسليم الاختبار وتصحيحه فورياً', { exact: true })).toBeVisible();
+    expect((await firstResult.json()).score).toBeNull();
+    await expect(learner.page.getByText('تم تسليم الاختبار، والنتيجة في انتظار اعتماد المدرس', { exact: true })).toBeVisible();
     await learner.page.getByRole('button', { name: 'العودة إلى المقرر', exact: true }).click();
     await learner.page.getByRole('button', { name: /امتحن نفسك|بدء حل الاختبار/ }).first().click();
     await expect.poll(() => solves.length).toBe(2);
@@ -433,7 +433,14 @@ test('manual Arabic choices publish from the editor and are graded in the studen
     await learner.page.getByRole('button', { name: /تأكيد.*تسليم|تسليم الآن/ }).click();
     const result = await submitted;
     expect(result.status()).toBe(200);
-    expect((await result.json()).score).toBe(5);
+    expect((await result.json()).score).toBeNull();
+    const pending = await (await learner.page.request.get(`${base}/api/v1/quizzes/${record.id}/result`)).json();
+    expect(pending.summary).toBeNull();
+    expect(pending.approval_status).toBe('pending');
+    await post(page, `quiz-attempts/${attempt.id}/approve`, {}, 200);
+    const released = await (await learner.page.request.get(`${base}/api/v1/quizzes/${record.id}/result`)).json();
+    expect(released.score).toBe(5);
+    expect(released.approval_status).toBe('approved');
   } finally { await learner.close(); }
 });
 

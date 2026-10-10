@@ -237,7 +237,7 @@ for (const mode of ['light', 'dark']) {
       await answer.fill('الكتلة محفوظة عند تساوي مجموع كتل المتفاعلات والنواتج.');
       await student.getByRole('button', { name: 'تسليم الاختبار', exact: true }).last().click();
       await student.getByRole('button', { name: 'نعم، تأكيد وتسليم الآن', exact: true }).click();
-      await expect(student.getByText('تم تسليم الاختبار — بانتظار التصحيح اليدوي')).toBeVisible();
+      await expect(student.getByText('تم تسليم الاختبار، والنتيجة في انتظار اعتماد المدرس')).toBeVisible();
       await student.getByRole('button', { name: 'العودة إلى المقرر', exact: true }).click();
       await student.getByRole('button', { name: 'الواجبات والتكليفات', exact: true }).click();
       await student.getByRole('button', { name: 'فتح الواجب وتسليم الحل', exact: true }).click();

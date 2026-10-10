@@ -58,10 +58,14 @@ test(`essay and uploaded homework are submitted and graded through the real UI${
     await student.getByPlaceholder("اكتب إجابتك هنا…").fill("Mass is conserved; state the units in grams.");
     await student.getByRole("button", { name: "تسليم الاختبار" }).last().click();
     await student.getByRole("button", { name: "نعم، تأكيد وتسليم الآن" }).click();
-    await expect(student.getByText("تم تسليم الاختبار — بانتظار التصحيح اليدوي")).toBeVisible();
+    await expect(student.getByText("تم تسليم الاختبار، والنتيجة في انتظار اعتماد المدرس")).toBeVisible();
     const pending = await (await student.request.get(`${base}/api/v1/quizzes/${quiz.id}/result`)).json();
     expect(pending.grading_status).toBe("pending");
-    expect(pending.summary.wrong).toBe(0);
+    expect(pending.score).toBeNull();
+    expect(pending.summary).toBeNull();
+    expect(pending.approval_status).toBe('pending');
+    expect(pending.questions.every((question: Record<string, unknown>) =>
+      Object.keys(question).sort().join(',') === 'id,student_answer')).toBe(true);
     await student.getByRole("button", { name: "العودة إلى المقرر", exact: true }).click();
     await student.getByRole("button", { name: "الواجبات والتكليفات" }).click();
     await student.getByRole("button", { name: "فتح الواجب وتسليم الحل" }).click();
@@ -160,10 +164,12 @@ test(`essay and uploaded homework are submitted and graded through the real UI${
     await page.getByLabel("تعليق السؤال 1").fill("Good reasoning; explain the measurement units.");
     await expect(page.getByLabel('تعليق السؤال 1')).toHaveCSS('background-color', 'rgb(30, 41, 59)');
     await expect(page.getByLabel('درجة السؤال 1')).toHaveCSS('background-color', 'rgb(30, 41, 59)');
-    await page.getByRole("button", { name: "حفظ واعتماد درجة الامتحان" }).click();
+    await page.getByRole("button", { name: "اعتماد وإظهار النتيجة", exact: true }).click();
     await expect(page.getByLabel("درجة السؤال 1")).toHaveCount(0);
     const result = await (await student.request.get(`${base}/api/v1/quizzes/${quiz.id}/result`)).json();
     expect(result.grading_status).toBe("complete");
+    expect(result.approval_status).toBe('approved');
+    expect(result.results_approved_at).toBeTruthy();
     expect(result.score).toBe(3.5);
     expect(result.questions[0].feedback).toBe("Good reasoning; explain the measurement units.");
     const summary = await (await page.request.get(`${base}/api/v1/users?role=student`)).json();

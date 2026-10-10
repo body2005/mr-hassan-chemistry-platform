@@ -24,6 +24,11 @@ from .live_helpers import isolated, pg_engine
 @pytest.fixture
 def maintenance_db(monkeypatch):
     isolated()
+    # These private-schema cases exercise enabled delivery, while deployment
+    # defaults intentionally leave email disabled. Do not enable delivery in
+    # the live API or mutate its cached Settings instance for this fixture.
+    delivery_settings = maintenance.get_settings().model_copy(update={'email_enabled': True})
+    monkeypatch.setattr(maintenance, 'get_settings', lambda: delivery_settings)
     engine = pg_engine()
     schema = 'qa_maintenance_' + uuid.uuid4().hex
     with engine.begin() as connection:

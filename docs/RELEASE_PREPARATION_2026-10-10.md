@@ -88,6 +88,21 @@ auto-deploying branch is itself a deployment trigger; do not push until that
 conflict is resolved. `render.yaml` specifies automatic deployments off, but
 the actual dashboard setting must be checked separately.
 
+Read-only inspection of the user's Chrome Render tab on 2026-10-10 found the
+service live on `788aec123a697cb941f2cd8c391e029ff3be5cc6`, using the Free native
+Python runtime, with **Auto-Deploy: On Commit**. Its root is `apps/api`; build
+is `pip install -r requirements.txt`; start is `alembic upgrade head && python
+scripts/seed_teacher.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT`.
+The pre-deploy command and health-check path are empty. No production setting
+was changed and no deployment was started.
+
+With explicit permission, only environment-variable names were read. Redis
+and Resend names exist; no S3 names appeared in the service variable list.
+`NITIAL_TEACHER_EMAIL` appears misspelled. Demo and password-reset flag names
+also exist, but their values were not read, so activation and connectivity
+remain unverified. This evidence does not establish working permanent storage
+or working email delivery. See the private local observation JSON for details.
+
 After explicit release approval:
 
 1. Freeze writes and take PostgreSQL plus S3 snapshots. Restore both into NEW

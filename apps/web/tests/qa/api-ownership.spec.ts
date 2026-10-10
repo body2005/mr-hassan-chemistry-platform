@@ -83,10 +83,17 @@ test("manual quiz and assignment lifecycle enforces student and teacher ownershi
     const answer = { submission_key: `qa-quiz-${code}`, answers: [{ question_id: question.id, answer: "Water" }] };
     const submitted = await student.context.post(`quiz-attempts/${attemptId}/submit`, { data: answer });
     expect(submitted.status()).toBe(200);
-    expect((await submitted.json()).score).toBe(5);
+    expect((await submitted.json()).score).toBeNull();
     const duplicate = await student.context.post(`quiz-attempts/${attemptId}/submit`, { data: answer });
     expect(duplicate.status()).toBe(200);
     expect((await duplicate.json()).id).toBe(attemptId);
+    expect((await duplicate.json()).score).toBeNull();
+    const pending = await student.context.get(`quizzes/${quiz.id}/result?attempt_id=${attemptId}`);
+    expect((await pending.json()).summary).toBeNull();
+    expect((await otherTeacher.context.post(`quiz-attempts/${attemptId}/approve`)).status()).toBe(404);
+    expect((await teacher.context.post(`quiz-attempts/${attemptId}/approve`)).status()).toBe(200);
+    const released = await student.context.get(`quizzes/${quiz.id}/result?attempt_id=${attemptId}`);
+    expect((await released.json()).score).toBe(5);
     const secondAttempt = await otherStudent.context.post(`quizzes/${quiz.id}/attempts`);
     expect(secondAttempt.status()).toBe(200);
     const secondAttemptId = (await secondAttempt.json()).id as string;

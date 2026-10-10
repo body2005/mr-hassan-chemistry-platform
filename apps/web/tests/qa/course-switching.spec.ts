@@ -58,7 +58,7 @@ test("student can switch between two enrolled courses", async ({ page, playwrigh
     await page.getByText("Water", { exact: true }).click();
     await page.getByRole("button", { name: "تسليم الاختبار" }).last().click();
     await page.getByRole("button", { name: "نعم، تأكيد وتسليم الآن" }).click();
-    await expect(page.getByText("تم تسليم الاختبار وتصحيحه فورياً")).toBeVisible();
+    await expect(page.getByText("تم تسليم الاختبار، والنتيجة في انتظار اعتماد المدرس")).toBeVisible();
     await page.getByRole('button', { name: 'العودة إلى المقرر', exact: true }).click();
     await expect(page.getByRole('button', { name: `نسبة إنجاز المقرر: ${names[0]}`, exact: true })).toHaveText('50%');
     // Many retained synthetic enrollments must not fan out assessment reads.
