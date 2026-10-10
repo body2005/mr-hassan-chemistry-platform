@@ -96,6 +96,10 @@ scripts/seed_teacher.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT`.
 The pre-deploy command and health-check path are empty. No production setting
 was changed and no deployment was started.
 
+The repository blueprint now declares `healthCheckPath: /api/v1/ready` for
+the API. Its offline production-settings check passed. This does not update
+the existing native-Python dashboard service or certify its readiness.
+
 With explicit permission, only environment-variable names were read. Redis
 and Resend names exist; no S3 names appeared in the service variable list.
 `NITIAL_TEACHER_EMAIL` appears misspelled. Demo and password-reset flag names

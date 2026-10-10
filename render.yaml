@@ -14,6 +14,7 @@ services:
     runtime: docker
     dockerfilePath: infra/Dockerfile.api
     dockerContext: apps/api
+    healthCheckPath: /api/v1/ready
     preDeployCommand: alembic upgrade head && python scripts/seed_teacher.py
     # Do not enable Uvicorn's wildcard forwarded-header trust. The app uses
     # direct peer IPs until Render's documented proxy CIDRs are configured.
