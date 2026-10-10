@@ -7,9 +7,12 @@ import { playbackFailureMessage } from '../services/playbackFailure';
 /** Own token admission/renewal and its auth generation, not the media UI. */
 export function useProtectedPlayback(lesson: VideoLesson, userId: string | undefined,
   videoRef: RefObject<HTMLVideoElement | null>, hlsRef: RefObject<Hls | null>) {
-  const [playbackUrl, setPlaybackUrl] = useState('');
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [authGeneration, setAuthGeneration] = useState(getApiAuthGeneration);
+  const playbackKey = JSON.stringify([lesson.id, lesson.videoUrl, lesson.requiresProtectedPlayback, userId, authGeneration]);
+  const [source, setSource] = useState({ key: '', url: '' });
+  const playbackUrl = source.key === playbackKey ? source.url : '';
+  const setPlaybackUrl = useCallback((url: string) => setSource({ key: playbackKey, url }), [playbackKey]);
   const scopeRef = useRef<{ controller: AbortController; generation: number } | null>(null);
   const renewing = useRef(false);
   const lastRenewal = useRef(0);
@@ -38,7 +41,7 @@ export function useProtectedPlayback(lesson: VideoLesson, userId: string | undef
     };
     window.addEventListener('lms_auth_scope_updated', onScopeChange);
     return () => window.removeEventListener('lms_auth_scope_updated', onScopeChange);
-  }, [videoRef, hlsRef]);
+  }, [videoRef, hlsRef, setPlaybackUrl]);
 
   useEffect(() => {
     const scope = { controller: new AbortController(), generation: getApiAuthGeneration() };
@@ -65,7 +68,7 @@ export function useProtectedPlayback(lesson: VideoLesson, userId: string | undef
       scope.controller.abort();
       if (scopeRef.current === scope) scopeRef.current = null;
     };
-  }, [lesson.id, lesson.videoUrl, lesson.requiresProtectedPlayback, userId, authGeneration]);
+  }, [lesson.id, lesson.videoUrl, lesson.requiresProtectedPlayback, userId, authGeneration, setPlaybackUrl]);
 
   const renewProtectedPlayback = useCallback(async (manual = false): Promise<boolean> => {
     const scope = scopeRef.current;
@@ -97,7 +100,7 @@ export function useProtectedPlayback(lesson: VideoLesson, userId: string | undef
     } finally {
       if (scopeRef.current === scope) renewing.current = false;
     }
-  }, [lesson.id, lesson.requiresProtectedPlayback, videoRef, hlsRef]);
+  }, [lesson.id, lesson.requiresProtectedPlayback, videoRef, hlsRef, setPlaybackUrl]);
 
   useEffect(() => {
     if (!playbackUrl.includes('/hls/') || !lesson.requiresProtectedPlayback) return;

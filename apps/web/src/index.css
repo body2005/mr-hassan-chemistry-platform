@@ -1686,6 +1686,7 @@ img, video, canvas, svg {
 .lesson-player-controls-row, .lesson-player-controls-group { flex-wrap: wrap; gap: 8px; min-width: 0; }
 .lesson-player-controls-row button, .lesson-playback-error button { min-width: 44px; min-height: 44px; justify-content: center; }
 .lesson-player-controls { overflow: visible; }
+.lesson-seek-button { border: 0; border-radius: 8px; background: rgba(255,255,255,.1); color: white; cursor: pointer; font-weight: 700; }
 .lesson-quality-menu { right: 0; }
 @media (max-width: 768px) {
   .lesson-quality-menu { left: 0; right: auto; }

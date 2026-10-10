@@ -116,6 +116,36 @@ def test_video_stream_requires_a_scoped_token_and_supports_ranges(db, monkeypatc
     assert response.content == b"pers"
     assert response.headers["accept-ranges"] == "bytes"
 
+    # Open-ended video requests must finish, rather than reserving a slot for
+    # the entire lesson behind a buffering reverse proxy. Seeking still reads
+    # the exact requested position, for object storage, local and legacy media.
+    from app.api.routes.platform import MAX_VIDEO_RANGE_BYTES
+    from app.core.storage import LocalStorageProvider
+
+    large_video = bytes(range(256)) * ((MAX_VIDEO_RANGE_BYTES * 2) // 256 + 1)
+    original_key = lesson.video_asset_key
+    object_store.objects[original_key.removeprefix("s3://test-bucket/")] = large_video
+    local_store = LocalStorageProvider(str(tmp_path / "objects"))
+    local_key = local_store.save_bytes(large_video, "lesson.mp4")
+    (tmp_path / f"{lesson.id}.mp4").write_bytes(large_video)
+    for provider, key in [(object_store, original_key), (local_store, local_key), (local_store, None)]:
+        monkeypatch.setattr("app.api.routes.platform.get_storage_provider", lambda: provider)
+        lesson.video_asset_key = key
+        db.commit()
+        for start in [0, 5, MAX_VIDEO_RANGE_BYTES + 23] * 3:
+            ranged = client.get(payload["stream_url"], headers={"Range": f"bytes={start}-"})
+            end = min(len(large_video), start + MAX_VIDEO_RANGE_BYTES)
+            assert ranged.status_code == 206
+            assert ranged.content == large_video[start:end]
+            assert ranged.headers["content-length"] == str(end - start)
+            assert ranged.headers["content-range"] == f"bytes {start}-{end - 1}/{len(large_video)}"
+        tail = client.get(payload["stream_url"], headers={"Range": "bytes=-7"})
+        assert tail.content == large_video[-7:]
+        assert client.get(payload["stream_url"], headers={"Range": f"bytes={len(large_video)}-"}).status_code == 416
+    lesson.video_asset_key = original_key
+    db.commit()
+    monkeypatch.setattr("app.api.routes.platform.get_storage_provider", lambda: object_store)
+
     # A password change or "sign out everywhere" must also invalidate a
     # previously issued stream URL, even if the old browser keeps its cookie.
     revoke = client.post("/api/v1/auth/revoke-all", headers=csrf_headers)

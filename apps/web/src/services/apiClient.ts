@@ -61,6 +61,8 @@ export class ApiClientError extends Error {
 }
 
 export interface ApiRequestInit extends RequestInit {
+  /** Background telemetry failures must not interrupt the foreground task. */
+  suppressErrorToast?: boolean;
   timeoutMs?: number;
   cacheTtlMs?: number;
   skipCache?: boolean;
@@ -349,6 +351,7 @@ async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retrie
   const timeoutMs = init.timeoutMs ?? 30_000;
   const requestInit = { ...init };
   delete requestInit.timeoutMs;
+  delete requestInit.suppressErrorToast;
   delete requestInit.cacheTtlMs;
   delete requestInit.skipCache;
   delete requestInit.cacheKey;
@@ -465,7 +468,7 @@ export async function apiRequest<T>(path: string, init: ApiRequestInit = {}, ret
       autoInvalidateOnMutation(path);
       return result;
     } catch (error) {
-      if (!/^\/(?:api\/v1\/)?auth\/(?:logout|refresh)(?:[/?]|$)/.test(path)) reportRequestError(error);
+      if (!init.suppressErrorToast && !/^\/(?:api\/v1\/)?auth\/(?:logout|refresh)(?:[/?]|$)/.test(path)) reportRequestError(error);
       throw error;
     }
   }

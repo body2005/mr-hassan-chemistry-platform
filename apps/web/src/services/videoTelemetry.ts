@@ -36,6 +36,7 @@ export class VideoTelemetryTracker {
   private playing = false;
   private flushing = false;
   private retryAt = 0;
+  private disabled = false;
 
   constructor(lessonId: string) {
     this.lessonId = lessonId;
@@ -86,6 +87,7 @@ export class VideoTelemetryTracker {
   }
 
   record(type: VideoEventType, video: HTMLVideoElement): void {
+    if (this.disabled) return;
     this.events.push({
       client_event_id: eventId(),
       lesson_id: this.lessonId,
@@ -100,16 +102,23 @@ export class VideoTelemetryTracker {
   }
 
   async flush(): Promise<void> {
-    if (!this.events.length || this.flushing || Date.now() < this.retryAt) return;
+    if (this.disabled || !this.events.length || this.flushing || Date.now() < this.retryAt) return;
     this.flushing = true;
     const batch = this.events.splice(0, 100);
     try {
       await apiRequest("/telemetry/video-events", {
         method: "POST",
+        suppressErrorToast: true,
         body: JSON.stringify({ events: batch }),
       });
       this.retryAt = 0;
     } catch (error) {
+      if (error instanceof ApiClientError && [401, 403].includes(error.status)) {
+        this.disabled = true;
+        this.events.length = 0;
+        this.detach();
+        return;
+      }
       // Preserve events for a later retry when the network is offline.
       this.events.unshift(...batch);
       this.events.splice(500);

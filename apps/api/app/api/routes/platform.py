@@ -10,10 +10,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 UTC = timezone.utc
-from typing import Annotated
+from typing import Annotated, Callable, Iterable
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status, UploadFile, File, Query
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 import shutil
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -377,34 +377,16 @@ def _parse_byte_range(range_header: str | None, size: int) -> tuple[int, int] | 
     return start, min(end, size - 1)
 
 
-def _stream_stored_media(request: Request, storage_key: str, filename: str, media_type: str) -> Response:
-    """Serve local or object-storage media without exposing a storage URL."""
-    storage = get_storage_provider()
-    try:
-        local_path = storage.get_local_path(storage_key)
-        if local_path:
-            return FileResponse(
-                local_path,
-                media_type=media_type,
-                filename=filename,
-                headers={
-                    "Content-Disposition": "inline",
-                    "Accept-Ranges": "bytes",
-                    "Cache-Control": "private, no-cache, no-store",
-                    "Referrer-Policy": "no-referrer",
-                    "Cross-Origin-Resource-Policy": "same-origin",
-                    "X-Content-Type-Options": "nosniff",
-                },
-            )
-        size = storage.get_size(storage_key)
-    except (FileNotFoundError, OSError, ValueError) as exc:
-        raise HTTPException(status_code=404, detail="Video not found") from exc
-    except Exception as exc:
-        # Storage providers intentionally avoid exposing upstream bucket errors.
-        raise HTTPException(status_code=404, detail="Video not found") from exc
+# Finish individual video transfers promptly even when a reverse proxy keeps
+# abandoned browser requests alive. Browsers request the next range as needed.
+MAX_VIDEO_RANGE_BYTES = 4 * 1024 * 1024
 
+
+def _stream_media(request: Request, size: int, read: Callable[[int, int], Iterable[bytes]], media_type: str) -> Response:
     byte_range = _parse_byte_range(request.headers.get("range"), size)
     start, end = byte_range if byte_range else (0, size - 1)
+    if byte_range and media_type.startswith("video/"):
+        end = min(end, start + MAX_VIDEO_RANGE_BYTES - 1)
     length = end - start + 1
     headers = {
         "Content-Disposition": "inline",
@@ -417,12 +399,39 @@ def _stream_stored_media(request: Request, storage_key: str, filename: str, medi
     }
     if byte_range:
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
-    return StreamingResponse(
-        storage.open_stream(storage_key, start=start, length=length),
-        status_code=206 if byte_range else 200,
-        media_type=media_type,
-        headers=headers,
-    )
+    return StreamingResponse(read(start, length), status_code=206 if byte_range else 200,
+                             media_type=media_type, headers=headers)
+
+
+def _stream_legacy_video(request: Request, lesson_id: uuid.UUID) -> Response:
+    path = _lesson_video_path(lesson_id)
+
+    def read(start: int, length: int):
+        with open(path, "rb") as source:
+            source.seek(start)
+            while length > 0:
+                chunk = source.read(min(length, 64 * 1024))
+                if not chunk:
+                    break
+                length -= len(chunk)
+                yield chunk
+
+    return _stream_media(request, os.path.getsize(path), read, "video/mp4")
+
+
+def _stream_stored_media(request: Request, storage_key: str, filename: str, media_type: str) -> Response:
+    """Serve local or object-storage media without exposing a storage URL."""
+    storage = get_storage_provider()
+    try:
+        size = storage.get_size(storage_key)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Video not found") from exc
+    except Exception as exc:
+        # Storage providers intentionally avoid exposing upstream bucket errors.
+        raise HTTPException(status_code=404, detail="Video not found") from exc
+
+    return _stream_media(request, size, lambda start, length: storage.open_stream(
+        storage_key, start=start, length=length), media_type)
 
 
 @router.post("/courses/{course_id}/modules", response_model=ModuleResponse, status_code=201)
@@ -563,18 +572,7 @@ def stream_lesson_video(lesson_id: uuid.UUID, request: Request, user: CurrentUse
     if lesson.video_asset_key and not lesson.video_asset_key.startswith("/api/"):
         media_type = mimetypes.guess_type(lesson.video_asset_key)[0] or "video/mp4"
         return _stream_stored_media(request, lesson.video_asset_key, f"lesson-{lesson.id}", media_type)
-    return FileResponse(
-        _lesson_video_path(lesson.id),
-        media_type="video/mp4",
-        headers={
-            "Content-Disposition": "inline",
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "private, no-cache, no-store",
-            "Referrer-Policy": "no-referrer",
-            "Cross-Origin-Resource-Policy": "same-origin",
-            "X-Content-Type-Options": "nosniff",
-        },
-    )
+    return _stream_legacy_video(request, lesson.id)
 
 
 def _live_video_cookie(db: Session, request: Request, user: User) -> dict | None:
@@ -712,18 +710,7 @@ def stream_lesson_authenticated_range(lesson_id: uuid.UUID, request: Request, db
     if lesson.video_asset_key and not lesson.video_asset_key.startswith("/api/"):
         media_type = mimetypes.guess_type(lesson.video_asset_key)[0] or "video/mp4"
         return _stream_stored_media(request, lesson.video_asset_key, f"lesson-{lesson.id}", media_type)
-    return FileResponse(
-        _lesson_video_path(lesson_id),
-        media_type="video/mp4",
-        headers={
-            "Content-Disposition": "inline",
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "private, no-cache, no-store",
-            "Referrer-Policy": "no-referrer",
-            "Cross-Origin-Resource-Policy": "same-origin",
-            "X-Content-Type-Options": "nosniff",
-        },
-    )
+    return _stream_legacy_video(request, lesson_id)
 
 
 @router.post("/modules/{module_id}/lessons", response_model=dict, status_code=201)

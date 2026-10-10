@@ -2,14 +2,14 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { VideoLessonPage } from './VideoLessonPage';
-import type { Course, TeacherProfile, VideoLesson } from '../types/lms';
+import type { Course, CurrentUser, StudentProfile, TeacherProfile, VideoLesson } from '../types/lms';
 
-const mocks = vi.hoisted(() => ({ request: vi.fn(), toast: vi.fn() }));
+const mocks = vi.hoisted(() => ({ request: vi.fn(), toast: vi.fn(), attach: vi.fn(), detach: vi.fn() }));
 vi.mock('../services/apiClient', () => ({ apiRequest: mocks.request, apiUrl: (url: string) => url,
   getApiAuthGeneration: () => 0, getApiAuthScope: () => 'teacher' }));
 vi.mock('./ToastProvider', () => ({ useToast: () => mocks.toast, ToastRegion: () => null }));
 vi.mock('../services/videoTelemetry', () => ({
-  VideoTelemetryTracker: class { attach() {} detach() {} },
+  VideoTelemetryTracker: class { attach = mocks.attach; detach = mocks.detach; },
 }));
 
 type Token = { stream_url: string };
@@ -32,7 +32,12 @@ const teacher: TeacherProfile = {
 };
 let host: HTMLDivElement;
 let root: Root;
-async function render(id: string, account = teacher) {
+const student: StudentProfile = {
+  id: 'student', name: 'Student', email: 'student@example.test', role: 'student', nationalId: '',
+  studentPhone: '', guardianPhone: '', age: 16, academicYear: '1st_secondary', academicYearLabel: '',
+  interestedSubjects: [], joinedDate: '',
+};
+async function render(id: string, account: CurrentUser = teacher) {
   await act(async () => root.render(<VideoLessonPage lesson={lesson(id)} course={course}
     currentUser={account} completedLessonIds={[]} onClose={() => {}}
     onToggleCompleteLesson={() => {}} onSelectLesson={() => {}} />));
@@ -44,6 +49,9 @@ beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   mocks.request.mockReset();
   mocks.toast.mockReset();
+  mocks.attach.mockReset();
+  mocks.detach.mockReset();
+  vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
   pending.length = 0;
   localStorage.clear();
   mocks.request.mockImplementation((path: string) => {
@@ -58,7 +66,56 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+it('tracks student playback once across ordinary rerenders and never tracks management previews', async () => {
+  await render('first'); await resolve(0, '/teacher.mp4');
+  expect(mocks.attach).not.toHaveBeenCalled();
+  await render('first', student); await resolve(1, '/student.mp4');
+  expect(mocks.attach).toHaveBeenCalledTimes(1);
+  await render('first', student);
+  expect(mocks.attach).toHaveBeenCalledTimes(1);
+  await render('first', teacher);
+  expect(mocks.detach).toHaveBeenCalledTimes(1);
+});
+
+it.each(['teacher', 'institution_admin', 'platform_admin'] as const)('allows %s to seek forward and back without a student watch restriction', async role => {
+  await render('first', { ...teacher, role }); await resolve(0, '/teacher.mp4');
+  const video = host.querySelector('video')!;
+  Object.defineProperty(video, 'duration', { configurable: true, value: 60 });
+  await act(async () => video.dispatchEvent(new Event('loadedmetadata')));
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="تقديم 10 ثواني"]')!.click());
+  expect(video.currentTime).toBe(10);
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="رجوع 10 ثواني"]')!.click());
+  expect(video.currentTime).toBe(0);
+  video.currentTime = 45;
+  await act(async () => video.dispatchEvent(new Event('timeupdate')));
+  expect(video.currentTime).toBe(45);
+  expect(mocks.toast).not.toHaveBeenCalled();
+});
+
+it('preserves the student forward-seek restriction', async () => {
+  await render('first', student); await resolve(0, '/student.mp4');
+  const video = host.querySelector('video')!;
+  video.currentTime = 45;
+  await act(async () => video.dispatchEvent(new Event('timeupdate')));
+  expect(video.currentTime).toBe(0);
+  expect(host.querySelector('[aria-label="تقديم 10 ثواني"]')).toBeNull();
+});
+
+it('updates an initially unknown WebM duration when the browser discovers its end', async () => {
+  await render('first'); await resolve(0, '/recorded.webm');
+  const video = host.querySelector('video')!;
+  Object.defineProperty(video, 'duration', { configurable: true, value: Infinity });
+  await act(async () => video.dispatchEvent(new Event('loadedmetadata')));
+  expect(host.textContent).not.toContain('Infinity');
+  Object.defineProperty(video, 'duration', { configurable: true, value: 20 });
+  await act(async () => video.dispatchEvent(new Event('durationchange')));
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="تقديم 10 ثواني"]')!.click());
+  expect(video.currentTime).toBe(10);
+  expect(host.textContent).toContain('00:20');
 });
 
 it.each(['resolve', 'reject'] as const)('ignores a late manual renewal %s after switching lessons', async outcome => {

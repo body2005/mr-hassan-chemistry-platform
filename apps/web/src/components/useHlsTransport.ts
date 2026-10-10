@@ -28,6 +28,11 @@ export function useHlsTransport(
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
+    const releaseSource = () => {
+      video.removeAttribute('src');
+      // Reset the media resource, aborting its outstanding Range request.
+      video.load();
+    };
     if (!playbackUrl) {
       // Do not retain the previous lesson's source while admission is pending.
       video.removeAttribute('src');
@@ -43,13 +48,14 @@ export function useHlsTransport(
       };
       showResolution();
       video.addEventListener('loadedmetadata', showResolution);
-      return () => video.removeEventListener('loadedmetadata', showResolution);
+      return () => { video.removeEventListener('loadedmetadata', showResolution); releaseSource(); };
     }
     if (!Hls.isSupported()) {
       if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = playbackUrl;
         setQualityOptions([AUTO_QUALITY]);
         setSelectedQuality(AUTO_QUALITY);
+        return releaseSource;
       } else setPlaybackError('المتصفح لا يدعم البث التكيفي؛ جرّب متصفحًا حديثًا.');
       return;
     }

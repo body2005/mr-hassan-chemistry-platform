@@ -40,12 +40,24 @@ let host: HTMLDivElement, root: ReturnType<typeof createRoot>;
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   mocks.instances.length = 0;
+  vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
-afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const render = (url: string) => act(async () => root.render(<Harness url={url} />));
 const parsed = () => act(async () => mocks.instances.at(-1)!.handlers.get('manifest')!());
 const choose = (label: string) => act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === label)!.click());
+
+it('aborts the old progressive resource when changing lessons or awaiting fresh admission', async () => {
+  await render('/first.mp4');
+  const video = host.querySelector('video')!;
+  await render('/second.mp4');
+  expect(video.getAttribute('src')).toBe('/second.mp4');
+  expect(video.load).toHaveBeenCalledTimes(1);
+  await render('');
+  expect(video.hasAttribute('src')).toBe(false);
+  expect(video.load).toHaveBeenCalledTimes(2);
+});
 
 it('switches the media level, restores automatic bandwidth ABR, and keeps a manual choice through token renewal', async () => {
   await render('/hls/first/master.m3u8'); await parsed();

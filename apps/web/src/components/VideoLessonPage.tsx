@@ -95,7 +95,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   const playerContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Completion & Anti-skip tracking
-  const isTeacher = currentUser?.role === "teacher";
+  const isTeacher = Boolean(currentUser && currentUser.role !== "student");
   const isAlreadyCompleted = isTeacher || completedLessonIds.includes(lesson.id);
   const [isLessonFinished, setIsLessonFinished] = useState(isAlreadyCompleted);
   const [maxWatchedTime, setMaxWatchedTime] = useState(0);
@@ -221,7 +221,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   useEffect(() => {
     telemetryTrackerRef.current?.detach();
     telemetryTrackerRef.current = null;
-    if (!lesson || !playbackUrl || !videoElementRef.current) return;
+    if (currentUser?.role !== 'student' || !playbackUrl || !videoElementRef.current) return;
 
     const tracker = new VideoTelemetryTracker(lesson.id);
     tracker.attach(videoElementRef.current);
@@ -231,7 +231,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
       tracker.detach();
       if (telemetryTrackerRef.current === tracker) telemetryTrackerRef.current = null;
     };
-  }, [lesson, playbackUrl]);
+  }, [lesson.id, playbackUrl, currentUser?.id, currentUser?.role]);
 
 
   // Video element handlers
@@ -302,6 +302,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   const handleLoadedMetadata = () => {
     if (!videoElementRef.current) return;
     const dur = videoElementRef.current.duration;
+    if (!Number.isFinite(dur) || dur <= 0) return;
     setDuration(dur);
 
     const saved = getStoredVideoProgress(currentUser?.id, lesson.id);
@@ -445,7 +446,6 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   };
   void nextLesson;
   void handleNextLesson;
-  void handleSkip;
 
   // Format seconds to mm:ss
   const formatTime = (secs: number) => {
@@ -593,10 +593,13 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                 <>
                   <video
                     ref={videoElementRef}
-                    src={playbackUrl.includes("/hls/") ? undefined : playbackUrl}
                     onTimeUpdate={handleTimeUpdate}
                     onEnded={handleEnded}
                     onLoadedMetadata={handleLoadedMetadata}
+                    onDurationChange={() => {
+                      const value = videoElementRef.current?.duration;
+                      if (value && Number.isFinite(value)) setDuration(value);
+                    }}
                     onError={() => void renewProtectedPlayback()}
                     onPlay={() => setIsPlaying(true)}
                     onPause={() => setIsPlaying(false)}
@@ -768,6 +771,10 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                     >
                       {/* Left Side: Play/Pause, Rewind to start, Volume Capsule, Time */}
                       <div className="lesson-player-controls-group" style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        {isTeacher && <>
+                          <button type="button" className="lesson-seek-button" aria-label="رجوع 10 ثواني" onClick={() => handleSkip(-10)}>−10</button>
+                          <button type="button" className="lesson-seek-button" aria-label="تقديم 10 ثواني" onClick={() => handleSkip(10)}>+10</button>
+                        </>}
                         {/* Play/Pause Button */}
                         <button
                           type="button"
