@@ -118,7 +118,11 @@ def test_distributed_sse_limit_reservation_survives_headers_and_disconnect():
         try:
             for _ in range(5): streams.append(Stream(student))
             assert store.zcard(key) == 5
-            assert store.zcard('admission:client:user:' + user['id']) >= 5
+            # SSE owns a separate long-lived reservation. Keeping five streams
+            # must not consume the short HTTP budget and starve playback/auth.
+            assert store.zcard('admission:client:user:' + user['id']) == 0
+            assert store.zcard('admission:realtime:user:' + user['id']) >= 5
+            assert student.get(BASE + '/auth/me', timeout=15).status_code == 200
             denied = student.get(BASE + '/realtime/stream', timeout=15)
             assert denied.status_code == 429
             streams.pop().close()
@@ -129,3 +133,4 @@ def test_distributed_sse_limit_reservation_survives_headers_and_disconnect():
             for stream in streams: stream.close()
         wait_until(lambda: store.zcard(key) == 0, 25)
         wait_until(lambda: store.zcard('admission:client:user:' + user['id']) == 0, 25)
+        wait_until(lambda: store.zcard('admission:realtime:user:' + user['id']) == 0, 25)

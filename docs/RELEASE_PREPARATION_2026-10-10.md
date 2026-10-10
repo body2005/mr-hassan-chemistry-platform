@@ -1,0 +1,123 @@
+# Release candidate preparation — 2026-10-10
+
+Branch: `fix/queen-p0-handoff`. Starting commit: `2b4cb7d05ba499876140ab2193825388516ce02e`.
+
+This document describes the changes and operational requirements. It does not
+certify production readiness. Current-run commands, exit codes, test XML,
+image identities, raw vulnerability reports and browser evidence are retained
+locally under `.qa/release1010/`, excluded from Git. Earlier reports are not
+evidence for this candidate.
+
+## Official assessment results
+
+Migration `f7c9e1a3b5d7` adds nullable approver/time fields; it preserves old
+scores and answers and does not fabricate historical approval. Legacy attempts
+without frozen questions require historical evidence review before release.
+
+Student submit/result/history responses redact official grades, correctness,
+feedback and answer keys until the owning teacher explicitly approves the
+submitted attempt. Student mastery excludes unreleased attempts. Essays and
+short answers require manual marking; zero is a grade, NULL `graded_at` is not.
+Objective marks may be computed internally. Practice remains separate from
+official grading; practice essays remain pending rather than being marked by
+literal matching or AI.
+
+The teacher action is **اعتماد وإظهار النتيجة**. Approval locks the attempt,
+requires every frozen answer to be marked and validates the frozen total.
+Grading uses the same row lock and cannot change an approved result. The
+student's pending message is **تم تسليم الاختبار، والنتيجة في انتظار اعتماد المدرس**.
+
+## Player and assessment scope
+
+Keyboard jumps display their actual accumulated duration inside the player,
+forward right / backward left, for 800 ms. The overlay belongs to the fullscreen
+container, has no pointer interaction, and retains the existing student seek
+restriction. Inputs and editable controls do not trigger player shortcuts.
+
+The separate units/lessons multi-select fields retain multiple IDs and support
+removing one selection or clearing only one field. Existing server-side scope,
+ownership, unit expansion/deduplication and entitlement validation remain in
+force. Clearing units does not clear separately selected lessons.
+
+## External production blockers
+
+1. **Permanent private storage:** a working S3-compatible account, private bucket,
+   endpoint, region, access key and secret are required. Configure both Render
+   API and the PC worker for the same bucket. Keep credentials in the private
+   environment/dashboard, never in Git or chat. Local Docker S3 QA is not proof
+   that Render has been configured.
+2. **PC worker:** configure the Render external PostgreSQL URL with TLS and the
+   same storage credentials in `.env.video-worker.local`. Run
+   `scripts/start-video-worker.ps1 -CheckOnly`, then start the worker and prove
+   a real job reaches `ready` before enabling production processing. See
+   [VIDEO_WORKER_PC.md](VIDEO_WORKER_PC.md). No port forwarding is required.
+3. **Email recovery:** Resend requires a sending API key and verified sender.
+   Enable email only after a synthetic recipient test. Disabled email does not
+   provide working password recovery. Do not substitute an example sender.
+4. **DRM:** current session-bound MP4/HLS authorizes access; an entitled viewer
+   can capture received clear media. An IDM detection button alone does not
+   prove a successful download. Do not describe token expiry, HLS, CSS, or
+   disabled right-click as DRM. Real DRM requires encrypted packaging plus
+   authenticated entitlement-bound license issuance and a compatible player.
+   `VIDEO_DRM_REQUIRED` is fail-closed, not an implemented DRM provider.
+5. **Native security review:** retain raw HIGH/CRITICAL findings. Custom native
+   source fixes need independent review; runtime isolation is mitigation, not
+   a fix for an unfixed native CVE. No suppression or version relabelling is
+   part of this candidate. Python/npm audit success does not clear OS findings.
+
+For a pricing reference, [Mux DRM](https://www.mux.com/docs/guides/protect-videos-with-drm)
+lists a $100/month add-on plus $0.003/license, separate from video charges
+(checked 2026-10-10). No provider was bought or configured. DRM cannot promise
+100% protection against all recording methods.
+
+## Existing files: preserve before changing storage
+
+Inventory the current database references and every source file before a
+Render restart/redeploy. Export to a private backup with object key, owner,
+size and SHA-256 manifest. Copy to the new private bucket without deleting
+the source. Verify every byte count/hash, authorized downloads and anonymous
+denial. Change references only after all copied objects verify; retain the
+original backup through acceptance and the rollback window. A database record
+alone does not establish that its media still exists. Render's ephemeral disk
+is not production storage ([Render documentation](https://render.com/docs/free)).
+
+## Deployment and rollback order
+
+No production deployment is authorized in this preparation task. A push to an
+auto-deploying branch is itself a deployment trigger; do not push until that
+conflict is resolved. `render.yaml` specifies automatic deployments off, but
+the actual dashboard setting must be checked separately.
+
+After explicit release approval:
+
+1. Freeze writes and take PostgreSQL plus S3 snapshots. Restore both into NEW
+   stores and compare all tables/rows, object hashes and access controls.
+2. Provision and test private storage, database TLS and Redis. Confirm sender,
+   stable frontend origin, trusted proxy ranges and private secrets.
+3. Deploy the matching API, run `alembic upgrade head` once, verify readiness
+   and existing accounts. Keep reset-password/demo seed flags false. The
+   obsolete Gemini/Groq credential inputs have been removed from Render's
+   template; existing dashboard values require a separate dashboard review.
+4. Deploy the matching frontend. Verify cookies, CSRF, refresh and stable
+   origin login through the Vercel proxy. Do not wildcard preview origins.
+5. Start and verify the PC worker, perform a synthetic video job, then enable
+   processing. Prove every offered rendition, seek, logout/revocation and
+   pending/approved quiz flow before inviting external testers.
+
+Prefer rolling back application images with the additive migration left in
+place. Do not run destructive downgrades or restore a stale backup over a live
+database. If data restore is necessary, restore into new stores, verify and
+switch after reconciliation. Restoring an older backup can lose later writes.
+
+## Deferred improvements and limits
+
+Large frontend bundles remain a performance improvement, distinct from
+authorization/storage/recovery blockers. Marketing counts should be backed by
+real data before public publication. Biology OCR accuracy remains deferred;
+no parser, AI, indexing, SMS, profile photos or video translation was added.
+Small local load tests cannot establish capacity for 1,000 concurrent users.
+
+QA project `chemistryrelease1010` is explicitly allowlisted alongside the
+previous local projects. Fault tests still require `QA_ISOLATED=true` and
+verify Docker Compose project/service ownership. They must never run against
+Render or real users. QA volumes/backups are retained, not deleted.

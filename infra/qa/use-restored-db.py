@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 from urllib.parse import quote
 
-if os.getenv("QA_ISOLATED") != "true" or os.getenv("QA_PROJECT") not in {"chemistryaudit2", "chemistryprodlocal"}:
+if os.getenv("QA_ISOLATED") != "true" or os.getenv("QA_PROJECT") not in {"chemistryaudit2", "chemistryprodlocal", "chemistryrelease1010"}:
     raise SystemExit("Restored database wrapper requires an allowlisted isolated QA project")
 if len(sys.argv) < 2:
     raise SystemExit("A child command is required")

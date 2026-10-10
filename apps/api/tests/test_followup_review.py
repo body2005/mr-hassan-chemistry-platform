@@ -150,7 +150,8 @@ def test_legacy_quiz_accepts_a_real_dict_option_key_or_text(db, answer):
     attempt = learner.post(f'/api/v1/quizzes/{quiz.id}/attempts', headers=csrf_headers(learner)).json()
     result = learner.post(f"/api/v1/quiz-attempts/{attempt['id']}/submit", headers=csrf_headers(learner),
         json={'submission_key':'valid-dict-option', 'answers':[{'question_id':str(q.id), 'answer':answer}]})
-    assert result.status_code == 200 and result.json()['score'] == 2
+    assert result.status_code == 200 and result.json()['score'] is None
+    assert db.query(QuizAttempt).filter_by(quiz_id=quiz.id).one().score == 2
 
 
 def test_assessment_query_count_does_not_grow_with_content(db):

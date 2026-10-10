@@ -28,7 +28,7 @@ class LiveSession(requests.Session):
 
 
 def isolated():
-    if os.getenv("QA_ISOLATED") != "true" or os.getenv("QA_PROJECT") not in {"chemistryprodlocal", "chemistryaudit2"}:
+    if os.getenv("QA_ISOLATED") != "true" or os.getenv("QA_PROJECT") not in {"chemistryprodlocal", "chemistryaudit2", "chemistryrelease1010"}:
         raise RuntimeError("Live integration requires an explicitly allowlisted isolated QA project")
 
 

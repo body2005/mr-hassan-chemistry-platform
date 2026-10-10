@@ -10,7 +10,7 @@ from app.models.storage_cleanup import StorageCleanup
 
 
 async def main():
-    if (os.getenv('QA_ISOLATED') != 'true' or os.getenv('QA_PROJECT') != 'chemistryaudit2'
+    if (os.getenv('QA_ISOLATED') != 'true' or os.getenv('QA_PROJECT') not in {'chemistryaudit2', 'chemistryrelease1010'}
             or settings.app_env != 'production_like' or 'qa_cleanup_' not in settings.database_url):
         raise RuntimeError('Cleanup probe requires a dedicated QA schema and production_like runtime')
     key = os.environ['QA_CLEANUP_KEY']

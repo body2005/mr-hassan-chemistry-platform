@@ -192,7 +192,7 @@ def test_manual_essay_is_pending_until_authorized_bounded_grading(db):
         assert client.post(f'/api/v1/quiz-attempts/{attempt_id}/submit', headers=csrf_headers(client), json=payload).status_code == 200
         result = client.get(f'/api/v1/quizzes/{quiz.id}/result').json()
         assert result['grading_status'] == 'pending'
-        assert result['summary'] == {'correct': 0, 'wrong': 0, 'skipped': 0, 'pending': 1, 'total': 1}
+        assert result['summary'] is None and result['score'] is None
         path = f'/api/v1/quiz-attempts/{attempt_id}/answers/{question.id}/grade'
         assert client.post(path, json={'awarded_points': 3}, headers=csrf_headers(client)).status_code == 403
         login(client, other, inst.slug)
@@ -213,6 +213,8 @@ def test_manual_essay_is_pending_until_authorized_bounded_grading(db):
         summary = next(item for item in client.get('/api/v1/users?role=student').json() if item['id'] == str(student.id))
         assert summary['pending_quiz_attempts'] == 0
         assert summary['average_quiz_score'] == 60
+        approval = client.post(f'/api/v1/quiz-attempts/{attempt_id}/approve', headers=csrf_headers(client))
+        assert approval.status_code == 200, approval.text
         login(client, student, inst.slug)
         result = client.get(f'/api/v1/quizzes/{quiz.id}/result').json()
         assert result['grading_status'] == 'complete'

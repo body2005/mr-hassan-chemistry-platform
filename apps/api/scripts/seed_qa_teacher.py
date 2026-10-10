@@ -14,7 +14,7 @@ from app.models.user import User, UserRole
 
 
 def main():
-    if os.getenv("QA_ISOLATED") != "true" or os.getenv("QA_PROJECT") not in {"chemistryaudit2", "chemistryprodlocal"}:
+    if os.getenv("QA_ISOLATED") != "true" or os.getenv("QA_PROJECT") not in {"chemistryaudit2", "chemistryprodlocal", "chemistryrelease1010"}:
         raise RuntimeError("Synthetic QA user creation is restricted to the allowlisted local test project")
     stamp = uuid.uuid4().hex
     # The API validates public-domain EmailStr values (reserved .test is not

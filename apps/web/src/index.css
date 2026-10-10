@@ -1691,6 +1691,7 @@ img, video, canvas, svg {
 .assessment-scope-selections li { display: flex; align-items: center; max-width: 100%; padding-inline-start: 12px; border: 1px solid var(--border-color); border-radius: 14px; background: var(--bg-surface-secondary); color: var(--text-main); font-size: 13px; }
 .assessment-scope-selections li > span { min-width: 0; overflow-wrap: anywhere; padding-block: 8px; }
 .assessment-scope-selections button { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 44px; min-height: 44px; padding: 0; border: 0; border-radius: 14px; background: transparent; color: inherit; cursor: pointer; }
+.assessment-scope-clear { min-height: 44px; margin-block-start: 4px; padding: 4px 8px; border: 0; background: transparent; color: var(--text-muted); font-size: 13px; text-decoration: underline; cursor: pointer; }
 .quiz-editor-journey p { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-block: 12px; font-size: 14px; line-height: 1.7; }
 .quiz-editor-journey p span { color: var(--text-muted); }
 .quiz-editor-error { display: flex; align-items: center; gap: 12px; margin-block: 12px; padding: 12px; border: 1px solid #b45309; border-inline-start-width: 4px; border-radius: 8px; background: var(--bg-surface-secondary); color: var(--text-main); font-size: 16px; line-height: 1.6; }
@@ -1700,6 +1701,12 @@ img, video, canvas, svg {
 .quiz-editor input, .quiz-editor select, .quiz-editor textarea { max-width: 100%; min-width: 0; }
 .quiz-editor input, .quiz-editor select { min-height: 44px; }
 .lesson-player-controls-row, .lesson-player-controls-group { flex-wrap: wrap; gap: 8px; min-width: 0; }
+.lesson-seek-feedback { position: absolute; z-index: 12; top: 42%; transform: translateY(-50%); display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 16px; border-radius: 50%; background: rgb(0 0 0 / 55%); color: white; font-size: 18px; font-weight: 700; pointer-events: none; }
+.lesson-seek-feedback-forward { right: 7%; }
+.lesson-seek-feedback-backward { left: 7%; }
+.quiz-result-pending { display: grid; justify-items: center; gap: 16px; padding: 40px 20px; text-align: center; color: var(--text-main); border: 1px solid var(--border-color); border-radius: 16px; background: var(--bg-surface); }
+.quiz-result-pending h2 { margin: 0; font-size: 20px; line-height: 1.7; }
+.quiz-result-pending p { margin: 0; color: var(--text-muted); }
 .lesson-player-controls-row button, .lesson-playback-error button { min-width: 44px; min-height: 44px; justify-content: center; }
 .lesson-player-controls { overflow: visible; }
 .lesson-quality-menu { right: 0; }

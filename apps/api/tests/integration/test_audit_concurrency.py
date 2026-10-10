@@ -80,8 +80,9 @@ def test_concurrent_quiz_submissions_no_duplicate_answers():
         payload = {'submission_key': uuid.uuid4().hex, 'answers': [{'question_id': question_id, 'answer': 'A'}]}
         responses = overlap(student, [('POST', f'/quiz-attempts/{attempt}/submit', payload)] * 2)
         assert [r.status_code for _, r in responses] == [200, 200]
-        assert [r.json()['score'] for _, r in responses] == [5, 5]
+        assert [r.json()['score'] for _, r in responses] == [None, None]
         with Session(engine) as db:
+            assert db.get(QuizAttempt, uuid.UUID(attempt)).score == 5
             assert db.scalar(select(func.count()).select_from(QuizAttemptAnswer).where(QuizAttemptAnswer.attempt_id == uuid.UUID(attempt))) == 1
         for client, _ in responses: client.close()
     engine.dispose()

@@ -43,6 +43,9 @@ def test_result_and_teacher_solution_show_canonical_choice_letters(db):
             headers=csrf_headers(learner), json={'submission_key': uuid.uuid4().hex,
                 'answers': [{'question_id': str(question.id), 'answer': 'الهيدروجين'}]})
         assert response.status_code == 200
+        with login(TestClient(app), teacher, inst.slug) as owner:
+            approved = owner.post(f'/api/v1/quiz-attempts/{opened["attempt"]["id"]}/approve', headers=csrf_headers(owner))
+            assert approved.status_code == 200, approved.text
         result = learner.get(f'/api/v1/quizzes/{quiz.id}/result')
         assert result.status_code == 200, result.text
         assert result.json()['questions'][0]['correct_answer_letter'] == 0

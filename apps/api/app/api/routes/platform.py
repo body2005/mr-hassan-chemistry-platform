@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import logging
+import math
 import os
 import tempfile
 import threading
@@ -967,7 +968,8 @@ def start_quiz(quiz_id: uuid.UUID, user: Student, db: Db) -> QuizAttemptResponse
         attempt = platform_service.start_quiz(db, user, quiz_id)
     except (LookupError, PermissionError, ValueError) as exc:
         raise _bad_request(exc) from exc
-    return QuizAttemptResponse.model_validate(attempt)
+    from app.services.quiz_results import student_attempt_response
+    return student_attempt_response(attempt)
 
 
 @router.post("/quiz-attempts/{attempt_id}/submit", response_model=QuizAttemptResponse)
@@ -978,7 +980,8 @@ def submit_quiz(
         attempt = platform_service.submit_quiz(db, user, attempt_id, payload)
     except (LookupError, PermissionError, ValueError) as exc:
         raise _bad_request(exc) from exc
-    return QuizAttemptResponse.model_validate(attempt)
+    from app.services.quiz_results import student_attempt_response
+    return student_attempt_response(attempt)
 
 
 @router.post("/assignments", response_model=AssignmentResponse, status_code=201)
@@ -1867,6 +1870,8 @@ def grade_quiz_answer(attempt_id: uuid.UUID, question_id: uuid.UUID, payload: Gr
         raise HTTPException(404, "Attempt not found") from exc
     if attempt.status != AttemptStatus.SUBMITTED:
         raise HTTPException(409, "Only submitted attempts can be graded")
+    if attempt.results_approved_at is not None:
+        raise HTTPException(409, "Approved results cannot be changed")
     answer = db.scalar(select(QuizAttemptAnswer).where(QuizAttemptAnswer.attempt_id == attempt.id,
         QuizAttemptAnswer.question_id == question_id))
     if answer is None:
@@ -1885,6 +1890,48 @@ def grade_quiz_answer(attempt_id: uuid.UUID, question_id: uuid.UUID, payload: Gr
     attempt.score = db.scalar(select(func.sum(QuizAttemptAnswer.awarded_points)).where(
         QuizAttemptAnswer.attempt_id == attempt.id, QuizAttemptAnswer.graded_at.is_not(None))) or 0
     record_audit(db, request, action="quiz_answer_graded", resource_type="quiz_attempt", resource_id=str(attempt.id), actor=user)
+    db.commit()
+    db.refresh(attempt)
+    return attempt
+
+
+@router.post("/quiz-attempts/{attempt_id}/approve", response_model=QuizAttemptResponse)
+def approve_quiz_result(attempt_id: uuid.UUID, user: Manager, db: Db, request: Request):
+    attempt = db.scalar(select(QuizAttempt).where(QuizAttempt.id == attempt_id).with_for_update())
+    quiz = db.get(Quiz, attempt.quiz_id) if attempt else None
+    course = db.get(Course, quiz.course_id) if quiz else None
+    if course is None or (user.role != UserRole.PLATFORM_ADMIN and course.institution_id != user.institution_id):
+        raise HTTPException(404, "Attempt not found")
+    try:
+        platform_service.ensure_course_manager(user, course)
+    except PermissionError as exc:
+        raise HTTPException(404, "Attempt not found") from exc
+    if attempt.is_practice or attempt.status != AttemptStatus.SUBMITTED:
+        raise HTTPException(409, "Only submitted official attempts can be approved")
+    if attempt.results_approved_at is not None:
+        return attempt
+    if not attempt.question_snapshot:
+        raise HTTPException(409, "Legacy attempt requires historical evidence review")
+    answers = db.scalars(select(QuizAttemptAnswer).where(QuizAttemptAnswer.attempt_id == attempt.id)).all()
+    by_question = {str(answer.question_id): answer for answer in answers}
+    if any(item["question_id"] not in by_question or by_question[item["question_id"]].graded_at is None
+           for item in attempt.question_snapshot):
+        raise HTTPException(409, "صحح كل الأسئلة المقالية قبل اعتماد النتيجة")
+    # Approve only the frozen rubric, never stray answers or invalid historical
+    # totals. Both grading and approval lock the same attempt row.
+    frozen = attempt.question_snapshot
+    expected_ids = {item["question_id"] for item in frozen}
+    if set(by_question) != expected_ids or len(expected_ids) != len(frozen):
+        raise HTTPException(409, "Attempt answers do not match the frozen assessment")
+    maximum = sum(item["points"] for item in frozen)
+    if (not math.isfinite(maximum) or maximum <= 0 or attempt.total_points != maximum or
+            any(not math.isfinite(by_question[item["question_id"]].awarded_points) or
+                not 0 <= by_question[item["question_id"]].awarded_points <= item["points"] for item in frozen)):
+        raise HTTPException(409, "Attempt requires a valid frozen grading total")
+    attempt.score = sum(by_question[item["question_id"]].awarded_points for item in frozen)
+    attempt.results_approved_at = datetime.now(UTC)
+    attempt.results_approved_by = user.id
+    record_audit(db, request, action="quiz_result_approved", resource_type="quiz_attempt", resource_id=str(attempt.id), actor=user)
     db.commit()
     db.refresh(attempt)
     return attempt
@@ -1939,6 +1986,21 @@ def get_quiz_result_view(
             raise HTTPException(status_code=404, detail="Attempt not found")
     else:
         attempt = all_attempts[0]
+
+    from app.services.quiz_results import result_is_visible, PENDING_RESULT_MESSAGE
+    if not result_is_visible(attempt):
+        answers = db.scalars(select(QuizAttemptAnswer).where(QuizAttemptAnswer.attempt_id == attempt.id)).all()
+        return {
+            "quiz": {"id": str(quiz.id), "title": quiz.title},
+            "attempt": {"id": str(attempt.id), "attempt_number": attempt.attempt_number,
+                        "is_practice": bool(attempt.is_practice),
+                        "submitted_at": attempt.submitted_at.isoformat() if attempt.submitted_at else None,
+                        "duration_seconds": None},
+            "score": None, "total_points": attempt.total_points,
+            "approval_status": "pending", "grading_status": "pending", "message": PENDING_RESULT_MESSAGE,
+            "summary": None,
+            "questions": [{"id": str(answer.question_id), "student_answer": answer.answer} for answer in answers],
+        }
 
     from app.services.quiz_snapshot import question_rows
     rows = question_rows(db, quiz, attempt)
@@ -2036,7 +2098,8 @@ def get_quiz_result_view(
                 "id": str(att.id),
                 "attempt_number": att.attempt_number,
                 "is_practice": bool(att.is_practice),
-                "score": float(att.score or 0.0),
+                "score": float(att.score or 0.0) if result_is_visible(att) else None,
+                "approval_status": "approved" if att.results_approved_at else "practice" if result_is_visible(att) else "pending",
                 "total_points": float(att.total_points) if att.total_points is not None else None,
                 "submitted_at": att.submitted_at.isoformat() if att.submitted_at else None,
                 "duration_seconds": max(0, int((_as_utc(att.submitted_at) - _as_utc(att.started_at)).total_seconds())) if att.submitted_at and att.started_at else None,
@@ -2044,6 +2107,8 @@ def get_quiz_result_view(
             for att in all_attempts
         ],
         "score": float(attempt.score or 0.0),
+        "approval_status": "approved" if attempt.results_approved_at else "practice",
+        "results_approved_at": attempt.results_approved_at.isoformat() if attempt.results_approved_at else None,
         "grading_status": "pending" if pending_count else "complete",
         "total_points": float(attempt.total_points) if attempt.total_points is not None else None,
         "history_state": "frozen" if attempt.question_snapshot is not None else "legacy-unverified",
@@ -2186,6 +2251,8 @@ def get_student_quiz_solution(
     return {
         "student_id": str(student_id),
         "student_name": target_student.display_name,
+        "approval_status": "approved" if attempt.results_approved_at else "pending",
+        "results_approved_at": attempt.results_approved_at.isoformat() if attempt.results_approved_at else None,
         "history_state": "frozen" if attempt.question_snapshot is not None else "legacy-unverified",
         "history_warning": (None if attempt.question_snapshot is not None else
             "لا توجد نسخة تاريخية موثقة للأسئلة؛ الدرجة المحفوظة لم تتغير، وتفاصيل الأسئلة تحتاج مراجعة المدرس."),
@@ -2240,13 +2307,15 @@ def get_quiz_attempts_history(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> 
         .order_by(QuizAttempt.attempt_number.desc())
     ).all()
 
+    from app.services.quiz_results import result_is_visible
     return [
         {
             "id": str(att.id),
             "attempt_number": att.attempt_number,
-            "grading_status": att.grading_status,
+            "grading_status": att.grading_status if result_is_visible(att) else "pending",
+            "approval_status": "approved" if att.results_approved_at else "practice" if result_is_visible(att) else "pending",
             "is_practice": bool(att.is_practice),
-            "score": float(att.score or 0.0),
+            "score": float(att.score or 0.0) if result_is_visible(att) else None,
             "total_points": float(att.total_points or 0.0),
             "submitted_at": att.submitted_at.isoformat() if att.submitted_at else None,
             "duration_seconds": max(0, int((_as_utc(att.submitted_at) - _as_utc(att.started_at)).total_seconds())) if att.submitted_at and att.started_at else None,

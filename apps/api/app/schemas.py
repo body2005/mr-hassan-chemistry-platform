@@ -565,6 +565,9 @@ class QuizAttemptResponse(BaseModel):
     total_points: float | None
     is_practice: bool = False
     grading_status: str
+    approval_status: str = "pending"
+    results_approved_at: datetime | None = None
+    results_approved_by: uuid.UUID | None = None
 
 
 class AssignmentAttemptResponse(BaseModel):

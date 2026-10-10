@@ -93,3 +93,11 @@ it('explains when no content is available in either dropdown', async () => {
   expect(field(0).textContent).toContain('لا توجد وحدات');
   expect(field(1).textContent).toContain('أضف درسًا');
 });
+
+it('clears only the requested field', async () => {
+  await act(async () => root.render(<Harness initialLessons={['one','two']} initialModules={['u1','u2']} />));
+  await act(async () => field(0).querySelector<HTMLButtonElement>('.assessment-scope-clear')!.click());
+  expect(result()).toEqual({lessons:['one','two'], modules:[]});
+  await act(async () => field(1).querySelector<HTMLButtonElement>('.assessment-scope-clear')!.click());
+  expect(result()).toEqual({lessons:[], modules:[]});
+});

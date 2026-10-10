@@ -8,7 +8,9 @@ from sqlalchemy import create_engine, text
 
 
 def test_scope_migration_backfills_legacy_links_and_has_one_head():
-    assert ScriptDirectory.from_config(Config('alembic.ini')).get_heads() == ['f6b8d0e2a4c6']
+    directory = ScriptDirectory.from_config(Config('alembic.ini'))
+    assert len(directory.get_heads()) == 1
+    assert 'f6b8d0e2a4c6' in {revision.revision for revision in directory.walk_revisions()}
     path = Path('alembic/versions/f6b8d0e2a4c6_multi_assessment_scope.py')
     spec = importlib.util.spec_from_file_location('multi_scope_migration', path)
     migration = importlib.util.module_from_spec(spec); spec.loader.exec_module(migration)

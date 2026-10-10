@@ -62,6 +62,8 @@ def test_weighted_mastery_and_result_stay_50_percent_after_bank_revision(db):
         headers=csrf_headers(owner))
     assert changed.status_code == 201, changed.text
     assert owner.get(path).json()["items"][0]["mastery"] == 0.5
+    approval = owner.post(f'/api/v1/quiz-attempts/{attempt["id"]}/approve', headers=csrf_headers(owner))
+    assert approval.status_code == 200, approval.text
     result = learner.get(f"/api/v1/quizzes/{quiz.id}/result").json()
     assert result["total_points"] == 10 and result["score"] == 5
     assert result["questions"][0]["prompt"] == "Explain conservation of mass"
@@ -77,7 +79,8 @@ def test_published_exam_and_in_progress_grading_ignore_bank_answer_changes(db):
     opened = solve(learner, quiz)
     assert opened["questions"][0]["points"] == 10
     attempt = submit(learner, opened["attempt"], question, "A")
-    assert attempt["score"] == 10 and attempt["total_points"] == 10
+    assert attempt["score"] is None and attempt["total_points"] == 10
+    assert db.get(QuizAttempt, uuid.UUID(attempt['id'])).score == 10
     row = db.query(QuizAttemptAnswer).filter_by(question_id=question.id).one()
     assert row.question_snapshot["question_version"] == 1
     assert row.question_snapshot["correct_answer"] == "A"
@@ -110,9 +113,9 @@ def test_legacy_evidence_is_reported_without_bank_weight_reinterpretation(db):
     report = owner.get(f"/api/v1/analytics/students/{student.id}/mastery").json()
     assert report["items"] == [] and report["legacy_unverified_count"] == 1
     result = learner.get(f"/api/v1/quizzes/{quiz.id}/result").json()
-    assert result["score"] == 5 and result["total_points"] == 10
-    assert result["questions"] == [] and result["history_state"] == "legacy-unverified"
-    assert result["history_warning"]
+    assert result["score"] is None and result["total_points"] == 10
+    assert result["approval_status"] == "pending"
+    assert 'correct_answer' not in str(result)
     response = owner.post(f"/api/v1/quiz-attempts/{legacy.id}/answers/{question.id}/grade",
         json={"awarded_points": 6}, headers=csrf_headers(owner))
     assert response.status_code == 409

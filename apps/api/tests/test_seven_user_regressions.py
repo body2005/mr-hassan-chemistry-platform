@@ -64,7 +64,8 @@ def test_mcq_key_and_option_text_identify_same_frozen_choice(db, correct, answer
             headers=csrf_headers(client), json={'submission_key': uuid.uuid4().hex,
             'answers': [{'question_id': str(question.id), 'answer': answer}]})
         assert result.status_code == 200, result.text
-        assert result.json()['score'] == expected
+        assert result.json()['score'] is None
+        assert db.get(QuizAttempt, uuid.UUID(result.json()['id'])).score == expected
 
 
 def add_attempt(db, inst, student, quiz, *, score, practice=False, number=1, snapshot=None):

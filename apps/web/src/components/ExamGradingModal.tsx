@@ -35,6 +35,7 @@ interface QuizSolutionQuestion {
 }
 
 interface QuizSolutionData {
+  approval_status?: 'pending' | 'approved';
   student_id: string;
   student_name: string;
   quiz?: { id: string; title: string };
@@ -117,7 +118,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
   const score = assessmentPercent(awarded, solutionData?.total_points);
 
   async function handleSave() {
-    if (!student || !solutionData?.attempt || savingGrade || solutionData.history_state === 'legacy-unverified') return;
+    if (!student || !solutionData?.attempt || savingGrade || solutionData.history_state === 'legacy-unverified' || solutionData.approval_status === 'approved') return;
     setSavingGrade(true);
     setGradeError(null);
     try {
@@ -140,6 +141,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
       const percent = assessmentPercent(updated.score, updated.total_points);
       if (percent == null)
         throw new Error('لا يمكن اعتماد النتيجة دون مجموع درجات صحيح وموثق.');
+      await apiRequest(`/quiz-attempts/${updated.attempt!.id}/approve`, { method: 'POST' });
       onApproveGrade(student.id, percent, notes);
       onClose();
     } catch (error) {
@@ -575,6 +577,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
                               <div>
                                 <label>درجة السؤال (من {q.points})
                                   <input aria-label={`درجة السؤال ${idx + 1}`} type="number" min={0} max={q.points} step="0.5"
+                                    disabled={savingGrade || solutionData.approval_status === 'approved'}
                                     value={answerGrades[q.id]?.points ?? (isPending ? "" : q.awarded)}
                                     onChange={(e) => setAnswerGrades((old) => ({ ...old, [q.id]: {
                                       points: e.target.value === "" ? Number.NaN : Number(e.target.value),
@@ -583,6 +586,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
                                 </label>
                                 <label>تعليق المدرس
                                   <textarea aria-label={`تعليق السؤال ${idx + 1}`} maxLength={20000}
+                                    disabled={savingGrade || solutionData.approval_status === 'approved'}
                                     value={answerGrades[q.id]?.feedback ?? q.feedback ?? ""}
                                     onChange={(e) => setAnswerGrades((old) => ({ ...old, [q.id]: {
                                       points: old[q.id]?.points ?? (isPending ? Number.NaN : q.awarded), feedback: e.target.value,
@@ -770,7 +774,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
           <button
             type="button"
             onClick={handleSave}
-            disabled={savingGrade || loadingSolution || !solutionData || solutionData.history_state === 'legacy-unverified'}
+            disabled={savingGrade || loadingSolution || !solutionData || solutionData.history_state === 'legacy-unverified' || solutionData.approval_status === 'approved'}
             style={{
               padding: "9px 22px",
               background: "#059669",
@@ -787,7 +791,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
             }}
           >
             <CheckCircle2 size={16} />
-            <span>حفظ واعتماد درجة الامتحان</span>
+            <span>{solutionData?.approval_status === 'approved' ? 'النتيجة معتمدة' : 'اعتماد وإظهار النتيجة'}</span>
           </button>
         </div>
       </div>

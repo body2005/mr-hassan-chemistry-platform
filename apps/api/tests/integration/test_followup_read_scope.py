@@ -49,7 +49,8 @@ def test_teacher_reads_only_owned_course_evidence_for_shared_student(global_fall
                 snapshot = capture_questions(db, quiz, [(link, q)])[0]
                 attempt = QuizAttempt(institution_id=institution, quiz_id=quiz.id, student_id=student.id,
                     attempt_number=1, status=AttemptStatus.SUBMITTED, started_at=datetime.now(timezone.utc),
-                    submitted_at=datetime.now(timezone.utc), total_points=1, question_snapshot=[snapshot])
+                    submitted_at=datetime.now(timezone.utc), total_points=1, question_snapshot=[snapshot],
+                    results_approved_at=datetime.now(timezone.utc), results_approved_by=teacher.id)
                 db.add(attempt); db.flush()
                 db.add(QuizAttemptAnswer(attempt_id=attempt.id, question_id=q.id, answer='Synthetic',
                     awarded_points=score, graded_at=datetime.now(timezone.utc), question_snapshot=snapshot))

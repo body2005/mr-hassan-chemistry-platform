@@ -4,9 +4,10 @@ import type { Course } from '../types/lms';
 
 type ScopeOption = { id: string; courseId: string; title: string; group: string; disabled: boolean };
 
-function ScopeSelect({ label, placeholder, emptyText, options, values, onToggle }: {
+function ScopeSelect({ label, placeholder, emptyText, options, values, onToggle, onClear }: {
   label: string; placeholder: string; emptyText: string; options: ScopeOption[]; values: string[];
   onToggle: (option: ScopeOption) => void;
+  onClear: () => void;
 }) {
   const id = useId();
   const detailsRef = useRef<HTMLDetailsElement>(null);
@@ -52,6 +53,7 @@ function ScopeSelect({ label, placeholder, emptyText, options, values, onToggle 
         </button>
       </li>)}
     </ul>}
+    {selected.length > 0 && <button type="button" className="assessment-scope-clear" onClick={onClear}>مسح {label}</button>}
   </div>;
 }
 
@@ -80,9 +82,11 @@ export function AssessmentScopePicker({ courses, courseId, lessonIds, moduleIds,
     <legend>المحتوى المرتبط بالتقييم</legend>
     <p>اختَر أكثر من وحدة أو درس. يلزم إتاحة المحتوى المحدد للطالب قبل الحل.</p>
     <ScopeSelect label="الوحدات" placeholder="اختَر الوحدات" emptyText="لا توجد وحدات بها دروس لهذا الصف."
-      options={units} values={moduleIds} onToggle={option => onChange(option.courseId, lessonIds, toggle(moduleIds, option.id))} />
+      options={units} values={moduleIds} onToggle={option => onChange(option.courseId, lessonIds, toggle(moduleIds, option.id))}
+      onClear={() => onChange(courseId || '', lessonIds, [])} />
     <ScopeSelect label="الدروس" placeholder="اختَر الدروس" emptyText="أضف درسًا لهذا الصف أولًا."
-      options={lessons} values={lessonIds} onToggle={option => onChange(option.courseId, toggle(lessonIds, option.id), moduleIds)} />
+      options={lessons} values={lessonIds} onToggle={option => onChange(option.courseId, toggle(lessonIds, option.id), moduleIds)}
+      onClear={() => onChange(courseId || '', [], moduleIds)} />
     {selected && courses.length > 1 && <p>لاختيار محتوى مجموعة أخرى، ألغِ الاختيارات الحالية أولًا.</p>}
   </fieldset>;
 }

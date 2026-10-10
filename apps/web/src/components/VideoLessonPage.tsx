@@ -13,6 +13,8 @@ import {
   Calendar,
   Download,
   FileText,
+  ChevronsRight,
+  ChevronsLeft,
 } from "lucide-react";
 import { Course, CurrentUser, VideoLesson } from "../types/lms";
 import { useProtectedPlayback } from "./useProtectedPlayback";
@@ -118,6 +120,15 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   // Wide/theater mode: video fills the entire viewport instead of the column.
   const [isWide, setIsWide] = useState(false);
   const controlsTimeoutRef = useRef<number | null>(null);
+  const [seekFeedback, setSeekFeedback] = useState<{ direction: 'forward' | 'backward'; seconds: number } | null>(null);
+  const seekFeedbackRef = useRef<typeof seekFeedback>(null);
+  const seekFeedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    seekFeedbackRef.current = null;
+    setSeekFeedback(null);
+    if (seekFeedbackTimer.current) clearTimeout(seekFeedbackTimer.current);
+    return () => { if (seekFeedbackTimer.current) clearTimeout(seekFeedbackTimer.current); };
+  }, [lesson.id, currentUser?.id]);
 
   // Sync fullscreen state & mark body for hiding floating action buttons
   useEffect(() => {
@@ -360,7 +371,8 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   // Skip handler (rewind is always allowed, forward skip blocked if !isLessonFinished)
   const handleSkip = (seconds: number) => {
     if (!videoElementRef.current) return;
-    const targetTime = videoElementRef.current.currentTime + seconds;
+    const previousTime = videoElementRef.current.currentTime;
+    const targetTime = previousTime + seconds;
     if (!isTeacher && seconds > 0 && !isLessonFinished && targetTime > maxWatchedRef.current + 1) {
       toast("لا يمكنك تقديم الفيديو للأمام قبل إنهاء مشاهدته مرة على الأقل", "warning");
       return;
@@ -369,6 +381,19 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     videoElementRef.current.currentTime = clampedTime;
     setCurrentTime(clampedTime);
     saveVideoProgressToStorage(currentUser?.id, lesson.id, clampedTime, maxWatchedRef.current, duration);
+    const moved = clampedTime - previousTime;
+    if (!moved) return;
+    const direction: 'forward' | 'backward' = moved > 0 ? 'forward' : 'backward';
+    const previous = seekFeedbackRef.current;
+    const feedback = { direction, seconds: Math.round((Math.abs(moved) + (previous?.direction === direction ? previous.seconds : 0)) * 10) / 10 };
+    seekFeedbackRef.current = feedback;
+    setSeekFeedback(feedback);
+    if (seekFeedbackTimer.current) clearTimeout(seekFeedbackTimer.current);
+    seekFeedbackTimer.current = setTimeout(() => {
+      seekFeedbackRef.current = null;
+      setSeekFeedback(null);
+      seekFeedbackTimer.current = null;
+    }, 800);
   };
 
   // Rewind video to start (00:00) while strictly preserving maxWatchedTime and progress percentage
@@ -590,6 +615,11 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                 zIndex: isWide ? 99999 : undefined,
               }}
             >
+              {seekFeedback && <div className={`lesson-seek-feedback lesson-seek-feedback-${seekFeedback.direction}`}
+                role="status" aria-live="polite" aria-atomic="true" dir="ltr">
+                {seekFeedback.direction === 'forward' ? <ChevronsRight aria-hidden="true" size={30} /> : <ChevronsLeft aria-hidden="true" size={30} />}
+                <span>{seekFeedback.direction === 'forward' ? '+' : '−'}{seekFeedback.seconds} <span lang="ar">ثوانٍ</span></span>
+              </div>}
               {/* Embed (YouTube / Google Drive) */}
               {isEmbed ? (
                 <iframe

@@ -16,9 +16,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.dependencies import get_current_user
+from app.core.security import hash_password
 from app.main import app
 from app.models.institution import Institution
 from app.models.user import User, UserRole
+from tests.test_security_and_tenancy import login, csrf_headers
 
 
 REMOVED_AI_ENDPOINTS = [
@@ -56,7 +58,7 @@ def teacher(db):
         institution_id=institution.id,
         username=f"teacher_{uuid.uuid4().hex[:6]}",
         email=f"teacher_{uuid.uuid4().hex[:6]}@test.edu",
-        password_hash="hash",
+        password_hash=hash_password("password-123456"),
         display_name="أستاذ",
         role=UserRole.TEACHER,
     )
@@ -80,10 +82,12 @@ def test_removed_ai_endpoints_return_404(teacher):
         app.dependency_overrides.clear()
 
 
-def test_quiz_extraction_still_works_end_to_end(teacher):
+def test_quiz_extraction_still_works_end_to_end(teacher, db):
     """The kept feature: extracting quiz questions from an uploaded file."""
-    client = TestClient(app, raise_server_exceptions=False)
-    app.dependency_overrides[get_current_user] = lambda: teacher
+    # Upload admission authenticates before reading the multipart body. Exercise
+    # that real security boundary instead of bypassing only a route dependency.
+    client = login(TestClient(app, raise_server_exceptions=False), teacher,
+                   db.get(Institution, teacher.institution_id).slug)
     try:
         sample_quiz = (
             "1. ما هو ناتج تفاعل الصوديوم مع الماء؟\n"
@@ -96,6 +100,7 @@ def test_quiz_extraction_still_works_end_to_end(teacher):
         response = client.post(
             "/api/v1/quiz/extract-from-file",
             files={"file": ("quiz.txt", io.BytesIO(sample_quiz.encode("utf-8")), "text/plain")},
+            headers=csrf_headers(client),
         )
         assert response.status_code == 200, response.text
         data = response.json()

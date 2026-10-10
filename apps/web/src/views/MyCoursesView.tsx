@@ -57,18 +57,20 @@ export interface DisplayBookItem extends EducationalBookItem {
 }
 
 export type QuizResultPage = {
+  approval_status?: 'pending' | 'approved' | 'practice';
+  message?: string;
   quiz: { id: string; title: string };
   attempt: { id: string; attempt_number: number; is_practice: boolean; submitted_at: string | null; duration_seconds: number | null };
   attempts_history?: Array<{
     id: string;
     attempt_number: number;
     is_practice: boolean;
-    score: number;
+    score: number | null;
     total_points: number | null;
     submitted_at: string | null;
     duration_seconds?: number | null;
   }>;
-  score: number;
+  score: number | null;
   total_points: number | null;
   history_state?: 'frozen' | 'legacy-unverified';
   history_warning?: string | null;
@@ -348,7 +350,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   const [serverQuizQuestionIndex, setServerQuizQuestionIndex] = useState(0);
   const [serverQuizFlagged, setServerQuizFlagged] = useState<Record<string, boolean>>({});
   const [serverQuizSubmitting, setServerQuizSubmitting] = useState(false);
-  const [serverQuizResult, setServerQuizResult] = useState<{ attemptId?: string; score: number; total: number; attemptNumber: number; gradingStatus?: string } | null>(null);
+  const [serverQuizResult, setServerQuizResult] = useState<{ attemptId?: string; score: number | null; total: number; attemptNumber: number; gradingStatus?: string } | null>(null);
   const [showQuizSubmitConfirm, setShowQuizSubmitConfirm] = useState(false);
   // Full graded result (standalone result page)
   const [quizResultPage, setQuizResultPage] = useState<QuizResultPage | null>(null);
@@ -361,7 +363,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     id: string;
     attempt_number: number;
     is_practice: boolean;
-    score: number;
+    score: number | null;
     total_points: number;
     submitted_at: string | null;
     duration_seconds?: number | null;
@@ -604,7 +606,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         id: string;
         attempt_number: number;
         is_practice: boolean;
-        score: number;
+        score: number | null;
         total_points: number;
         submitted_at: string | null;
         duration_seconds?: number | null;
@@ -702,7 +704,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       }).then((submitted) => {
         setServerQuizResult({
           attemptId: (submitted as { id?: string }).id || attemptId,
-          score: submitted.score ?? 0,
+          score: submitted.score,
           total: submitted.total_points ?? serverQuiz.totalPoints,
           attemptNumber: submitted.attempt_number,
           gradingStatus: submitted.grading_status,
@@ -2685,16 +2687,16 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
                       <Sparkles size={28} style={{ color: "#059669" }} />
                       <div>
-                          <strong style={{ fontSize: "16px", color: "var(--text-main)", display: "block" }}>{serverQuizResult.gradingStatus === "pending" ? "تم تسليم الاختبار — بانتظار التصحيح اليدوي" : "تم تسليم الاختبار وتصحيحه فورياً"}</strong>
+                          <strong style={{ fontSize: "16px", color: "var(--text-main)", display: "block" }}>{serverQuizResult.score === null ? "تم تسليم الاختبار، والنتيجة في انتظار اعتماد المدرس" : "تم تسليم الاختبار"}</strong>
                         <span style={{ fontSize: "12.5px", color: "var(--text-muted)" }}>
                           {serverQuizAttempt?.isPractice
                             ? `المحاولة رقم ${serverQuizResult.attemptNumber} — تدريبية: ظهرت لك فقط ولن تصل للمعلم أو كشف الدرجات.`
-                            : `المحاولة رقم ${serverQuizResult.attemptNumber} — النتيجة مسجلة في كشف الدرجات.`}
+                            : `المحاولة رقم ${serverQuizResult.attemptNumber}`}
                         </span>
                       </div>
                     </div>
                     <div style={{ fontSize: "26px", fontWeight: 900, color: "#059669" }}>
-                      {serverQuizResult.gradingStatus === "pending" ? "بانتظار التصحيح — الدرجة الحالية غير نهائية" : `${serverQuizResult.score} / ${serverQuizResult.total} درجة`}
+                      {serverQuizResult.score === null ? "بانتظار اعتماد المدرس" : `${serverQuizResult.score} / ${serverQuizResult.total} درجة`}
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", marginTop: "16px" }}>
@@ -3215,6 +3217,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               )}
 
               {quizResultPage && (() => {
+                if (quizResultPage.approval_status === 'pending' || quizResultPage.score === null) {
+                  return <div role="status" className="quiz-result-pending">
+                    <Clock size={28} aria-hidden="true" />
+                    <h2>{quizResultPage.message || 'تم تسليم الاختبار، والنتيجة في انتظار اعتماد المدرس'}</h2>
+                    <p>ستظهر الدرجة ومراجعة الإجابات بعد اعتماد النتيجة.</p>
+                  </div>;
+                }
                 const dur = quizResultPage.attempt.duration_seconds;
                 const durLabel = dur != null ? `${Math.floor(dur / 60)}:${String(dur % 60).padStart(2, "0")}` : "—";
                 return (
@@ -3299,7 +3308,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                                   </span>
                                 )}
                                 <span style={{ fontWeight: 900, fontSize: "12px" }}>
-                                  ({att.score}/{att.total_points})
+                                  {att.score === null ? 'بانتظار اعتماد المدرس' : `(${att.score}/${att.total_points})`}
                                 </span>
                               </button>
                             );
@@ -4348,7 +4357,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
                     <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
                       <span style={{ fontSize: "15px", fontWeight: 900, color: "#059669" }}>
-                        {att.score} / {att.total_points}
+                        {att.score === null ? 'بانتظار اعتماد المدرس' : `${att.score} / ${att.total_points}`}
                       </span>
                       <button
                         type="button"

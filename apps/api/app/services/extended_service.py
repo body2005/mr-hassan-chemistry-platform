@@ -476,6 +476,8 @@ def compute_student_mastery_report(db: Session, user: User, student_id: uuid.UUI
         .order_by(QuizAttempt.attempt_number.desc(), QuizAttempt.submitted_at.desc(), QuizAttempt.id))
     if scope is not None:
         query = query.where(Quiz.course_id.in_(scope))
+    if user.role == UserRole.STUDENT:
+        query = query.where(QuizAttempt.results_approved_at.is_not(None))
     latest = {}
     for attempt, course_id, is_pending in db.execute(query):
         latest.setdefault(attempt.quiz_id, (attempt, course_id, is_pending))

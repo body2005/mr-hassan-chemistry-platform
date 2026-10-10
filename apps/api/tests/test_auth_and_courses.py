@@ -250,7 +250,8 @@ def test_quiz_is_server_timed_and_submission_is_idempotent(db) -> None:
         },
     )
     assert submission.status_code == 200
-    assert submission.json()["score"] == 5
+    assert submission.json()["score"] is None
+    assert db.query(QuizAttempt).one().score == 5
     duplicate = student_client.post(
         f"/api/v1/quiz-attempts/{attempt.json()['id']}/submit",
         json={"submission_key": "quiz-submit-001", "answers": []},

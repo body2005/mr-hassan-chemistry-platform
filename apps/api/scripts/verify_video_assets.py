@@ -6,7 +6,7 @@ from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import urlopen
 
-if os.getenv("QA_ISOLATED") != "true" or os.getenv("QA_PROJECT") not in {"chemistryaudit2", "chemistryprodlocal"}:
+if os.getenv("QA_ISOLATED") != "true" or os.getenv("QA_PROJECT") not in {"chemistryaudit2", "chemistryprodlocal", "chemistryrelease1010"}:
     raise SystemExit("Only an explicitly isolated QA project is allowed")
 os.environ["STORAGE_BACKEND"] = "s3"
 

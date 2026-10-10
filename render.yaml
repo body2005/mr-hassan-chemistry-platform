@@ -94,10 +94,6 @@ services:
         sync: false
       - key: S3_REGION
         value: "auto"
-      - key: GEMINI_API_KEY
-        sync: false
-      - key: GROQ_API_KEY
-        sync: false
       - key: REDIS_URL
         fromService:
           type: keyvalue
@@ -175,10 +171,6 @@ services:
         sync: false
       - key: S3_REGION
         value: "auto"
-      - key: GEMINI_API_KEY
-        sync: false
-      - key: GROQ_API_KEY
-        sync: false
     autoDeployTrigger: "off"
 
 databases:

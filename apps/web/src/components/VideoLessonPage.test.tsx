@@ -67,6 +67,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
   vi.restoreAllMocks();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -106,6 +107,57 @@ it('preserves the student forward-seek restriction', async () => {
   expect(host.querySelector('[aria-label="تقديم 10 ثواني"]')).toBeNull();
   await act(async () => host.querySelector('.lesson-video-player')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })));
   expect(video.currentTime).toBe(0);
+});
+
+it('shows actual keyboard movement on the correct side, accumulates it and clears it automatically', async () => {
+  await render('first'); await resolve(0, '/teacher.mp4');
+  vi.useFakeTimers();
+  const video = host.querySelector('video')!;
+  Object.defineProperty(video, 'duration', {configurable:true, value:60});
+  await act(async () => video.dispatchEvent(new Event('loadedmetadata')));
+  const press = async (key: string) => act(async () => host.querySelector('.lesson-video-player')!
+    .dispatchEvent(new KeyboardEvent('keydown', {key, bubbles:true})));
+  await press('ArrowRight'); await press('ArrowRight');
+  expect(video.currentTime).toBe(20); // One seek per key, not two handlers.
+  expect(host.querySelector('.lesson-seek-feedback-forward')?.textContent).toContain('+20');
+  await press('ArrowLeft');
+  expect(host.querySelector('.lesson-seek-feedback-forward')).toBeNull();
+  expect(host.querySelector('.lesson-seek-feedback-backward')?.textContent).toContain('−10');
+  await act(async () => vi.advanceTimersByTime(800));
+  expect(host.querySelector('.lesson-seek-feedback')).toBeNull();
+  video.currentTime = 58;
+  await press('ArrowRight');
+  expect(host.querySelector('.lesson-seek-feedback-forward')?.textContent).toContain('+2');
+  await press('ArrowRight');
+  expect(video.currentTime).toBe(60);
+  expect(host.querySelector('.lesson-seek-feedback-forward')?.textContent).toContain('+2');
+  await act(async () => vi.advanceTimersByTime(800));
+  video.currentTime = 3;
+  await press('ArrowLeft');
+  expect(host.querySelector('.lesson-seek-feedback-backward')?.textContent).toContain('−3');
+});
+
+it.each(['input', 'textarea'] as const)('leaves arrow keys in a %s to the editor', async tag => {
+  await render('first'); await resolve(0, '/teacher.mp4');
+  const player = host.querySelector('.lesson-video-player')!;
+  const editor = document.createElement(tag);
+  player.append(editor);
+  const key = new KeyboardEvent('keydown', {key:'ArrowRight', bubbles:true, cancelable:true});
+  await act(async () => editor.dispatchEvent(key));
+  expect(key.defaultPrevented).toBe(false);
+  expect(host.querySelector('video')!.currentTime).toBe(0);
+  expect(host.querySelector('.lesson-seek-feedback')).toBeNull();
+});
+
+it('never claims a student skipped into unwatched content', async () => {
+  await render('first', student); await resolve(0, '/student.mp4');
+  const video = host.querySelector('video')!;
+  Object.defineProperty(video, 'duration', {configurable:true, value:60});
+  await act(async () => video.dispatchEvent(new Event('loadedmetadata')));
+  await act(async () => host.querySelector('.lesson-video-player')!
+    .dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowRight', bubbles:true})));
+  expect(video.currentTime).toBe(0);
+  expect(host.querySelector('.lesson-seek-feedback')).toBeNull();
 });
 
 it('updates an initially unknown WebM duration when the browser discovers its end', async () => {

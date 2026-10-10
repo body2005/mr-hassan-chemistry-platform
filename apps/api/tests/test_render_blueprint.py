@@ -20,6 +20,7 @@ def test_production_blueprint_settings_and_no_public_passwords():
         env = {}
         for item in service['envVars']:
             key = item['key']
+            assert key not in {'GEMINI_API_KEY', 'GROQ_API_KEY', 'OPENAI_API_KEY'}, 'Removed AI services must not require deployment credentials'
             if 'value' in item:
                 env[key] = item['value']
             elif item.get('fromService', {}).get('envVarKey'):
