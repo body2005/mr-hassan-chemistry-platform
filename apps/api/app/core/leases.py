@@ -54,7 +54,7 @@ class ResourceLease:
     async def acquire(self) -> bool:
         self.client = await asyncio.to_thread(_get_redis_client)
         if self.client is None:
-            if get_settings().redis_required:
+            if get_settings().redis_required or get_settings().deployment_environment:
                 raise HTTPException(503, "Admission service temporarily unavailable", headers={"Retry-After": "2"})
             return False
         try:

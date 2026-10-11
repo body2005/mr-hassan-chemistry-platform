@@ -191,7 +191,7 @@ async def upload_payment_receipt(
                 if written > max_bytes:
                     raise HTTPException(status_code=413, detail="Payment receipt is too large")
                 output.write(chunk)
-    except Exception:
+    except BaseException:
         if os.path.exists(destination):
             os.remove(destination)
         raise
@@ -206,11 +206,16 @@ async def upload_payment_receipt(
     storage = get_storage_provider()
     storage_key = generate_safe_object_key(f"payment_receipts/{order.institution_id}/{order.id}", receipt.filename or f"receipt{extension}")
     try:
-        stored_path = storage.save_file(destination, storage_key, receipt.content_type or mimetypes.guess_type(storage_key)[0])
+        from app.core.storage_async import save_file_async
+        stored_path = await save_file_async(storage, destination, storage_key, receipt.content_type or mimetypes.guess_type(storage_key)[0])
     except Exception as exc:
         db.rollback()
         compensate_upload(db, storage_key)
         raise HTTPException(status_code=503, detail="Unable to store payment receipt") from exc
+    except BaseException:
+        db.rollback()
+        compensate_upload(db, storage_key)
+        raise
     finally:
         if os.path.exists(destination):
             os.remove(destination)

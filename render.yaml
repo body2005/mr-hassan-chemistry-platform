@@ -5,7 +5,8 @@ services:
   - type: keyvalue
     name: chemistry-platform-redis
     plan: free
-    maxmemoryPolicy: allkeys-lru
+    # Evicting live admission/session entries weakens security accounting.
+    maxmemoryPolicy: noeviction
     ipAllowList: []
 
   - type: web

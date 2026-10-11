@@ -1,0 +1,58 @@
+-- OFFLINE PREPARATION ONLY. Not an Alembic migration or startup command.
+-- Review RLS_ROLLOUT_2026-10-11.md first. Do not run on live DB this round.
+-- No ENABLE/FORCE statements, grants, role creation or BYPASSRLS here.
+-- Owner installs policies for a separate existing nonowner runtime role:
+-- psql --set=app_role=<reviewed_runtime_role> --file=infra/rls-review.sql.example
+BEGIN;
+SELECT set_config('review.app_role', :'app_role', true);
+DO $policy$
+DECLARE
+    runtime_role name := current_setting('review.app_role');
+    table_name text;
+    predicate text := 'institution_id = nullif(current_setting(''app.institution_id'', true), '''')::uuid';
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = runtime_role
+                   AND NOT rolsuper AND NOT rolbypassrls) THEN
+        RAISE EXCEPTION 'An existing non-superuser NOBYPASSRLS runtime role is required';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+               WHERE n.nspname='public' AND pg_has_role(runtime_role, c.relowner, 'MEMBER')) THEN
+        RAISE EXCEPTION 'Runtime role must not own application tables';
+    END IF;
+    -- Tenant barrier only. ORM ownership/entitlement/approval predicates remain
+    -- mandatory inside this tenant; this is not teacher/student row isolation.
+    -- Auth bootstrap tables intentionally excluded: users, refresh_sessions,
+    -- revoked_sessions and password reset. Use a restricted auth role/bridge.
+    FOREACH table_name IN ARRAY ARRAY[
+        'courses','questions','quizzes','quiz_attempts','assignments',
+        'assignment_attempts','assignment_submissions','lesson_comments',
+        'lesson_assets','payment_orders','student_entitlements','notifications',
+        'calendar_events','grades','student_mastery','learning_objectives',
+        'question_banks','rubrics','report_jobs','certificates','lesson_progress'
+    ] LOOP
+        -- Fail on a schema mismatch; never silently omit a missing table.
+        EXECUTE format('CREATE POLICY tenant_boundary ON public.%I AS RESTRICTIVE FOR ALL TO %I USING (%s) WITH CHECK (%s)',
+                       table_name, runtime_role, predicate, predicate);
+        EXECUTE format('CREATE POLICY tenant_access ON public.%I AS PERMISSIVE FOR ALL TO %I USING (%s) WITH CHECK (%s)',
+                       table_name, runtime_role, predicate, predicate);
+    END LOOP;
+    -- Tables without institution_id derive it via an RLS-protected parent.
+    FOR table_name, predicate IN SELECT * FROM (VALUES
+        ('course_modules', 'EXISTS (SELECT 1 FROM public.courses p WHERE p.id=course_id)'),
+        ('lessons', 'EXISTS (SELECT 1 FROM public.courses p WHERE p.id=course_id)'),
+        ('enrollments', 'EXISTS (SELECT 1 FROM public.courses p WHERE p.id=course_id)'),
+        ('quiz_questions', 'EXISTS (SELECT 1 FROM public.quizzes p WHERE p.id=quiz_id)'),
+        ('quiz_attempt_answers', 'EXISTS (SELECT 1 FROM public.quiz_attempts p WHERE p.id=attempt_id)'),
+        ('quiz_lesson_links', 'EXISTS (SELECT 1 FROM public.quizzes p WHERE p.id=quiz_id)'),
+        ('quiz_module_links', 'EXISTS (SELECT 1 FROM public.quizzes p WHERE p.id=quiz_id)'),
+        ('assignment_lesson_links', 'EXISTS (SELECT 1 FROM public.assignments p WHERE p.id=assignment_id)'),
+        ('assignment_module_links', 'EXISTS (SELECT 1 FROM public.assignments p WHERE p.id=assignment_id)')
+    ) AS definitions(target, expression) LOOP
+        EXECUTE format('CREATE POLICY tenant_boundary ON public.%I AS RESTRICTIVE FOR ALL TO %I USING (%s) WITH CHECK (%s)',
+                       table_name, runtime_role, predicate, predicate);
+        EXECUTE format('CREATE POLICY tenant_access ON public.%I AS PERMISSIVE FOR ALL TO %I USING (%s) WITH CHECK (%s)',
+                       table_name, runtime_role, predicate, predicate);
+    END LOOP;
+END;
+$policy$;
+COMMIT;

@@ -4,7 +4,7 @@ import logging
 import re
 
 
-_SENSITIVE_QUERY = re.compile(r"(?i)([?&](?:token|video_token|access_token)=)[^&\s]*")
+_SENSITIVE_QUERY = re.compile(r"(?i)([?&](?:token|video_token|access_token|refresh_token|reset_token|x-amz-signature|x-amz-credential|x-amz-security-token)=)[^&\s]*")
 
 
 class RedactAccessTokenFilter(logging.Filter):

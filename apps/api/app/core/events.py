@@ -55,7 +55,7 @@ class RealTimeEventBroker:
                 return
             client = await asyncio.to_thread(_get_redis_client)
             if client is None:
-                if get_settings().redis_required:
+                if get_settings().redis_required or get_settings().deployment_environment:
                     raise HTTPException(503, "Event transport temporarily unavailable")
                 return
             redis_async = Redis.from_url(get_settings().redis_url, decode_responses=True,
@@ -230,7 +230,7 @@ class RealTimeEventBroker:
             except Exception:
                 logger.warning("Realtime publishing unavailable; persistent notification must be fetched")
                 return 0
-        if get_settings().redis_required:
+        if get_settings().redis_required or get_settings().deployment_environment:
             return 0
         with self._lock:
             loops = {sub.loop for sub in self._subscribers.values()}

@@ -58,6 +58,8 @@ def create_chapter(
     if course is None or course.institution_id != user.institution_id:
         raise LookupError("Module not found")
     _ensure_manager(user)
+    if user.role == UserRole.TEACHER and course.teacher_id != user.id:
+        raise LookupError("Module not found")
     if position is None:
         position = (
             db.scalar(select(func.max(Chapter.position)).where(Chapter.module_id == module.id))

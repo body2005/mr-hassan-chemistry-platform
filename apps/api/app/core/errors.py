@@ -113,7 +113,13 @@ def install_error_handlers(app: FastAPI) -> None:
             content = _error_payload(request, exc.detail["code"], exc.detail.get("message", ""))
         else:
             code = _STATUS_TO_CODE.get(exc.status_code, "ERROR")
-            content = _error_payload(request, code, str(exc.detail))
+            if isinstance(exc.detail, dict) and "message" in exc.detail:
+                # Keep readiness dependency names machine-readable. Do not
+                # stringify the structured body into an opaque Python dict.
+                content = _error_payload(request, code, exc.detail["message"])
+                content["detail"] = exc.detail
+            else:
+                content = _error_payload(request, code, str(exc.detail))
         response = JSONResponse(status_code=exc.status_code, content=content)
         if exc.headers:
             response.headers.update(exc.headers)
@@ -139,8 +145,8 @@ def install_error_handlers(app: FastAPI) -> None:
         request: Request, exc: Exception
     ) -> JSONResponse:
         import logging
-        logging.getLogger("matgar.server").exception(
-            "Unhandled server error on %s %s: %s", request.method, request.url.path, exc
+        logging.getLogger("matgar.server").error(
+            "Unhandled server error on %s %s (reason=%s)", request.method, request.url.path, type(exc).__name__
         )
         res = JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

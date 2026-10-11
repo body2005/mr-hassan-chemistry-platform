@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from dataclasses import dataclass
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.rls_context import bind_verified_actor
 from app.core.security import decode_preview_token, decode_session_token
 from app.models.platform import RefreshSession, RevokedSession
 from app.models.user import User, UserRole
@@ -104,6 +105,7 @@ def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session is revoked")
     if not _active_session_family(db, payload):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session family is revoked")
+    bind_verified_actor(db, user)
     return user
 
 
@@ -141,8 +143,9 @@ def get_optional_user(
             return None
         if payload.get("role") != user.role.value:
             return None
+        bind_verified_actor(db, user)
         return user
-    except SQLAlchemyError:
+    except (SQLAlchemyError, RuntimeError):
         # An unavailable identity store is a service failure, not evidence
         # that a valid browser session became anonymous or was revoked.
         raise

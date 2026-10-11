@@ -80,11 +80,15 @@ class LocalStorageProvider(BaseStorageProvider):
         os.makedirs(self.base_dir, exist_ok=True)
         from app.core.config import get_settings
         self.is_production = get_settings().deployment_environment
-        self.is_persistent_mount = (
-            self.base_dir.startswith("/var/data")
-            or os.path.ismount(self.base_dir)
-            or bool(os.getenv("RENDER_DISK_PATH"))
-        )
+        # A path name or an environment variable is not evidence of a disk.
+        # Look for a real mounted ancestor, excluding the ephemeral root FS.
+        self.is_persistent_mount = False
+        ancestor = os.path.realpath(self.base_dir)
+        while os.path.dirname(ancestor) != ancestor:
+            if os.path.ismount(ancestor):
+                self.is_persistent_mount = True
+                break
+            ancestor = os.path.dirname(ancestor)
         if self.is_production and not self.is_persistent_mount:
             logger.warning(
                 "WARNING: Storage is using local directory '%s' in production without a verified "
@@ -117,6 +121,7 @@ class LocalStorageProvider(BaseStorageProvider):
         return candidate
 
     def save_file(self, local_source_path: str, storage_key: str, content_type: str | None = None) -> str:
+        self._require_durable_write()
         dest_path = self._full_path(storage_key)
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         if os.path.abspath(local_source_path) != os.path.abspath(dest_path):
@@ -124,11 +129,18 @@ class LocalStorageProvider(BaseStorageProvider):
         return dest_path
 
     def save_bytes(self, data: bytes, storage_key: str, content_type: str | None = None) -> str:
+        self._require_durable_write()
         dest_path = self._full_path(storage_key)
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         with open(dest_path, "wb") as f:
             f.write(data)
         return dest_path
+
+    def _require_durable_write(self) -> None:
+        if self.is_production and not self.is_persistent_mount:
+            from fastapi import HTTPException
+            raise HTTPException(503, "Persistent object storage must be configured before uploading",
+                                headers={"Retry-After": "3"})
 
     def get_local_path(self, storage_key: str) -> str | None:
         path = self._full_path(storage_key)
@@ -250,13 +262,15 @@ class S3StorageProvider(BaseStorageProvider):
         if content_type:
             extra_args["ContentType"] = content_type
 
-        # Multipart threshold 8MB with bounded concurrency and auto abort on failure
+        # Each SDK transfer otherwise creates its own threads and multipart
+        # buffers. HTTP admission bounds concurrent uploads; one part at a time
+        # also bounds each transfer without changing file/lease limits.
         from boto3.s3.transfer import TransferConfig
         transfer_config = TransferConfig(
             multipart_threshold=8 * 1024 * 1024,
-            max_concurrency=4,
+            max_concurrency=1,
             multipart_chunksize=8 * 1024 * 1024,
-            use_threads=True,
+            use_threads=False,
         )
         client.upload_file(
             local_source_path,
@@ -358,7 +372,7 @@ class S3StorageProvider(BaseStorageProvider):
             )
             return url
         except Exception:
-            logger.exception("Failed to generate presigned S3 URL")
+            logger.warning("Failed to generate presigned S3 URL")
             return None
 
     def check_readiness(self) -> dict[str, str | bool]:

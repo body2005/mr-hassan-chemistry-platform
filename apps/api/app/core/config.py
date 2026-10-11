@@ -79,12 +79,16 @@ class Settings(BaseSettings):
     multipart_overhead_mb: int = Field(default=10, ge=1, le=100)
     max_concurrent_ingestions: int = Field(default=1, ge=1, le=8)
     redis_required: bool = False
+    # Preparation only: no RLS policies are enabled by startup/migrations.
+    rls_context_enabled: bool = False
     payment_instapay_account: str | None = None
     payment_vodafone_cash_number: str | None = None
     payment_bank_details: str | None = None
     storage_backend: str = "local"
     cookie_secure: bool | None = None
-    ingestion_backend: str = "celery"
+    # Knowledge Center ingestion was removed. Direct assessment extraction
+    # does not dispatch Celery tasks; do not require a nonexistent consumer.
+    ingestion_backend: Literal['disabled', 'celery'] = "disabled"
     allow_local_ingestion: bool = False
     payment_receipt_max_mb: int = Field(default=10, ge=1, le=25)
     trusted_proxies: str = "127.0.0.1,::1"

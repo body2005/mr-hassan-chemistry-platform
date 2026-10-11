@@ -27,7 +27,9 @@ _redis_script = None
 
 LUA_SLIDING_WINDOW = """
 local key = KEYS[1]
-local now = tonumber(ARGV[1])
+-- Use the shared Redis clock, not potentially skewed API host clocks.
+local clock = redis.call('TIME')
+local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
 local window = tonumber(ARGV[2])
 local limit = tonumber(ARGV[3])
 local member = ARGV[4]
@@ -135,11 +137,11 @@ def resolve_client_ip(request: Request) -> str:
 
 def resolve_rate_limit_key(request: Request, category: str) -> str:
     settings = get_settings()
-    token = request.cookies.get(settings.session_cookie_name)
-    if not token:
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.lower().startswith("bearer "):
-            token = auth_header[7:].strip()
+    # Match the authentication dependency: an explicit Bearer credential
+    # takes precedence over a browser cookie, including when it is invalid.
+    auth_header = request.headers.get("Authorization", "")
+    token = (auth_header[7:].strip() if auth_header.lower().startswith("bearer ")
+             else request.cookies.get(settings.session_cookie_name))
 
     if token:
         payload = decode_session_token(token)
@@ -207,7 +209,7 @@ def enforce_rate_limit(
     window_seconds: int | None = None,
     identity: str | None = None,
 ) -> None:
-    global _redis_client, _redis_script
+    global _redis_client, _redis_script, _last_redis_failure
     settings = get_settings()
     if os.getenv("DISABLE_RATE_LIMITING", "").lower() in {"1", "true", "yes"}:
         if settings.deployment_environment:
@@ -248,6 +250,7 @@ def enforce_rate_limit(
         except Exception:
             _redis_client = None
             _redis_script = None
+            _last_redis_failure = time.monotonic()
             logger.warning("Redis rate limiting query failed")
 
     if settings.redis_required or settings.deployment_environment:
@@ -277,4 +280,4 @@ def reset_rate_limits() -> None:
         except Exception:
             # This is a maintenance-only helper used by tests and trusted
             # operators. Avoid leaking a Redis URL while preserving evidence.
-            logger.exception("Unable to clear Redis rate-limit keys")
+            logger.warning("Unable to clear Redis rate-limit keys")

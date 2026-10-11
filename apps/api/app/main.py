@@ -88,6 +88,10 @@ def classify_rate_limit_category(method: str, path: str) -> str:
         f"{api_prefix}/auth/me", f"{api_prefix}/auth/profile-summary", f"{api_prefix}/auth/avatar",
     }:
         return "read"
+    if normalized_path == f"{api_prefix}/auth/refresh":
+        return "session_refresh"
+    if normalized_path == f"{api_prefix}/auth/logout":
+        return "session_logout"
     if normalized_path.startswith(f"{api_prefix}/auth/"):
         return "auth"
     if (
@@ -100,6 +104,7 @@ def classify_rate_limit_category(method: str, path: str) -> str:
         normalized_path.endswith("/video")
         or normalized_path.endswith("/receipt")
         or normalized_path.endswith("/materials")
+        or ("/assignments/" in normalized_path and normalized_path.endswith("/submissions/file"))
     ):
         return "upload"
     if normalized_method == "POST" and (
@@ -111,6 +116,7 @@ def classify_rate_limit_category(method: str, path: str) -> str:
         or f"{api_prefix}/analytics" in normalized_path
         or f"{api_prefix}/payments/orders" in normalized_path
         or f"{api_prefix}/users" in normalized_path
+        or "/reports/" in normalized_path
     ):
         return "heavy_query"
     if normalized_method in {"PUT", "PATCH", "DELETE"} or normalized_path.endswith(
@@ -226,7 +232,7 @@ async def security_middleware(request, call_next):
         )
         return res
     except Exception as exc:
-        logger.exception("Unhandled error processing request %s: %s", request_id, exc)
+        logger.error("Unhandled error processing request %s (reason=%s)", request_id, type(exc).__name__)
         err_res = JSONResponse(
             status_code=500,
             content={"error": {"code": "INTERNAL_SERVER_ERROR", "message": "An internal server error occurred"}, "request_id": request_id},
@@ -266,7 +272,7 @@ app.add_middleware(
         "X-Request-ID",
         "X-Requested-With",
     ],
-    expose_headers=["X-Request-ID"],
+    expose_headers=["X-Request-ID", "Retry-After"],
     max_age=600,
 )
 # Header-only ASGI wrapper must be outside ALL rejecting user middleware,

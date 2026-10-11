@@ -207,7 +207,11 @@ def _revoke_video_sessions(
                     r.zrem(key, *slots)
             return
         except Exception:
-            logger.warning("Redis unavailable for video revocation; using memory marker")
+            logger.warning("Redis unavailable for video revocation")
+    if get_settings().deployment_environment or get_settings().redis_required:
+        # Durable family revocation is committed by logout. Playback fails
+        # closed while Redis is down; do not create process-local markers.
+        return
     for key in keys:
         _memory_video_deny[key] = until
     if slots:
@@ -241,6 +245,8 @@ def _video_denied(
             return False
         except Exception:
             pass
+    if get_settings().deployment_environment or get_settings().redis_required:
+        raise HTTPException(503, "Video session service temporarily unavailable", headers={"Retry-After": "2"})
     return any(_memory_video_deny.get(key, now) > now for key in keys)
 
 

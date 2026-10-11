@@ -182,6 +182,10 @@ def register(
     payload: RegisterRequest, response: Response, db: Db, request: Request
 ) -> AuthResponse:
     enforce_rate_limit(request, bucket="auth", limit=10, window_seconds=60)
+    enforce_rate_limit(request, bucket="register_ip", limit=10, window_seconds=60,
+                       identity=resolve_client_ip(request))
+    enforce_rate_limit(request, bucket="register_account", limit=5, window_seconds=300,
+                       identity=payload.institution_slug + ":" + auth_service.normalize_email(payload.email))
     try:
         user = auth_service.register_student(db, payload)
         record_audit(
@@ -240,13 +244,19 @@ def refresh(
     refresh_cookie: Annotated[str | None, Cookie(alias=get_settings().refresh_cookie_name)] = None,
 ) -> AuthResponse:
     """Rotate exactly one refresh credential and detect replay of an older one."""
-    enforce_rate_limit(request, bucket="auth", limit=60, window_seconds=60)
+    # Cookie rotation must not consume login's small credential-attempt budget.
+    # The middleware's generic budget remains; apply a separate IP/account cap.
+    enforce_rate_limit(request, bucket="refresh_ip", limit=get_settings().rate_limit_read,
+                       window_seconds=60, identity=resolve_client_ip(request))
     if not refresh_cookie:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh session is missing")
 
     now = datetime.now(UTC)
     token_hash = hash_token(refresh_cookie)
     owner_id = db.query(RefreshSession.user_id).filter(RefreshSession.token_hash == token_hash).scalar()
+    if owner_id is not None:
+        enforce_rate_limit(request, bucket="refresh_account", limit=60, window_seconds=60,
+                           identity=str(owner_id))
     # Stable lock order for refresh/password/reset/revoke: user, then token.
     user = db.query(User).filter(User.id == owner_id).with_for_update().populate_existing().one_or_none()
     # Lock the consumed row.  On PostgreSQL this makes two simultaneous
@@ -445,6 +455,10 @@ def request_password_reset(
     payload: PasswordResetRequest, db: Db, request: Request
 ) -> dict[str, str]:
     enforce_rate_limit(request, bucket="password_reset_request", limit=5, window_seconds=300)
+    enforce_rate_limit(request, bucket="password_reset_ip", limit=5, window_seconds=300,
+                       identity=resolve_client_ip(request))
+    enforce_rate_limit(request, bucket="password_reset_account", limit=5, window_seconds=300,
+                       identity=payload.institution_slug + ":" + auth_service.normalize_email(str(payload.email)))
     if not password_reset_mail_configured():
         raise HTTPException(status_code=503, detail="Password reset by email is not enabled")
     # Deliberately generic: account existence must not be exposed to callers.
@@ -461,6 +475,11 @@ def request_password_reset(
 @router.post("/password-reset/confirm", status_code=status.HTTP_204_NO_CONTENT)
 def confirm_password_reset(payload: PasswordResetConfirm, db: Db, request: Request) -> None:
     enforce_rate_limit(request, bucket="password_reset_confirm", limit=5, window_seconds=300)
+    enforce_rate_limit(request, bucket="password_reset_confirm_ip", limit=5, window_seconds=300,
+                       identity=resolve_client_ip(request))
+    # Opaque target is HMACed by the limiter; never store a reset token as a key.
+    enforce_rate_limit(request, bucket="password_reset_token", limit=5, window_seconds=300,
+                       identity=payload.token)
     try:
         auth_service.reset_password(db, payload)
     except ValueError as exc:

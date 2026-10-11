@@ -60,7 +60,8 @@ def _probe_readiness(db: Session) -> ReadinessResponse:
     except SQLAlchemyError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Database is unavailable",
+            detail={"message": "Database is unavailable",
+                    "dependencies": {"database": "unavailable"}},
         ) from exc
 
     try:
@@ -103,25 +104,28 @@ def _probe_readiness(db: Session) -> ReadinessResponse:
 
         dependencies["celery_worker"] = "ok" if worker_ok else "unavailable"
         dependencies["ingestion_dispatcher"] = "ok" if (broker_ok and worker_ok) else "unavailable"
-    elif settings.allow_local_ingestion:
+    elif settings.ingestion_backend == "disabled":
         dependencies["celery_broker"] = "not_configured"
         dependencies["celery_worker"] = "not_configured"
-        dependencies["ingestion_dispatcher"] = "ok"
+        dependencies["ingestion_dispatcher"] = "not_configured"
     else:
         dependencies["celery_broker"] = "not_configured"
         dependencies["celery_worker"] = "not_configured"
         dependencies["ingestion_dispatcher"] = "unavailable"
 
-    # In production and production_like, all core services (DB, Storage, Ingestion) must be healthy
+    # Only enabled capabilities are dependencies. Removed ingestion is not
+    # reported as healthy; database, persistent storage and Redis remain gates.
     is_prod_like = settings.deployment_environment
     if is_prod_like:
         critical_deps = [
             dependencies["database"],
             dependencies["storage"],
-            dependencies["ingestion_dispatcher"],
         ]
-        if settings.redis_required:
-            critical_deps.append(dependencies["redis"])
+        if settings.ingestion_backend != "disabled":
+            critical_deps.append(dependencies["ingestion_dispatcher"])
+        # Rate limiting and resource admission fail closed on every deployed
+        # instance, even when REDIS_REQUIRED was accidentally left unset.
+        critical_deps.append(dependencies["redis"])
 
         if any(d != "ok" for d in critical_deps):
             raise HTTPException(
@@ -163,10 +167,14 @@ _probe_cache = None
 
 
 def _run_probe():
-    with SessionLocal() as db:
-        if db.bind.dialect.name == "postgresql":
-            db.execute(text("SET LOCAL statement_timeout = '1500ms'"))
-        return _probe_readiness(db)
+    try:
+        with SessionLocal() as db:
+            if db.bind.dialect.name == "postgresql":
+                db.execute(text("SET LOCAL statement_timeout = '1500ms'"))
+            return _probe_readiness(db)
+    except SQLAlchemyError as exc:
+        raise HTTPException(503, detail={"message": "Database is unavailable",
+                                       "dependencies": {"database": "unavailable"}}) from exc
 
 
 def _cached_readiness():

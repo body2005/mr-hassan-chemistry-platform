@@ -1,0 +1,8 @@
+{
+  "Rules": [{
+    "ID": "Abort-abandoned-multipart-after-seven-days",
+    "Status": "Enabled",
+    "Filter": {"Prefix": ""},
+    "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7}
+  }]
+}

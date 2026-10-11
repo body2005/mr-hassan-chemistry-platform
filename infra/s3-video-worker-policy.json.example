@@ -1,0 +1,19 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "RecoverInterruptedMultipartAllocation",
+    "Effect": "Allow",
+    "Action": "s3:ListBucketMultipartUploads",
+    "Resource": "arn:aws:s3:::REPLACE_WITH_DEDICATED_BUCKET"
+  }, {
+    "Sid": "EncoderSourceAndGeneratedAssetsOnly",
+    "Effect": "Allow",
+    "Action": ["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"],
+    "Resource": [
+      "arn:aws:s3:::REPLACE_WITH_DEDICATED_BUCKET/video-staging/*",
+      "arn:aws:s3:::REPLACE_WITH_DEDICATED_BUCKET/lesson_videos/*",
+      "arn:aws:s3:::REPLACE_WITH_DEDICATED_BUCKET/video-assets/*",
+      "arn:aws:s3:::REPLACE_WITH_DEDICATED_BUCKET/video-originals/*"
+    ]
+  }]
+}

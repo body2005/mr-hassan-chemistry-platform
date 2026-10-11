@@ -1,0 +1,10 @@
+-- Read-only metadata audit for a later authorized DB connection. Not run now.
+SELECT current_user, r.rolsuper, r.rolbypassrls
+FROM pg_roles r WHERE r.rolname=current_user;
+SELECT n.nspname, c.relname, pg_get_userbyid(c.relowner) AS owner,
+       c.relrowsecurity, c.relforcerowsecurity,
+       pg_has_role(current_user, c.relowner, 'MEMBER') AS member_of_owner_role
+FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+WHERE n.nspname='public' AND c.relkind IN ('r','p') ORDER BY c.relname;
+SELECT schemaname, tablename, policyname, permissive, roles, cmd, qual, with_check
+FROM pg_policies WHERE schemaname='public' ORDER BY tablename, policyname;

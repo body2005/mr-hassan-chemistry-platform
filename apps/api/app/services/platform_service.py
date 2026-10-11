@@ -200,8 +200,10 @@ def _enrolled(db: Session, user: User, course_id: uuid.UUID) -> bool:
 
 
 def create_question(db: Session, user: User, payload: QuestionCreateRequest) -> Question:
-    if user.role == UserRole.TEACHER and payload.course_id:
+    if payload.course_id:
         course = course_for_user(db, user, payload.course_id)
+        if course.institution_id != user.institution_id:
+            raise LookupError("Course not found")
         ensure_course_manager(user, course)
     _validate_quiz_question(payload)
     question = Question(

@@ -24,11 +24,18 @@ class UploadBudgetMiddleware:
     async def __call__(self, scope, receive, send):
         limit = None
         if scope["type"] == "http" and scope["method"] == "POST":
+            from app.core.config import get_settings
             path = scope["path"]
             if path.endswith("/video") and "/lessons/" in path:
                 limit = MAX_VIDEO_BYTES
             elif path.endswith("/materials") and "/lessons/" in path:
                 limit = MAX_MATERIAL_BYTES
+            elif path.endswith("/submissions/file") and "/assignments/" in path:
+                limit = MAX_MATERIAL_BYTES
+            elif path.endswith("/receipt") and "/payments/orders/" in path:
+                limit = get_settings().payment_receipt_max_mb * 1024**2
+            elif path.rstrip("/").endswith("/quiz/extract-from-file"):
+                limit = get_settings().max_request_size_mb * 1024**2
         if limit is not None:
             headers = dict(scope.get("headers", []))
             try:
