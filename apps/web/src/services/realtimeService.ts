@@ -206,6 +206,7 @@ class RealTimeService {
       case "submission_graded":
         invalidateApiCache("/submissions");
         invalidateApiCache("/assignments");
+        invalidateApiCache("/users");
         window.dispatchEvent(new CustomEvent("lms_submission_graded", { detail: parsed }));
         break;
 

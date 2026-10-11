@@ -40,6 +40,7 @@ from app.models.platform import (
     QuizAttemptAnswer,
     QuizQuestion,
     QuizStatus,
+    SubmissionStatus,
 )
 from app.models.progress import LessonProgress
 from app.models.platform import LessonComment, AttemptStatus, QuizAttempt
@@ -1478,6 +1479,7 @@ def list_users(user: Manager, db: Db, role: UserRole | None = None) -> list[Mana
         QuizAttempt.institution_id == user.institution_id,
         QuizAttempt.status == AttemptStatus.SUBMITTED,
         QuizAttempt.is_practice.is_(False),
+        Course.institution_id == user.institution_id,
     )
     if user.role == UserRole.TEACHER:
         attempts_query = attempts_query.where(Course.teacher_id == user.id)
@@ -1489,12 +1491,46 @@ def list_users(user: Manager, db: Db, role: UserRole | None = None) -> list[Mana
     by_student = defaultdict(list)
     for attempt in attempts:
         by_student[attempt.student_id].append(attempt)
+    submissions_query = select(AssignmentSubmission, Assignment.max_score).join(
+        Assignment, Assignment.id == AssignmentSubmission.assignment_id
+    ).join(Course, Course.id == Assignment.course_id).where(
+        AssignmentSubmission.student_id.in_(ids),
+        AssignmentSubmission.institution_id == user.institution_id,
+        Assignment.institution_id == user.institution_id,
+        Course.institution_id == user.institution_id,
+    ).order_by(AssignmentSubmission.version.desc())
+    if user.role == UserRole.TEACHER:
+        submissions_query = submissions_query.where(Course.teacher_id == user.id)
+    homework_by_student = defaultdict(list)
+    seen_submissions = set()
+    for submission, max_score in db.execute(submissions_query):
+        # A resubmission replaces the previous version, including while awaiting grading.
+        key = (submission.student_id, submission.assignment_id)
+        if key in seen_submissions:
+            continue
+        seen_submissions.add(key)
+        if (
+            submission.status in (SubmissionStatus.GRADED, SubmissionStatus.APPROVED)
+            and submission.graded_at is not None
+            and submission.final_score is not None
+            and max_score > 0
+            and math.isfinite(submission.final_score)
+            and math.isfinite(max_score)
+        ):
+            homework_by_student[submission.student_id].append(
+                float(submission.final_score) / float(max_score) * 100
+            )
     result = []
     for item in users:
         visible = by_student[item.id]
         finalized = [attempt for attempt in visible if attempt.id not in pending_ids and attempt.total_points > 0]
         percent = (sum(float(attempt.score or 0) / float(attempt.total_points) * 100 for attempt in finalized)
                    / len(finalized)) if finalized else None
+        homework_scores = homework_by_student[item.id]
+        homework_percent = sum(homework_scores) / len(homework_scores) if homework_scores else None
+        # Missing categories carry no weight; an actual zero score still counts.
+        available_rates = [rate for rate in (percent, homework_percent) if rate is not None]
+        overall_percent = sum(available_rates) / len(available_rates) if available_rates else 0
         response = ManagedUserResponse.model_validate(item)
         result.append(response.model_copy(update={
             "quiz_attempts_count": len(visible),
@@ -1502,6 +1538,8 @@ def list_users(user: Manager, db: Db, role: UserRole | None = None) -> list[Mana
             "pending_quiz_attempts": sum(attempt.id in pending_ids for attempt in visible),
             "average_quiz_score": percent,
             "quiz_success_rate": percent,
+            "homework_success_rate": round(homework_percent, 2) if homework_percent is not None else None,
+            "total_overall_grade": round(overall_percent, 2),
         }))
     return result
 

@@ -119,6 +119,13 @@ export const SubmissionsView: React.FC = () => {
           });
         }
       });
+      if (e.type === "lms_submission_graded") {
+        void userService.getStudents().then((updated) => {
+          setStudents(updated.map(mapApiStudentToRecord));
+        }).catch(() => {
+          toast({ message: "تعذر تحديث النسب بعد التصحيح. أعد تحميل الصفحة.", tone: "danger" });
+        });
+      }
     };
 
     window.addEventListener("lms_submission_received", handleSubmissionEvent);
@@ -152,13 +159,13 @@ export const SubmissionsView: React.FC = () => {
   const groupPassingRate =
     yearStudents.length > 0
       ? Math.round(
-          yearStudents.reduce((acc, s) => acc + (s.quizSuccessRate + s.homeworkSuccessRate) / 2, 0) /
+          yearStudents.reduce((acc, s) => acc + s.totalOverallGrade, 0) /
             yearStudents.length
         )
       : 0;
 
   const passedStudentsCount =
-    yearStudents.filter((s) => (s.quizSuccessRate + s.homeworkSuccessRate) / 2 >= 50).length;
+    yearStudents.filter((s) => s.totalOverallGrade >= 50).length;
 
   const groupOverallAttendance =
     yearStudents.length > 0
@@ -203,6 +210,12 @@ export const SubmissionsView: React.FC = () => {
     try {
       const updated = await submissionService.gradeSubmission(subId, updatedScore, teacherNotes);
       setSubmissions((prev) => prev.map((sub) => (sub.id === subId ? updated : sub)));
+      try {
+        const updatedStudents = await userService.getStudents();
+        setStudents(updatedStudents.map(mapApiStudentToRecord));
+      } catch {
+        toast({ message: "حُفظ التصحيح، لكن تعذر تحديث النسب. أعد تحميل الصفحة.", tone: "danger" });
+      }
       toast({
         message: "تم حفظ واعتماد الدرجة بنجاح",
         tone: "success",

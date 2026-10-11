@@ -82,6 +82,8 @@ class ManagedUserResponse(UserResponse):
     has_completed_exam: bool = False
     average_quiz_score: float | None = None
     quiz_success_rate: float | None = None
+    homework_success_rate: float | None = None
+    total_overall_grade: float = 0
 
 
 class RegisterRequest(BaseModel):

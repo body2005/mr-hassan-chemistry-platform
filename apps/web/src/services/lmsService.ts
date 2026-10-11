@@ -1366,6 +1366,7 @@ export const submissionService = {
       body: JSON.stringify({ final_score: finalScore, teacher_feedback: teacherFeedback, approve }),
     });
     invalidateApiCache("/submissions");
+    invalidateApiCache("/users");
     return mapApiSubmission(result);
   },
 };
@@ -1394,7 +1395,7 @@ export type ApiManagedUser = Pick<
   overall_attendance_ratio?: number;
   assignment_submission_ratio?: number;
   average_quiz_score?: number | null;
-  homework_success_rate?: number;
+  homework_success_rate?: number | null;
   quiz_success_rate?: number | null;
   total_overall_grade?: number;
   last_active_date?: string | null;
