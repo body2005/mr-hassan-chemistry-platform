@@ -1,3 +1,4 @@
+import { assessmentTimestamp } from "../services/assessmentSchedule";
 import React, { useState, useEffect, useRef } from "react";
 import {
   Bell,
@@ -33,6 +34,7 @@ interface NotificationsViewProps {
 }
 
 export interface CalendarScheduleEvent {
+  courseId?: string;
   id: string;
   academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary" | "all";
   date: string; // YYYY-MM-DD
@@ -321,7 +323,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       message: broadcastMessage.trim(),
       type: broadcastType,
       targetYear: broadcastTargetGrade,
-      dueDate: broadcastDueDate.trim() || undefined,
+      scheduledFor: broadcastDueDate.trim() || undefined,
       createdAt: "الآن",
       read: false,
       actionTab: broadcastActionTab,
@@ -369,59 +371,61 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
     if (saving) return;
     setSaving(true);
     setSaveError(null);
-    const signature = JSON.stringify([selectedGrade, wizardState]);
-    if (requestRef.current.signature !== signature) requestRef.current = {signature, id: wizardState.editingEventId || `evt_${crypto.randomUUID()}`, notificationId: `notif_sched_${crypto.randomUUID()}`};
-    const fullTimeStr = `${wizardState.timeHour} ${wizardState.timePeriod}`;
-    const newEvent: CalendarScheduleEvent = {
-      id: requestRef.current.id,
-      academicYear: selectedGrade,
-      date: wizardState.selectedDate,
-      dayName: wizardState.dayTitle.trim() || `${getArabicDayName(new Date(wizardState.selectedDate))} - موعد إرسال`,
-      time: fullTimeStr,
-      contentType: wizardState.contentType,
-      isRecurringWeekly: wizardState.isRecurringWeekly,
-      isPublishedToStudents: wizardState.isPublishedToStudents,
-      quizDurationMinutes: wizardState.contentType === "quiz" ? wizardState.quizDurationMinutes : undefined,
-      customMessage: wizardState.contentType === "general" ? (wizardState.customMessage.trim() || undefined) : undefined,
-      isCancelled: false,
-      publishStartDate: wizardState.isScheduledNotif ? wizardState.scheduledNotifDate : undefined,
-      publishStartTime: wizardState.isScheduledNotif ? `${wizardState.scheduledNotifHour} ${wizardState.scheduledNotifPeriod}` : undefined,
-    };
-
-    // Build the notification createdAt — either scheduled ISO date or "الآن"
-    let notifCreatedAt = "الآن";
-    if (wizardState.isScheduledNotif && wizardState.scheduledNotifDate) {
-      const schedDate = wizardState.scheduledNotifDate;
-      const schedHour = wizardState.scheduledNotifHour || "06:00";
-      const schedPeriod = wizardState.scheduledNotifPeriod || "م";
-      const [hh, mm = '00'] = schedHour.split(":");
-      let hour24 = parseInt(hh, 10) || 6;
-      if (schedPeriod === "م" && hour24 < 12) hour24 += 12;
-      if (schedPeriod === "ص" && hour24 === 12) hour24 = 0;
-      notifCreatedAt = new Date(`${schedDate}T${String(hour24).padStart(2, "0")}:${mm}:00`).toISOString();
-    }
-
-    let autoNotif: NotificationItem | undefined = undefined;
-    if (wizardState.isPublishedToStudents) {
-      // If teacher wrote a custom message, use it; otherwise title only (no day/time in body)
-      const notifMessage = wizardState.customMessage?.trim() || `${newEvent.dayName} — ${newEvent.date} ${newEvent.time}`;
-
-      autoNotif = {
-        id: requestRef.current.notificationId,
-        title: `${wizardState.contentType === "quiz" ? "موعد اختبار بالجدول" : wizardState.contentType === "general" ? "تنبيه عام بالجدول" : "موعد جديد بالجدول"}: ${newEvent.dayName}`.slice(0, 200),
-        message: notifMessage,
-        type: wizardState.contentType === "quiz" ? "quiz" : wizardState.contentType === "assignment" ? "assignment" : wizardState.contentType === "general" ? "warning" : "system",
-        targetYear: selectedGrade,
-        createdAt: notifCreatedAt,
-        read: false,
-        actionTab: "Notifications",
-        quizDurationMinutes: wizardState.contentType === "quiz" ? wizardState.quizDurationMinutes : undefined,
-      };
-
-    }
-
     let eventSaved = false;
     try {
+      const signature = JSON.stringify([selectedGrade, wizardState]);
+      if (requestRef.current.signature !== signature) requestRef.current = {signature, id: wizardState.editingEventId || `evt_${crypto.randomUUID()}`, notificationId: `notif_sched_${crypto.randomUUID()}`};
+      const fullTimeStr = `${wizardState.timeHour} ${wizardState.timePeriod}`;
+      const newEvent: CalendarScheduleEvent = {
+        id: requestRef.current.id,
+        courseId: calendarEvents.find(event => event.id === wizardState.editingEventId)?.courseId,
+        closeDeadline: calendarEvents.find(event => event.id === wizardState.editingEventId)?.closeDeadline,
+        academicYear: selectedGrade,
+        date: wizardState.selectedDate,
+        dayName: wizardState.dayTitle.trim() || `${getArabicDayName(new Date(wizardState.selectedDate))} - موعد إرسال`,
+        time: fullTimeStr,
+        contentType: wizardState.contentType,
+        isRecurringWeekly: wizardState.isRecurringWeekly,
+        isPublishedToStudents: wizardState.isPublishedToStudents,
+        quizDurationMinutes: wizardState.contentType === "quiz" ? wizardState.quizDurationMinutes : undefined,
+        customMessage: wizardState.contentType === "general" ? (wizardState.customMessage.trim() || undefined) : undefined,
+        isCancelled: false,
+        publishStartDate: wizardState.isScheduledNotif ? wizardState.scheduledNotifDate : undefined,
+        publishStartTime: wizardState.isScheduledNotif ? `${wizardState.scheduledNotifHour} ${wizardState.scheduledNotifPeriod}` : undefined,
+      };
+
+      // Build the notification createdAt — either scheduled ISO date or "الآن"
+      let notifCreatedAt = "الآن";
+      if (wizardState.isScheduledNotif && wizardState.scheduledNotifDate) {
+        const schedDate = wizardState.scheduledNotifDate;
+        const schedHour = wizardState.scheduledNotifHour || "06:00";
+        const schedPeriod = wizardState.scheduledNotifPeriod || "م";
+        const [hh, mm = '00'] = schedHour.split(":");
+        let hour24 = parseInt(hh, 10) || 6;
+        if (schedPeriod === "م" && hour24 < 12) hour24 += 12;
+        if (schedPeriod === "ص" && hour24 === 12) hour24 = 0;
+        notifCreatedAt = assessmentTimestamp(`${schedDate}T${String(hour24).padStart(2, "0")}:${mm}:00`, "الإشعار")!;
+      }
+
+      let autoNotif: NotificationItem | undefined = undefined;
+      if (wizardState.isPublishedToStudents) {
+        // If teacher wrote a custom message, use it; otherwise title only (no day/time in body)
+        const notifMessage = wizardState.customMessage?.trim() || `${newEvent.dayName} — ${newEvent.date} ${newEvent.time}`;
+
+        autoNotif = {
+          id: requestRef.current.notificationId,
+          title: `${wizardState.contentType === "quiz" ? "موعد اختبار بالجدول" : wizardState.contentType === "general" ? "تنبيه عام بالجدول" : "موعد جديد بالجدول"}: ${newEvent.dayName}`.slice(0, 200),
+          message: notifMessage,
+          type: wizardState.contentType === "quiz" ? "quiz" : wizardState.contentType === "assignment" ? "assignment" : wizardState.contentType === "general" ? "warning" : "system",
+          targetYear: selectedGrade,
+          createdAt: notifCreatedAt,
+          read: false,
+          actionTab: "Notifications",
+          quizDurationMinutes: wizardState.contentType === "quiz" ? wizardState.quizDurationMinutes : undefined,
+        };
+
+      }
+
       setCalendarEvents(await calendarService.saveCalendarEvent(newEvent));
       eventSaved = true;
       if (autoNotif) {
@@ -2298,13 +2302,12 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
                 <div>
                   <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
-                    تاريخ التسليم/الموعد (اختياري):
+                    موعد إرسال الإشعار بتوقيت القاهرة (اختياري):
                   </label>
                   <input
-                    type="text"
+                    type="datetime-local"
                     value={broadcastDueDate}
                     onChange={(e) => setBroadcastDueDate(e.target.value)}
-                    placeholder="مثال: الجمعة القادمة 09:00 م"
                     style={{
                       width: "100%",
                       padding: "8px 12px",

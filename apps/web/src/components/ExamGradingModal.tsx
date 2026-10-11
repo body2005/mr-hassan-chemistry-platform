@@ -1,3 +1,4 @@
+import { formatGrade } from "../services/gradeDisplay";
 import React, { useState, useEffect } from "react";
 import {
   Award,
@@ -675,7 +676,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
                   الدرجة الكلية الحالية للطالب
                 </span>
                 <strong style={{ fontSize: "18px", color: "var(--text-main)" }}>
-                  {student.totalOverallGrade}%
+                  {formatGrade(student.totalOverallGrade)}
                 </strong>
               </div>
 
@@ -692,7 +693,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
                   نسبة نجاح الاختبارات المسجلة
                 </span>
                 <strong style={{ fontSize: "18px", color: "#059669" }}>
-                  {student.quizSuccessRate}%
+                  {formatGrade(student.quizSuccessRate)}
                 </strong>
               </div>
             </div>

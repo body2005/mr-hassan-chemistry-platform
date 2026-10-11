@@ -16,7 +16,7 @@ from typing import Annotated, Callable, Iterable
 from fastapi import APIRouter, Depends, HTTPException, Request, status, UploadFile, File, Query
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 import shutil
-from sqlalchemy import func, select
+from sqlalchemy import func, select, or_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -84,7 +84,10 @@ from app.services import platform_service
 from app.services.audit_service import record_audit
 from app.services.payment_service import can_access_lesson_content
 from app.schemas import LessonPublicationRequest, ApproveQuizResultRequest
-from app.services.content_access import require_assessment_access
+from app.schemas import AssessmentPublicationRequest
+from app.services.assessment_events import assessment_changed
+from app.services.content_access import (require_assessment_access, assessment_started, assessment_open,
+    assessment_window_filter, filter_student_assessments)
 from app.core.upload_limits import MAX_VIDEO_BYTES, ensure_staging_capacity
 from app.models.platform import RefreshSession, RevokedSession
 
@@ -782,6 +785,7 @@ def update_lesson_publication(lesson_id: uuid.UUID, payload: "LessonPublicationR
     lesson.publication_status = payload.publication_status
     lesson.publish_at = platform_service._as_utc(payload.publish_at)
     db.commit()
+    assessment_changed(db, lesson)
     return {"id": str(lesson.id), "publication_status": lesson.publication_status, "publish_at": lesson.publish_at}
 
 
@@ -985,13 +989,70 @@ def list_quizzes(
             Enrollment.student_id == user.id,
             Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
         )
-        query = query.where(Quiz.status == QuizStatus.PUBLISHED, Quiz.course_id.in_(enrolled_courses))
+        query = query.where(Quiz.status == QuizStatus.PUBLISHED, Quiz.course_id.in_(enrolled_courses),
+                            assessment_window_filter(Quiz))
     elif user.role == UserRole.TEACHER:
         query = query.where(Quiz.course_id.in_(select(Course.id).where(Course.teacher_id == user.id)))
     return [
         QuizResponse.model_validate(item)
-        for item in db.scalars(query.order_by(Quiz.created_at.desc())).all()
+        for item in filter_student_assessments(db, user, db.scalars(query.order_by(Quiz.created_at.desc())).all())
     ]
+
+
+def _update_assessment_publication(db, user, model, assessment_id, payload):
+    assessment = db.scalar(select(model).where(model.id == assessment_id,
+        model.institution_id == user.institution_id).with_for_update())
+    if assessment is None:
+        raise HTTPException(404, "Assessment not found")
+    course = db.get(Course, assessment.course_id)
+    if course is None:
+        raise HTTPException(404, "Assessment not found")
+    try:
+        platform_service.ensure_course_manager(user, course)
+    except PermissionError as exc:
+        raise HTTPException(404, "Assessment not found") from exc
+    assessment.starts_at = platform_service._as_utc(payload.starts_at)
+    if model is Quiz:
+        assessment.ends_at = platform_service._as_utc(payload.ends_at)
+    else:
+        assessment.due_at = platform_service._as_utc(payload.ends_at)
+    if model is Quiz:
+        active_attempts = db.scalars(select(QuizAttempt).where(QuizAttempt.quiz_id == assessment.id,
+            QuizAttempt.status == AttemptStatus.IN_PROGRESS).with_for_update()).all()
+        for attempt in active_attempts:
+            duration_end = platform_service._as_utc(attempt.started_at) + timedelta(seconds=assessment.duration_seconds) if assessment.duration_seconds else None
+            ends = [value for value in (duration_end, platform_service._as_utc(assessment.ends_at)) if value]
+            attempt.expires_at = min(ends) if ends else None
+    else:
+        from app.models.platform import AssignmentAttempt, AssignmentAttemptStatus
+        for attempt in db.scalars(select(AssignmentAttempt).where(AssignmentAttempt.assignment_id == assessment.id,
+                AssignmentAttempt.status == AssignmentAttemptStatus.IN_PROGRESS).with_for_update()):
+            attempt.expires_at = assessment.due_at
+    if payload.publication_status == "published":
+        try:
+            assessment = (platform_service.publish_quiz(db, user, assessment.id) if model is Quiz
+                          else platform_service.publish_assignment(db, user, assessment.id))
+        except (LookupError, PermissionError, ValueError) as exc:
+            db.rollback()
+            raise _bad_request(exc) from exc
+    else:
+        if payload.publication_status == "draft":
+            assessment.status = "draft"
+        from app.services.assessment_schedule import sync_assessment_schedule
+        sync_assessment_schedule(db, assessment)
+        db.commit()
+        assessment_changed(db, assessment)
+    return assessment
+
+
+@router.patch("/quizzes/{quiz_id}/publication", response_model=QuizResponse)
+def update_quiz_publication(quiz_id: uuid.UUID, payload: AssessmentPublicationRequest, user: Manager, db: Db):
+    return _update_assessment_publication(db, user, Quiz, quiz_id, payload)
+
+
+@router.patch("/assignments/{assignment_id}/publication", response_model=AssignmentResponse)
+def update_assignment_publication(assignment_id: uuid.UUID, payload: AssessmentPublicationRequest, user: Manager, db: Db):
+    return _update_assessment_publication(db, user, Assignment, assignment_id, payload)
 
 
 @router.post("/quizzes/{quiz_id}/attempts", response_model=QuizAttemptResponse)
@@ -1002,6 +1063,29 @@ def start_quiz(quiz_id: uuid.UUID, user: Student, db: Db) -> QuizAttemptResponse
         raise _bad_request(exc) from exc
     from app.services.quiz_results import student_attempt_response
     return student_attempt_response(attempt)
+
+
+@router.get("/quiz-attempts/{attempt_id}/availability")
+def quiz_attempt_availability(attempt_id: uuid.UUID, user: Student, db: Db) -> dict:
+    """Refresh an open attempt's schedule without returning questions or grades."""
+    attempt = db.scalar(select(QuizAttempt).where(QuizAttempt.id == attempt_id,
+        QuizAttempt.student_id == user.id, QuizAttempt.institution_id == user.institution_id))
+    if attempt is None:
+        raise HTTPException(404, "Attempt not found")
+    quiz = db.get(Quiz, attempt.quiz_id)
+    now = datetime.now(UTC)
+    allowed = attempt.status == AttemptStatus.IN_PROGRESS
+    try:
+        require_assessment_access(db, user, quiz, writing=True)
+    except HTTPException as exc:
+        if exc.status_code not in {403, 404}:
+            raise
+        allowed = False
+    deadline = platform_service._as_utc(attempt.expires_at)
+    if deadline and now >= deadline:
+        allowed = False
+    return {"server_time": now.isoformat(), "expires_at": deadline.isoformat() if deadline else None,
+            "can_submit": allowed}
 
 
 @router.post("/quiz-attempts/{attempt_id}/submit", response_model=QuizAttemptResponse)
@@ -1050,7 +1134,7 @@ def list_assignments(
         )
         query = query.where(
             Assignment.status == AssignmentStatus.PUBLISHED,
-            Assignment.course_id.in_(enrolled_courses),
+            Assignment.course_id.in_(enrolled_courses), assessment_window_filter(Assignment),
         )
     elif user.role == UserRole.TEACHER:
         query = query.where(
@@ -1058,7 +1142,7 @@ def list_assignments(
         )
     return [
         AssignmentResponse.model_validate(item)
-        for item in db.scalars(query.order_by(Assignment.created_at.desc())).all()
+        for item in filter_student_assessments(db, user, db.scalars(query.order_by(Assignment.created_at.desc())).all())
     ]
 
 
@@ -1103,7 +1187,7 @@ def list_submissions(
     if assignment is None:
         raise HTTPException(status_code=404, detail="Assignment not found")
     if user.role == UserRole.STUDENT:
-        require_assessment_access(db, user, assignment)
+        require_assessment_access(db, user, assignment, results=True)
         query = select(AssignmentSubmission).where(
             AssignmentSubmission.assignment_id == assignment_id,
             AssignmentSubmission.student_id == user.id,
@@ -1137,7 +1221,7 @@ def my_submissions(user: Student, db: Db) -> list[AssignmentSubmissionResponse]:
     accessible = []
     for item in items:
         try:
-            require_assessment_access(db, user, db.get(Assignment, item.assignment_id))
+            require_assessment_access(db, user, db.get(Assignment, item.assignment_id), results=True)
         except HTTPException as exc:
             if exc.status_code in {403, 404}:
                 continue
@@ -1266,6 +1350,7 @@ def list_notifications(
     query = select(Notification).where(
         Notification.recipient_id == user.id,
         Notification.institution_id == user.institution_id,
+        or_(Notification.scheduled_for.is_(None), Notification.scheduled_for <= datetime.now(UTC)),
     )
     if unread_only:
         query = query.where(Notification.read_at.is_(None))
@@ -1309,7 +1394,7 @@ def mark_notification_read(
             Notification.institution_id == user.institution_id,
         )
     )
-    if notification is None:
+    if notification is None or (user.role == UserRole.STUDENT and notification.scheduled_for and platform_service._as_utc(notification.scheduled_for) > datetime.now(UTC)):
         raise HTTPException(status_code=404, detail="Notification not found")
     notification.read_at = notification.read_at or datetime.now(UTC)
     db.commit()
@@ -1326,8 +1411,13 @@ def list_calendar(
     query = select(CalendarEvent).where(CalendarEvent.institution_id == user.institution_id)
     if user.role == UserRole.STUDENT:
         query = query.where(
-            CalendarEvent.is_published.is_(True), CalendarEvent.cancelled_at.is_(None)
+            CalendarEvent.is_published.is_(True), CalendarEvent.cancelled_at.is_(None),
+            or_(CalendarEvent.course_id.is_(None), CalendarEvent.course_id.in_(select(Enrollment.course_id).where(
+                Enrollment.student_id == user.id,
+                Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]))))
         )
+    elif user.role == UserRole.TEACHER:
+        query = query.where(CalendarEvent.creator_id == user.id)
     return [
         CalendarEventResponse.model_validate(item)
         for item in db.scalars(
@@ -1392,12 +1482,17 @@ def update_calendar(
         raise HTTPException(status_code=404, detail="Calendar event not found")
     if user.role == UserRole.TEACHER and event.creator_id != user.id:
         raise HTTPException(status_code=403, detail="You do not own this event")
+    if payload.course_id:
+        try:
+            platform_service.ensure_course_manager(user, platform_service.course_for_user(db, user, payload.course_id))
+        except (LookupError, PermissionError) as exc:
+            raise HTTPException(404, "Course not found") from exc
     event.course_id = payload.course_id
     event.title = payload.title.strip()
     event.description = payload.description
     event.event_type = payload.event_type
-    event.starts_at = payload.starts_at
-    event.ends_at = payload.ends_at
+    event.starts_at = platform_service._as_utc(payload.starts_at)
+    event.ends_at = platform_service._as_utc(payload.ends_at)
     event.is_published = payload.is_published
     event.cancelled_at = None
     db.commit()
@@ -1479,75 +1574,14 @@ def list_users(user: Manager, db: Db, role: UserRole | None = None) -> list[Mana
         ).where(Course.teacher_id == user.id)
         query = query.where((User.id == user.id) | (User.id.in_(enrolled_students)))
     users = db.scalars(query.order_by(User.created_at.desc())).all()
-    ids = [item.id for item in users]
-    attempts_query = select(QuizAttempt).join(Quiz).join(Course).where(
-        QuizAttempt.student_id.in_(ids),
-        QuizAttempt.institution_id == user.institution_id,
-        QuizAttempt.status == AttemptStatus.SUBMITTED,
-        QuizAttempt.is_practice.is_(False),
-        Course.institution_id == user.institution_id,
-    )
-    if user.role == UserRole.TEACHER:
-        attempts_query = attempts_query.where(Course.teacher_id == user.id)
-    attempts = db.scalars(attempts_query).all()
-    pending_ids = set(db.scalars(select(QuizAttemptAnswer.attempt_id).where(
-        QuizAttemptAnswer.attempt_id.in_([attempt.id for attempt in attempts]),
-        QuizAttemptAnswer.graded_at.is_(None),
-    )).all())
-    by_student = defaultdict(list)
-    for attempt in attempts:
-        by_student[attempt.student_id].append(attempt)
-    submissions_query = select(AssignmentSubmission, Assignment.max_score).join(
-        Assignment, Assignment.id == AssignmentSubmission.assignment_id
-    ).join(Course, Course.id == Assignment.course_id).where(
-        AssignmentSubmission.student_id.in_(ids),
-        AssignmentSubmission.institution_id == user.institution_id,
-        Assignment.institution_id == user.institution_id,
-        Course.institution_id == user.institution_id,
-    ).order_by(AssignmentSubmission.version.desc())
-    if user.role == UserRole.TEACHER:
-        submissions_query = submissions_query.where(Course.teacher_id == user.id)
-    homework_by_student = defaultdict(list)
-    seen_submissions = set()
-    for submission, max_score in db.execute(submissions_query):
-        # A resubmission replaces the previous version, including while awaiting grading.
-        key = (submission.student_id, submission.assignment_id)
-        if key in seen_submissions:
-            continue
-        seen_submissions.add(key)
-        if (
-            submission.status in (SubmissionStatus.GRADED, SubmissionStatus.APPROVED)
-            and submission.graded_at is not None
-            and submission.final_score is not None
-            and max_score > 0
-            and math.isfinite(submission.final_score)
-            and math.isfinite(max_score)
-        ):
-            homework_by_student[submission.student_id].append(
-                float(submission.final_score) / float(max_score) * 100
-            )
-    result = []
-    for item in users:
-        visible = by_student[item.id]
-        finalized = [attempt for attempt in visible if attempt.id not in pending_ids and attempt.total_points > 0]
-        percent = (sum(float(attempt.score or 0) / float(attempt.total_points) * 100 for attempt in finalized)
-                   / len(finalized)) if finalized else None
-        homework_scores = homework_by_student[item.id]
-        homework_percent = sum(homework_scores) / len(homework_scores) if homework_scores else None
-        # Missing categories carry no weight; an actual zero score still counts.
-        available_rates = [rate for rate in (percent, homework_percent) if rate is not None]
-        overall_percent = sum(available_rates) / len(available_rates) if available_rates else 0
-        response = ManagedUserResponse.model_validate(item)
-        result.append(response.model_copy(update={
-            "quiz_attempts_count": len(visible),
-            "has_completed_exam": bool(visible),
-            "pending_quiz_attempts": sum(attempt.id in pending_ids for attempt in visible),
-            "average_quiz_score": percent,
-            "quiz_success_rate": percent,
-            "homework_success_rate": round(homework_percent, 2) if homework_percent is not None else None,
-            "total_overall_grade": round(overall_percent, 2),
-        }))
-    return result
+    from app.services.gradebook import published_grade_summaries, group_grade_summary
+    summaries = published_grade_summaries(db, user, [item.id for item in users])
+    groups = {}
+    for level in {item.grade_level for item in users}:
+        groups[level] = group_grade_summary([summaries[item.id] for item in users if item.grade_level == level])
+    return [ManagedUserResponse.model_validate(item).model_copy(update={
+        **{key: value for key, value in summaries[item.id].items() if key in ManagedUserResponse.model_fields}, "group_overall_grade": groups[item.grade_level]["total_overall_grade"],
+    }) for item in users]
 
 
 @router.post("/users/{user_id}/block", response_model=UserResponse)
@@ -1774,11 +1808,12 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
             "duration_seconds": q.duration_seconds,
             "starts_at": q.starts_at.isoformat() if q.starts_at else None,
             "ends_at": q.ends_at.isoformat() if q.ends_at else None,
+            "availability_state": "open" if assessment_open(q) else "closed" if assessment_started(q) else "scheduled",
             "attempts_allowed": q.attempts_allowed,
             "attempts_used": attempt_counts.get(q.id, 0),
             "completed": q.id in completed_quizzes,
             # Unscoped quizzes fall back to: any enrolled student can try.
-            "accessible": scope_accessible(q),
+            "accessible": scope_accessible(q) and (user.role != UserRole.STUDENT or assessment_open(q)),
         }
 
     def assignment_item(a: Assignment) -> dict:
@@ -1791,20 +1826,29 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
             "lesson_id": str(a.lesson_id) if a.lesson_id else None,
             "lesson_ids": [str(value) for value in a.lesson_ids],
             "module_ids": [str(value) for value in a.module_ids],
+            "starts_at": a.starts_at.isoformat() if a.starts_at else None,
+            "availability_state": "open" if assessment_open(a) else "closed" if assessment_started(a) else "scheduled",
             "due_at": a.due_at.isoformat() if a.due_at else None,
             "max_score": float(a.max_score or 0),
             "completed": a.id in completed_assignments,
-            "accessible": scope_accessible(a),
+            "accessible": scope_accessible(a) and (user.role != UserRole.STUDENT or assessment_open(a)),
         }
 
+    now = datetime.now(UTC)
+    boundaries = [platform_service._as_utc(value) for item in [*quizzes, *assignments] for value in
+        (item.starts_at, item.ends_at if isinstance(item, Quiz) else item.due_at) if value]
+    boundaries.extend(platform_service._as_utc(lesson.publish_at) for lesson in lessons if lesson.publish_at)
+    upcoming = [value for value in boundaries if value > now]
     return {
+        "server_time": now.isoformat(),
+        "next_availability_at": min(upcoming).isoformat() if upcoming else None,
         "course_id": str(course_id),
         "lessons": [
             {"id": str(lid), "title": lesson_titles[lid], "accessible": lid in accessible_lessons}
             for lid in lesson_ids if lid in visible_lessons
         ],
-        "quizzes": [quiz_item(q) for q in quizzes],
-        "assignments": [assignment_item(a) for a in assignments],
+        "quizzes": [quiz_item(q) for q in filter_student_assessments(db, user, quizzes)],
+        "assignments": [assignment_item(a) for a in filter_student_assessments(db, user, assignments)],
     }
 
 
@@ -1890,6 +1934,7 @@ def get_quiz_solve_view(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
         return cleaned
 
     return {
+        "server_time": datetime.now(UTC).isoformat(),
         "quiz": {
             "id": str(quiz.id),
             "title": quiz.title,
@@ -1961,6 +2006,7 @@ def grade_quiz_answer(attempt_id: uuid.UUID, question_id: uuid.UUID, payload: Gr
     record_audit(db, request, action="quiz_answer_graded", resource_type="quiz_attempt", resource_id=str(attempt.id), actor=user)
     db.commit()
     db.refresh(attempt)
+    assessment_changed(db, quiz, student_id=attempt.student_id)
     return attempt
 
 
@@ -2006,6 +2052,7 @@ def approve_quiz_result(attempt_id: uuid.UUID, user: Manager, db: Db, request: R
     record_audit(db, request, action="quiz_result_approved", resource_type="quiz_attempt", resource_id=str(attempt.id), actor=user)
     db.commit()
     db.refresh(attempt)
+    assessment_changed(db, quiz, student_id=attempt.student_id)
     return attempt
 
 
@@ -2029,14 +2076,14 @@ def get_quiz_result_view(
         select(Quiz).where(
             Quiz.id == quiz_id,
             Quiz.institution_id == user.institution_id,
-            Quiz.status == QuizStatus.PUBLISHED,
+            Quiz.status.in_([QuizStatus.PUBLISHED, QuizStatus.CLOSED]),
         )
     )
     if quiz is None:
         raise HTTPException(status_code=404, detail="Quiz not found")
     if user.role != UserRole.STUDENT:
         raise HTTPException(status_code=403, detail="Student only")
-    require_assessment_access(db, user, quiz)
+    require_assessment_access(db, user, quiz, results=True)
     if not _enrolled(db, user, quiz.course_id):
         raise HTTPException(status_code=403, detail="Not enrolled")
 
@@ -2369,14 +2416,14 @@ def get_quiz_attempts_history(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> 
         select(Quiz).where(
             Quiz.id == quiz_id,
             Quiz.institution_id == user.institution_id,
-            Quiz.status == QuizStatus.PUBLISHED,
+            Quiz.status.in_([QuizStatus.PUBLISHED, QuizStatus.CLOSED]),
         )
     )
     if quiz is None:
         raise HTTPException(status_code=404, detail="Quiz not found")
     if user.role != UserRole.STUDENT:
         raise HTTPException(status_code=403, detail="Student only")
-    require_assessment_access(db, user, quiz)
+    require_assessment_access(db, user, quiz, results=True)
     if not _enrolled(db, user, quiz.course_id):
         raise HTTPException(status_code=403, detail="Not enrolled")
 
@@ -2438,11 +2485,13 @@ def get_assignment_solve_view(assignment_id: uuid.UUID, user: CurrentUser, db: D
     ) if user.role == UserRole.STUDENT else None
 
     return {
+        "server_time": datetime.now(UTC).isoformat(),
         "id": str(assignment.id),
         "title": assignment.title,
         "prompt": assignment.prompt,
         "course_id": str(assignment.course_id),
         "lesson_id": str(assignment.lesson_id) if assignment.lesson_id else None,
+        "starts_at": assignment.starts_at.isoformat() if assignment.starts_at else None,
         "due_at": assignment.due_at.isoformat() if assignment.due_at else None,
         "max_score": float(assignment.max_score or 0),
         "my_latest_submission": (
@@ -2787,6 +2836,7 @@ def get_bootstrap_data(
             q = select(Notification).where(
                 Notification.recipient_id == user.id,
                 Notification.institution_id == user.institution_id,
+                or_(Notification.scheduled_for.is_(None), Notification.scheduled_for <= datetime.now(UTC)),
             )
             student_notifs = db.scalars(q.order_by(Notification.created_at.desc()).limit(50)).all()
             from app.services.lesson_announcements import visible_lesson_notifications

@@ -1,3 +1,4 @@
+import { AssessmentScheduleManager } from "./AssessmentScheduleManager";
 import React, { useState, useEffect, useMemo } from "react";
 import {
   FileQuestion,
@@ -194,6 +195,7 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+      <AssessmentScheduleManager />
       {/* Top Banner & Stats */}
       <div
         style={{

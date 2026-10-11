@@ -11,19 +11,17 @@ export interface FormattedDateTime {
  * Line 3: Date e.g. "9/24/2026"
  */
 export function formatDateTimeSimple(raw?: string | Date | null): FormattedDateTime {
-  if (!raw) return { time: "—", dayName: "", date: "" };
+  if (!raw || raw === "—") return { time: "—", dayName: "", date: "" };
   if (typeof raw === "string" && (raw === "الآن" || raw === "اليوم" || raw === "—")) {
     const now = new Date();
-    const dayName = now.toLocaleDateString("ar-EG", { weekday: "long" });
-    const month = now.getMonth() + 1;
-    const day = now.getDate();
-    const year = now.getFullYear();
+    const dayName = now.toLocaleDateString("ar-EG", { weekday: "long", timeZone: "Africa/Cairo" });
     const time = now.toLocaleTimeString("en-US", {
       hour: "numeric",
       minute: "2-digit",
       hour12: true,
+      timeZone: "Africa/Cairo",
     });
-    return { time, dayName, date: `${month}/${day}/${year}` };
+    return { time, dayName, date: now.toLocaleDateString("en-US", { timeZone: "Africa/Cairo" }) };
   }
 
   try {
@@ -37,16 +35,14 @@ export function formatDateTimeSimple(raw?: string | Date | null): FormattedDateT
       hour: "numeric",
       minute: "2-digit",
       hour12: true,
+      timeZone: "Africa/Cairo",
     });
 
     // Format Arabic day name: e.g. "الخميس"
-    const dayName = d.toLocaleDateString("ar-EG", { weekday: "long" });
+    const dayName = d.toLocaleDateString("ar-EG", { weekday: "long", timeZone: "Africa/Cairo" });
 
     // Format date: "9/24/2026"
-    const month = d.getMonth() + 1;
-    const day = d.getDate();
-    const year = d.getFullYear();
-    const date = `${month}/${day}/${year}`;
+    const date = d.toLocaleDateString("en-US", { timeZone: "Africa/Cairo" });
 
     return { time, dayName, date };
   } catch {

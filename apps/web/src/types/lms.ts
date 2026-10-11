@@ -123,6 +123,7 @@ export interface CourseAssessmentRef {
   maxScore?: number;
   dueLabel?: string | null;
   startsAt?: string | null;
+  availabilityState?: "open" | "closed" | "scheduled";
   /** Total attempts this student has already consumed on this quiz. */
   attemptsUsed?: number;
   /** Server-confirmed official quiz or homework submission; starting is not completion. */
@@ -163,11 +164,13 @@ export interface NotificationSchedule {
 }
 
 export interface NotificationItem {
+  courseId?: string;
   id: string;
   title: string;
   message: string;
   type: "assignment" | "quiz" | "system" | "warning" | "payment" | "lesson_access";
   dueDate?: string;
+  scheduledFor?: string;
   targetYear?: "all" | "1st_secondary" | "2nd_secondary" | "3rd_secondary" | string;
   createdAt: string;
   read: boolean;
@@ -202,10 +205,10 @@ export interface StudentRecord {
   academicYearLabel: string;
   overallAttendanceRatio: number; // 0 - 1.0 (e.g. 0.85 = 85%)
   assignmentSubmissionRatio: number; // 0 - 1.0 (e.g. 0.92 = 92%)
-  averageQuizScore: number; // 0 - 100
-  totalOverallGrade: number; // 0 - 100
-  quizSuccessRate: number; // 0 - 100%
-  homeworkSuccessRate: number; // 0 - 100%
+  averageQuizScore: number | null; // 0 - 100
+  totalOverallGrade: number | null; // 0 - 100
+  quizSuccessRate: number | null; // 0 - 100%
+  homeworkSuccessRate: number | null; // 0 - 100%
   lastActiveDate: string;
   studentPhone?: string;
   governorate?: string;
@@ -216,6 +219,12 @@ export interface StudentRecord {
   isBlocked?: boolean;
   hasCompletedExam?: boolean;
   pendingQuizAttempts?: number;
+  pendingAssessmentsCount?: number;
+  publishedAssessmentsCount?: number;
+  unattemptedAssessmentsCount?: number;
+  earnedPoints?: number;
+  possiblePoints?: number;
+  groupOverallGrade?: number | null;
   examMissedDeadline?: boolean;
   watchHistory: StudentVideoWatchLog[];
   customFieldValues: Record<string, unknown>;
@@ -282,6 +291,7 @@ export interface QuestionTypeConfig {
 }
 
 export interface CalendarScheduleEvent {
+  courseId?: string;
   id: string;
   academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary" | "all";
   date: string; // YYYY-MM-DD

@@ -1,3 +1,4 @@
+import { serverNow, synchronizeServerTime } from "../services/availabilityRefresh";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   ArrowLeft,
@@ -198,14 +199,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   const [selectedCourseId, setSelectedCourseId] = useState(() => initialCourseId || '');
   const [catalogOpen, setCatalogOpen] = useState(false);
-  const [assessmentClock, setAssessmentClock] = useState(Date.now);
-  useEffect(() => {
-    const timer = window.setInterval(() => setAssessmentClock(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
   const quizAvailability = (quiz: CourseAssessmentRef) =>
-    quiz.startsAt && new Date(quiz.startsAt).getTime() > assessmentClock ? 'لم يبدأ موعد الاختبار بعد'
-    : quiz.dueLabel && new Date(quiz.dueLabel).getTime() <= assessmentClock ? 'انتهى موعد الاختبار' : '';
+    quiz.availabilityState === 'scheduled' ? 'لم يبدأ موعد الاختبار بعد'
+    : quiz.availabilityState === 'closed' ? 'انتهى موعد الاختبار' : '';
   const freeCatalog = onEnrollCourse && <FreeCourseCatalog year={studentYear} enrolledIds={enrolledCourses.map(c => c.id)}
     onEnroll={async id => { await onEnrollCourse(id); setSelectedCourseId(id); }} />;
 
@@ -660,10 +656,12 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     setServerQuizLoading(true);
     try {
       const data = await apiRequest<{
+        server_time: string;
         quiz: { id: string; title: string; duration_seconds: number | null; total_points: number };
         attempt: { id: string; attempt_number: number; started_at: string | null; expires_at: string | null } | null;
         questions: Array<Omit<ServerQuizSolve["questions"][number], "options"> & { options: unknown }>;
       }>(`/quizzes/${assessment.id}/solve`, { skipCache: true });
+      synchronizeServerTime(data.server_time);
       setServerQuiz({
         quizId: data.quiz.id,
         title: data.quiz.title,
@@ -700,11 +698,35 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       setServerQuizRemaining(null);
       return;
     }
-    const compute = () => setServerQuizRemaining(Math.max(0, Math.floor((serverQuizDeadline - Date.now()) / 1000)));
+    const compute = () => { const now = serverNow(); setServerQuizRemaining(now === null ? null : Math.max(0, Math.floor((serverQuizDeadline - now) / 1000))); };
     compute();
     const interval = setInterval(compute, 1000);
     return () => clearInterval(interval);
   }, [serverQuizDeadline, serverQuiz, serverQuizResult]);
+
+  // Schedule changes update the current deadline without resetting answers.
+  useEffect(() => {
+    const id = serverQuizAttempt?.id;
+    if (!id || serverQuizResult) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const changed = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        void apiRequest<{ server_time: string; expires_at: string | null; can_submit: boolean }>(
+          `/quiz-attempts/${id}/availability`, { skipCache: true }
+        ).then(data => {
+          if (!active) return;
+          synchronizeServerTime(data.server_time);
+          setServerQuizDeadline(data.expires_at ? Date.parse(data.expires_at) : null);
+          if (!data.can_submit) setServerQuizError('التقييم غير متاح للتسليم حاليًا؛ راجع موعد الإتاحة.');
+          else { setServerQuizError(null); serverQuizAutoSubmitted.current = false; }
+        }).catch(() => { if (active) setServerQuizError('تعذر تحديث موعد الاختبار.'); });
+      }, 300);
+    };
+    window.addEventListener('lms_assessments_updated', changed);
+    return () => { active = false; clearTimeout(timer); window.removeEventListener('lms_assessments_updated', changed); };
+  }, [serverQuizAttempt?.id, serverQuizResult]);
 
   /** Submit the solved server quiz: real attempt + server-side grading. */
   const submitServerQuiz = useCallback(async (force = false) => {
@@ -797,6 +819,15 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       setServerAssignmentLoading(false);
     }
   }
+
+  useEffect(() => {
+    if (!serverAssignment?.id) return;
+    const row = selectedAssessments.items.find(item => item.id === serverAssignment.id && item.kind === 'assignment');
+    if (selectedAssessments.loading) return;
+    if (!row) { setServerAssignmentError('الواجب غير متاح حاليًا.'); return; }
+    setServerAssignment(previous => previous ? { ...previous, dueAt: row.dueLabel ?? null } : previous);
+    setServerAssignmentError(row.accessible ? null : 'انتهى موعد تسليم الواجب أو لم يعد متاحًا.');
+  }, [serverAssignment?.id, selectedAssessments.items, selectedAssessments.loading]);
 
   /** Download the printable assignment sheet (server-rendered Arabic PDF). */
   async function downloadAssignmentSheet() {
@@ -1838,7 +1869,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)" }}>{asg.title}</h3>
               <p style={{ margin: "0 0 14px", fontSize: "12.5px", color: "var(--text-muted)" }}>
                 تابع للدرس: {asg.lessonId ? lessonTitleById.get(asg.lessonId) || "—" : "مقرر كامل"}
-                {asg.dueLabel ? ` • آخر موعد: ${new Date(asg.dueLabel).toLocaleDateString("ar-EG")}` : ""}
+                {asg.dueLabel ? ` • آخر موعد: ${new Date(asg.dueLabel).toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })}` : ""}
               </p>
               {asg.accessible ? (
                 <button
@@ -2039,11 +2070,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)", lineHeight: 1.4 }}>{qz.title}</h3>
                 <p style={{ margin: "0 0 14px", fontSize: "12.5px", color: "var(--text-muted)", lineHeight: 1.5 }}>
                   الدروس: {(qz.lessonIds?.length ? qz.lessonIds : qz.lessonId ? [qz.lessonId] : []).map(id => lessonTitleById.get(id) || 'درس مرتبط').join('، ') || (qz.moduleIds?.length ? `${qz.moduleIds.length} وحدات كاملة` : 'الصف الدراسي')}
-                  {qz.startsAt ? ` • يبدأ ${new Date(qz.startsAt).toLocaleString("ar-EG")}` : ""}
-                  {qz.dueLabel ? ` • يُغلق ${new Date(qz.dueLabel).toLocaleString("ar-EG")}` : ""}
+                  {qz.startsAt ? ` • يبدأ ${new Date(qz.startsAt).toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })}` : ""}
+                  {qz.dueLabel ? ` • يُغلق ${new Date(qz.dueLabel).toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })}` : ""}
                 </p>
               </div>
-              {qz.accessible && quizAvailability(qz) ? <div>
+              {quizAvailability(qz) ? <div>
                 <p role="status">{quizAvailability(qz)}</p>
                 {(qz.attemptsUsed ?? 0) > 0 && <button type="button" className="btn-secondary" onClick={() => void openQuizResultPage(qz.id)}>عرض النتيجة والتصحيح</button>}
               </div> : qz.accessible && (qz.attemptsAllowed == null || (qz.attemptsUsed ?? 0) < qz.attemptsAllowed) ? (

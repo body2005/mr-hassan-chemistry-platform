@@ -17,6 +17,7 @@ from app.models.platform import (Assignment, AssignmentStatus, AssignmentSubmiss
     QuizStatus, QuizAttempt, QuizAttemptAnswer, AttemptStatus)
 from app.models.progress import LessonProgress
 from app.models.user import User, UserRole
+from app.services.gradebook import published_grade_summaries, group_grade_summary
 
 router = APIRouter()
 Db = Annotated[Session, Depends(get_db)]
@@ -29,6 +30,12 @@ class AnalyticsSummary(BaseModel):
     lessons_count: int
     quizzes_count: int
     assignments_count: int
+    total_overall_grade: float | None = None
+    homework_avg_score: float | None = None
+    earned_points: float = 0
+    possible_points: float = 0
+    pending_assessments_count: int = 0
+    student_grades: dict[str, dict[str, Any]] = Field(default_factory=dict)
     quiz_avg_score: float | None = None
     quiz_completion_rate: float | None = None
     assignment_submission_rate: float | None = None
@@ -37,7 +44,7 @@ class AnalyticsSummary(BaseModel):
     risk_students_count: int = 0
     top_quizzes: list[dict[str, Any]] = []
     assignments_on_time_rate: float | None = None
-    metric_policy: str = "percent/latest-submitted-official/enrollment-pairs/v1"
+    metric_policy: str = "points/published-eligible/latest-submitted-official/v2"
     quiz_eligible_count: int = 0
     quiz_completed_count: int = 0
     quiz_scored_count: int = 0
@@ -83,12 +90,6 @@ async def get_analytics_summary(
                          Enrollment.student_id.in_(students), Enrollment.course_id.in_(courses))
     quiz_filter = (Quiz.institution_id == user.institution_id,
                    Quiz.status.in_([QuizStatus.PUBLISHED, QuizStatus.CLOSED]))
-    assignment_filter = (Assignment.institution_id == user.institution_id,
-                         Assignment.status.in_([AssignmentStatus.PUBLISHED, AssignmentStatus.CLOSED]))
-    quiz_eligible_count = db.scalar(select(func.count()).select_from(Enrollment).join(
-        Quiz, Quiz.course_id == Enrollment.course_id).where(*enrollment_filter, *quiz_filter)) or 0
-    assignment_eligible_count = db.scalar(select(func.count()).select_from(Enrollment).join(
-        Assignment, Assignment.course_id == Enrollment.course_id).where(*enrollment_filter, *assignment_filter)) or 0
     lesson_eligible_count = db.scalar(select(func.count()).select_from(Enrollment).join(
         Lesson, Lesson.course_id == Enrollment.course_id).where(*enrollment_filter)) or 0
     pending = select(QuizAttemptAnswer.id).where(QuizAttemptAnswer.attempt_id == QuizAttempt.id,
@@ -117,18 +118,6 @@ async def get_analytics_summary(
             invalid_score_count += 1
             continue
         scored.append((attempt, score / total * 100))
-    quiz_avg_score = round(sum(percent for _, percent in scored) / len(scored), 2) if scored else None
-    quiz_completion_rate = round(len(attempts) / quiz_eligible_count * 100, 2) if quiz_eligible_count else None
-
-    submissions = db.scalars(select(AssignmentSubmission).join(Assignment, Assignment.id == AssignmentSubmission.assignment_id)
-        .join(Enrollment, (Enrollment.course_id == Assignment.course_id) &
-                         (Enrollment.student_id == AssignmentSubmission.student_id))
-        .where(AssignmentSubmission.institution_id == user.institution_id,
-               *enrollment_filter, *assignment_filter,
-               AssignmentSubmission.submitted_at.is_not(None))).all()
-    submitted_pairs = {(row.student_id, row.assignment_id) for row in submissions}
-    assignment_submission_rate = (round(len(submitted_pairs) / assignment_eligible_count * 100, 2)
-                                  if assignment_eligible_count else None)
 
     progresses = db.execute(select(LessonProgress).join(Lesson, LessonProgress.lesson_id == Lesson.id)
         .join(Enrollment,
@@ -140,8 +129,20 @@ async def get_analytics_summary(
     lesson_completion_rate = (round(len(completed_pairs) / lesson_eligible_count * 100, 2)
                               if lesson_eligible_count else None)
 
+    grades = published_grade_summaries(db, user, list(db.scalars(students)))
+    group = group_grade_summary(grades.values())
+    quiz_eligible_count = sum(row["quiz_assessments_count"] for row in grades.values())
+    assignment_eligible_count = sum(row["homework_assessments_count"] for row in grades.values())
+    completed_count = sum(row["quiz_attempts_count"] for row in grades.values())
+    submitted_count = sum(row["homework_submissions_count"] for row in grades.values())
+    quiz_completion_rate = round(completed_count / quiz_eligible_count * 100, 2) if quiz_eligible_count else None
+    assignment_submission_rate = round(submitted_count / assignment_eligible_count * 100, 2) if assignment_eligible_count else None
+
     mastery_distribution = {"ممتاز": 0, "جيد جداً": 0, "جيد": 0, "مقبول": 0, "ضعيف": 0}
-    for _, score in scored:
+    for grade in grades.values():
+        score = grade["total_overall_grade"]
+        if score is None:
+            continue
         if score >= 90:
             mastery_distribution["ممتاز"] += 1
         elif score >= 80:
@@ -161,12 +162,15 @@ async def get_analytics_summary(
             for a, percent in top]
 
     return AnalyticsSummary(
+        **group,
+        homework_avg_score=group["homework_success_rate"],
+        student_grades={str(key): value for key, value in grades.items()},
         course_id=None,
         students_count=students_count,
         lessons_count=lessons_count,
         quizzes_count=quizzes_count,
         assignments_count=assignments_count,
-        quiz_avg_score=quiz_avg_score,
+        quiz_avg_score=group["quiz_success_rate"],
         quiz_completion_rate=quiz_completion_rate,
         assignment_submission_rate=assignment_submission_rate,
         lesson_completion_rate=lesson_completion_rate,
@@ -175,7 +179,7 @@ async def get_analytics_summary(
         top_quizzes=top_quizzes,
         assignments_on_time_rate=None,
         quiz_eligible_count=quiz_eligible_count,
-        quiz_completed_count=len(attempts),
+        quiz_completed_count=completed_count,
         quiz_scored_count=len(scored),
         invalid_score_count=invalid_score_count,
         assignment_eligible_count=assignment_eligible_count,

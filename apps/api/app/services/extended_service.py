@@ -356,6 +356,9 @@ def record_grade(
     db.add(grade)
     db.commit()
     db.refresh(grade)
+    if item_type in {"quiz", "assignment"}:
+        from app.services.assessment_events import assessment_changed
+        assessment_changed(db, item, student_id=student_id)
     return grade
 
 
@@ -372,6 +375,15 @@ def student_grades(db: Session, viewer: User, student_id: uuid.UUID) -> list[Gra
     if scope is not None:
         query = query.where(Grade.course_id.in_(scope))
     rows = db.scalars(query).all()
+    if viewer.role == UserRole.STUDENT:
+        # A separate ledger endpoint must not reveal an official quiz result
+        # before the same approval required by quiz-results endpoints.
+        from app.models.platform import QuizAttempt, AttemptStatus
+        approved = set(db.scalars(select(QuizAttempt.quiz_id).where(
+            QuizAttempt.student_id == student_id, QuizAttempt.institution_id == viewer.institution_id,
+            QuizAttempt.is_practice.is_(False), QuizAttempt.status == AttemptStatus.SUBMITTED,
+            QuizAttempt.results_approved_at.is_not(None))))
+        rows = [row for row in rows if row.item_type != "quiz" or row.item_id in approved]
     return list(rows)
 
 

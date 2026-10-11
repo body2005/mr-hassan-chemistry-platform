@@ -1,3 +1,4 @@
+import { cairoToUtc } from "../utils/cairoTime";
 /** Normalize teacher-entered local schedule times before any server writes. */
 export function assessmentTimestamp(value: string | null | undefined, field: string): string | null {
   if (!value?.trim()) return null;
@@ -22,10 +23,11 @@ export function assessmentTimestamp(value: string | null | undefined, field: str
     let h = Number(hour);
     if (marker && h >= 1 && h <= 12) h = h % 12 + (/^(م|pm)$/i.test(marker) ? 12 : 0);
     else if (marker) h = -1;
-    const date = new Date(Number(year), Number(month) - 1, Number(day), h, Number(minute), Number(second));
+    const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
     if (h >= 0 && h <= 23 && Number(minute) < 60 && Number(second) < 60
-      && date.getFullYear() === Number(year) && date.getMonth() === Number(month) - 1 && date.getDate() === Number(day)) {
-      return date.toISOString();
+      && date.getUTCFullYear() === Number(year) && date.getUTCMonth() === Number(month) - 1 && date.getUTCDate() === Number(day)) {
+      const wall = `${year}-${month}-${day}T${String(h).padStart(2, '0')}:${minute}`;
+      return new Date(Date.parse(cairoToUtc(wall)) + Number(second) * 1000).toISOString();
     }
   }
   throw new Error(`وقت ${field} غير صالح. استخدم مثلًا 15:00 أو 3:00م، وتأكد من التاريخ.`);

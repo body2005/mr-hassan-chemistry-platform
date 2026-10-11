@@ -31,6 +31,14 @@ GOVERNORATE_CODES = frozenset({
 })
 
 
+def validate_schedule_window(start, end):
+    for value in (start, end):
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("Schedule timestamps must include a timezone")
+    if start is not None and end is not None and end <= start:
+        raise ValueError("Schedule end must be after its start")
+
+
 def _normalize_digits(value: str) -> str:
     return value.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789"))
 
@@ -83,7 +91,15 @@ class ManagedUserResponse(UserResponse):
     average_quiz_score: float | None = None
     quiz_success_rate: float | None = None
     homework_success_rate: float | None = None
-    total_overall_grade: float = 0
+    total_overall_grade: float | None = None
+    group_overall_grade: float | None = None
+    earned_points: float = 0
+    possible_points: float = 0
+    published_assessments_count: int = 0
+    pending_assessments_count: int = 0
+    pending_homework_count: int = 0
+    unattempted_assessments_count: int = 0
+    invalid_assessments_count: int = 0
 
 
 class RegisterRequest(BaseModel):
@@ -395,6 +411,10 @@ class LessonProgressResponse(BaseModel):
 
 
 class AnalyticsResponse(BaseModel):
+    total_overall_grade: float | None = None
+    earned_points: float = 0
+    possible_points: float = 0
+    pending_assessments_count: int = 0
     course_id: uuid.UUID
     enrolled_students: int
     completed_lessons: int
@@ -435,6 +455,12 @@ class NotificationCreateRequest(BaseModel):
     dedup_key: str | None = Field(default=None, max_length=160)
     scheduled_for: datetime | None = None
 
+    @field_validator("scheduled_for")
+    @classmethod
+    def aware_schedule(cls, value):
+        validate_schedule_window(value, None)
+        return value
+
 
 class NotificationBroadcastRequest(BaseModel):
     target_grade: str | None = Field(default=None, pattern="^SECONDARY_[123]$")
@@ -446,6 +472,12 @@ class NotificationBroadcastRequest(BaseModel):
     dedup_key: str | None = Field(default=None, max_length=160)
     scheduled_for: datetime | None = None
 
+    @field_validator("scheduled_for")
+    @classmethod
+    def aware_schedule(cls, value):
+        validate_schedule_window(value, None)
+        return value
+
 
 class CalendarEventCreateRequest(BaseModel):
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=100)
@@ -456,6 +488,11 @@ class CalendarEventCreateRequest(BaseModel):
     starts_at: datetime
     ends_at: datetime | None = None
     is_published: bool = True
+
+    @model_validator(mode="after")
+    def valid_window(self):
+        validate_schedule_window(self.starts_at, self.ends_at)
+        return self
 
 
 class CalendarEventResponse(BaseModel):
@@ -522,6 +559,11 @@ class QuizCreateRequest(AssessmentScopeRequest):
     # Attach the quiz to a unit and optionally to the exact lesson it covers.
     module_id: uuid.UUID | None = None
     lesson_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def valid_window(self):
+        validate_schedule_window(self.starts_at, self.ends_at)
+        return self
 
     @model_validator(mode="before")
     @classmethod
@@ -595,6 +637,17 @@ class ApproveQuizResultRequest(BaseModel):
     notes: str | None = Field(default=None, max_length=20000)
 
 
+class AssessmentPublicationRequest(BaseModel):
+    publication_status: Literal['draft', 'published'] | None = None
+    starts_at: datetime | None
+    ends_at: datetime | None
+
+    @model_validator(mode="after")
+    def valid_window(self):
+        validate_schedule_window(self.starts_at, self.ends_at)
+        return self
+
+
 class LessonPublicationRequest(BaseModel):
     publication_status: Literal['draft', 'published']
     publish_at: datetime | None = None
@@ -641,6 +694,11 @@ class AssignmentCreateRequest(AssessmentScopeRequest):
     module_id: uuid.UUID | None = None
     lesson_id: uuid.UUID | None = None
     max_score: float = Field(default=100.0, gt=0, le=100_000)
+
+    @model_validator(mode="after")
+    def valid_window(self):
+        validate_schedule_window(self.starts_at, self.due_at)
+        return self
 
     @field_validator("prompt", mode="before")
     @classmethod

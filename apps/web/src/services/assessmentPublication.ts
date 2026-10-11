@@ -1,3 +1,4 @@
+import { assessmentWindow } from "./assessmentSchedule";
 import type { GeneratedQuestion } from '../types/quiz';
 import { canonicalQuestionType } from './questionType';
 import { hasContentReview } from './quizContentReview';
@@ -36,5 +37,10 @@ export function validateAssessmentPublication(input: PublicationInput): { messag
   if (input.isQuiz && (!Number.isFinite(Number(input.duration)) || Number(input.duration) <= 0 || Number(input.duration) > 300)) return failure('يرجى تحديد مدة حل الاختبار من 1 إلى 300 دقيقة (يلزم ادخاله).', 'publish');
   if (!input.startDate || !input.startTime.trim()) return failure('يرجى تحديد موعد النشر وبدء الإتاحة (يلزم ادخاله).', 'publish');
   if (!input.endDate || !input.endTime.trim()) return failure(`يرجى تحديد موعد انتهاء الإتاحة وإغلاق ${noun} (يلزم ادخاله).`, 'publish');
+  try {
+    assessmentWindow(`${input.startDate}T${input.startTime}:00`, `${input.endDate}T${input.endTime}:00`);
+  } catch (error) {
+    return failure(error instanceof Error ? error.message : 'راجع مواعيد الإتاحة.', 'publish');
+  }
   return null;
 }

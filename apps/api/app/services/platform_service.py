@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.core.events import event_broker
 from app.services.content_access import require_assessment_access
+from app.services.assessment_events import assessment_changed
 from app.services.storage_cleanup import enqueue_cleanup
 from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus, Lesson
 from app.models.platform import (
@@ -287,7 +288,7 @@ def publish_quiz_atomic(db: Session, user: User, payload: QuizPublishRequest) ->
         return existing
     quiz = Quiz(institution_id=course.institution_id, course_id=course.id, creator_id=user.id,
                 title=payload.title.strip(), duration_seconds=payload.duration_seconds,
-                starts_at=payload.starts_at, ends_at=payload.ends_at, module_id=module_id, lesson_id=lesson_id,
+                starts_at=_as_utc(payload.starts_at), ends_at=_as_utc(payload.ends_at), module_id=module_id, lesson_id=lesson_id,
                 randomize_questions=payload.randomize_questions, attempts_allowed=payload.attempts_allowed,
                 status=QuizStatus.PUBLISHED, published_at=datetime.now(UTC),
                 publication_key=payload.idempotency_key, publication_hash=digest)
@@ -311,6 +312,7 @@ def publish_quiz_atomic(db: Session, user: User, payload: QuizPublishRequest) ->
         db.rollback()
         raise
     db.refresh(quiz)
+    assessment_changed(db, quiz)
     return quiz
 
 
@@ -324,8 +326,8 @@ def create_quiz(db: Session, user: User, payload: QuizCreateRequest) -> Quiz:
         creator_id=user.id,
         title=payload.title.strip(),
         duration_seconds=payload.duration_seconds,
-        starts_at=payload.starts_at,
-        ends_at=payload.ends_at,
+        starts_at=_as_utc(payload.starts_at),
+        ends_at=_as_utc(payload.ends_at),
         randomize_questions=payload.randomize_questions,
         attempts_allowed=payload.attempts_allowed,
         module_id=module_id,
@@ -398,8 +400,11 @@ def publish_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> Quiz:
     freeze_exam(db, quiz)
     quiz.status = QuizStatus.PUBLISHED
     quiz.published_at = datetime.now(UTC)
+    from app.services.assessment_schedule import sync_assessment_schedule
+    sync_assessment_schedule(db, quiz)
     db.commit()
     db.refresh(quiz)
+    assessment_changed(db, quiz)
     return quiz
 
 
@@ -412,7 +417,7 @@ def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
             Quiz.id == quiz_id,
             Quiz.institution_id == user.institution_id,
             Quiz.status == QuizStatus.PUBLISHED,
-        )
+        ).with_for_update().execution_options(populate_existing=True)
     )
     require_assessment_access(db, user, quiz, writing=True)
     now = datetime.now(UTC)
@@ -434,6 +439,9 @@ def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
         else:
             if active.question_snapshot is None:
                 raise ValueError("Legacy attempt has no frozen question evidence; teacher review is required")
+            if quiz.ends_at:
+                active.expires_at = min(_as_utc(active.expires_at), _as_utc(quiz.ends_at)) if active.expires_at else _as_utc(quiz.ends_at)
+                db.commit()
             return active
     attempt_number = (
         db.scalar(
@@ -483,6 +491,12 @@ def _answers_equal(answer: object, correct: object, *, question=None) -> bool:
 def submit_quiz(
     db: Session, user: User, attempt_id: uuid.UUID, payload: QuizAttemptSubmitRequest
 ) -> QuizAttempt:
+    quiz_id = db.scalar(select(QuizAttempt.quiz_id).where(QuizAttempt.id == attempt_id,
+        QuizAttempt.student_id == user.id, QuizAttempt.institution_id == user.institution_id))
+    if quiz_id is None:
+        raise LookupError("Attempt not found")
+    db.scalar(select(Quiz).where(Quiz.id == quiz_id, Quiz.institution_id == user.institution_id)
+        .with_for_update().execution_options(populate_existing=True))
     attempt = db.scalar(
         select(QuizAttempt).where(
             QuizAttempt.id == attempt_id,
@@ -539,6 +553,7 @@ def submit_quiz(
     attempt.score = score
     db.commit()
     db.refresh(attempt)
+    assessment_changed(db, db.get(Quiz, attempt.quiz_id), student_id=attempt.student_id)
     return attempt
 
 
@@ -572,8 +587,8 @@ def create_assignment(db: Session, user: User, payload: AssignmentCreateRequest)
         creator_id=user.id,
         title=payload.title.strip(),
         prompt=payload.prompt.strip(),
-        starts_at=payload.starts_at,
-        due_at=payload.due_at,
+        starts_at=_as_utc(payload.starts_at),
+        due_at=_as_utc(payload.due_at),
         max_score=payload.max_score,
         module_id=module_id,
         lesson_id=lesson_id,
@@ -608,8 +623,11 @@ def publish_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> Ass
     assignment.prompt = assignment.prompt.strip()
     assignment.module_id, assignment.lesson_id = module_id, lesson_id
     assignment.status = AssignmentStatus.PUBLISHED
+    from app.services.assessment_schedule import sync_assessment_schedule
+    sync_assessment_schedule(db, assignment)
     db.commit()
     db.refresh(assignment)
+    assessment_changed(db, assignment)
     return assignment
 
 
@@ -620,7 +638,7 @@ def start_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> Assig
             Assignment.id == assignment_id,
             Assignment.institution_id == user.institution_id,
             Assignment.status == AssignmentStatus.PUBLISHED,
-        )
+        ).with_for_update().execution_options(populate_existing=True)
     )
     require_assessment_access(db, user, assignment, writing=True)
     now = datetime.now(UTC)
@@ -638,6 +656,9 @@ def start_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> Assig
             active.status = AssignmentAttemptStatus.EXPIRED
             db.flush()
         else:
+            if assignment.due_at:
+                active.expires_at = min(_as_utc(active.expires_at), _as_utc(assignment.due_at)) if active.expires_at else _as_utc(assignment.due_at)
+                db.commit()
             return active
     attempt_number = (
         db.scalar(
@@ -672,7 +693,7 @@ def submit_assignment(
             Assignment.id == assignment_id,
             Assignment.institution_id == user.institution_id,
             Assignment.status == AssignmentStatus.PUBLISHED,
-        )
+        ).with_for_update().execution_options(populate_existing=True)
     )
     require_assessment_access(db, user, assignment, writing=True)
     now = datetime.now(UTC)
@@ -734,6 +755,7 @@ def submit_assignment(
             raise
         return existing
     db.refresh(submission)
+    assessment_changed(db, assignment, student_id=submission.student_id)
 
     try:
         course = db.get(Course, assignment.course_id)
@@ -835,6 +857,7 @@ def grade_submission(
     db.add(notif)
     db.commit()
     db.refresh(submission)
+    assessment_changed(db, assignment, student_id=submission.student_id)
 
     try:
         event_broker.publish_event(
@@ -899,13 +922,15 @@ def create_notification(
         message=payload.message.strip(),
         action_url=payload.action_url,
         dedup_key=payload.dedup_key,
-        scheduled_for=payload.scheduled_for,
+        scheduled_for=_as_utc(payload.scheduled_for),
         delivery_status=DeliveryStatus.PENDING,
     )
     db.add(notification)
     db.commit()
     db.refresh(notification)
 
+    if notification.scheduled_for and _as_utc(notification.scheduled_for) > datetime.now(UTC):
+        return notification
     try:
         event_broker.publish_event(
             institution_id=notification.institution_id,
@@ -980,7 +1005,7 @@ def broadcast_notification(
             message=payload.message.strip(),
             action_url=payload.action_url,
             dedup_key=dedup_key,
-            scheduled_for=payload.scheduled_for,
+            scheduled_for=_as_utc(payload.scheduled_for),
             delivery_status=DeliveryStatus.PENDING,
         )
         notifications.append(notification)
@@ -989,6 +1014,8 @@ def broadcast_notification(
         db.add_all(new_notifications)
         db.flush()
         db.commit()
+        if payload.scheduled_for and _as_utc(payload.scheduled_for) > datetime.now(UTC):
+            return notifications
         try:
             event_broker.publish_event(
                 institution_id=user.institution_id,
@@ -1030,8 +1057,8 @@ def create_calendar_event(
         title=payload.title.strip(),
         description=payload.description,
         event_type=payload.event_type,
-        starts_at=payload.starts_at,
-        ends_at=payload.ends_at,
+        starts_at=_as_utc(payload.starts_at),
+        ends_at=_as_utc(payload.ends_at),
         is_published=payload.is_published,
     )
     db.add(event)
@@ -1118,14 +1145,20 @@ def course_analytics(db: Session, user: User, course_id: uuid.UUID) -> dict[str,
         .all()
     )
     average = round(sum(progress_rows) / len(progress_rows), 2) if progress_rows else 0.0
+    from app.services.gradebook import published_grade_summaries, group_grade_summary
+    student_ids = list(db.scalars(select(Enrollment.student_id).where(Enrollment.course_id == course.id,
+        Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]))))
+    grades = list(published_grade_summaries(db, user, student_ids, course_ids=[course.id]).values())
+    group = group_grade_summary(grades)
     risk_score = max(0.0, min(1.0, 1 - average / 100))
     return {
         "course_id": course.id,
         "enrolled_students": enrolled_students,
         "completed_lessons": sum(1 for value in progress_rows if value >= 100),
         "average_completion_percent": average,
-        "assignment_average_score": None,
-        "quiz_average_score": None,
+        "assignment_average_score": group["homework_success_rate"],
+        "quiz_average_score": group["quiz_success_rate"],
+        **group,
         "risk": {
             "score": round(risk_score, 3),
             "explanation": (

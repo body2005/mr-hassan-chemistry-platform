@@ -1,3 +1,4 @@
+import { assessmentsChanged } from "./availabilityRefresh";
 import { ApiClientError, apiRequest, apiUrl, invalidateApiCache } from "./apiClient";
 
 export interface RealtimeMessage<T = unknown> {
@@ -47,6 +48,7 @@ class RealTimeService {
         this.emit("status", { status: "connected" });
         // Redis events are hints, not durable history. Recover notifications
         // missed while offline from the authenticated database-backed route.
+        assessmentsChanged();
         invalidateApiCache("/notifications");
         window.dispatchEvent(new CustomEvent("lms_notifications_updated"));
         // A review/access change can occur while no subscriber exists. Read
@@ -72,6 +74,7 @@ class RealTimeService {
         "calendar_updated",
         "lesson_comment_created",
         "lesson_published",
+        "assessment_updated",
       ];
 
       for (const eventName of registeredEvents) {
@@ -164,7 +167,11 @@ class RealTimeService {
       case 'lesson_comment_created':
         invalidateApiCache('/lessons');
         break;
+      case 'assessment_updated':
+        assessmentsChanged();
+        break;
       case 'lesson_published':
+        assessmentsChanged();
         invalidateApiCache('/courses');
         invalidateApiCache('/bootstrap');
         window.dispatchEvent(new CustomEvent('lms_courses_updated'));

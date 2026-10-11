@@ -14,7 +14,9 @@ import {
   beginBrowserLogout,
 } from "./apiClient";
 import type { StudentEntitlement } from "./paymentService";
-import { assessmentWindow } from "./assessmentSchedule";
+import { cairoLocalValue } from "../utils/cairoTime";
+import { armAvailabilityRefresh, assessmentsChanged } from "./availabilityRefresh";
+import { assessmentTimestamp, assessmentWindow } from "./assessmentSchedule";
 import { canonicalQuestionType } from "./questionType";
 import { canonicalEditorOptionKey } from "./mcqOptions";
 /**
@@ -351,15 +353,16 @@ function mapApiNotification(item: ApiNotification): NotificationItem {
     createdAt: item.created_at,
     read: Boolean(item.read_at),
     dueDate: item.scheduled_for || undefined,
+    scheduledFor: item.scheduled_for || undefined,
     actionUrl: item.action_url || undefined,
-    actionTab: isPayment ? "PaymentManagement" : (item.action_url?.replace(/^#/, "") as NotificationItem["actionTab"]),
+    actionTab: isPayment ? "PaymentManagement" : (item.action_url?.replace(/^#/, "").split("?")[0] as NotificationItem["actionTab"]),
     paymentOrderId,
   };
 }
 
 function mapApiCalendarEvent(item: ApiCalendarEvent): CalendarScheduleEvent {
   const starts = new Date(item.starts_at);
-  const time = starts.toLocaleTimeString("ar-EG", { hour: "2-digit", minute: "2-digit" });
+  const time = starts.toLocaleTimeString("ar-EG", { timeZone: "Africa/Cairo", hour: "2-digit", minute: "2-digit" });
   const contentType = ["lesson", "assignment", "quiz", "general"].includes(item.event_type)
     ? (item.event_type as CalendarScheduleEvent["contentType"])
     : "general";
@@ -398,7 +401,9 @@ function mapApiCalendarEvent(item: ApiCalendarEvent): CalendarScheduleEvent {
   return {
     id: item.id,
     academicYear,
-    date: item.starts_at.slice(0, 10),
+    courseId: item.course_id || undefined,
+    closeDeadline: item.ends_at ? cairoLocalValue(item.ends_at).replace("T", " ") : undefined,
+    date: cairoLocalValue(item.starts_at).slice(0, 10),
     dayName: item.title,
     time,
     contentType,
@@ -828,12 +833,13 @@ export const notificationService = {
       method: "POST",
       body: JSON.stringify({
         kind: item.type,
+        course_id: item.courseId || null,
         title: item.title,
         message: item.message,
         target_grade: item.targetYear && item.targetYear !== 'all' ? ({'1st_secondary': 'SECONDARY_1', '2nd_secondary': 'SECONDARY_2', '3rd_secondary': 'SECONDARY_3'} as const)[item.targetYear] : null,
-        action_url: item.targetYear ? `${actionUrl || "#Notifications"}?grade=${item.targetYear}` : actionUrl,
+        action_url: item.targetYear ? `${actionUrl || "#Notifications"}${actionUrl?.includes("?") ? "&" : "?"}grade=${item.targetYear}` : actionUrl,
         dedup_key: item.id,
-        scheduled_for: item.createdAt.includes("T") ? item.createdAt : undefined,
+        scheduled_for: assessmentTimestamp(item.scheduledFor || (item.createdAt.includes("T") ? item.createdAt : null), "الإشعار"),
       }),
     });
     invalidateApiCache("/notifications");
@@ -899,7 +905,8 @@ export const calendarService = {
   },
 
   async saveCalendarEvent(event: CalendarScheduleEvent): Promise<CalendarScheduleEvent[]> {
-    const startsAt = new Date(`${event.date}T${parseScheduleClock(event.time)}:00`).toISOString();
+    const schedule = assessmentWindow(`${event.date}T${parseScheduleClock(event.time)}:00`, event.closeDeadline?.replace(' ', 'T'));
+    const startsAt = schedule.startsAt;
     const metaPayload = {
       academicYear: event.academicYear || "1st_secondary",
       isRecurringWeekly: event.isRecurringWeekly,
@@ -910,11 +917,12 @@ export const calendarService = {
     };
     const payload = {
       idempotency_key: event.id.startsWith('evt_') ? event.id : undefined,
+      course_id: event.courseId || null,
       title: event.dayName,
       description: JSON.stringify(metaPayload),
       event_type: event.contentType,
       starts_at: startsAt,
-      ends_at: null,
+      ends_at: schedule.endsAt,
       is_published: event.isPublishedToStudents !== false,
     };
     const isServerId = !event.id.startsWith("evt_");
@@ -1099,6 +1107,8 @@ export const courseService = {
   /** Server-side shape of a published assessment the student can attempt. */
   async getCourseAssessments(courseId: string, options?: { skipCache?: boolean; signal?: AbortSignal }): Promise<{
     course_id: string;
+    server_time: string;
+    next_availability_at: string | null;
     lessons: Array<{ id: string; title: string; accessible: boolean }>;
     quizzes: Array<{
       id: string;
@@ -1115,6 +1125,7 @@ export const courseService = {
       attempts_used: number;
       completed: boolean;
       accessible: boolean;
+      availability_state?: "open" | "closed" | "scheduled";
     }>;
     assignments: Array<{
       id: string;
@@ -1125,9 +1136,11 @@ export const courseService = {
       lesson_ids?: string[];
       module_ids?: string[];
       due_at: string | null;
+      starts_at: string | null;
       max_score: number;
       completed: boolean;
       accessible: boolean;
+      availability_state?: "open" | "closed" | "scheduled";
     }>;
   }> {
     return apiRequest(`/courses/${courseId}/assessments`, { cacheTtlMs: 60_000, ...options });
@@ -1135,6 +1148,7 @@ export const courseService = {
 
   async getCourseAssessmentRefs(courseId: string, options?: { skipCache?: boolean; signal?: AbortSignal }): Promise<CourseAssessmentRef[]> {
     const data = await courseService.getCourseAssessments(courseId, options);
+    armAvailabilityRefresh(courseId, data.server_time, data.next_availability_at);
     return [
       ...data.quizzes.map((q) => ({
         id: q.id,
@@ -1147,6 +1161,7 @@ export const courseService = {
         durationMinutes: q.duration_seconds ? Math.ceil(q.duration_seconds / 60) : undefined,
         dueLabel: q.ends_at,
         startsAt: q.starts_at,
+        availabilityState: q.availability_state,
         attemptsUsed: q.attempts_used,
         attemptsAllowed: q.attempts_allowed,
         completed: q.completed === true,
@@ -1163,6 +1178,8 @@ export const courseService = {
         maxScore: a.max_score,
         completed: a.completed === true,
         dueLabel: a.due_at,
+        startsAt: a.starts_at,
+        availabilityState: a.availability_state,
         accessible: a.accessible,
       })),
     ];
@@ -1230,6 +1247,7 @@ export const courseService = {
       }),
     });
     invalidateApiCache("/courses");
+    assessmentsChanged();
     return { quiz_id: quiz.id };
   },
 
@@ -1267,7 +1285,16 @@ export const courseService = {
       method: "POST",
     });
     invalidateApiCache("/courses");
+    assessmentsChanged();
     return { assignment_id: created.id };
+  },
+
+  async updateAssessmentPublication(kind: "quiz" | "assignment", id: string, start: string | null, end: string | null, publicationStatus?: "draft" | "published"): Promise<void> {
+    const window = assessmentWindow(start, end);
+    await apiRequest(`/${kind === "quiz" ? "quizzes" : "assignments"}/${id}/publication`, {
+      method: "PATCH", body: JSON.stringify({ starts_at: window.startsAt, ends_at: window.endsAt, publication_status: publicationStatus }),
+    });
+    assessmentsChanged();
   },
 
   async addModule(courseId: string, payload: { title: string; position: number }): Promise<ApiCourse["modules"][number]> {
@@ -1320,7 +1347,7 @@ export const courseService = {
   },
 
   async updateLessonPublication(lessonId: string, publication_status: 'draft' | 'published', publish_at: string | null): Promise<void> {
-    await apiRequest(`/lessons/${lessonId}/publication`, { method: 'PATCH', body: JSON.stringify({ publication_status, publish_at }) });
+    await apiRequest(`/lessons/${lessonId}/publication`, { method: 'PATCH', body: JSON.stringify({ publication_status, publish_at: assessmentTimestamp(publish_at, "نشر الدرس") }) });
     invalidateApiCache('/courses');
   },
   async deleteLesson(moduleId: string | undefined, lessonId: string): Promise<void> {
@@ -1397,7 +1424,13 @@ export type ApiManagedUser = Pick<
   average_quiz_score?: number | null;
   homework_success_rate?: number | null;
   quiz_success_rate?: number | null;
-  total_overall_grade?: number;
+  total_overall_grade?: number | null;
+  group_overall_grade?: number | null;
+  earned_points?: number;
+  possible_points?: number;
+  published_assessments_count?: number;
+  pending_assessments_count?: number;
+  unattempted_assessments_count?: number;
   last_active_date?: string | null;
   quizzes_taken?: number;
   quiz_attempts_count?: number;

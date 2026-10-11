@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { CurrentUser, StudentProfile, StudentRecord, TeacherProfile } from "../types/lms";
 import { Language, translations } from "../utils/i18n";
+import { invalidateApiCache } from "../services/apiClient";
 import { userService } from "../services/lmsService";
 import { PasswordChangeWizard } from "../components/PasswordChangeWizard";
 import { useConfirm } from "../components/ConfirmWizard";
@@ -38,10 +39,11 @@ export interface ManagedStudentItem {
   createdAt?: string;
   overallAttendanceRatio?: number;
   assignmentSubmissionRatio?: number;
-  averageQuizScore?: number;
-  totalOverallGrade?: number;
-  homeworkSuccessRate?: number;
-  quizSuccessRate?: number;
+  averageQuizScore?: number | null;
+  totalOverallGrade?: number | null;
+  homeworkSuccessRate?: number | null;
+  quizSuccessRate?: number | null;
+  pendingAssessmentsCount?: number;
   lastActiveDate?: string;
   customFieldValues?: Record<string, unknown>;
   watchHistory?: StudentRecord["watchHistory"];
@@ -80,11 +82,23 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [selectedStudentForDetail, setSelectedStudentForDetail] = useState<ManagedStudentItem | null>(null);
   const [selectedStudentForWizard, setSelectedStudentForWizard] = useState<ManagedStudentItem | null>(null);
   const [passwordWizardOpen, setPasswordWizardOpen] = useState(false);
+  const [gradeRevision, setGradeRevision] = useState(0);
+  useEffect(() => {
+    if (isStudent) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = () => { clearTimeout(timer); timer = setTimeout(() => {
+      invalidateApiCache('/users'); setGradeRevision(value => value + 1);
+    }, 300); };
+    const events = ['lms_assessments_updated', 'lms_submission_graded', 'lms_payment_updated'];
+    for (const event of events) window.addEventListener(event, refresh);
+    return () => { clearTimeout(timer); for (const event of events) window.removeEventListener(event, refresh); };
+  }, [isStudent, user.id]);
 
   useEffect(() => {
     if (isStudent) return;
+    let active = true;
     void userService.getStudents()
-      .then((students) => setRegisteredStudents(students.map((student) => {
+      .then((students) => { if (!active) return; setRegisteredStudents(students.map((student) => {
         const year: "1st_secondary" | "2nd_secondary" | "3rd_secondary" =
           student.grade_level === "SECONDARY_2"
             ? "2nd_secondary"
@@ -102,6 +116,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           name: student.display_name,
           email: student.email,
           role: student.role,
+          averageQuizScore: student.average_quiz_score ?? null,
+          totalOverallGrade: student.total_overall_grade ?? null,
+          homeworkSuccessRate: student.homework_success_rate ?? null,
+          quizSuccessRate: student.quiz_success_rate ?? null,
+          pendingAssessmentsCount: student.pending_assessments_count ?? 0,
           isBlocked: !student.is_active,
           academicYear: year,
           academicYearLabel: yearLabel,
@@ -113,9 +132,12 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           gender: student.gender || "",
           createdAt: student.created_at ? student.created_at.slice(0, 10) : "",
         };
-      })))
-      .catch(() => setRegisteredStudents([]));
-  }, [isStudent]);
+      })); })
+      .catch(() => { if (active) setRegisteredStudents([]); });
+    return () => { active = false; };
+  }, [isStudent, user.id, gradeRevision]);
+
+  const currentDetailStudent = registeredStudents.find(row => row.id === selectedStudentForDetail?.id);
 
   async function handleToggleBlockStudent(studentId: string, studentName: string, currentlyBlocked: boolean) {
     const actionText = currentlyBlocked ? "إلغاء حظر" : "حظر";
@@ -656,60 +678,30 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
       {/* Student Video Timeline Modal for Teacher */}
       <StudentDetailModal
-        student={selectedStudentForDetail ? {
-          id: selectedStudentForDetail.id,
-          name: selectedStudentForDetail.name || "طالب",
-          email: selectedStudentForDetail.email || "—",
-          nationalId: selectedStudentForDetail.nationalId || "—",
-          academicYear: selectedStudentForDetail.academicYear || "1st_secondary",
-          academicYearLabel: selectedStudentForDetail.academicYearLabel || "الصف الأول الثانوي",
-          overallAttendanceRatio: selectedStudentForDetail.overallAttendanceRatio ?? 0.85,
-          assignmentSubmissionRatio: selectedStudentForDetail.assignmentSubmissionRatio ?? 0.8,
-          averageQuizScore: selectedStudentForDetail.averageQuizScore ?? 82,
-          totalOverallGrade: selectedStudentForDetail.totalOverallGrade ?? 85,
-          homeworkSuccessRate: selectedStudentForDetail.homeworkSuccessRate ?? 85,
-          quizSuccessRate: selectedStudentForDetail.quizSuccessRate ?? 80,
-          lastActiveDate: selectedStudentForDetail.lastActiveDate || "اليوم",
-          customFieldValues: selectedStudentForDetail.customFieldValues || {},
-          watchHistory: selectedStudentForDetail.watchHistory || [
-            {
-              videoId: "vid_1",
-              videoTitle: "الدرس الأول: العناصر الانتقالية وخواصها",
-              courseTitle: "الكيمياء العامة",
-              totalDurationSec: 2400,
-              watchedDurationSec: 2160,
-              completionPercentage: 90,
-              lastWatchedAt: "2026-08-20 14:30",
-              dropOffTimestampSec: 2160,
-              segments: [
-                { startTimeSec: 0, endTimeSec: 600, watched: true },
-                { startTimeSec: 600, endTimeSec: 1200, watched: true },
-                { startTimeSec: 1200, endTimeSec: 1800, watched: true },
-                { startTimeSec: 1800, endTimeSec: 2160, watched: true },
-              ],
-            },
-            {
-              videoId: "vid_2",
-              videoTitle: "الدرس الثاني: تفاعلات أكاسيد الحديد والمعادلات",
-              courseTitle: "الكيمياء العامة",
-              totalDurationSec: 1800,
-              watchedDurationSec: 1620,
-              completionPercentage: 90,
-              lastWatchedAt: "2026-08-22 16:15",
-              dropOffTimestampSec: 1620,
-              segments: [
-                { startTimeSec: 0, endTimeSec: 900, watched: true },
-                { startTimeSec: 900, endTimeSec: 1620, watched: true },
-              ],
-            },
-          ],
+        student={currentDetailStudent ? {
+          id: currentDetailStudent.id,
+          name: currentDetailStudent.name || "طالب",
+          email: currentDetailStudent.email || "—",
+          nationalId: currentDetailStudent.nationalId || "—",
+          academicYear: currentDetailStudent.academicYear || "1st_secondary",
+          academicYearLabel: currentDetailStudent.academicYearLabel || "الصف الأول الثانوي",
+          overallAttendanceRatio: currentDetailStudent.overallAttendanceRatio ?? 0,
+          assignmentSubmissionRatio: currentDetailStudent.assignmentSubmissionRatio ?? 0,
+          averageQuizScore: currentDetailStudent.averageQuizScore ?? null,
+          totalOverallGrade: currentDetailStudent.totalOverallGrade ?? null,
+          homeworkSuccessRate: currentDetailStudent.homeworkSuccessRate ?? null,
+          quizSuccessRate: currentDetailStudent.quizSuccessRate ?? null,
+          lastActiveDate: currentDetailStudent.lastActiveDate || "—",
+          customFieldValues: currentDetailStudent.customFieldValues || {},
+          pendingAssessmentsCount: currentDetailStudent.pendingAssessmentsCount,
+          watchHistory: currentDetailStudent.watchHistory || [],
         } : null}
         onClose={() => setSelectedStudentForDetail(null)}
       />
 
       {/* Student Registration Detail Wizard (on Double-Click) */}
       <StudentDetailWizard
-        student={selectedStudentForWizard}
+        student={registeredStudents.find(row => row.id === selectedStudentForWizard?.id) ?? null}
         onClose={() => setSelectedStudentForWizard(null)}
         onBlock={async (studentId, studentName, isBlocked) => {
           await handleToggleBlockStudent(studentId, studentName, isBlocked);

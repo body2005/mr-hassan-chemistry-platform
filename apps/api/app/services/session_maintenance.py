@@ -139,6 +139,9 @@ async def maintenance_loop():
         try:
             await asyncio.to_thread(process_reset_requests)
             await asyncio.to_thread(deliver_reset_mail)
+            from app.services.schedule_delivery import deliver_due_notifications, announce_assessment_boundaries
+            await asyncio.to_thread(deliver_due_notifications)
+            await asyncio.to_thread(announce_assessment_boundaries)
             if ticks % 4 == 0:
                 await asyncio.to_thread(cleanup_expired_sessions)
                 from app.services.lesson_announcements import announce_available_lessons

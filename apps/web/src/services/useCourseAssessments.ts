@@ -10,16 +10,18 @@ export function useCourseAssessments(courseId: string | undefined, userId: strin
   const retry = useCallback(() => { setSnapshot(undefined); setAttempt(value => value + 1); }, []);
   useEffect(() => {
     if (!courseId || !userId) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const events = ['lms_courses_updated', 'lms_submission_graded', 'lms_lesson_unlocked', 'lms_payment_updated'];
     const refresh = (event: Event) => {
       // SSE reconnect emits a no-detail payment hint. App reconciles actual
       // entitlements; retry only if that changes accessRevision, not on every
       // reconnect after a429/503. Real review events carry their payload.
       if (event.type === 'lms_payment_updated' && (!(event instanceof CustomEvent) || !event.detail)) return;
-      retry();
+      clearTimeout(timer);
+      timer = setTimeout(retry, 300);
     };
     for (const event of events) window.addEventListener(event, refresh);
-    return () => { for (const event of events) window.removeEventListener(event, refresh); };
+    return () => { clearTimeout(timer); for (const event of events) window.removeEventListener(event, refresh); };
   }, [courseId, userId, retry]);
   useEffect(() => {
     if (!courseId || !userId) return;

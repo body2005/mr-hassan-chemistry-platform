@@ -22,6 +22,7 @@ import { ExamGradingModal } from "../components/ExamGradingModal";
 import { CustomColumnModal } from "../components/CustomColumnModal";
 import { StudentDetailWizard } from "../components/StudentDetailWizard";
 import { exportToDocx, exportToExcel, exportToPrintPdf } from "../utils/exportEngine";
+import { formatGrade, followUpLabel } from "../services/gradeDisplay";
 import { useToast } from "../components/ToastProvider";
 
 function mapApiStudentToRecord(item: ApiManagedUser): StudentRecord {
@@ -49,11 +50,11 @@ function mapApiStudentToRecord(item: ApiManagedUser): StudentRecord {
     academicYearLabel: label,
     overallAttendanceRatio: typeof item.overall_attendance_ratio === "number" ? item.overall_attendance_ratio : 0,
     assignmentSubmissionRatio: typeof item.assignment_submission_ratio === "number" ? item.assignment_submission_ratio : 0,
-    averageQuizScore: typeof item.average_quiz_score === "number" ? item.average_quiz_score : 0,
-    homeworkSuccessRate: typeof item.homework_success_rate === "number" ? item.homework_success_rate : 0,
-    quizSuccessRate: typeof item.quiz_success_rate === "number" ? item.quiz_success_rate : 0,
-    totalOverallGrade: typeof item.total_overall_grade === "number" ? item.total_overall_grade : 0,
-    lastActiveDate: item.last_active_date || (item.created_at ? item.created_at.slice(0, 10) : "—"),
+    averageQuizScore: typeof item.average_quiz_score === "number" ? item.average_quiz_score : null,
+    homeworkSuccessRate: typeof item.homework_success_rate === "number" ? item.homework_success_rate : null,
+    quizSuccessRate: typeof item.quiz_success_rate === "number" ? item.quiz_success_rate : null,
+    totalOverallGrade: typeof item.total_overall_grade === "number" ? item.total_overall_grade : null,
+    lastActiveDate: item.last_active_date || "—",
     isBlocked: !item.is_active,
     hasCompletedExam: Boolean(
       (typeof item.quizzes_taken === "number" && item.quizzes_taken > 0) ||
@@ -63,6 +64,12 @@ function mapApiStudentToRecord(item: ApiManagedUser): StudentRecord {
       Boolean(item.has_completed_exam)
     ),
     pendingQuizAttempts: item.pending_quiz_attempts ?? 0,
+    pendingAssessmentsCount: item.pending_assessments_count ?? 0,
+    publishedAssessmentsCount: item.published_assessments_count ?? 0,
+    unattemptedAssessmentsCount: item.unattempted_assessments_count ?? 0,
+    earnedPoints: item.earned_points,
+    possiblePoints: item.possible_points,
+    groupOverallGrade: item.group_overall_grade ?? null,
     studentPhone: item.student_phone || item.phone || "—",
     governorate: item.governorate || "—",
     schoolName: item.school_name || "—",
@@ -96,44 +103,34 @@ export const SubmissionsView: React.FC = () => {
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false);
 
   React.useEffect(() => {
-    void Promise.all([submissionService.getTeacherSubmissions(), userService.getStudents()])
-      .then(([serverSubmissions, serverStudents]) => {
-        setSubmissions(serverSubmissions);
-        setStudents(serverStudents.map(mapApiStudentToRecord));
-      })
-      .catch(() => {
-        setSubmissions([]);
-        setStudents([]);
-      })
-      .finally(() => setLoading(false));
-
-    const handleSubmissionEvent = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      // Refresh teacher submissions live
-      void submissionService.getTeacherSubmissions().then((updated) => {
-        setSubmissions(updated);
-        if (detail?.student_name) {
-          toast({
-            message: `وصل تسليم واجب جديد من الطالب: ${detail.student_name}`,
-            tone: "info",
-          });
+    let active = true;
+    let revision = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = async () => {
+      const request = ++revision;
+      invalidateApiCache("/users");
+      invalidateApiCache("/submissions");
+      try {
+        const [serverSubmissions, serverStudents] = await Promise.all([
+          submissionService.getTeacherSubmissions(), userService.getStudents(),
+        ]);
+        if (active && request === revision) {
+          setSubmissions(serverSubmissions);
+          setStudents(serverStudents.map(mapApiStudentToRecord));
         }
-      });
-      if (e.type === "lms_submission_graded") {
-        void userService.getStudents().then((updated) => {
-          setStudents(updated.map(mapApiStudentToRecord));
-        }).catch(() => {
-          toast({ message: "تعذر تحديث النسب بعد التصحيح. أعد تحميل الصفحة.", tone: "danger" });
-        });
+      } catch {
+        if (active && request === revision) toast({ message: "تعذر تحديث بيانات المتابعة؛ أعد المحاولة.", tone: "danger" });
+      } finally {
+        if (active && request === revision) setLoading(false);
       }
     };
-
-    window.addEventListener("lms_submission_received", handleSubmissionEvent);
-    window.addEventListener("lms_submission_graded", handleSubmissionEvent);
-
+    void refresh();
+    const changed = () => { clearTimeout(timer); timer = setTimeout(() => void refresh(), 300); };
+    const events = ["lms_submission_received", "lms_submission_graded", "lms_assessments_updated", "lms_payment_updated"];
+    for (const event of events) window.addEventListener(event, changed);
     return () => {
-      window.removeEventListener("lms_submission_received", handleSubmissionEvent);
-      window.removeEventListener("lms_submission_graded", handleSubmissionEvent);
+      active = false; ++revision; clearTimeout(timer);
+      for (const event of events) window.removeEventListener(event, changed);
     };
   }, [toast]);
 
@@ -156,16 +153,12 @@ export const SubmissionsView: React.FC = () => {
   );
 
   // Group Aggregate Metrics (Requirement from Image 2)
-  const groupPassingRate =
-    yearStudents.length > 0
-      ? Math.round(
-          yearStudents.reduce((acc, s) => acc + s.totalOverallGrade, 0) /
-            yearStudents.length
-        )
-      : 0;
+  const groupPassingRate = yearStudents[0]?.groupOverallGrade ?? null;
+  const passedStudentsCount = yearStudents.filter(
+    s => s.totalOverallGrade !== null && s.totalOverallGrade >= minThreshold
+  ).length;
 
-  const passedStudentsCount =
-    yearStudents.filter((s) => s.totalOverallGrade >= 50).length;
+  const groupPendingCount = yearStudents.reduce((total, student) => total + (student.pendingAssessmentsCount ?? 0), 0);
 
   const groupOverallAttendance =
     yearStudents.length > 0
@@ -254,21 +247,23 @@ export const SubmissionsView: React.FC = () => {
       "نسبة نجاح الاختبارات %",
       "النسبة الكلية %",
       "حالة المتابعة",
+      "تقييمات بانتظار التصحيح",
+      "تقييمات لم تُحل",
       "آخر ظهور",
       ...yearCustomCols.map((c) => c.name),
     ];
 
     const rows = filteredYearStudents.map((s) => {
-      const subRatioPct = Math.round(s.assignmentSubmissionRatio * 100);
-      const isBelowMin = subRatioPct < minThreshold;
       return [
         s.name,
         s.guardianPhone || "—",
         `${(s.overallAttendanceRatio * 100).toFixed(0)}%`,
-        `${s.homeworkSuccessRate}%`,
-        `${s.quizSuccessRate}%`,
-        `${s.totalOverallGrade}%`,
-        isBelowMin ? "تنبيه: تحت المعدل الأدنى" : "منتظم ومستقر",
+        formatGrade(s.homeworkSuccessRate),
+        formatGrade(s.quizSuccessRate),
+        formatGrade(s.totalOverallGrade),
+        followUpLabel(s.totalOverallGrade, minThreshold),
+        s.pendingAssessmentsCount ?? 0,
+        s.unattemptedAssessmentsCount ?? 0,
         s.lastActiveDate,
         ...yearCustomCols.map((c) => String(s.customFieldValues[c.id] ?? "—")),
       ];
@@ -294,13 +289,14 @@ export const SubmissionsView: React.FC = () => {
       rows,
       summaryStats: [
         { label: "إجمالي طلاب المجموعة", value: filteredYearStudents.length },
-        { label: "نسبة نجاح المجموعة", value: `${groupPassingRate}%` },
+        { label: "الدرجة الكلية للمجموعة", value: formatGrade(groupPassingRate) },
+        { label: "تقييمات المجموعة بانتظار التصحيح", value: groupPendingCount },
         { label: "نسبة المتابعة والحضور", value: `${groupOverallAttendance}%` },
         { label: "الالتزام بالواجبات", value: `${groupSubmissionRate}%` },
-        { label: "المعدل الأدنى للواجبات", value: `${minThreshold}%` },
+        { label: "الحد الأدنى للدرجة الكلية", value: `${minThreshold}%` },
         {
           label: "الطلاب تحت المعدل الأدنى",
-          value: filteredYearStudents.filter((s) => s.assignmentSubmissionRatio * 100 < minThreshold).length,
+          value: filteredYearStudents.filter((s) => s.totalOverallGrade !== null && s.totalOverallGrade < minThreshold).length,
         },
       ],
     };
@@ -436,13 +432,13 @@ export const SubmissionsView: React.FC = () => {
         {/* Minimum Threshold Input */}
         <div style={{ display: "flex", alignItems: "center", gap: "8px", background: "var(--bg-surface-secondary)", padding: "6px 12px", borderRadius: "8px", border: "1px solid var(--border-color)" }}>
           <Sliders size={15} style={{ color: "var(--text-muted)" }} />
-          <span style={{ fontSize: "12px", fontWeight: 700, color: "var(--text-main)" }}>المعدل الأدنى للتسليم:</span>
+          <span style={{ fontSize: "12px", fontWeight: 700, color: "var(--text-main)" }}>الحد الأدنى للدرجة الكلية:</span>
           <input
             type="number"
             min="0"
             max="100"
             value={minThreshold}
-            onChange={(e) => setMinThreshold(parseInt(e.target.value) || 0)}
+            onChange={(e) => setMinThreshold(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
             style={{ width: "54px", padding: "4px 6px", border: "1px solid var(--border-color)", borderRadius: "6px", fontSize: "13px", fontWeight: 800, textAlign: "center", color: "var(--text-main)", background: "var(--bg-surface)" }}
           />
           <span style={{ fontSize: "12px", fontWeight: 700, color: "var(--text-muted)" }}>%</span>
@@ -474,7 +470,7 @@ export const SubmissionsView: React.FC = () => {
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <span style={{ fontSize: "12.5px", color: "var(--text-muted)", fontWeight: 700 }}>
-                معدل النجاح التراكمي للمجموعة
+                الدرجة الكلية للمجموعة
               </span>
               <span
                 style={{
@@ -500,7 +496,7 @@ export const SubmissionsView: React.FC = () => {
                   letterSpacing: "-0.02em",
                 }}
               >
-                {groupPassingRate}%
+                {formatGrade(groupPassingRate)}
               </strong>
               <span
                 style={{
@@ -510,7 +506,7 @@ export const SubmissionsView: React.FC = () => {
                   fontVariantNumeric: "tabular-nums",
                 }}
               >
-                ({passedStudentsCount} طالب ناجح)
+                ({passedStudentsCount} طالب بلغ الحد المختار)
               </span>
             </div>
           </div>
@@ -527,8 +523,8 @@ export const SubmissionsView: React.FC = () => {
               color: "var(--text-muted)",
             }}
           >
-            <span>متوسط الواجبات والاختبارات المعتمدة</span>
-            <span style={{ fontVariantNumeric: "tabular-nums" }}>آخر 30 يوماً</span>
+            <span>{groupPendingCount ? `إجمالي مؤقت · ${groupPendingCount} بانتظار التصحيح` : "نقاط التقييمات المنشورة للطلاب"}</span>
+            <span style={{ fontVariantNumeric: "tabular-nums" }}>كل التقييمات المنشورة</span>
           </div>
         </div>
 
@@ -785,9 +781,8 @@ export const SubmissionsView: React.FC = () => {
               </tr>
             ) : (
               filteredYearStudents.map((student) => {
-                const subRatioPct = Math.round(student.assignmentSubmissionRatio * 100);
                 const attendancePct = Math.round(student.overallAttendanceRatio * 100);
-                const isBelowMin = subRatioPct < minThreshold;
+                const isBelowMin = student.totalOverallGrade !== null && student.totalOverallGrade < minThreshold;
                 const studentSub = submissions.find((sub) => sub.studentId === student.id);
                 const isBlocked = !!student.isBlocked;
 
@@ -832,28 +827,30 @@ export const SubmissionsView: React.FC = () => {
                       </strong>
                     </td>
                     <td style={{ textAlign: "center" }}>
-                      <strong style={{ fontSize: "14px", color: student.homeworkSuccessRate >= 70 ? "#059669" : "#ef4444", fontVariantNumeric: "tabular-nums" }}>
-                        {student.homeworkSuccessRate}%
+                      <strong style={{ fontSize: "14px", color: student.homeworkSuccessRate === null ? "var(--text-muted)" : student.homeworkSuccessRate >= 70 ? "#047857" : "#b91c1c", fontVariantNumeric: "tabular-nums" }}>
+                        {formatGrade(student.homeworkSuccessRate)}
                       </strong>
                     </td>
                     <td style={{ textAlign: "center" }}>
-                      <strong style={{ fontSize: "14px", color: student.pendingQuizAttempts ? "var(--text-muted)" : student.quizSuccessRate >= 70 ? "#059669" : "#ef4444", fontVariantNumeric: "tabular-nums" }}>
-                        {student.pendingQuizAttempts ? "بانتظار التصحيح" : `${student.quizSuccessRate}%`}
+                      <strong style={{ fontSize: "14px", color: student.quizSuccessRate === null ? "var(--text-muted)" : student.quizSuccessRate >= 70 ? "#047857" : "#b91c1c", fontVariantNumeric: "tabular-nums" }}>
+                        {formatGrade(student.quizSuccessRate)}
                       </strong>
                     </td>
                     <td style={{ textAlign: "center" }}>
-                      <strong style={{ fontSize: "14px", color: student.totalOverallGrade >= 75 ? "var(--text-main)" : "#ef4444" }}>
-                        {student.totalOverallGrade}%
+                      <strong style={{ fontSize: "14px", color: student.totalOverallGrade === null ? "var(--text-muted)" : isBelowMin ? "#b91c1c" : "#047857" }}>
+                        {formatGrade(student.totalOverallGrade)}
                       </strong>
+                      {!!student.pendingAssessmentsCount && <small style={{ display: "block", color: "var(--text-muted)" }}>إجمالي مؤقت · {student.pendingAssessmentsCount} بانتظار التصحيح</small>}
+                      {!!student.unattemptedAssessmentsCount && <small style={{ display: "block", color: "var(--text-muted)" }}>{student.unattemptedAssessmentsCount} لم تُحل</small>}
                     </td>
                     <td style={{ textAlign: "center" }}>
-                      {isBelowMin ? (
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "3px 8px", background: "var(--bg-accent-warm)", color: "#ef4444", borderRadius: "6px", fontSize: "11px", fontWeight: 800 }}>
+                      {student.totalOverallGrade === null ? <span style={{ color: "var(--text-muted)" }}>—</span> : isBelowMin ? (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "3px 8px", background: "var(--bg-accent-warm)", color: "#b91c1c", borderRadius: "6px", fontSize: "11px", fontWeight: 800 }}>
                           <AlertTriangle size={12} /> تحت المعدل الأدنى
                         </span>
                       ) : (
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "3px 8px", background: "var(--bg-accent)", color: "#059669", borderRadius: "6px", fontSize: "11px", fontWeight: 800 }}>
-                          <CheckCircle2 size={12} /> منتظم ومستقر
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "3px 8px", background: "var(--bg-accent)", color: "#047857", borderRadius: "6px", fontSize: "11px", fontWeight: 800 }}>
+                          <CheckCircle2 size={12} /> أعلى من الحد الأدنى
                         </span>
                       )}
                     </td>
@@ -938,7 +935,7 @@ export const SubmissionsView: React.FC = () => {
 
       {/* Exam Grading Modal */}
       <ExamGradingModal
-        student={activeExamStudent}
+        student={students.find(s => s.id === activeExamStudent?.id) ?? null}
         onClose={() => setActiveExamStudent(null)}
         onApproveGrade={handleApproveExamGrade}
       />
@@ -954,7 +951,7 @@ export const SubmissionsView: React.FC = () => {
 
       {/* Student Detail Wizard on Double-Click */}
       <StudentDetailWizard
-        student={detailWizardStudent}
+        student={students.find(s => s.id === detailWizardStudent?.id) ?? null}
         onClose={() => setDetailWizardStudent(null)}
         onBlock={async (studentId, studentName, isBlocked) => {
           const res = await userService.toggleBlock(studentId);

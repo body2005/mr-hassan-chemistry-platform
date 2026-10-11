@@ -8,7 +8,7 @@ from sqlalchemy import or_, select
 from app.core.database import SessionLocal
 from app.core.events import event_broker
 from app.models.course import Course, Enrollment, EnrollmentStatus, Lesson
-from app.models.platform import DeliveryStatus, Notification
+from app.models.platform import Assignment, Quiz, DeliveryStatus, Notification
 from app.models.user import User, UserRole
 from app.services.lesson_release import available_lesson_ids
 from app.services.payment_service import accessible_course_lesson_ids
@@ -18,6 +18,26 @@ logger = logging.getLogger(__name__)
 
 def visible_lesson_notifications(db, user, notifications):
     """Withdraw a lesson notice if content is withdrawn or access is revoked."""
+    now = datetime.now(timezone.utc)
+    notifications = [item for item in notifications if not item.scheduled_for or
+        (item.scheduled_for.replace(tzinfo=timezone.utc) if item.scheduled_for.tzinfo is None
+         else item.scheduled_for) <= now]
+    from app.services.content_access import filter_student_assessments
+    assessment_links = {}
+    for item in notifications:
+        query = parse_qs(urlsplit(item.action_url or '').fragment.partition('?')[2])
+        raw, kind = query.get('assessment', [None])[0], query.get('kind', [None])[0]
+        if raw:
+            try:
+                assessment_links[item.id] = (kind, uuid.UUID(raw))
+            except ValueError:
+                assessment_links[item.id] = (kind, None)
+    visible = set()
+    for kind, model in (('quiz', Quiz), ('assignment', Assignment)):
+        ids = [value for k, value in assessment_links.values() if k == kind and value]
+        rows = list(db.scalars(select(model).where(model.id.in_(ids), model.institution_id == user.institution_id)))
+        visible.update((kind, row.id) for row in filter_student_assessments(db, user, rows))
+    notifications = [item for item in notifications if item.id not in assessment_links or assessment_links[item.id] in visible]
     links = {}
     for item in notifications:
         query = parse_qs(urlsplit(item.action_url or '').fragment.partition('?')[2])

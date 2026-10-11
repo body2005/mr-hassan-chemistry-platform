@@ -1,3 +1,4 @@
+import { assessmentTimestamp } from "../services/assessmentSchedule";
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   AlertCircle,
@@ -774,6 +775,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
         id: `evt_${assessmentType}_${Date.now()}`,
         academicYear: selectedAcademicYear,
         date: publishStartDate,
+        courseId: currentCourse?.id,
         // The event type already identifies quiz/assignment. Adding a prefix
         // would overflow the API's 200-character limit for a valid title.
         dayName: titleToPublish,
@@ -791,11 +793,13 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
           // Notification titles have their own 200-character API limit. Keep
           // the full assessment title in the body, without overflowing on the
           // prefix when the teacher uses the maximum valid title length.
+          courseId: currentCourse?.id,
           title: `${isQuiz ? "اختبار جديد" : "واجب منزلي جديد"}: ${titleToPublish}`.slice(0, 200),
           message: `تم نشر ${isQuiz ? "اختبار" : "واجب"} «${titleToPublish}». ${isQuiz ? `مدة الحل: ${durationNum} دقيقة. ` : ""}آخر موعد: ${closeDeadlineDate} ${closeDeadlineTime}.`,
           type: assessmentType,
           targetYear: selectedAcademicYear,
           createdAt: "الآن",
+          scheduledFor: assessmentTimestamp(`${publishStartDate}T${publishStartTime}:00`, "بداية الإتاحة") || undefined,
           read: false,
           actionTab: "MyCourses",
           quizDurationMinutes: durationNum,
@@ -815,8 +819,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       const endIso = closeDeadlineDate && closeDeadlineTime ? `${closeDeadlineDate}T${closeDeadlineTime}:00` : null;
       const publicationDigest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({titleToPublish, currentQuestions, selectedLessonIds, selectedModuleIds, startIso, endIso, quizDurationMinutes})));
       const retryKey = `${publicationKey}-${Array.from(new Uint8Array(publicationDigest).slice(0, 16), b => b.toString(16).padStart(2, '0')).join('')}`;
+      let publishedId: string;
       if (isQuiz) {
-        await courseService.publishQuizToServer({
+        const published = await courseService.publishQuizToServer({
           idempotency_key: retryKey,
           course_id: currentCourse.id,
           lesson_ids: selectedLessonIds,
@@ -833,8 +838,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
             points: q.points ?? undefined,
           })),
         });
+        publishedId = published.quiz_id;
       } else {
-        await courseService.publishAssignmentToServer({
+        const published = await courseService.publishAssignmentToServer({
           course_id: currentCourse.id,
           lesson_ids: selectedLessonIds,
           module_ids: selectedModuleIds,
@@ -844,10 +850,16 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
           starts_at: startIso,
           due_at: endIso,
         });
+        publishedId = published.assignment_id;
       }
+
+      newCalendarEvent.id = `evt_assessment_${assessmentType}_${publishedId}`;
+      newNotif.id = `assessment-published:${assessmentType}:${publishedId}`;
+      newNotif.actionUrl = `#MyCourses?assessment=${publishedId}&kind=${assessmentType}`;
 
       // 4. Save to Teacher Quiz History Archive (local mirror for the teacher)
       quizHistoryService.saveQuiz({
+        id: publishedId,
         title: titleToPublish,
         assessmentType,
         academicYear: selectedAcademicYear,

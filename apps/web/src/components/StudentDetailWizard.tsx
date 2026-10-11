@@ -1,3 +1,4 @@
+import { formatGrade } from "../services/gradeDisplay";
 import React from "react";
 import {
   Ban,
@@ -100,6 +101,10 @@ export const StudentDetailWizard: React.FC<StudentDetailWizardProps> = ({
           overflow: "hidden",
         }}
       >
+        <div style={{ padding: "16px", borderBottom: "1px solid var(--border-color)" }}>
+          <strong>الدرجة الكلية: {formatGrade(s.totalOverallGrade)}</strong>
+          {!!s.pendingAssessmentsCount && <p>إجمالي مؤقت · {s.pendingAssessmentsCount} تقييمات بانتظار التصحيح</p>}
+        </div>
         {/* Header */}
         <div
           style={{

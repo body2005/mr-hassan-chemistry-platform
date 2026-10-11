@@ -1,3 +1,4 @@
+import { formatGrade } from "../services/gradeDisplay";
 import React from "react";
 import {
   Video,
@@ -53,20 +54,22 @@ export const StudentDetailModal: React.FC<StudentDetailModalProps> = ({
           </button>
         </div>
 
+        <p><strong>الدرجة الكلية: {formatGrade(student.totalOverallGrade)}</strong></p>
+        {!!student.pendingAssessmentsCount && <p>إجمالي مؤقت · {student.pendingAssessmentsCount} تقييمات بانتظار التصحيح</p>}
         {/* Stats Grid */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "10px", marginBottom: "20px" }}>
           <div style={{ background: "var(--bg-surface-secondary)", padding: "12px", borderRadius: "10px", border: "1px solid var(--border-color)", textAlign: "center" }}>
             <span style={{ fontSize: "11px", color: "var(--text-muted)", display: "block" }}>متوسط درجات الكويز</span>
-            <strong style={{ fontSize: "18px", color: "var(--text-main)" }}>{student.averageQuizScore}%</strong>
+            <strong style={{ fontSize: "18px", color: "var(--text-main)" }}>{formatGrade(student.averageQuizScore)}</strong>
           </div>
           <div style={{ background: "var(--bg-surface-secondary)", padding: "12px", borderRadius: "10px", border: "1px solid var(--border-color)", textAlign: "center" }}>
             <span style={{ fontSize: "11px", color: "var(--text-muted)", display: "block" }}>نسبة نجاح الواجبات</span>
-            <strong style={{ fontSize: "18px", color: "#059669" }}>{student.homeworkSuccessRate}%</strong>
+            <strong style={{ fontSize: "18px", color: "#059669" }}>{formatGrade(student.homeworkSuccessRate)}</strong>
           </div>
           <div style={{ background: "var(--bg-surface-secondary)", padding: "12px", borderRadius: "10px", border: "1px solid var(--border-color)", textAlign: "center" }}>
             <span style={{ fontSize: "11px", color: "var(--text-muted)", display: "block" }}>الفيديوهات المكتملة</span>
             <strong style={{ fontSize: "18px", color: "var(--text-main)" }}>
-              {student.watchHistory.filter((v) => v.completionPercentage >= 90).length} / {student.watchHistory.length || 3}
+              {student.watchHistory.filter((v) => v.completionPercentage >= 90).length} / {student.watchHistory.length}
             </strong>
           </div>
         </div>
