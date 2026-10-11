@@ -1,0 +1,38 @@
+# A private outbound-only worker for a Render API. No local database or web port.
+services:
+  video-worker:
+    image: chemistry-video-worker-pc:local
+    build:
+      context: ../apps/api
+      dockerfile: ../../infra/Dockerfile.video
+      args:
+        API_VIDEO_IMAGE: ${API_VIDEO_IMAGE:-chemistry-video-api-pc:local}
+    env_file:
+      - path: ../.env.video-worker.local
+        format: raw
+    environment:
+      APP_ENV: production
+      EMAIL_ENABLED: "false"
+      VIDEO_PROCESSING_ENABLED: "true"
+      VIDEO_DIRECT_UPLOAD_ENABLED: "false"
+      STORAGE_BACKEND: s3
+      DB_POOL_SIZE: "2"
+      DB_MAX_OVERFLOW: "1"
+    command: ["python", "-m", "scripts.video_worker"]
+    restart: unless-stopped
+    init: true
+    volumes: [video_work_pc:/work]
+    tmpfs: [/tmp:size=128m]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 2
+    mem_limit: 2560m
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; os.kill(1,0)"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+volumes:
+  video_work_pc:

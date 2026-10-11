@@ -1,0 +1,174 @@
+name: Review quality gates
+on:
+  pull_request:
+  push:
+    branches: [fix/queen-p0-handoff]
+permissions:
+  contents: read
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+        working-directory: apps/web
+      - run: npm run lint
+        working-directory: apps/web
+      - run: npm run build
+        working-directory: apps/web
+      - run: npm test -- --reporter=default --reporter=junit --outputFile=../../artifacts/frontend.xml
+        working-directory: apps/web
+      - run: npm audit --audit-level=high
+        working-directory: apps/web
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-results
+          path: artifacts/
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+        env:
+          POSTGRES_USER: qa
+          POSTGRES_PASSWORD: ci-synthetic-only
+          POSTGRES_DB: qa
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U qa" --health-interval 5s --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      # Host Python/Ubuntu Expat are NOT the application's reviewed XML
+      # bindings. Keep every test, including the native security regression,
+      # in a test-only layer of the actual API build; never skip/mock it.
+      - name: Build matching API and disposable backend test environment
+        run: |
+          mkdir -p artifacts
+          docker build -f infra/Dockerfile.api -t qa-ci-api --iidfile artifacts/api-build-id.txt apps/api
+          docker image inspect qa-ci-api --format '{{.Id}}' > artifacts/api-image-id.txt
+          # BuildKit FROM needs an image reference, not a raw local config ID.
+          # This job-local tag must match the recorded immutable ID both sides.
+          test "$(docker image inspect qa-ci-api --format '{{.Id}}')" = "$(cat artifacts/api-image-id.txt)"
+          docker build -f infra/Dockerfile.qa --build-arg API_TEST_IMAGE=qa-ci-api -t qa-ci-backend --iidfile artifacts/backend-build-id.txt apps/api
+          test "$(docker image inspect qa-ci-api --format '{{.Id}}')" = "$(cat artifacts/api-image-id.txt)"
+          docker image inspect qa-ci-backend --format '{{.Id}}' > artifacts/backend-image-id.txt
+      - name: Backend tests including actual native Expat security regression
+        run: |
+          docker run --rm --network none -e APP_ENV=test -e STORAGE_DIR=/tmp/qa-storage \
+            -v "$PWD/artifacts:/qa" -v "$PWD/render.yaml:/qa-tools/render.yaml:ro" -v "$PWD:/repo:ro" \
+            --entrypoint python "$(cat artifacts/backend-image-id.txt)" \
+            -m pytest tests --ignore=tests/integration /repo/scripts/qa/tests/test_ci_backend_environment.py --junitxml=/qa/backend.xml -q
+      - name: Fresh and previous-head PostgreSQL migrations
+        run: |
+          docker run --rm --network host -e APP_ENV=test \
+            -e DATABASE_URL=postgresql+psycopg://qa:ci-synthetic-only@localhost:5432/qa \
+            --entrypoint python "$(cat artifacts/backend-image-id.txt)" -m scripts.ci_migrations
+      - run: |
+          docker run --rm -v "$PWD/artifacts:/qa" --entrypoint python \
+            "$(cat artifacts/backend-image-id.txt)" -m pip_audit -r requirements.lock --format json --output /qa/pip-audit.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-results
+          path: artifacts/
+  browser-and-images:
+    runs-on: ubuntu-24.04
+    # The current full live integration/browser gates take >60min together.
+    # Allow cold signed native builds and real limiter expiry/byte boundaries;
+    # this controller budget changes no assertion, service or security limit.
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci && npx playwright install --with-deps chromium
+        working-directory: apps/web
+      - name: Browser evidence paths exclude private traces and secrets
+        run: python3 -m unittest discover -s scripts/qa/tests -p test_ci_evidence_paths.py -v
+      - name: Prepare synthetic local HTTPS stack
+        shell: pwsh
+        run: ./scripts/qa/prepare-production.ps1 -Docker docker -Project chemistryaudit2
+      - name: Build isolated production template
+        shell: pwsh
+        run: ./scripts/qa/run-video.ps1 -Stage Build -Docker docker
+      - name: Generate valid synthetic media (no runtime assets from Git)
+        shell: pwsh
+        run: ./scripts/qa/prepare-media.ps1 -Docker docker -Project chemistryaudit2
+      - name: Actual restricted encoder binary and signed provenance
+        shell: pwsh
+        run: ./scripts/qa/verify-native-video.ps1 -Docker docker
+      - name: Prepare isolated identities and current-media storage checkpoint
+        shell: pwsh
+        run: ./scripts/qa/prepare-test-data.ps1 -Docker docker -Project chemistryaudit2
+      - name: Backup UID migration and unsafe-target rejection
+        shell: pwsh
+        run: ./scripts/qa/check-backup-permissions.ps1 -Docker docker
+      - name: Interrupted-run controller safeguards and exact-image recovery
+        shell: pwsh
+        run: |
+          ./scripts/qa/test-runtime-recovery.ps1
+          ./scripts/qa/test-runtime-recovery-live.ps1 -Docker docker
+      - name: PostgreSQL, Redis, storage and service-recovery integration
+        shell: pwsh
+        run: ./scripts/qa/run-video.ps1 -Stage Integration -Docker docker
+      - name: Browser journeys
+        shell: pwsh
+        run: ./scripts/qa/run-video.ps1 -Stage Browser -Docker docker
+      - name: Strict original-source Extract fidelity (no relaxed reference)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $root = (Get-Location).Path
+          $image = & docker inspect --format '{{.Image}}' chemistryaudit2-api-1
+          if ($LASTEXITCODE -ne 0 -or $image -notmatch '^sha256:[a-f0-9]{64}$') { throw 'Actual API image unavailable' }
+          & docker run --rm --network none --memory 1g --cpus 1 --pids-limit 64 --cap-drop ALL --security-opt no-new-privileges --tmpfs /srv/storage:rw,size=64m,uid=10001,gid=10001 -v "${root}/apps/api/tests/fixtures/blind_inputs:/srv/tests/fixtures/blind_inputs:ro" -v "${root}/.qa/audit2:/qa" --entrypoint python $image -m scripts.qa_extract_fidelity --output /qa/extract-fidelity-ci.json
+          exit $LASTEXITCODE
+      - name: Image vulnerability gate (no suppression)
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p artifacts
+          failed=0
+          for service in api video-worker; do
+            image=$(docker inspect --format '{{.Image}}' chemistryaudit2-$service-1)
+            docker image inspect "$image" --format '{{.Id}}' >> artifacts/image-identities.txt
+            code=0
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/artifacts:/results" aquasec/trivy:0.69.3@sha256:7228e304ae0f610a1fad937baa463598cadac0c2ac4027cc68f3a8b997115689 image --format sarif --output /results/$service.sarif --severity HIGH,CRITICAL --exit-code 1 "$image" || code=$?
+            printf '%s exit=%s\n' "$service" "$code" >> artifacts/scanner-exits.txt
+            if [ "$code" -ne 0 ]; then failed=1; fi
+          done
+          exit "$failed"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: local-browser-images
+          path: |
+            artifacts/
+            .qa/audit2/video-commands-*.json
+            .qa/audit2/runtime-recovery-*.json
+            .qa/audit2/*video*.xml
+            .qa/audit2/extract-fidelity-ci.json
+            .qa/audit2/trusted-browser-*/browser.xml
+            .qa/audit2/trusted-browser-*/command.json
+            .qa/audit2/trusted-browser-*/artifacts/**/*.png
+            .qa/audit2/video-results-*/**/*.png
+            .qa/playwright/results/**/*.png
+  secrets:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The PR checkout has only source. This does NOT certify previously
+      # deleted credentials in Git history; that requires a separate audit.
+      - name: Scan the current checkout, never upload discovered credentials
+        run: docker run --rm -v "$PWD:/repo:ro" zricethezav/gitleaks:v8.24.3@sha256:5d0147dc25c78f8cc2b9861ff8f5c9b4a41419ed60a9ce2217de5a215270b42b detect --source /repo --no-git --redact --verbose --exit-code=1

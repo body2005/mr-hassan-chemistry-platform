@@ -78,7 +78,8 @@ class LocalStorageProvider(BaseStorageProvider):
     def __init__(self, base_dir: str | None = None):
         self.base_dir = os.path.abspath(base_dir or os.getenv("STORAGE_DIR", "storage"))
         os.makedirs(self.base_dir, exist_ok=True)
-        self.is_production = os.getenv("APP_ENV", "").lower() == "production"
+        from app.core.config import get_settings
+        self.is_production = get_settings().deployment_environment
         self.is_persistent_mount = (
             self.base_dir.startswith("/var/data")
             or os.path.ismount(self.base_dir)
@@ -93,16 +94,27 @@ class LocalStorageProvider(BaseStorageProvider):
             )
 
     def _full_path(self, storage_key: str) -> str:
-        if os.path.exists(storage_key):
-            return os.path.abspath(storage_key)
-        norm = os.path.normpath(storage_key).lstrip("/\\")
+        if not storage_key or '\x00' in storage_key:
+            raise ValueError("Invalid storage key")
+        # Treat both separators as path separators on every OS; old absolute
+        # keys remain supported ONLY when canonically contained in this root.
+        key = storage_key.replace('\\', os.sep).replace('/', os.sep)
+        if '..' in key.split(os.sep):
+            raise ValueError("Storage traversal is forbidden")
+        norm = os.path.normpath(key)
         base_name = os.path.basename(self.base_dir.rstrip("/\\"))
         parts = norm.split(os.sep)
-        if parts and parts[0] == base_name:
+        if not os.path.isabs(norm) and parts and parts[0] == base_name:
             norm = os.sep.join(parts[1:])
-        if ".." in norm.split(os.sep):
-            raise ValueError(f"Invalid storage key with traversal: {storage_key}")
-        return os.path.join(self.base_dir, norm)
+        root = os.path.realpath(self.base_dir)
+        candidate = os.path.realpath(norm if os.path.isabs(norm) else os.path.join(root, norm))
+        try:
+            contained = os.path.commonpath([root, candidate]) == root
+        except ValueError:
+            contained = False
+        if not contained or candidate == root:
+            raise ValueError("Storage key must remain inside the storage root")
+        return candidate
 
     def save_file(self, local_source_path: str, storage_key: str, content_type: str | None = None) -> str:
         dest_path = self._full_path(storage_key)
@@ -119,8 +131,6 @@ class LocalStorageProvider(BaseStorageProvider):
         return dest_path
 
     def get_local_path(self, storage_key: str) -> str | None:
-        if os.path.exists(storage_key):
-            return os.path.abspath(storage_key)
         path = self._full_path(storage_key)
         return path if os.path.exists(path) else None
 
@@ -145,24 +155,14 @@ class LocalStorageProvider(BaseStorageProvider):
                 yield chunk
 
     def get_size(self, storage_key: str) -> int:
-        if os.path.exists(storage_key):
-            return os.path.getsize(storage_key)
         path = self.get_local_path(storage_key) or self._full_path(storage_key)
         return os.path.getsize(path)
 
     def exists(self, storage_key: str) -> bool:
-        if os.path.exists(storage_key):
-            return True
         path = self.get_local_path(storage_key) or self._full_path(storage_key)
         return os.path.exists(path)
 
     def delete(self, storage_key: str) -> bool:
-        if os.path.exists(storage_key):
-            try:
-                os.remove(storage_key)
-                return True
-            except OSError:
-                return False
         path = self.get_local_path(storage_key) or self._full_path(storage_key)
         if os.path.exists(path):
             try:
@@ -238,6 +238,8 @@ class S3StorageProvider(BaseStorageProvider):
                     signature_version="s3v4",
                     s3={"addressing_style": "path" if is_path_style else "virtual"},
                     retries={"max_attempts": 3, "mode": "standard"},
+                    connect_timeout=3,
+                    read_timeout=15,
                 ),
             )
         return self._client
@@ -284,8 +286,11 @@ class S3StorageProvider(BaseStorageProvider):
             range_header = f"bytes={start}-{start + length - 1}"
         response = client.get_object(Bucket=self.bucket_name, Key=key, Range=range_header)
         stream: BinaryIO = response["Body"]
-        while chunk := stream.read(64 * 1024):
-            yield chunk
+        try:
+            while chunk := stream.read(64 * 1024):
+                yield chunk
+        finally:
+            stream.close()
 
     def get_size(self, storage_key: str) -> int:
         client = self._get_client()
@@ -299,8 +304,13 @@ class S3StorageProvider(BaseStorageProvider):
         try:
             client.head_object(Bucket=self.bucket_name, Key=key)
             return True
-        except Exception:
-            return False
+        except Exception as exc:
+            from botocore.exceptions import ClientError
+            if isinstance(exc, ClientError) and str(exc.response.get("Error", {}).get("Code")) in {"404", "NoSuchKey", "NotFound"}:
+                return False
+            # An unreachable store is not a missing resource. Let the API
+            # dependency handler return a retryable 503, preserving ownership.
+            raise
 
     def delete(self, storage_key: str) -> bool:
         client = self._get_client()
@@ -310,6 +320,31 @@ class S3StorageProvider(BaseStorageProvider):
             return True
         except Exception:
             return False
+
+    def abort_incomplete_uploads(self, storage_key: str) -> int:
+        """Abort allocations for an EXACT retired object, never a prefix sweep.
+
+        HEAD/DELETE do not remove multipart parts. SDK abort can itself fail
+        during an outage; the durable deletion outbox must retry this step.
+        Only call after a persisted deletion intent, not for a live upload.
+        """
+        from botocore.exceptions import ClientError
+        key = storage_key.removeprefix(f"s3://{self.bucket_name}/")
+        client = self._get_client()
+        aborted = 0
+        for page in client.get_paginator("list_multipart_uploads").paginate(Bucket=self.bucket_name, Prefix=key):
+            for upload in page.get("Uploads", []):
+                if upload["Key"] != key:
+                    continue
+                if aborted >= 100:
+                    raise RuntimeError("Multipart cleanup batch budget exhausted")
+                try:
+                    client.abort_multipart_upload(Bucket=self.bucket_name, Key=key, UploadId=upload["UploadId"])
+                except ClientError as exc:
+                    if str(exc.response.get("Error", {}).get("Code")) not in {"NoSuchUpload", "404"}:
+                        raise
+                aborted += 1
+        return aborted
 
     def generate_presigned_url(self, storage_key: str, expires_in: int = 300) -> str | None:
         """Generates a private, short-lived (default 5 minutes) signed URL for viewing/downloading."""
@@ -329,10 +364,10 @@ class S3StorageProvider(BaseStorageProvider):
     def check_readiness(self) -> dict[str, str | bool]:
         """
         Active probe performing write, read, and delete of a temporary test object.
-        Result is cached for 45 seconds to avoid repeated external I/O on rapid readiness polls.
+        Result is cached briefly; readiness must notice outages and recovery.
         """
         now = time.time()
-        if self._probe_cache and (now - self._probe_cache[0]) < 45.0:
+        if self._probe_cache and (now - self._probe_cache[0]) < 5.0:
             return self._probe_cache[1]
 
         probe_key = f".probes/readiness_{uuid.uuid4().hex[:8]}.tmp"
@@ -365,7 +400,7 @@ class S3StorageProvider(BaseStorageProvider):
             res = {
                 "provider": "s3_object_storage",
                 "status": "unavailable",
-                "error": str(exc).split(":")[0],
+                "error": type(exc).__name__,
                 "writable": False,
                 "persistent": True,
             }
@@ -410,8 +445,11 @@ def get_storage_provider() -> BaseStorageProvider:
                     bucket_name=settings.s3_bucket,
                     access_key_id=settings.s3_access_key,
                     secret_access_key=settings.s3_secret_key,
+                    region_name=settings.s3_region,
                 )
             except Exception as e:
+                if settings.deployment_environment:
+                    raise RuntimeError("Configured object storage is unavailable") from e
                 logger.warning("Failed to initialize S3 storage provider (%s); falling back to local storage.", e)
                 _storage_instance = LocalStorageProvider()
         else:

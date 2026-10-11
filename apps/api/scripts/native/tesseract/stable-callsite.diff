@@ -1,0 +1,11 @@
+diff --git a/src/classify/adaptmatch.cpp b/src/classify/adaptmatch.cpp
+--- a/src/classify/adaptmatch.cpp
++++ b/src/classify/adaptmatch.cpp
+@@ -1511,6 +1511,6 @@
+       CharNormClassifier(Blob, *sample, Results);
+     } else if (Ambiguities && *Ambiguities >= 0 && !tess_bn_matching) {
+-      AmbigClassifier(bl_features, fx_info, Blob, PreTrainedTemplates, AdaptedTemplates->Class,
++      AmbigClassifier(bl_features, fx_info, Blob, PreTrainedTemplates, AdaptedTemplates->Class.data(),
+                       Ambiguities, Results);
+     }
+   }

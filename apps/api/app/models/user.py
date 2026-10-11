@@ -1,11 +1,13 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 try:
     from enum import StrEnum
-except ImportError:
+except ImportError:  # Python 3.10: enum.StrEnum arrived in 3.11
     from enum import Enum
+
     class StrEnum(str, Enum):
-        pass
+        def __str__(self) -> str:
+            return str(self.value)
 
 
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, UniqueConstraint
@@ -21,11 +23,30 @@ class UserRole(StrEnum):
     PLATFORM_ADMIN = "platform_admin"
 
 
+class GradeLevel(StrEnum):
+    SECONDARY_1 = "SECONDARY_1"
+    SECONDARY_2 = "SECONDARY_2"
+    SECONDARY_3 = "SECONDARY_3"
+
+
+class Gender(StrEnum):
+    MALE = "MALE"
+    FEMALE = "FEMALE"
+
+
+class Religion(StrEnum):
+    MUSLIM = "MUSLIM"
+    CHRISTIAN = "CHRISTIAN"
+    OTHER = "OTHER"
+    PREFER_NOT_TO_SAY = "PREFER_NOT_TO_SAY"
+
+
 class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "users"
     __table_args__ = (
         UniqueConstraint("institution_id", "username", name="uq_users_institution_username"),
         UniqueConstraint("institution_id", "email", name="uq_users_institution_email"),
+        UniqueConstraint("institution_id", "national_id", name="uq_users_institution_national_id"),
     )
 
     institution_id: Mapped[uuid.UUID] = mapped_column(
@@ -40,9 +61,33 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         index=True,
         nullable=False,
     )
+    grade_level: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    student_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    guardian_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    mother_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    education_division: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    specialization: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    national_id: Mapped[str | None] = mapped_column(String(14), nullable=True)
+    governorate: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    school_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    gender: Mapped[Gender | None] = mapped_column(
+        Enum(Gender, name="user_gender", native_enum=False, values_callable=enum_values), nullable=True
+    )
+    religion: Mapped[Religion | None] = mapped_column(
+        Enum(Religion, name="user_religion", native_enum=False, values_callable=enum_values), nullable=True
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc))
+    avatar_key: Mapped[str | None] = mapped_column(String(512))
+
+    @property
+    def avatar_url(self) -> str | None:
+        # Same-origin, authenticated endpoint; never expose a storage key.
+        return f"/api/v1/auth/avatar?v={self.updated_at.isoformat()}" if self.avatar_key else None
 
     institution = relationship("Institution", back_populates="users")
     taught_courses = relationship("Course", back_populates="teacher")

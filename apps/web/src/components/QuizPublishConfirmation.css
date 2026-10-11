@@ -1,0 +1,82 @@
+.publish-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--modal-overlay-bg);
+  backdrop-filter: blur(4px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.publish-confirm-card {
+  --publish-danger-text: #b91c1c;
+  background: var(--bg-surface);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  width: 100%;
+  max-width: 520px;
+  max-height: calc(100dvh - 40px);
+  min-width: 0;
+  overflow: auto;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, .3);
+}
+[data-theme="dark"] .publish-confirm-card { --publish-danger-text: #fca5a5; }
+.publish-confirm-header, .publish-confirm-header > div, .publish-confirm-intro, .publish-confirm-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.publish-confirm-header { padding: 16px 20px; justify-content: space-between; color: #fff; }
+.publish-confirm-header > div { min-width: 0; }
+.publish-confirm-header h3 { margin: 0; font-size: 16px; font-weight: 800; }
+.publish-confirm-header svg, .publish-confirm-intro > svg { flex-shrink: 0; }
+.publish-confirm-close {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  color: #fff;
+  cursor: pointer;
+}
+.publish-confirm-body { padding: 20px; }
+.publish-confirm-intro { align-items: flex-start; gap: 12px; margin-bottom: 16px; }
+.publish-confirm-intro > svg { margin-top: 2px; }
+.publish-confirm-intro p { margin: 0; font-size: 14px; font-weight: 800; line-height: 1.5; }
+.publish-confirm-intro p + p { margin-top: 4px; font-size: 12.5px; font-weight: 400; color: var(--text-muted); }
+.publish-confirm-error { margin: 12px 0; padding: 10px; border: 1px solid var(--publish-danger-text); border-radius: 8px; overflow-wrap: anywhere; }
+.publish-confirm-summary {
+  margin: 0;
+  padding: 14px 16px;
+  background: var(--bg-surface-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  font-size: 13px;
+}
+.publish-confirm-summary > div { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; padding: 5px 0; }
+.publish-confirm-summary > div:first-child { border-bottom: 1px solid var(--border-color); padding-bottom: 8px; margin-bottom: 5px; }
+.publish-confirm-summary > div:last-child { border-top: 1px solid var(--border-color); padding-top: 8px; margin-top: 5px; }
+.publish-confirm-summary dt { color: var(--text-muted); font-weight: 600; }
+.publish-confirm-summary dd { margin: 0; min-width: 0; max-width: 100%; overflow-wrap: anywhere; font-weight: 700; }
+.publish-confirm-summary > div:first-child dd { font-weight: 800; }
+.publish-confirm-summary .publish-confirm-success { color: var(--success-text); }
+.publish-confirm-summary .publish-confirm-time { font-size: 18px; }
+.publish-confirm-summary .publish-confirm-deadline { color: var(--publish-danger-text); }
+.publish-confirm-footer { flex-wrap: wrap; justify-content: flex-end; padding: 14px 20px; background: var(--bg-surface-secondary); border-top: 1px solid var(--border-color); }
+.publish-confirm-footer button { border-radius: 8px; padding: 8px 18px; font-size: 13px; font-weight: 700; cursor: pointer; }
+.publish-confirm-cancel { background: var(--bg-surface); border: 1px solid var(--border-color-strong); color: var(--text-main); }
+.publish-confirm-submit { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 0; color: #fff; font-weight: 800 !important; box-shadow: 0 2px 6px rgba(15, 118, 110, .25); }
+.publish-confirm-submit:disabled { cursor: wait; }
+@media (max-width: 480px) {
+  .publish-confirm-overlay { padding: 12px; }
+  .publish-confirm-card { max-height: calc(100dvh - 24px); }
+  .publish-confirm-header, .publish-confirm-body, .publish-confirm-footer { padding: 14px; }
+  .publish-confirm-summary > div { display: block; padding: 6px 0; }
+  .publish-confirm-summary dd { margin-top: 4px; }
+  .publish-confirm-summary dd[dir="ltr"] { text-align: right; }
+}

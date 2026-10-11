@@ -9,11 +9,11 @@ except ImportError:
     class StrEnum(str, Enum):
         pass
 
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
-from app.models.course import CourseStatus, EnrollmentStatus, LessonKind, IndexingStatus
+from app.models.course import CourseStatus, EnrollmentStatus, LessonKind, MaterializationStatus
 from app.models.platform import (
     AssignmentStatus,
     AttemptStatus,
@@ -21,7 +21,27 @@ from app.models.platform import (
     QuizStatus,
     SubmissionStatus,
 )
-from app.models.user import UserRole
+from app.models.user import Gender, GradeLevel, Religion, UserRole
+
+GOVERNORATE_CODES = frozenset({
+    "ALEXANDRIA", "ASWAN", "ASIUT", "BEHEIRA", "BENI_SUEF", "CAIRO", "DAKAHLIA",
+    "DAMIETTA", "FAYOUM", "GHARBIA", "GIZA", "ISMAILIA", "KAFR_EL_SHEIKH", "LUXOR",
+    "MATROUH", "MINYA", "MONUFIA", "NEW_VALLEY", "NORTH_SINAI", "PORT_SAID",
+    "QALYUBIA", "QENA", "RED_SEA", "SHARQIA", "SOHAG", "SOUTH_SINAI", "SUEZ",
+})
+
+
+def _normalize_digits(value: str) -> str:
+    return value.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789"))
+
+
+def _normalize_phone(value: str | None) -> str | None:
+    if value is None or not value.strip():
+        return None
+    normalized = _normalize_digits(value)
+    if not normalized.isascii() or not normalized.isdigit() or len(normalized) > 20:
+        raise ValueError("Phone number must contain at most 20 digits")
+    return normalized
 
 
 class UserResponse(BaseModel):
@@ -33,11 +53,40 @@ class UserResponse(BaseModel):
     email: EmailStr
     display_name: str
     role: UserRole
+    grade_level: GradeLevel | None = None
+    governorate: str | None = None
+    school_name: str | None = None
+    gender: Gender | None = None
+    student_phone: str | None = None
+    guardian_phone: str | None = None
+    mother_phone: str | None = None
+    city: str | None = None
+    education_division: str | None = None
+    specialization: str | None = None
+    national_id: str | None = None
+    religion: Religion | None = None
     is_active: bool
     created_at: datetime
 
 
+class PrivateUserResponse(UserResponse):
+    """Returned to the authenticated account owner and administrators during auth flows."""
+    uploaded_videos_count: int | None = None
+    enrolled_students_count: int | None = None
+
+
+class ManagedUserResponse(UserResponse):
+    """Assessment summaries restricted to courses visible to this manager."""
+    quiz_attempts_count: int = 0
+    pending_quiz_attempts: int = 0
+    has_completed_exam: bool = False
+    average_quiz_score: float | None = None
+    quiz_success_rate: float | None = None
+
+
 class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     display_name: str = Field(min_length=2, max_length=160)
     email: EmailStr
     password: str = Field(min_length=10, max_length=128)
@@ -45,6 +94,69 @@ class RegisterRequest(BaseModel):
     institution_slug: str = Field(
         default="demo", min_length=2, max_length=80, pattern=r"^[a-z0-9-]+$"
     )
+    grade_level: GradeLevel
+    student_phone: str | None = None
+    guardian_phone: str | None = None
+    mother_phone: str | None = None
+    city: str | None = Field(default=None, min_length=2, max_length=100)
+    education_division: str | None = Field(default=None, pattern=r'^(GENERAL|AZHAR)$')
+    specialization: str | None = Field(default=None, pattern=r'^(SCIENCE|MATH)$')
+    national_id: str | None = None
+    governorate: str = Field(min_length=1, max_length=40)
+    school_name: str = Field(min_length=2, max_length=200)
+    gender: Gender
+    religion: Religion | None = None
+
+    @field_validator("display_name")
+    @classmethod
+    def validate_person_name(cls, value: str) -> str:
+        import unicodedata
+        if not all(c == " " or unicodedata.category(c)[0] in {"L", "M"} for c in value) or not any(c.isalpha() for c in value):
+            raise ValueError("الاسم يجب أن يحتوي على حروف ومسافات فقط")
+        return value
+
+    @field_validator("display_name", "school_name", mode="before")
+    @classmethod
+    def trim_required_text(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("Value must be text")
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Value is required")
+        return normalized
+
+    @field_validator("student_phone", "guardian_phone", "mother_phone", mode="before")
+    @classmethod
+    def validate_phone(cls, value: object) -> str | None:
+        return _normalize_phone(value if isinstance(value, str) else None)
+
+    @field_validator("city", mode="before")
+    @classmethod
+    def trim_city(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("City must be text")
+        return value.strip()
+
+    @field_validator("national_id", mode="before")
+    @classmethod
+    def validate_national_id(cls, value: object) -> str | None:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if not isinstance(value, str):
+            raise ValueError("National ID must be text")
+        normalized = _normalize_digits(value.strip())
+        if not normalized.isdigit() or len(normalized) != 14:
+            raise ValueError("National ID must contain exactly 14 digits")
+        return normalized
+
+    @field_validator("governorate")
+    @classmethod
+    def validate_governorate(cls, value: str) -> str:
+        if value not in GOVERNORATE_CODES:
+            raise ValueError("Governorate is not supported")
+        return value
 
     @field_validator("password")
     @classmethod
@@ -63,9 +175,9 @@ class LoginRequest(BaseModel):
 
 
 class AuthResponse(BaseModel):
-    user: UserResponse
+    user: PrivateUserResponse
     expires_in: int
-    token: str | None = None
+    expires_at: datetime
 
 
 class ChangePasswordRequest(BaseModel):
@@ -92,6 +204,7 @@ class CourseCreateRequest(BaseModel):
     status: CourseStatus = CourseStatus.DRAFT
     teacher_id: uuid.UUID | None = None
     price_egp: float = Field(default=0, ge=0, le=1_000_000)
+    grade_level: GradeLevel | None = None
 
 
 class ModuleCreateRequest(BaseModel):
@@ -100,13 +213,36 @@ class ModuleCreateRequest(BaseModel):
 
 
 class LessonCreateRequest(BaseModel):
+    publication_status: Literal['draft', 'published'] = 'published'
+    publish_at: datetime | None = None
+    required_material_count: int = Field(default=0, ge=0, le=100)
+
+    @field_validator('publish_at')
+    @classmethod
+    def publication_timezone(cls, value):
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError('Publication time must include a timezone')
+        return value
     title: str = Field(min_length=2, max_length=200)
     kind: LessonKind
     position: int = Field(ge=1, le=10_000)
     content: str | None = Field(default=None, max_length=100_000)
-    video_asset_key: str | None = Field(default=None, max_length=512)
+    # Deliberately no video_asset_key: native videos are attached only via the
+    # authorization-checked upload endpoint, never through lesson creation.
+    # Public external links cannot satisfy protected playback requirements.
+    external_video_url: str | None = Field(default=None, max_length=2048)
     video_duration_seconds: int | None = Field(default=None, ge=1, le=24 * 60 * 60)
     price_egp: float = Field(default=0, ge=0, le=1_000_000)
+
+    @field_validator("external_video_url")
+    @classmethod
+    def _validate_external_video_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        if not trimmed:
+            return None
+        raise ValueError("External video links bypass protected playback; upload a video file instead")
 
 
 class LessonMaterialSummary(BaseModel):
@@ -121,20 +257,35 @@ class LessonMaterialSummary(BaseModel):
     created_at: datetime
 
 
+class VideoProcessingSummary(BaseModel):
+    id: uuid.UUID
+    status: str
+    created_at: datetime
+
+
 class LessonResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    course_id: uuid.UUID
+    module_id: uuid.UUID | None = None
+    publication_status: str = 'published'
+    publish_at: datetime | None = None
+    required_material_count: int = 0
     title: str
     kind: LessonKind
     position: int
     content: str | None
-    video_asset_key: str | None
+    # The raw storage key is never serialized: it is a private-path secret and
+    # clients only need the boolean plus the token-gated stream URL.
+    has_video: bool = False
+    # Public availability metadata; never grants playback access.
+    has_uploaded_video: bool = False
+    video_upload: VideoProcessingSummary | None = None
+    video_url: str | None = None
     video_duration_seconds: int | None
-    indexing_status: IndexingStatus = IndexingStatus.NOT_INDEXED
-    indexing_error: str | None = None
-    indexed_chunks_count: int = 0
-    rag_synced: bool = False
+    materialization_status: MaterializationStatus = MaterializationStatus.NOT_INDEXED
+    materialization_error: str | None = None
     price_egp: float = 0
     materials: list[LessonMaterialSummary] = []
 
@@ -145,6 +296,7 @@ class ModuleResponse(BaseModel):
     id: uuid.UUID
     title: str
     position: int
+    is_unassigned: bool = False
     lessons: list[LessonResponse] = []
 
 
@@ -162,6 +314,7 @@ class CourseResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     price_egp: float = 0
+    grade_level: str | None = None
     modules: list[ModuleResponse] = []
 
 
@@ -264,6 +417,13 @@ class NotificationResponse(BaseModel):
     created_at: datetime
 
 
+class LessonCommentCreateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    body: str = Field(min_length=1, max_length=2000, strict=True)
+    parent_id: uuid.UUID | None = None
+
+
 class NotificationCreateRequest(BaseModel):
     recipient_id: uuid.UUID
     kind: str = Field(min_length=2, max_length=40)
@@ -275,6 +435,8 @@ class NotificationCreateRequest(BaseModel):
 
 
 class NotificationBroadcastRequest(BaseModel):
+    target_grade: str | None = Field(default=None, pattern="^SECONDARY_[123]$")
+    course_id: uuid.UUID | None = None
     kind: str = Field(min_length=2, max_length=40)
     title: str = Field(min_length=2, max_length=200)
     message: str = Field(min_length=1, max_length=10_000)
@@ -284,6 +446,7 @@ class NotificationBroadcastRequest(BaseModel):
 
 
 class CalendarEventCreateRequest(BaseModel):
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=100)
     course_id: uuid.UUID | None = None
     title: str = Field(min_length=2, max_length=200)
     description: str | None = Field(default=None, max_length=10_000)
@@ -317,6 +480,12 @@ class QuestionCreateRequest(BaseModel):
     points: float = Field(default=1.0, gt=0, le=1000)
     learning_objective: str | None = Field(default=None, max_length=200)
 
+    @model_validator(mode="after")
+    def validate_option_limit(self) -> "QuestionCreateRequest":
+        from app.core.question_policy import validate_question_content
+        validate_question_content(self)
+        return self
+
 
 class QuestionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -333,7 +502,12 @@ class QuestionResponse(BaseModel):
     created_at: datetime
 
 
-class QuizCreateRequest(BaseModel):
+class AssessmentScopeRequest(BaseModel):
+    lesson_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
+    module_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
+
+
+class QuizCreateRequest(AssessmentScopeRequest):
     course_id: uuid.UUID
     title: str = Field(default="", max_length=200)
     quiz_title: str | None = Field(default=None, max_length=200)
@@ -343,6 +517,9 @@ class QuizCreateRequest(BaseModel):
     randomize_questions: bool = False
     attempts_allowed: int = Field(default=1, ge=1, le=10)
     question_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
+    # Attach the quiz to a unit and optionally to the exact lesson it covers.
+    module_id: uuid.UUID | None = None
+    lesson_id: uuid.UUID | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -358,7 +535,12 @@ class QuizCreateRequest(BaseModel):
         return data
 
 
-class QuizResponse(BaseModel):
+class QuizPublishRequest(QuizCreateRequest):
+    questions: list[QuestionCreateRequest] = Field(min_length=1, max_length=200)
+    idempotency_key: str = Field(min_length=8, max_length=100)
+
+
+class QuizResponse(AssessmentScopeRequest):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
@@ -371,6 +553,8 @@ class QuizResponse(BaseModel):
     starts_at: datetime | None
     ends_at: datetime | None
     published_at: datetime | None
+    module_id: uuid.UUID | None = None
+    lesson_id: uuid.UUID | None = None
     randomize_questions: bool
     attempts_allowed: int
     created_at: datetime
@@ -394,7 +578,31 @@ class QuizAttemptResponse(BaseModel):
     submitted_at: datetime | None
     status: AttemptStatus
     score: float | None
+    calculated_score: float | None = None
+    final_percentage: float | None = None
     total_points: float | None
+    is_practice: bool = False
+    grading_status: str
+    approval_status: str = "pending"
+    results_approved_at: datetime | None = None
+    results_approved_by: uuid.UUID | None = None
+
+
+class ApproveQuizResultRequest(BaseModel):
+    final_percentage: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
+    notes: str | None = Field(default=None, max_length=20000)
+
+
+class LessonPublicationRequest(BaseModel):
+    publication_status: Literal['draft', 'published']
+    publish_at: datetime | None = None
+
+    @field_validator('publish_at')
+    @classmethod
+    def publication_timezone(cls, value):
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError('Publication time must include a timezone')
+        return value
 
 
 class AssignmentAttemptResponse(BaseModel):
@@ -420,13 +628,23 @@ class QuizAttemptSubmitRequest(BaseModel):
     answers: list[QuizAnswerInput] = Field(max_length=200)
 
 
-class AssignmentCreateRequest(BaseModel):
+class AssignmentCreateRequest(AssessmentScopeRequest):
     course_id: uuid.UUID
     title: str = Field(default="", max_length=200)
     assignment_title: str | None = Field(default=None, max_length=200)
     prompt: str = Field(min_length=2, max_length=20_000)
+    starts_at: datetime | None = None
     due_at: datetime | None = None
+    # Attach the assignment to a unit and optionally to one lesson.
+    module_id: uuid.UUID | None = None
+    lesson_id: uuid.UUID | None = None
     max_score: float = Field(default=100.0, gt=0, le=100_000)
+
+    @field_validator("prompt", mode="before")
+    @classmethod
+    def normalize_prompt(cls, value: Any) -> Any:
+        # Length must apply to meaningful content, not surrounding whitespace.
+        return value.strip() if isinstance(value, str) else value
 
     @model_validator(mode="before")
     @classmethod
@@ -442,7 +660,7 @@ class AssignmentCreateRequest(BaseModel):
         return data
 
 
-class AssignmentResponse(BaseModel):
+class AssignmentResponse(AssessmentScopeRequest):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
@@ -450,10 +668,13 @@ class AssignmentResponse(BaseModel):
     title: str
     assignment_title: str | None = None
     prompt: str
+    starts_at: datetime | None = None
     due_at: datetime | None
     max_score: float
     status: AssignmentStatus
     created_at: datetime
+    module_id: uuid.UUID | None = None
+    lesson_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
     def populate_assignment_title(self) -> "AssignmentResponse":
@@ -498,6 +719,11 @@ class GradeSubmissionRequest(BaseModel):
     approve: bool = False
 
 
+class GradeQuizAnswerRequest(BaseModel):
+    awarded_points: float = Field(ge=0, le=100_000, allow_inf_nan=False)
+    feedback: str | None = Field(default=None, max_length=20_000)
+
+
 class CertificateResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -508,32 +734,6 @@ class CertificateResponse(BaseModel):
     score: float | None
     issued_at: datetime
     revoked_at: datetime | None
-
-
-class AIInvocationResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    task: str
-    provider: str
-    model: str
-    prompt_version: str
-    status: str
-    latency_ms: int | None
-    input_tokens: int | None
-    output_tokens: int | None
-    estimated_cost: float | None
-    error_code: str | None
-    output_json: dict | list | None
-    created_at: datetime
-
-
-class AIInvocationRequest(BaseModel):
-    task: str = Field(min_length=2, max_length=60)
-    prompt: str = Field(min_length=1, max_length=100_000)
-    provider: str = Field(default="ollama", min_length=2, max_length=60)
-    model: str | None = Field(default=None, max_length=120)
-    prompt_version: str = Field(default="v1", min_length=1, max_length=40)
 
 
 class AuditLogResponse(BaseModel):
@@ -548,3 +748,38 @@ class AuditLogResponse(BaseModel):
     after_json: dict | None
     request_id: str | None
     occurred_at: datetime
+
+
+class LessonAccessRequestCreate(BaseModel):
+    student_note: str | None = Field(default=None, max_length=2000)
+
+
+class LessonAccessReviewRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class LessonAccessRequestResponse(BaseModel):
+    id: uuid.UUID
+    student_id: uuid.UUID
+    student_name: str
+    student_phone: str | None = None
+    lesson_id: uuid.UUID
+    lesson_title: str
+    course_id: uuid.UUID
+    course_title: str
+    status: str
+    student_note: str | None = None
+    reviewer_note: str | None = None
+    created_at: datetime
+    reviewed_at: datetime | None = None
+
+
+class BootstrapResponse(BaseModel):
+    authenticated: bool
+    user: PrivateUserResponse | None = None
+    unread_notifications_count: int = 0
+    notifications: list[NotificationResponse] = Field(default_factory=list)
+    courses: list[CourseResponse] = Field(default_factory=list)
+    enrolled_course_ids: list[str] = Field(default_factory=list)
+    entitlements: list[dict[str, Any]] = Field(default_factory=list)
+    settings: dict[str, Any] = Field(default_factory=dict)

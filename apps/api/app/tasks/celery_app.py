@@ -5,10 +5,9 @@ import os
 from celery import Celery
 
 celery_app = Celery(
-    "knowledge_center",
+    "freebuff_platform",
     broker=os.getenv("CELERY_BROKER_URL", os.getenv("REDIS_URL", "redis://localhost:6379/1")),
     backend=os.getenv("CELERY_RESULT_BACKEND", os.getenv("REDIS_URL", "redis://localhost:6379/2")),
-    include=["app.tasks.knowledge_ingestion"],
 )
 visibility_timeout = int(os.getenv("CELERY_VISIBILITY_TIMEOUT", "3600"))
 celery_app.conf.update(

@@ -10,10 +10,12 @@ import uuid
 from datetime import datetime
 try:
     from enum import StrEnum
-except ImportError:  # Python 3.10
+except ImportError:  # Python 3.10: enum.StrEnum arrived in 3.11
     from enum import Enum
+
     class StrEnum(str, Enum):
-        pass
+        def __str__(self) -> str:
+            return str(self.value)
 
 from sqlalchemy import (
     JSON,
@@ -29,6 +31,8 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    cast,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -90,8 +94,8 @@ class QuestionBank(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 
 class QuestionVersion(UUIDPrimaryKeyMixin, Base):
-    """Immutable snapshot of a question at a point in time. Attempts reference
-    this table so historical grading never changes retroactively."""
+    """Immutable bank revision. Assessments copy the revision identity and full
+    content into their own snapshots, including the assessment-specific weight."""
 
     __tablename__ = "question_versions"
     __table_args__ = (
@@ -152,9 +156,6 @@ class Grade(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     with is_current=False for full history."""
 
     __tablename__ = "grades"
-    __table_args__ = (
-        Index("ix_grades_current", "student_id", "item_type", "item_id", unique=True),
-    )
 
     institution_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=False
@@ -172,6 +173,13 @@ class Grade(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     feedback: Mapped[str | None] = mapped_column(Text)
     graded_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    __table_args__ = (
+        Index("ix_grades_current", institution_id, student_id,
+              func.coalesce(cast(course_id, String(36)), "none"), item_type,
+              func.coalesce(cast(item_id, String(36)), "none"), unique=True,
+              postgresql_where=is_current.is_(True), sqlite_where=is_current.is_(True)),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +232,12 @@ class NotificationDelivery(UUIDPrimaryKeyMixin, Base):
 
 class LearningObjective(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "learning_objectives"
+    __table_args__ = (
+        Index("uq_objective_scoped_code", "institution_id", "course_id", "code", unique=True,
+              postgresql_where=text("course_id IS NOT NULL"), sqlite_where=text("course_id IS NOT NULL")),
+        Index("uq_objective_global_code", "institution_id", "code", unique=True,
+              postgresql_where=text("course_id IS NULL"), sqlite_where=text("course_id IS NULL")),
+    )
 
     institution_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=False
@@ -259,52 +273,14 @@ class StudentMastery(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class RiskAssessment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    __tablename__ = "risk_assessments"
-    __table_args__ = (
-        Index("ix_risk_student_latest", "student_id", "created_at"),
-    )
-
-    institution_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=False
-    )
-    student_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
-    )
-    course_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("courses.id", ondelete="SET NULL"), index=True
-    )
-    risk_score: Mapped[float] = mapped_column(Float, nullable=False)  # 0..1
-    band: Mapped[str] = mapped_column(String(20), nullable=False)     # low|medium|high
-    factors_json: Mapped[dict | list | None] = mapped_column(JSON)     # explainable contributors
-    model_version: Mapped[str | None] = mapped_column(String(80))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-
-class Intervention(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    __tablename__ = "interventions"
-
-    institution_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=False
-    )
-    risk_assessment_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("risk_assessments.id", ondelete="SET NULL"), index=True
-    )
-    student_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
-    )
-    kind: Mapped[str] = mapped_column(String(60), nullable=False)  # recommended_lesson|targeted_practice|follow_up_quiz|teacher_alert
-    payload_json: Mapped[dict | list | None] = mapped_column(JSON)
-    status: Mapped[str] = mapped_column(String(20), default="proposed", nullable=False)
-    assigned_to: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
-
-
 # ---------------------------------------------------------------------------
 # Async report jobs
 # ---------------------------------------------------------------------------
 
 class ReportJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "report_jobs"
+    __table_args__ = (UniqueConstraint("institution_id", "requested_by", "idempotency_key",
+                                     name="uq_report_requester_key"),)
 
     institution_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=False
@@ -314,69 +290,12 @@ class ReportJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     report_kind: Mapped[str] = mapped_column(String(60), nullable=False)  # student|class|course|performance|risk
     params_json: Mapped[dict | list | None] = mapped_column(JSON)
-    idempotency_key: Mapped[str | None] = mapped_column(String(100), unique=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(20), default="queued", nullable=False)
     format: Mapped[str] = mapped_column(String(10), default="xlsx", nullable=False)
     object_key: Mapped[str | None] = mapped_column(String(512))
     error_message: Mapped[str | None] = mapped_column(Text)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-
-# ---------------------------------------------------------------------------
-# AI job queue + audit runs
-# ---------------------------------------------------------------------------
-
-class AIJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    __tablename__ = "ai_jobs"
-    __table_args__ = (
-        Index("ix_ai_jobs_state", "status", "created_at"),
-    )
-
-    institution_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("institutions.id", ondelete="SET NULL"), index=True
-    )
-    requested_by: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), index=True
-    )
-    task: Mapped[str] = mapped_column(String(60), nullable=False)  # quiz_generation|essay_grading|document_processing|report_narrative
-    payload_json: Mapped[dict | list | None] = mapped_column(JSON)
-    idempotency_key: Mapped[str | None] = mapped_column(String(100), unique=True)
-    status: Mapped[str] = mapped_column(String(20), default="queued", nullable=False)  # queued|processing|completed|failed|cancelled
-    result_json: Mapped[dict | list | None] = mapped_column(JSON)
-    error_code: Mapped[str | None] = mapped_column(String(80))
-    error_message: Mapped[str | None] = mapped_column(Text)
-    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-
-class AIRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """Audit record for every actual provider call, including fallbacks."""
-
-    __tablename__ = "ai_runs"
-
-    ai_job_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("ai_jobs.id", ondelete="SET NULL"), index=True
-    )
-    institution_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("institutions.id", ondelete="SET NULL"), index=True
-    )
-    actor_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), index=True
-    )
-    task: Mapped[str] = mapped_column(String(60), nullable=False)
-    provider: Mapped[str] = mapped_column(String(60), nullable=False)
-    model: Mapped[str] = mapped_column(String(120), nullable=False)
-    model_version: Mapped[str | None] = mapped_column(String(80))
-    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
-    input_hash: Mapped[str | None] = mapped_column(String(64), index=True)
-    output_json: Mapped[dict | list | None] = mapped_column(JSON)
-    status: Mapped[str] = mapped_column(String(20), nullable=False)  # success|error|timeout|fallback|cancelled
-    latency_ms: Mapped[int | None] = mapped_column(Integer)
-    input_tokens: Mapped[int | None] = mapped_column(Integer)
-    output_tokens: Mapped[int | None] = mapped_column(Integer)
-    estimated_cost: Mapped[float | None] = mapped_column(Float)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 # ---------------------------------------------------------------------------

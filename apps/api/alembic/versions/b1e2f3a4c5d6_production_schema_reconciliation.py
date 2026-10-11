@@ -38,12 +38,13 @@ def upgrade() -> None:
         role_type = users_columns["role"]["type"]
         current_length = getattr(role_type, "length", None)
         if current_length is not None and current_length < 32:
-            op.alter_column(
-                "users",
-                "role",
-                type_=sa.String(length=32),
-                existing_type=role_type,
-            )
+            # SQLite cannot ALTER COLUMN in place; batch mode rebuilds the table.
+            with op.batch_alter_table("users") as batch_op:
+                batch_op.alter_column(
+                    "role",
+                    type_=sa.String(length=32),
+                    existing_type=role_type,
+                )
 
     # 2. Outline node foreign keys with safe <= 63 character names
     outline_tables = (
@@ -60,20 +61,30 @@ def upgrade() -> None:
         safe_fk_name = f"fk_{table}_outline_node"
         legacy_fk_name = f"fk_{table}_outline_node_id_knowledge_outline_nodes"
 
-        for fk_name in list(fk_names):
+        to_drop = [
+            fk_name
+            for fk_name in fk_names
             if (
                 fk_name == legacy_fk_name
                 or (is_postgres and fk_name.startswith(legacy_fk_name[:63]))
-            ) and fk_name != safe_fk_name:
-                op.drop_constraint(fk_name, table, type_="foreignkey")
-                fk_names.discard(fk_name)
-
-        if safe_fk_name not in fk_names:
-            col_names = {c["name"] for c in insp.get_columns(table)}
-            if "outline_node_id" in col_names and insp.has_table("knowledge_outline_nodes"):
-                op.create_foreign_key(
+            )
+            and fk_name != safe_fk_name
+        ]
+        col_names = {c["name"] for c in insp.get_columns(table)}
+        needs_create = (
+            safe_fk_name not in fk_names
+            and "outline_node_id" in col_names
+            and insp.has_table("knowledge_outline_nodes")
+        )
+        if not to_drop and not needs_create:
+            continue
+        # SQLite cannot ALTER constraints; batch mode rebuilds the table.
+        with op.batch_alter_table(table) as batch_op:
+            for fk_name in to_drop:
+                batch_op.drop_constraint(fk_name, type_="foreignkey")
+            if needs_create:
+                batch_op.create_foreign_key(
                     safe_fk_name,
-                    table,
                     "knowledge_outline_nodes",
                     ["outline_node_id"],
                     ["id"],

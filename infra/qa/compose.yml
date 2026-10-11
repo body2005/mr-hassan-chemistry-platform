@@ -1,0 +1,170 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    cpus: 1.0
+    mem_limit: 1024m
+    environment:
+      POSTGRES_USER: qa
+      POSTGRES_PASSWORD: qa-only-password
+      POSTGRES_DB: chemistry_qa
+    ports:
+      - "127.0.0.1:15434:5432"
+    volumes:
+      - qa_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qa -d chemistry_qa"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    cpus: 0.5
+    mem_limit: 256m
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - qa_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  mailpit:
+    image: axllent/mailpit:v1.31.1@sha256:98b916bd3c8d61f7633a52d3ea2f58d00620cb01ca57ab59edde68c347a95365
+    cpus: 0.25
+    mem_limit: 256m
+    environment:
+      MP_SMTP_TLS_CERT: sans:mailpit
+      MP_SMTP_TLS_KEY: sans:mailpit
+      MP_SMTP_REQUIRE_TLS: "true"
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_DISABLE_RDNS: "true"
+    ports:
+      - "127.0.0.1:18025:8025"
+
+  minio:
+    # QA-only S3-compatible store; the pinned production MinIO image cannot be pulled.
+    # The former LocalStack emulator lost objects on container recreation.
+    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+    cpus: 0.5
+    mem_limit: 1024m
+    environment:
+      AWS_ACCESS_KEY_ID: qa-minio
+      AWS_SECRET_ACCESS_KEY: qa-minio-password
+      S3_BUCKET: chemistry-qa
+    ports:
+      - "127.0.0.1:19000:8333"
+    volumes:
+      - qa_s3:/data
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8333"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  minio-init:
+    image: chemistryqa-api:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: qa-minio
+      AWS_SECRET_ACCESS_KEY: qa-minio-password
+      AWS_DEFAULT_REGION: us-east-1
+    command: ["python", "-c", "import boto3; s3=boto3.client('s3', endpoint_url='http://minio:8333'); s3.create_bucket(Bucket='chemistry-qa') if 'chemistry-qa' not in [item['Name'] for item in s3.list_buckets()['Buckets']] else None"]
+
+  migration:
+    build:
+      context: ../../apps/api
+      dockerfile: ../../infra/Dockerfile.api
+    cpus: 1.0
+    mem_limit: 1024m
+    command: ["alembic", "upgrade", "head"]
+    environment: &api_environment
+      APP_ENV: production_like
+      SECRET_KEY: qa-local-secret-key-with-adequate-length
+      DATABASE_URL: postgresql+psycopg://qa:qa-only-password@postgres:5432/chemistry_qa
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      STORAGE_BACKEND: minio
+      S3_ENDPOINT_URL: http://minio:8333
+      S3_ACCESS_KEY: qa-minio
+      S3_SECRET_KEY: qa-minio-password
+      S3_BUCKET: chemistry-qa
+      FRONTEND_ORIGINS: http://127.0.0.1:18080
+      # Isolated mail-delivery tests opt in; deployments default to no email.
+      EMAIL_ENABLED: "true"
+      EMAIL_PROVIDER: smtp
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_USER: qa-smtp-user
+      SMTP_PASSWORD: qa-smtp-password
+      SMTP_FROM_EMAIL: qa@example.com
+      # Mailpit uses a throwaway self-signed cert; production forbids disabling verification.
+      SMTP_TLS_VERIFY: "false"
+      COOKIE_SECURE: "false"
+      COOKIE_CROSS_SITE: "false"
+      INGESTION_BACKEND: celery
+      ALLOW_LOCAL_INGESTION: "false"
+      REDIS_REQUIRED: "true"
+      PAYMENT_INSTAPAY_ACCOUNT: qa-synthetic-merchant
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: ../../apps/api
+      dockerfile: ../../infra/Dockerfile.api
+    cpus: 1.0
+    mem_limit: 1024m
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+    environment: *api_environment
+    ports:
+      - "127.0.0.1:18000:8000"
+    volumes:
+      - qa_video_uploads:/srv/uploads
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: ../../apps/api
+      dockerfile: ../../infra/Dockerfile.api
+    cpus: 0.5
+    mem_limit: 512m
+    command: ["celery", "-A", "app.tasks.celery_app.celery_app", "worker", "--loglevel=info", "--concurrency=1", "-Q", "notifications,reports,analytics"]
+    environment: *api_environment
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ../../apps/web
+      dockerfile: ../../infra/Dockerfile.web
+      args:
+        VITE_API_URL: /api/v1
+    cpus: 0.5
+    mem_limit: 512m
+    ports:
+      - "127.0.0.1:18080:80"
+    depends_on:
+      - api
+
+volumes:
+  qa_postgres:
+  qa_redis:
+  qa_s3:
+  qa_video_uploads:

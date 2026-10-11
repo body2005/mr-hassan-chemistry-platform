@@ -14,6 +14,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 import unicodedata
 import uuid
 from dataclasses import dataclass, field
@@ -22,6 +24,8 @@ from typing import Any
 from PIL import Image, ImageOps
 
 from app.core.errors import OperationCancelledError
+from app.services.extraction_limits import (ExtractionLimitError, MAX_PAGES, MAX_RENDER_SIDE,
+    MAX_RENDER_PIXELS, OCR_TIMEOUT_SECONDS, check_archive, check_image, ocr_slot, render_scale)
 
 logger = logging.getLogger(__name__)
 
@@ -132,16 +136,27 @@ def is_text_garbled(text: str) -> bool:
     Detects whether extracted PDF text is garbled, corrupt, or mojibake.
     Common with legacy Arabic typesetting PDFs that lack proper ToUnicode CMaps,
     resulting in CID tokens (e.g. `(cid:103)`) or arbitrary Latin/Greek glyph mappings.
+
+    Arabic presentation forms (U+FBxx / U+FExx) are a LEGACY-but-valid storage
+    choice, not corruption: they normalize losslessly via NFKC.  All ratio
+    checks therefore run on an NFKC-measured copy so a healthy presentation-
+    forms text layer is never condemned (and never replaced by OCR); the
+    caller's original text is left untouched.
     """
     if not text or len(text.strip()) < 10:
         return False
+
+    # Measure corruption on an NFKC copy: presentation forms, compatibility
+    # ligatures and symbol variants collapse to their canonical code points
+    # before any ratio is computed.  Measurement only - `text` is unchanged.
+    measured = unicodedata.normalize("NFKC", text)
 
     # Check 1: CID font tokens (e.g. (cid:103)(cid:164)...)
     cid_matches = len(re.findall(r'\(cid:\d+\)', text))
     if cid_matches >= 3:
         return True
 
-    non_ws = [c for c in text if not c.isspace()]
+    non_ws = [c for c in measured if not c.isspace()]
     if not non_ws:
         return False
     total_non_ws = len(non_ws)
@@ -174,12 +189,23 @@ def is_text_garbled(text: str) -> bool:
     if pres_arabic_ratio > 0.20:
         return True
 
-    words = [w.strip('.,()!?[]:\"\'') for w in text.split()]
-    words = [w for w in words if w]
+    raw_words = measured.split()
+    # MCQ option markers - '(a)', '(b)', 'A)', unicode bracket markers - are
+    # deliberate answer choices, not mojibake fragments. Detect them on the RAW
+    # token (before stripping punctuation) so '(a) S' never counts as fragmented.
+    option_marker = re.compile(r"^[\(\[]?[A-Za-zء-ي][\)\]]?$")
+    stripped_words = [w.strip('.,()!?[]' + chr(34) + chr(39)) for w in raw_words]
+    words = [w for w in stripped_words if w]
     if len(words) > 5:
         # Check 4: Mixed fragmented non-words (single Latin letters separated by spaces e.g. 'c R Ú e C G')
-        single_char_words = sum(1 for w in words if len(w) == 1 and w.isascii())
-        if (single_char_words / len(words)) > 0.35 and arabic_ratio < 0.30:
+        option_positions = {i for i, w in enumerate(raw_words) if option_marker.match(w)}
+        adjacent_answers = {i + 1 for i in option_positions}  # answer text right after a marker
+        single_char_words = sum(
+            1
+            for i, w in enumerate(stripped_words)
+            if w and len(w) == 1 and w.isascii() and i not in option_positions and i not in adjacent_answers
+        )
+        if (single_char_words / max(len(words), 1)) > 0.35 and arabic_ratio < 0.30:
             return True
 
         # Check 5: Reversed Arabic (visual order instead of logical order)
@@ -188,36 +214,36 @@ def is_text_garbled(text: str) -> bool:
         if taa_marbuta_starts >= 2:
             return True
 
-        # Definite article (الـ) is ALWAYS a prefix in Arabic; in reversed text it becomes a suffix (لا).
-        rev_alif_lam = sum(1 for w in words if w.endswith(('لا', 'لآ', 'لأ', 'لإ')))
-        if (rev_alif_lam / len(words)) > 0.12 and taa_marbuta_starts >= 1:
+        # Check 5: Reversed Arabic (visual order instead of logical order)
+        # In Arabic grammar, words NEVER begin with Taa Marbuta (ة or presentation variants).
+        taa_marbuta_starts = sum(1 for w in words if w.startswith(('ة', '\ufe93', '\ufe94')))
+        if taa_marbuta_starts >= 2:
             return True
+
+    # Check 5c (outside the >5-word gate; self-guarded by TWO independent
+    # anomalies): presentation-form dumps expose the same impossibility in
+    # second position - a word whose second character is Taa Marbuta cannot
+    # be logical Arabic (it would need a 1-letter prefix).  Word-FINAL plain
+    # 'لل' is the NFKC residue of the lam-lam ligature in visual-order
+    # dumps (logical Arabic writes a doubled lam as lam + shadda, one
+    # letter; word-INITIAL 'لل' is the legitimate preposition and must not
+    # fire).  Legit text has 0 of these anomalies and can never fire.
+    taa_second_pos = sum(
+        1 for w in words if len(w) >= 2 and w[1] in ('ة', '\u0629')
+    )
+    final_lam_lam = sum(
+        1 for w in words if len(w) >= 4 and w.endswith('لل')
+    )
+    rev_alif_lam = sum(1 for w in words if w.endswith(('لا', 'لآ', 'لأ', 'لإ')))
+    if taa_second_pos + final_lam_lam >= 2:
+        return True
+    if (rev_alif_lam / max(len(words), 1)) > 0.12 and (taa_marbuta_starts + taa_second_pos + final_lam_lam) >= 1:
+        return True
 
     return False
 
 
 BIDI_CHARS_RE = re.compile(r'[\u200e\u200f\u202a-\u202e\u2066-\u2069]')
-
-OCR_ARABIC_CONFUSIONS = [
-    # Tesseract ara+eng glyph confusions inside Arabic context
-    (r'(^|[\u0600-\u06FF\s])of(?=[\u0600-\u06FF\s]|$)', r'\g<1>أو'),
-    (r'(^|[\u0600-\u06FF\s])ale(?=[\u0600-\u06FF\s]|$)', r'\g<1>علم'),
-    (r'(^|[\u0600-\u06FF\s])Jol(?=[\u0600-\u06FF\s]|$)', r'\g<1>أول'),
-    (r'(^|[\u0600-\u06FF\s])wi(?=[\u0600-\u06FF\s]|$)', r'\g<1>أو'),
-    (r'(^|[\u0600-\u06FF\s])to(?=[\u0600-\u06FF\s]|$)', r'\g<1>إلى'),
-    (r'(^|[\u0600-\u06FF\s])in(?=[\u0600-\u06FF\s]|$)', r'\g<1>في'),
-    (r'(^|[\u0600-\u06FF\s])and(?=[\u0600-\u06FF\s]|$)', r'\g<1>و'),
-    (r'(^|[\u0600-\u06FF\s])fae(?=[\u0600-\u06FF\s]|$)', r'\g<1>فهي'),
-    (r'(^|[\u0600-\u06FF\s])bol(?=[\u0600-\u06FF\s]|$)', r'\g<1>بل'),
-    (r'(^|[\u0600-\u06FF\s])Bale(?=[\u0600-\u06FF\s]|$)', r'\g<1>حادة'),
-    (r'(^|[\u0600-\u06FF\s])Cob(?=[\u0600-\u06FF\s]|$)', r'\g<1>فوق'),
-    (r'(^|[\u0600-\u06FF\s])dab Fi(?=[\u0600-\u06FF\s]|$)', r'\g<1>في هذا'),
-    (r'(^|[\u0600-\u06FF\s])أنحديد(?=[\u0600-\u06FF\s]|$)', r'\g<1>الحديد'),
-    (r'(^|[\u0600-\u06FF\s])انحديد(?=[\u0600-\u06FF\s]|$)', r'\g<1>الحديد'),
-    (r'(^|[\u0600-\u06FF\s])الأومنيوم(?=[\u0600-\u06FF\s]|$)', r'\g<1>الألومنيوم'),
-    (r'(^|[\u0600-\u06FF\s])أومنيوم(?=[\u0600-\u06FF\s]|$)', r'\g<1>ألومنيوم'),
-]
-
 
 def is_reversed_arabic_token(w: str) -> bool:
     w = w.strip('.,()!?[]:"\'')
@@ -225,7 +251,7 @@ def is_reversed_arabic_token(w: str) -> bool:
         return False
     if w.startswith(('ة', '\ufe93', '\ufe94')):
         return True
-    if w.endswith(('لا', 'لآ', 'لأ', 'لإ')) and w not in ('لا', 'إلا', 'كلا', 'لولا', 'علا', 'هلا', 'جلا'):
+    if w.endswith(('لا', 'لآ', 'لأ', 'لإ')) and w not in ('لا', 'إلا', 'كلا', 'لولا', 'علا', 'العلا', 'هلا', 'جلا', 'المكلا'):
         return True
     if w.endswith(('لحا', 'لخا', 'لجا')):
         return True
@@ -240,7 +266,10 @@ def is_reversed_arabic(text: str) -> bool:
     words = text.split()
     if not words:
         return False
-    return any(is_reversed_arabic_token(w) for w in words)
+    # Reversed Arabic text has many tokens starting with Taa Marbuta (impossible in normal Arabic)
+    # or ending with reversed Alif-Lam. Require at least 2 distinct reversed tokens.
+    rev_tokens = sum(1 for w in words if is_reversed_arabic_token(w))
+    return rev_tokens >= 2 or (len(words) <= 3 and rev_tokens >= 1)
 
 
 def fix_reversed_arabic_text(text: str) -> str:
@@ -339,15 +368,27 @@ def normalize_arabic_presentation_forms(text: str) -> str:
     # 2. Filter bidi control marks
     normalized = BIDI_CHARS_RE.sub("", normalized)
 
-    # PDF extractors may detach an Arabic combining mark from its base letter
-    # (for example, ``مبتدئ ًا``). Join only whitespace before Arabic marks so
-    # Latin text, chemical formula spacing, superscripts, and subscripts remain
-    # untouched.
+    # PDF extractors may detach an Arabic combining mark from its base letter.
+    # A space before a VOWEL mark (fatha/damma/kasra) belongs to the FOLLOWING
+    # word's first letter ('اس ُتهلك' -> 'استُهلك'); a space before a TANWEEN
+    # +alef tail belongs to the PRECEDING word's end ('علم ًا' -> 'علمًا').
     normalized = re.sub(
-        r"(?<=[\u0600-\u06FF])\s+(?=[\u064B-\u065F\u0670])",
-        "",
+        r"(?<=[\u0600-\u06FF])[ \t]+([\u064F\u0650\u064E])([\u0621-\u064A])",
+        r"\2\1",
         normalized,
     )
+    normalized = re.sub(
+        r"(?<=[\u0600-\u06FF])[ \t]+([\u064B-\u064D\u0670]+\u0627?)(?![\u0621-\u064A])",
+        r"\1",
+        normalized,
+    )
+    # Strip orphan combining marks at the start of strings or preceded by whitespace
+    normalized = re.sub(r"(?:^|(?<=\s))[\u064B-\u065F\u0670]+", "", normalized)
+    # A detached damma after the conjunction waw collapses to bare waw
+    # (the damma belongs to the following verb's first consonant);
+    # generic orthography — no verb lists.
+    normalized = re.sub(r"\bو\s*\u064f(?=[\u0621-\u064A])", "و", normalized)
+    normalized = re.sub(r"\bو\u064f(?=[\u0621-\u064A])", "و", normalized)
 
     # 3. Filter out svg remnants, e.g. svgsvg, <svg ... </svg>, etc.
     normalized = re.sub(r'(?i)<svg\b[^>]*>[\s\S]*?<\/svg>', ' ', normalized)
@@ -357,110 +398,1152 @@ def normalize_arabic_presentation_forms(text: str) -> str:
     # 4. Filter button leftovers (e.g. "btn-primary", "click here to submit", UI button leftovers)
     normalized = re.sub(r'\b(?:btn|btn-[a-z0-9_\-]+|button-text|submit-btn)\b', ' ', normalized, flags=re.IGNORECASE)
 
-    # 5. Fix common chemistry OCR and typographical errors
-    normalized = re.sub(r'\bالأومنيوم\b', 'الألومنيوم', normalized)
-    normalized = re.sub(r'\bأومنيوم\b', 'ألومنيوم', normalized)
-
     return normalized
 
 
 def clean_arabic_ocr_text(text: str) -> str:
-    """Cleans OCR artifacts, normalizes presentation forms, removes rogue Unicode BiDi isolation marks, and context-aware fixes for Tesseract confusions."""
+    """Normalize layout/Unicode without translating or guessing source words.
+
+    A Latin word near Arabic may be intentional bilingual content. Spelling
+    substitutions require visual evidence or an explicit teacher edit, not a
+    dictionary keyed only by surrounding language.
+    """
     if not text:
         return ""
     cleaned = normalize_arabic_presentation_forms(text)
-    # Only apply Arabic substitutions if text has an Arabic context to avoid corrupting English words (e.g. 'of', 'in', 'to')
-    has_arabic = bool(re.search(r'[\u0600-\u06FF]', cleaned))
-    if has_arabic:
-        for pat, rep in OCR_ARABIC_CONFUSIONS:
-            cleaned = re.sub(pat, rep, cleaned)
     cleaned = re.sub(r'[ \t]+', ' ', cleaned)
     return cleaned.strip()
+
+
+SUB_MAP = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+SUP_MAP = str.maketrans("0123456789+-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻")
+
+
+def clean_chemical_formula_text(text: str) -> str:
+    """
+    Normalizes chemical formulas, cleans LaTeX remnants and removes markdown asterisks.
+    Fully deterministic and general across scientific & chemical texts.
+    """
+    if not text:
+        return ""
+    s = text
+
+    # 1. Remove markdown bold/italic asterisks completely
+    s = re.sub(r"\*{2,}", "", s)
+    s = re.sub(r"(?<!\w)\*(?!\w)", "", s)
+
+    # 2. Clean LaTeX text wrappers: \text{...}, \mathrm{...}, \mathbf{...}
+    s = re.sub(r"\\(?:text|mathrm|mathbf)\{([^}]*)\}", r"\1", s)
+
+    # 3. Mathematical and chemical operators
+    s = s.replace(r"\cdot", "·").replace(r"\times", "×")
+    s = s.replace(r"^\circ", "°").replace(r"\circ", "°")
+    # Render the symbol; do not turn entropy/temperature or a bare delta into
+    # enthalpy. Only the explicitly written H belongs in the result.
+    s = re.sub(r"\\Delta\s*H\b|Delta\s*H\b", "ΔH", s)
+    s = re.sub(r"\\Delta\b", "Δ", s)
+    s = re.sub(r"\bquad\s*,\s*quad\b", ", ", s)
+    s = re.sub(r"\bquad\b", " ", s)
+    s = re.sub(r"\\[,;:]", " ", s)
+    s = re.sub(r"\\mid\b|(?<=\w)\s+mid\s+(?=\w)", " | ", s)
+    s = re.sub(r"\\parallel\b|(?<=\w)\s+parallel\s+(?=\w)", " || ", s)
+
+    # 4. Equilibrium constants and potentials
+    s = re.sub(r"K_\{?sp\}?", "Ksp", s)
+    s = re.sub(r"\bK_([abw])\b", r"K\1", s)
+    s = re.sub(r"E\^\{?[°\\]*circ\}?_\{?cell\}?", "E°cell", s)
+    s = re.sub(r"E\^\{?°\}?_\{?cell\}?", "E°cell", s)
+    s = re.sub(r"E°_\{?cell\}?", "E°cell", s)
+
+    # 5. Subscripts and superscripts
+    s = re.sub(r"\\?_\{?\((s|aq|l|g|dil|conc)\)\}?", r"(\1)", s)
+    s = re.sub(r"_\{(\d+)\((s|aq|l|g|dil|conc)\)\}", lambda m: m.group(1).translate(SUB_MAP) + f"({m.group(2)})", s)
+    s = re.sub(r"_\{(\d+)\}", lambda m: m.group(1).translate(SUB_MAP), s)
+    s = re.sub(r"\^\{([0-9\+\-]+)\}", lambda m: m.group(1).translate(SUP_MAP), s)
+    s = re.sub(r"\^([0-9\+\-]+)", lambda m: m.group(1).translate(SUP_MAP), s)
+    s = re.sub(r"([A-Za-z\)])_(\d+)", lambda m: m.group(1) + m.group(2).translate(SUB_MAP), s)
+    s = re.sub(r"\(([^)]+)\)_(\d+)", lambda m: f"({m.group(1)})" + m.group(2).translate(SUB_MAP), s)
+    s = re.sub(r"([A-Za-z]+)\^\{?([0-9]+[+-])\}?", lambda m: m.group(1) + m.group(2).translate(SUP_MAP), s)
+    s = re.sub(r"([A-Za-z]+)([2-4][+-])(?=[\s,\)\]\|]|$)", lambda m: m.group(1) + m.group(2).translate(SUP_MAP), s)
+    s = re.sub(r"\\alpha\b|\\?alpha(?=%)", "α", s)
+    s = s.replace(r"\alpha", "α").replace(r"\beta", "β").replace(r"\gamma", "γ")
+
+    # 6. LaTeX arrows
+    s = s.replace(r"\rightleftharpoons", "⇌").replace(r"\rightarrow", "→")
+
+    # 7. Delimiters and leftover LaTeX backslashes
+    s = s.replace("$$", "").replace("$", "")
+    s = re.sub(r"\\([a-zA-Z%])", r"\1", s)
+    s = re.sub(r"\\+", "", s)
+
+    # 8. Standard chemical symbols
+    s = re.sub(r"\bPH\b", "pH", s)
+
+    # Clean double spaces
+    s = re.sub(r"[ \t]{2,}", " ", s)
+    return s.strip()
+
+
+def fix_arabic_bidi_scrambling(text: str) -> str:
+    """
+    Repairs Arabic bidirectional text ordering anomalies produced by LTR-stream PDF extractors:
+    - Inverted parentheses e.g. ')word(' -> '(word)'
+    - Voltage and equality expressions e.g. '0.74+ =$ إذا علمت... V' -> 'إذا علمت أن جهد تأكسد الكروم = +0.74 V'
+    - Split quantities e.g. '14.3$ ُأذيب g' -> 'ُأذيب 14.3 g'
+    - Celsius temperature expressions and ranges e.g. 'من 400°C 700إلى°C' -> 'من 400°C إلى 700°C'
+    - Premise and lead clause inversions e.g. '، كيف يمكن... سبيكة...' -> 'سبيكة...، كيف يمكن...'
+    - Sequential condition and conclusion ordering
+    """
+    if not text:
+        return ""
+    s = text
+
+    # Delimiters clean early
+    s = s.replace("$$", "").replace("$", "")
+
+    # Step 1: Normalize reversed isolated parentheses )word( -> (word)
+    s = re.sub(r"(?:^|(?<=[\s،,؛;\.\:؟\?]))\)\s*([^\(\)]+?)\s*\((?=[\s،,؛;\.\:؟\?]|(?=[\u0600-\u06FF])|$)", r"(\1)", s)
+    s = re.sub(r"(?:^|(?<=[\s،,؛;\.\:؟\?]))\)\s*([^\(\)\s]+)\s*\)(?=[\s،,؛;\.\:؟\?]|(?=[\u0600-\u06FF])|$)", r"(\1)", s)
+    s = re.sub(r"(?:^|(?<=[\s،,؛;\.\:؟\?]))\(\s*([^\(\)\s]+)\s*\((?=[\s،,؛;\.\:؟\?]|(?=[\u0600-\u06FF])|$)", r"(\1)", s)
+
+    # Step 2: Generic vowel-reattachment — a stray damma fused onto the
+    # conjunction waw belongs to the following word's first consonant; the
+    # waw keeps its letter.  Restricted to the waw shape only: a general
+    # letter+mark+letter rule would destroy legitimate mid-word diacritics
+    # ('يُستخدم', 'أُذيب') whose marks were reattached correctly upstream.
+    s = re.sub(r"\b\u0648[ \t]*\u064f(?=[\u0621-\u064A])", "\u0648", s)
+
+    # Clean percentage symbols and escaped backslashes before digits
+    s = re.sub(r"\\?%[ \t]*\\?(\d+(?:\.\d+)?)", r"\1%", s)
+    s = re.sub(r"\\?(\d+(?:\.\d+)?)[ \t]*\\?%", r"\1%", s)
+
+    # Step 3: Voltage / Equality expressions like '0.74+ =$ إذا علمت... V'
+    def repl_volt(m):
+        val = m.group(1).strip()
+        clause = m.group(2).strip()
+        unit = m.group(3).strip()
+        if val.endswith("+") or val.endswith("-"):
+            val = val[-1] + val[:-1]
+        elif not val.startswith("+") and not val.startswith("-"):
+            val = "+" + val
+        return f"{clause} = {val} {unit}"
+
+    s = re.sub(
+        r"([+\-]?\d+(?:\.\d+)?\+?|\d+(?:\.\d+)?\-?)\s*=\s*([\u0600-\u06FF\s،؛\-]+?)\s*(?:\\?text\{\s*)?([A-Za-z]+)(?:\s*\})?",
+        repl_volt,
+        s
+    )
+
+    # Step 4: General quantity split: [Number] [Arabic words] [Unit]
+    def repl_quantity(m):
+        val = m.group(1).strip()
+        clause = m.group(2).strip()
+        unit = m.group(3).strip()
+        unit = re.sub(r"^\\?text\{\s*([^\}]+)\s*\}$", r"\1", unit)
+        return f"{clause} {val} {unit}"
+
+    s = re.sub(
+        r"(?<![0-9\.\-])(\d+(?:\.\d+)?)\s+([\u0600-\u06FF\u064B-\u065F\u0670\s،؛]+?)\s*(?:\\?text\{\s*)?(g|mL|L|M|mol|g/mol|A|s|min|h)(?:\s*\})?",
+        repl_quantity,
+        s
+    )
+
+    # Step 5: Degree Celsius expressions: '25 عند ^\circ\text{C}' -> 'عند 25°C'
+    def repl_celsius(m):
+        val = m.group(1).strip()
+        clause = m.group(2).strip()
+        return f"{clause} {val}°C"
+
+    s = re.sub(
+        r"(\d+(?:\.\d+)?)\s*([\u0600-\u06FF\s]+?)\s*(?:°C|\^?\\?circ(?:\\?text\{C\})?|درجة\s*(?:مئوية|سيليزية))",
+        repl_celsius,
+        s
+    )
+
+    # Step 6: Temperature range: 'من 400°C 700إلى°C' -> 'من 400°C إلى 700°C'
+    def repl_temp_range(m):
+        return f"من {m.group(1)}°C إلى {m.group(2)}°C"
+
+    s = re.sub(
+        r"(?:من\s*)?(\d+)(?:\^?\\?circ(?:\\?text\{C\})?|°C)\s*(\d+)\s*إلى\s*(?:\^?\\?circ(?:\\?text\{C\})?|°C)?",
+        repl_temp_range,
+        s,
+    )
+    s = re.sub(
+        r"(?:من\s*)?(\d+)\s*(\d+)\s*إلى\s*(?:\^?\\?circ(?:\\?text\{C\})?|°C)",
+        repl_temp_range,
+        s,
+    )
+
+    # Generic degree-unit dedup (no value changes): written-out unit fused
+    # with the symbol is collapsed to the symbol, e.g. 'درجة°C' -> '°C' and
+    # 'درجة مئوية°C' -> '°C'.  Also matches the LaTeX form before conversion
+    # ('25 درجة ^\circ\text{C}').
+    s = re.sub(r"درجة\s*(?:مئوية|سيليزية)?\s*(?=°C)", "", s)
+    s = re.sub(r"درجة\s*(?:مئوية|سيليزية)?\s*(?=\^?\\?circ)", "", s)
+
+    # Step 12: Question header inversions e.g. ')درجات 3( :17 السؤال' -> 'السؤال 17: (3 درجات)'
+    s = re.sub(r"[:\.\-]\s*(\d+)\s*(السؤال|سؤال)\b", r"\2 \1:", s)
+    s = re.sub(r"\b(درجات|درجة|علامات|علامة)\s*(\d+)\b", r"\2 \1", s)
+    s = re.sub(r"(\([^\)]*(?:درجات|درجة|علامات|علامة|marks?|pts?)[^\)]*\))\s*(السؤال\s*\d+\s*[:\.\-]?)", r"\2 \1", s)
+
+    # Step 13: Section header inversions e.g. '[ )20 إلى 17 من( الأسئلة المقالية :ًثاني ]' -> '[ ثانياً: الأسئلة المقالية (من 17 إلى 20) ]'
+    s = re.sub(
+        r"\[?\s*\(\s*(?:من\s*)?(\d+)\s*إلى\s*(\d+)\s*(?:من\s*)?\)\s*(الأسئلة\s+المقالية)\s*:\s*ً?ثاني[ةا]?\s*\]?",
+        r"[ ثانياً: \3 (من \2 إلى \1) ]",
+        s,
+    )
+    s = re.sub(
+        r"\[?\s*\(\s*(?:من\s*)?(\d+)\s*إلى\s*(\d+)\s*(?:من\s*)?\)\s*(أسئلة\s+الاختيار[^\:]*)\s*:\s*ً?أول[ىا]?\s*\]?",
+        r"[ أولاً: \3 (من \2 إلى \1) ]",
+        s,
+    )
+
+    # Generic detached-mark repair (orthography only, no content words).
+    # First: a space-separated mark+SINGLE-LETTER fragment after an Arabic
+    # word is that word's reordered prefix ('ذيب ُأ' -> 'أُذيب').  A bare
+    # alef after the mark is excluded: mark+alef is a tanween ending and
+    # belongs to the FOLLOWING word ('بأن ًا علم' -> 'بأن علمًا').
+    s = re.sub(
+        r"([\u0621-\u064A][\u0621-\u064A\u064B-\u065F]*)[ \t]+([\u064B-\u065F])([\u0623\u0625\u0628-\u064A])(?![\u0621-\u064A])",
+        r"\3\2\1",
+        s,
+    )
+    # Then: a space-separated mark+alef tail closes the preceding word
+    # ('علم ًا' -> 'علمًا'); a mark+letters fragment INTERLEAVES
+    # ('اس ُتهلك' -> 'استُهلك': mark belongs on the first letter of the
+    # rest); leftover space-preceded orphan marks drop.
+    s = re.sub(
+        r"([\u0621-\u064A][\u0621-\u064A]*)[ \t]+([\u064B-\u065F\u0670]+)\u0627(?![\u0621-\u064A])",
+        "\\1\\2\u0627",
+        s,
+    )
+    s = re.sub(
+        r"([\u0621-\u064A][\u0621-\u064A\u064B-\u065F]*)[ \t]+([\u064B-\u065F])([\u0623\u0625\u0628-\u064A])([\u0621-\u064A\u064B-\u065F]*)",
+        r"\1\3\2\4",
+        s,
+    )
+    s = re.sub(r"(?:^|(?<=[ \t]))[\u064B-\u065F\u0670]+", "", s)
+    # 'ُأذيب' -> 'أُذيب': a stray damma written before the alef-hamza of a
+    # word-initial glottal stop belongs after it (generic orthography).
+    s = s.replace("\u064f\u0623", "\u0623\u064f")
+    # A space-preceded damma squeezed between two letters is a displaced
+    # vowel mark: it fuses onto the FOLLOWING letter ('اس ُتهلك' -> 'استُهلك').
+    s = re.sub(r"([\u0621-\u064A])[ \t]+\u064f([\u0621-\u064A])", "\\1\\2\u064f", s)
+    # Written digit + fused unit symbol collapse the gap ('25 °C' -> '25°C'),
+    # value untouched.
+    s = re.sub(r"(\d)[ \t]+°C", r"\1°C", s)
+    # Terminal sweep: a number written with the spoken degree word adjacent
+    # to the °C symbol collapses to NUMBER+°C in any leftover ordering
+    # ('25 درجة°C' / 'درجة 25°C' -> '25°C'), value untouched.
+    s = re.sub(r"(\d+(?:\.\d+)?)[ \t]*(?:درجة[ \t]*(?:مئوية|سيليزية)?[ \t]*)°C", r"\1°C", s)
+    s = re.sub(r"درجة[ \t]*(?:مئوية|سيليزية)?[ \t]*(\d+(?:\.\d+)?)°C", r"\1°C", s)
+
+    # Clean stray punctuation at the beginning of questions (preserve negative numbers)
+    s = re.sub(r"^[،,:\.\/]\s*", "", s.strip())
+    s = re.sub(r"^[-–—]\s*(?!\d)", "", s.strip())
+
+    # Clean double spaces
+    s = re.sub(r"[ \t]{2,}", " ", s)
+    return s.strip()
+
+
+_RTL_ASSEMBLY_ARABIC_RE = re.compile(r"[\u0600-\u06FF]")
+_RTL_ASSEMBLY_LTRISH_RE = re.compile(r"[A-Za-z0-9$\\]")
+_RTL_ASSEMBLY_OPT_LETTER_RE = re.compile(r"[\u0623\u0628\u062C\u062FA-Da-d1-4]")
+_RTL_ASSEMBLY_MATH_MARKERS_RE = re.compile(r"[\\^_{}]")
+# Structural signals that a line was stored in VISUAL order (display order ==
+# stream order), expressed purely in characters, never in content words:
+#  - a direction-neutral separator (comparison operator, equilibrium arrow,
+#    standalone dash) sitting next to an Arabic word;
+#  - a parenthesis pair wrapped around Arabic text in MIRRORED order ')...(';
+#  - a bracket fused to a digit ('3(', ')16') or to a colon (':17').
+_RTL_ASSEMBLY_VISUAL_SEP_RE = re.compile(
+    r"[\u0600-\u06FF]\s*[><\u21CC\u2192\u2190]\s|[\u0600-\u06FF]\s+[-\u2013]\s+[\u0600-\u06FF]"
+)
+# Mirrored parenthetical requires TWO adjacent Arabic letters between the
+# reversed parens: ')كبريتات الباريوم('.  A lone conjunction like ') و ('
+# (which occurs inside logical lines around (X)/(Y) tokens) is NOT a signal.
+_RTL_ASSEMBLY_MIRRORED_PAREN_RE = re.compile(
+    r"\)\s*[\u0600-\u06FF][\u0600-\u06FF\u064B-\u065F][\u0600-\u06FF\u064B-\u065F\s\d]*\s*\("
+)
+_RTL_ASSEMBLY_FUSED_BRACKET_NUM_RE = re.compile(r"\d{1,3}\(|\)\d{1,3}|\s:\d{1,3}\b")
+_RTL_ASSEMBLY_PUNCT_TAIL = {".", "\u060C", "\u061B", "\u061F", ":", "\u06D4"}
+_RTL_ASSEMBLY_LEADING_MARKS_RE = re.compile(r"^([\u064B-\u065F\u0670]+)(.*)$", re.DOTALL)
+# Prefix fragments: a damma/kasra/fatha fused with a single letter (يُ / أُ)
+# emitted as its own span.  The rebuilt prefix is letter+marks.
+_RTL_ASSEMBLY_PREFIX_FRAG_LETTER_LAST_RE = re.compile("^([\u064B-\u065F\u0670]+)([\u064A\u0623])$")
+_RTL_ASSEMBLY_PREFIX_FRAG_LETTER_FIRST_RE = re.compile("^([\u064A\u0623])([\u064B-\u065F\u0670]+)$")
+_RTL_ASSEMBLY_PUNCT_SPACE_RE = re.compile(r"\s+([\u061F\u060C\u061B])")
+_RTL_ASSEMBLY_TRAILING_MARKS_RE = re.compile(r"[\u064B-\u065F\u0670]$")
+# Reversed option label emitted in visual order: ')أ(' / ')أ (' / ')3('.  When
+# the label wraps a SINGLE letter/digit it is an option marker, so the
+# parenthetical is rotated to canonical '(أ)' regardless of line family.
+_RTL_ASSEMBLY_REVERSED_LABEL_RE = re.compile(r"\)([\u0623\u0628\u062C\u062F][\u064B-\u065F]?|[1-4A-Da-d])\(")
+# Reversed parentheses wrapping ONLY digits and separators: ')0 , 1 (' ->
+# '(0,1)'.  These are mirrored coordinate pairs, never real parentheticals.
+_RTL_ASSEMBLY_REVERSED_NUMPAIR_RE = re.compile(r"\)\s*([0-9\u0660-\u0669.,\u060C\s]+)\(")
+# Latin unit fused with a full stop ('m/s .' / 'V .'): the dot belongs to the
+# sentence, not the unit, so it moves AFTER the unit token.
+_RTL_ASSEMBLY_UNIT_DOT_RE = re.compile(r"([A-Za-z][A-Za-z0-9/\u00b2\u00b3\u2070-\u209f]*)\s+\.\s*$")
+_RTL_ASSEMBLY_TANWEEN_RE = re.compile(r"[\u064B-\u064D]")
+_RTL_ASSEMBLY_LABEL_GROUP_RE = re.compile(r"^[()\[\]\s]*[\u0623\u0628\u062C\u062FA-Da-d1-4][()\[\]\s]*$")
+
+
+def _is_visual_order_stream(joined: str) -> bool:
+    """Decide whether a line was stored visually, from structure only.
+
+    No content words are involved: the signals are a direction-neutral
+    separator adjacent to Arabic, mirrored Arabic parentheticals, or fused
+    bracket/number tokens.  Math-heavy lines (LaTeX markers) are always
+    logical.
+    """
+    if _RTL_ASSEMBLY_MATH_MARKERS_RE.search(joined):
+        return False
+    if _RTL_ASSEMBLY_VISUAL_SEP_RE.search(joined):
+        return True
+    if _RTL_ASSEMBLY_MIRRORED_PAREN_RE.search(joined):
+        return True
+    # A fused bracket/number alone is NOT proof of visual storage: mirrored
+    # parentheses of chemical states like '(III)' can fuse in logical lines
+    # too.  Structural confirmation requires Arabic plus bracket adjacency.
+    if not _RTL_ASSEMBLY_ARABIC_RE.search(joined):
+        return False
+    return bool(_RTL_ASSEMBLY_FUSED_BRACKET_NUM_RE.search(joined))
+
+
+def _is_ltrish_token(tok: str) -> bool:
+    """True for formula/unit/Latin tokens that must stay atomic inside RTL lines.
+
+    Question-number tokens ('14.') are excluded: they are layout labels,
+    not LTR content runs, and must never force the logical family alone.
+    """
+    if not tok:
+        return False
+    if re.fullmatch(r"\d{1,3}[.:]", tok):
+        return False
+    if _RTL_ASSEMBLY_ARABIC_RE.search(tok):
+        return False
+    return bool(_RTL_ASSEMBLY_LTRISH_RE.search(tok))
+
+
+def _has_stray_close_paren(tokens: list[str]) -> bool:
+    """Token-level mirrored-paren signal: a ')' with no '(' still open.
+
+    Visual-order storage emits the CLOSING paren of an Arabic parenthetical
+    before its opening one (')word('), so a bare close with an empty stack
+    is a structural visual-order proof that survives around balanced groups
+    like '(III)' or '(X)'.
+    """
+    depth = 0
+    for tok in tokens:
+        for ch in tok:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                if depth == 0:
+                    return True
+                depth -= 1
+    return False
+
+
+def _swap_visual_header_token(t: str) -> str:
+    """Visual-order essay header token '3( :17' -> '17: (3' (points + number).
+
+    Generic shape: points-number, mirrored open paren, colon, question
+    number — no content words involved.
+    """
+    m = re.fullmatch(r"\s*(\d{1,3})\(\s*:\s*(\d{1,3})", t or "")
+    if m:
+        return f"{m.group(2)}: ({m.group(1)}"
+    return t
+
+
+def _mirror_brackets(s: str) -> str:
+    """Mirror paired brackets (visual-order storage mirrors them)."""
+    return s.translate(str.maketrans("()[]{}", ")(][}"))
+
+
+def _swap_visual_bracket_token(t: str) -> str:
+    """Repair fused bracket/digit tokens emitted in visual order.
+
+    Visual-order storage mirrors paired brackets and fuses them with adjacent
+    digits, e.g. ':17' -> '17:', '3(' -> '(3', ')20' -> '20)'.
+    """
+    if re.fullmatch(r":\d{1,3}", t):
+        return t[1:] + ":"
+    if re.fullmatch(r"\d{1,3}[(]", t):
+        return "(" + t[:-1]
+    if re.fullmatch(r"\d{1,3}[)]", t):
+        return "(" + t[:-1]
+    if re.fullmatch(r"[)]\d{1,3}", t):
+        return t[1:] + ")"
+    if re.fullmatch(r"[(]\d{1,3}", t):
+        return t[1:] + ")"
+    return t
+
+
+def _reverse_arabic_comma(s: str) -> str:
+    """In coordinate reading the Arabic comma lands mirrored: ',15' -> '15,'"""
+    return re.sub(r",(\d+)", r"\1,", s)
+
+
+def _rotate_reversed_labels(text: str) -> str:
+    """Rotate mirrored option labels and mirrored coordinate pairs.
+
+    ')أ(' is an option marker written with mirrored parentheses; a single
+    letter/digit between REVERSED parens (no spaces) is never a real
+    parenthetical, so it rotates to the canonical '(أ)' form.  Spaced forms
+    like ') و (' - conjunctions inside logical text - never match.
+
+    ')0 , 1 (' style number pairs (coordinate points, ordered pairs) get
+    the same rotation: reversed parens wrapping only digits/separators are
+    mirrored storage of '(0, 1)', and the comma inside a number pair
+    separates members, so its spacing is normalized too.
+    """
+    text = _RTL_ASSEMBLY_REVERSED_LABEL_RE.sub(lambda m: f"({m.group(1)})", text)
+    text = _RTL_ASSEMBLY_REVERSED_NUMPAIR_RE.sub(
+        lambda m: "(" + m.group(1).replace(" ", "") + ")", text
+    )
+    return text
+
+
+def _fuse_latin_unit_dots(words: list[str]) -> list[str]:
+    """Attach a lone sentence dot to a preceding Latin/number token.
+
+    '3 A . ما' -> '3 A. ما' and '20 s .' -> '20 s.': a full stop separated
+    from a Latin unit/number by spaces is sentence punctuation the writer
+    spaced out; it belongs to that token.  Arabic-word dots are untouched
+    (an Arabic word never ends in a Latin letter), and multi-dot blank
+    tokens ('............') are never single dots.
+    """
+    out: list[str] = []
+    for w in words:
+        if (
+            w == "."
+            and out
+            and _RTL_ASSEMBLY_LTRISH_RE.search(out[-1][-1:])
+            and not _RTL_ASSEMBLY_ARABIC_RE.search(out[-1][-1:])
+        ):
+            out[-1] = out[-1] + "."
+            continue
+        out.append(w)
+    return out
+
+
+def _cluster_rows(spans: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Cluster spans into visual rows with a running y-center and adaptive
+    tolerance; rows carry their mean y for the assembler's loop."""
+    lines: list[dict[str, Any]] = []
+    for sp in sorted(spans, key=lambda s: s["yc"]):
+        target = None
+        for ln in lines:
+            if abs(sp["yc"] - ln["y"]) <= max(6.0, 0.55 * sp["h"]):
+                target = ln
+                break
+        if target is None:
+            lines.append({"y": sp["yc"], "items": [sp]})
+        else:
+            n = len(target["items"])
+            target["y"] = (target["y"] * n + sp["yc"]) / (n + 1)
+            target["items"].append(sp)
+    return lines
+
+
+def _detect_column_gutter(spans: list[dict[str, Any]], page_width: float) -> float | None:
+    """Detect a single vertical two-column gutter from pure geometry.
+
+    Discriminator (line-based, no content words): on a genuine two-column
+    page every visual row sits ENTIRELY on one side of the middle band -
+    columns never mix inside a row.  On a single-column page, most rows
+    span across the middle (long sentences, even when split into several
+    spans).  A gutter is accepted only when rows crossing the middle are
+    rare (headers) and both sides hold a real share of the rows.
+    """
+    if len(spans) < 12 or page_width <= 0:
+        return None
+    mid = page_width / 2.0
+    band = 12.0
+    # Cluster into visual rows (same tolerance as the assembler).
+    rows: list[list[dict[str, Any]]] = []
+    for sp in sorted(spans, key=lambda s: s["yc"]):
+        if rows and abs(sp["yc"] - rows[-1][-1]["yc"]) <= max(6.0, 0.55 * sp["h"]):
+            rows[-1].append(sp)
+        else:
+            rows.append([sp])
+    n_rows = len(rows)
+    if n_rows < 6:
+        return None
+    crossing_rows = 0
+    right_rows = 0
+    left_rows = 0
+    for row in rows:
+        has_left = any(sp["x0"] < mid - band for sp in row)
+        has_right = any(sp["x1"] > mid + band for sp in row)
+        spans_band = any(sp["x0"] < mid - band and sp["x1"] > mid + band for sp in row)
+        if spans_band or (has_left and has_right):
+            crossing_rows += 1
+        elif has_right:
+            right_rows += 1
+        elif has_left:
+            left_rows += 1
+    if crossing_rows / n_rows > 0.25:
+        return None
+    if right_rows < 3 or left_rows < 3:
+        return None
+    return mid
+
+
+def _reattach_leading_marks(tokens: list[str]) -> list[str]:
+    """Merge combining-mark-led tokens into their reading predecessor.
+
+    PDF writers sometimes emit a diacritic (or a displaced tanween) as its
+    own span, or split a word into 'mark + letters' fragments.  Reattachment
+    follows generic Arabic orthography only - no dictionary, no content
+    knowledge:
+
+    - mark(s) + alef ('ًا') is the word's tanween ending -> append verbatim;
+    - other harakat starting a token ('ُتهلك') belong after the consonant
+      they mark, so they interleave: prev + first-letter + mark + rest;
+    - a mark-led token with no Arabic predecessor rebuilds itself
+      ('ًأول' -> 'أولاً'), restoring the tanween's alef.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        tok = tokens[i]
+        m = _RTL_ASSEMBLY_LEADING_MARKS_RE.match(tok) if tok else None
+        if m:
+            marks, rest = m.group(1), m.group(2)
+            nxt = tokens[i + 1] if i + 1 < n else ""
+            prev = out[-1] if out else ""
+            if (
+                rest
+                and len(rest.split()) >= 2
+                and _RTL_ASSEMBLY_TANWEEN_RE.search(marks)
+                and _RTL_ASSEMBLY_ARABIC_RE.search(rest[:1])
+            ):
+                # 'ًمساوية تقريب' -> 'مساوية تقريبًا': a tanween mark leading
+                # a MULTI-WORD fragment sits word-finally, so it closes the
+                # fragment's last word (with its tanween alef).
+                ws = rest.split()
+                out.append(" ".join(ws[:-1] + [ws[-1] + marks + "\u0627"]))
+                i += 1
+                continue
+            if (
+                rest
+                and len(rest) == 1
+                and rest != "\u0627"
+                and _RTL_ASSEMBLY_ARABIC_RE.search(rest[:1])
+                and nxt
+                and _RTL_ASSEMBLY_ARABIC_RE.search(nxt[:1])
+                and not _is_ltrish_token(nxt)
+            ):
+                # 'ُي' + 'عرف' -> 'يُعرف': a mark+SINGLE-NON-ALEF-LETTER
+                # fragment is the reordered PREFIX of the following word.
+                # (mark+alef 'ًا' is a tanween ending and must attach to the
+                # previous word instead.)
+                out.append(rest + marks + nxt)
+                i += 2
+                continue
+            if prev and _RTL_ASSEMBLY_ARABIC_RE.search(prev[-1:]):
+                if rest.startswith("\u0627"):
+                    out[-1] = prev + marks + rest
+                    i += 1
+                    continue
+                if not rest:
+                    out[-1] = prev + marks
+                    i += 1
+                    continue
+                # Interleave would destroy a writer-pushed PREFIX fragment:
+                # a mark+SINGLE-LETTER piece against a unit token (or at the
+                # line end) is the previous word's reordered prefix ('ذيب' +
+                # 'ُأ' + g$ -> 'أُذيب').  Leave those for the prefix pass;
+                # multi-letter rests are normal split words and interleave
+                # ('اس' + 'ُتهلك' -> 'استُهلك').
+                if len(rest) == 1 and ((i + 1 >= n) or _is_ltrish_token(tokens[i + 1])):
+                    out.append(tok)
+                    i += 1
+                    continue
+                # Shadda marks gemination of the PREVIOUS consonant, so a
+                # shadda-led fragment never interleaves ('نق' + 'ّي' ->
+                # 'نقّي', not 'نقيّ').
+                if "\u0651" in marks:
+                    out[-1] = prev + marks + rest
+                    i += 1
+                    continue
+                out[-1] = prev + rest[0] + marks + rest[1:]
+                i += 1
+                continue
+            if not (prev and _RTL_ASSEMBLY_ARABIC_RE.search(prev[-1:])):
+                # No Arabic neighbour: rebuild the word itself ('ًأول' -> 'أولاً').
+                alef = "\u0627" if (_RTL_ASSEMBLY_TANWEEN_RE.search(marks) and not rest.endswith("\u0627")) else ""
+                rebuilt = rest + marks + alef
+                if rebuilt.strip():
+                    out.append(rebuilt)
+                    i += 1
+                    continue
+        out.append(tok)
+        i += 1
+    return out
+
+
+def _resolve_tanween_fragments(items: list[dict[str, Any]]) -> None:
+    """Attach a lone tanween fragment ('ًا') to the reading-successor span.
+
+    Geometry: the fragment sits flush against the span that follows it in
+    reading order (next span by ascending x).  The mark closes that span's
+    LAST word ('الناتجة عنها، ومبين' + 'ًا' -> '...ومبينًا') - generic
+    Arabic orthography, no content knowledge.
+    """
+    for i, sp in enumerate(items):
+        t = sp["text"]
+        m = re.fullmatch(r"([\u064B-\u065F]+)\u0627?", t or "")
+        if not m:
+            continue
+        # Reading-order successor: the next span starting flush at (or just
+        # after) this fragment's right edge — flush-touching counts
+        # (successor x0 == fragment x1 is common in these layouts).
+        best = None
+        for j, other in enumerate(items):
+            if j == i or other["x0"] < sp["x1"] - 0.5:
+                continue
+            if best is None or other["x0"] < items[best]["x0"]:
+                best = j
+        if best is None:
+            continue
+        succ = items[best]
+        if not _RTL_ASSEMBLY_ARABIC_RE.search(succ["text"][-1:]):
+            continue
+        words = succ["text"].split()
+        if not words:
+            continue
+        alef = "\u0627" if t.endswith("\u0627") else ""
+        words[-1] = words[-1] + m.group(1) + alef
+        succ["text"] = " ".join(words)
+        sp["text"] = ""
+
+
+def _resolve_prefix_fragments(items: list[dict[str, Any]]) -> None:
+    """Merge 'mark+letter' prefix fragments (يُ / أُ) into the span to their left.
+
+    Geometry: such a fragment sits flush against its left neighbour's right
+    edge (x1).  The rebuilt prefix (letter + marks) prepends to that span's
+    first word ('ُي' + 'ستخدم' -> 'يُستخدم') - generic Arabic morphology,
+    no content knowledge.
+    """
+    for i, sp in enumerate(items):
+        t = sp["text"]
+        m1 = _RTL_ASSEMBLY_PREFIX_FRAG_LETTER_LAST_RE.match(t)
+        m2 = _RTL_ASSEMBLY_PREFIX_FRAG_LETTER_FIRST_RE.match(t)
+        if m1:
+            letter, marks = m1.group(2), m1.group(1)
+        elif m2:
+            letter, marks = m2.group(1), m2.group(2)
+        else:
+            continue
+        rebuilt = letter + marks
+        for j in range(len(items) - 1, -1, -1):
+            if j == i:
+                continue
+            prev = items[j]
+            # Flush adjacency OR full x-coverage: fragments placed before the
+            # unit token are covered by that unit span's bbox ('ستخدم'
+            # spans [75.6..524.1] over the 'ُي' fragment at [174.69..177.14]).
+            # Search the WHOLE line: writers emit these fragments with
+            # degenerate zero-width boxes out of stream position.
+            adjacent = abs(prev["x1"] - sp["x0"]) <= 5.0
+            covered = prev["x0"] <= sp["x0"] and sp["x1"] <= prev["x1"]
+            if (adjacent or covered) and _RTL_ASSEMBLY_ARABIC_RE.search(prev["text"][-1:]):
+                words = prev["text"].split()
+                words[0] = rebuilt + words[0]
+                prev["text"] = " ".join(words)
+                sp["text"] = ""
+                break
+
+
+def _fuse_arabic_word_fragments(tokens: list[str]) -> list[str]:
+    """Fuse writer-split word fragments by generic Arabic orthography.
+
+    - a token ending in a combining mark joins the following letters
+      (the mark sits on its last consonant);
+    - a lone Arabic prefix letter (و/ف/ب/ل/ك) at a token end attaches to the
+      next Arabic token ('و' + 'يدرس' -> 'ويدرس'), including a waw that ends
+      a longer fragment ('...الذرية، و' + 'يُستخدم' -> '...الذرية، ويُستخدم').
+    """
+    fused: list[str] = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        tok = tokens[i]
+        nxt = tokens[i + 1] if i + 1 < n else None
+        if (
+            nxt
+            and tok
+            and _RTL_ASSEMBLY_ARABIC_RE.search(tok[-1:])
+            and _RTL_ASSEMBLY_TRAILING_MARKS_RE.search(tok)
+            and _RTL_ASSEMBLY_ARABIC_RE.search(nxt[:1])
+            and not _is_ltrish_token(nxt)
+        ):
+            fused.append(tok + nxt)
+            i += 2
+            continue
+        if (
+            nxt
+            and _RTL_ASSEMBLY_ARABIC_RE.search(nxt[:1])
+            and not _is_ltrish_token(nxt)
+            and (tok in ("\u0648", "\u0641", "\u0628", "\u0644", "\u0643") or re.search(r"(?:^|\s)[\u0648\u0641\u0628\u0644\u0643]$", tok or ""))
+        ):
+            m = re.search(r"(?:^|\s)([\u0648\u0641\u0628\u0644\u0643])$", tok or "")
+            if tok in ("\u0648", "\u0641", "\u0628", "\u0644", "\u0643"):
+                fused.append(tok + nxt)
+            elif m:
+                fused.append(tok[: m.start(1)] + m.group(1) + nxt)
+            i += 2
+            continue
+        fused.append(tok)
+        i += 1
+    return fused
+
+
+def _assemble_rtl_lines_from_fitz(fitz_page: Any) -> list[str]:
+    """
+    Coordinate-based line reassembly for Arabic (RTL) PDF pages.
+
+    The unit of assembly is the typeset SPAN (``get_text("dict")``), not the
+    word: words-mode silently drops detached combining marks, spans keep
+    them.
+
+    Mixed-storage documents: within one page some lines are stored logically
+    (stream order == reading order) and others visually (stream order ==
+    left-to-right display order).  Each line is routed by STRUCTURAL signals
+    only (never content words):
+
+    - math/LaTeX or pure-LTR lines -> verbatim left-to-right span order;
+    - a direction-neutral separator next to Arabic ('>') -> visual line,
+      read right-to-left (x-descending) with label/number/tail rotations;
+    - lines containing LTR tokens (formulas/units) -> logical stream order;
+    - a mirrored Arabic parenthetical ')word(' -> visual;
+    - paren-initial lines (options) -> logical ascending-x order;
+    - punctuation-final lines without stray marks -> logical stream order;
+    - remaining Arabic stems/headers -> visual (geometry decides).
+
+    Stray combining-mark spans are repaired generically BEFORE ordering:
+    a 'mark+letter' prefix fragment (يُ / أُ) merges into the flush-left
+    neighbour span's first word, and mark-led word fragments reattach by
+    orthography afterwards.  No content words, no chemistry knowledge.
+    """
+    try:
+        page_dict = fitz_page.get_text("dict")
+    except Exception:
+        return []
+
+    # Page width for the two-column gutter detector.
+    try:
+        page_width = float(fitz_page.rect.width)
+    except Exception:
+        page_width = 595.0
+
+    # Collect non-empty spans and cluster them into visual lines with a
+    # running y-center and adaptive tolerance.
+    spans: list[dict[str, Any]] = []
+    for blk_i, blk in enumerate(page_dict.get("blocks", [])):
+        for ln_i, ln in enumerate(blk.get("lines", [])):
+            for sp_i, sp in enumerate(ln.get("spans", [])):
+                txt = str(sp.get("text", ""))
+                if not txt.strip():
+                    continue
+                x0, y0, x1, y1 = sp["bbox"]
+                spans.append(
+                    {
+                        "x0": x0,
+                        "x1": x1,
+                        "yc": (y0 + y1) / 2,
+                        "h": max(y1 - y0, 1.0),
+                        "text": txt.strip(),
+                        # True writer stream position (block, line, span):
+                        # the authoritative order for logically-stored lines.
+                        "seq": (blk_i, ln_i, sp_i),
+                    }
+                )
+    if not spans:
+        return []
+
+    # ---- Two-column page split (RTL reading: right column first) --------
+    # Detection is line-based geometry: on a genuine two-column page every
+    # visual row sits entirely on one side of the middle band.  The page is
+    # then split into two half-width sub-pages and each is assembled
+    # independently; single-column pages are assembled whole.
+    gutter = _detect_column_gutter(spans, page_width)
+    row_clusters: list[list[dict[str, Any]]]
+    if gutter is not None:
+        right_spans = [sp for sp in spans if sp["x0"] >= gutter]
+        left_spans = [sp for sp in spans if sp["x0"] < gutter]
+        row_clusters = [
+            _cluster_rows(group) for group in (right_spans, left_spans)
+        ]
+    else:
+        row_clusters = [_cluster_rows(spans)]
+
+    out: list[str] = []
+    for rows in row_clusters:
+        for ln in rows:
+            items = [sp for sp in ln["items"] if sp["text"].strip()]
+            if not items:
+                continue
+            # Restore the writer's stream order inside each visual row.
+            items.sort(key=lambda s: s["seq"])
+            if not items:
+                continue
+
+            # Geometry-driven prefix-fragment repair BEFORE any ordering.
+            _resolve_prefix_fragments(items)
+            _resolve_tanween_fragments(items)
+            items = [sp for sp in items if sp["text"].strip()]
+            if not items:
+                continue
+
+            # ---- Two-column layout guard -------------------------------------
+            # Handled at PAGE level (see _detect_column_gutter): two-column
+            # pages never mix columns inside one visual row, while single-
+            # column pages have rows spanning the page middle.
+
+            stream = [sp["text"] for sp in items]
+            joined = " ".join(stream)
+            xasc = sorted(items, key=lambda s: s["x0"])
+            xdesc = sorted(items, key=lambda s: (-s["x0"], -s["x1"]))
+
+            if not _RTL_ASSEMBLY_ARABIC_RE.search(joined) or _RTL_ASSEMBLY_MATH_MARKERS_RE.search(joined):
+                # Pure LTR / math line: verbatim writer stream order (this is the
+                # only order that keeps mixed Arabic+LaTeX premise lines readable).
+                text = re.sub(r"\s{2,}", " ", " ".join(sp["text"] for sp in items)).strip()
+                if text:
+                    out.append(text)
+                continue
+
+            has_frag = any(_RTL_ASSEMBLY_LEADING_MARKS_RE.match(t) for t in stream)
+            has_ltr = any(_is_ltrish_token(t) for t in stream)
+            ends_punct = bool(stream and stream[-1].rstrip().endswith((":", ".")))
+            label_option = bool(
+                xasc
+                and (xasc[0]["text"] or "") == "("
+                and len(xasc) >= 2
+                and re.fullmatch(r"[\u0623\u0628\u062C\u062FA-Da-d1-4]", xasc[1]["text"] or "")
+            )
+
+            if label_option:
+                # Option rows ('(أ) ...') are canonical: label flush-left, text
+                # ascending-x — even when they contain '>' comparison chains.
+                family = "logical_xasc"
+            elif _RTL_ASSEMBLY_VISUAL_SEP_RE.search(joined):
+                family = "visual"
+            elif _has_stray_close_paren(stream):
+                family = "visual"
+            elif _RTL_ASSEMBLY_ARABIC_RE.search(joined) and _RTL_ASSEMBLY_FUSED_BRACKET_NUM_RE.search(joined):
+                family = "visual"
+            elif _RTL_ASSEMBLY_MATH_MARKERS_RE.search(joined):
+                family = "logical"
+            elif has_ltr:
+                family = "logical"
+            elif ends_punct and not has_frag:
+                family = "logical"
+            else:
+                # Stems/headers without structural signals: geometry wins.
+                family = "visual"
+
+            if family in ("logical", "logical_xasc"):
+                ordered = items if family == "logical" else xasc
+                words: list[str] = []
+                for sp in ordered:
+                    t = sp["text"]
+                    if _is_ltrish_token(t):
+                        words.append(t)
+                    else:
+                        words.extend(t.split())
+                words = _reattach_leading_marks(words)
+                words = _fuse_arabic_word_fragments(words)
+                words = _reattach_leading_marks(words)
+                # Tighten the split label triplet '( أ )' -> '(أ)'.
+                tight: list[str] = []
+                k2 = 0
+                while k2 < len(words):
+                    if (
+                        k2 + 2 < len(words)
+                        and words[k2] == "("
+                        and words[k2 + 2] == ")"
+                        and re.fullmatch(r"[\u0623\u0628\u062C\u062FA-Da-d1-4]", words[k2 + 1] or "")
+                    ):
+                        tight.append(f"({words[k2 + 1]})")
+                        k2 += 3
+                        continue
+                    tight.append(words[k2])
+                    k2 += 1
+                words = tight
+                # 'ذيب' + 'ُأ' -> 'أُذيب': a mark+SINGLE-LETTER fragment sitting
+                # AFTER an Arabic word (next token LTR/absent) is that word's
+                # reordered prefix, pushed by the writer before the unit token.
+                for wi in range(len(words) - 1, 0, -1):
+                    mm = _RTL_ASSEMBLY_LEADING_MARKS_RE.match(words[wi] or "")
+                    if (
+                        mm
+                        and len(mm.group(2)) == 1
+                        and mm.group(2) != "\u0627"
+                        and _RTL_ASSEMBLY_ARABIC_RE.search(words[wi - 1][-1:])
+                        and (wi + 1 >= len(words) or _is_ltrish_token(words[wi + 1]))
+                    ):
+                        words[wi - 1] = mm.group(2) + mm.group(1) + words[wi - 1]
+                        del words[wi]
+                # Word-level spacing: 'اس ُتهلك' -> 'استُهلك' (mark preceded by a
+                # space fuses onto the following letter).
+                words = [
+                    (re.sub(r"([\u0621-\u064A])[ \t]+([\u064B-\u065F])", r"\1\2", w) if not _is_ltrish_token(w) else w)
+                    for w in words
+                ]
+                # A question number displaced into the stream rotates to the head
+                # so downstream 'N.' question-start detection still fires.
+                if words and not re.match(r"^\(?\d{1,3}\)?\s*[.\-:]", words[0]):
+                    for k in range(1, len(words)):
+                        if re.fullmatch(r"\(?\d{1,3}\)?[.:]", words[k] or ""):
+                            words.insert(0, words.pop(k))
+                            break
+                text = _rotate_reversed_labels(re.sub(r"\s{2,}", " ", " ".join(words)))
+                text = _fuse_latin_unit_dots(text.split())
+                text = " ".join(text)
+                text = re.sub(r"\(\s+([^()]+?)\s+\)", r"(\1)", text)
+                text = _RTL_ASSEMBLY_PUNCT_SPACE_RE.sub(r"\1", text)
+                if text:
+                    out.append(text)
+                continue
+
+            # ---- Visual-order path: read x-descending -------------------------
+            seq = [_swap_visual_header_token(_swap_visual_bracket_token(sp["text"])) for sp in xdesc]
+            seq = [_reverse_arabic_comma(t) for t in seq]
+            # Enclosing frame rotation: '] ... [' -> '[ ... ]'.
+            if len(seq) >= 2 and seq[0] in ")]}”" and seq[-1] in "([{\u201c":
+                seq = [seq[-1]] + seq[1:-1] + [seq[0]]
+
+            # Option label at the visual left end: ') أ (' or '(' + 'أ' -> '(أ)'
+            label = None
+            if len(seq) >= 2 and seq[-1] in "()" and re.fullmatch(
+                r"[\u0623\u0628\u062C\u062FA-Da-d1-4]", seq[-2] or ""
+            ):
+                label = f"({seq[-2]})"
+                seq = seq[:-2]
+
+            # Question number at the visual left end: '14.' / '20:' -> head
+            num = None
+            if seq and re.fullmatch(r"\d{1,3}[.:]", seq[-1]):
+                num = seq[-1]
+                seq = seq[:-1]
+
+            # Sentence-final punctuation at the visual right end -> logical end
+            tail_punct = ""
+            if seq and seq[0] in _RTL_ASSEMBLY_PUNCT_TAIL:
+                tail_punct = seq[0]
+                seq = seq[1:]
+
+            seq = _reattach_leading_marks(seq)
+            # Word-level orthographic repair inside spans ('نق ّي' -> 'نقّي').
+            flat: list[str] = []
+            for t in seq:
+                if _is_ltrish_token(t):
+                    flat.append(t)
+                else:
+                    flat.extend(t.split())
+            flat = _reattach_leading_marks(flat)
+            flat = _fuse_arabic_word_fragments(flat)
+            seq = flat
+
+            # Merge parenthesised groups spanning several tokens.
+            merged: list[str] = []
+            i = 0
+            while i < len(seq):
+                t = seq[i]
+                if t.startswith("(") and not t.endswith(")"):
+                    grp = [t]
+                    j = i + 1
+                    closed = False
+                    while j < len(seq):
+                        grp.append(seq[j])
+                        if seq[j].endswith(")") or seq[j] == ")":
+                            closed = True
+                            break
+                        j += 1
+                    if closed:
+                        merged.append(" ".join(grp))
+                        i = j + 1
+                        continue
+                merged.append(t)
+                i += 1
+            seq = merged
+
+            seq = _fuse_arabic_word_fragments(seq)
+            parts = ([label] if label else []) + seq
+            text = " ".join(p for p in parts if p)
+            if tail_punct:
+                text = f"{text} {tail_punct}".strip()
+            if num:
+                text = f"{num} {text}".strip()
+            text = _rotate_reversed_labels(text)
+            text = _fuse_latin_unit_dots(text.split())
+            text = " ".join(text)
+            text = re.sub(r"\(\s+([^()]+?)\s+\)", r"(\1)", text)
+            text = re.sub(r"\)\s*\)$", ")", text)
+            text = _RTL_ASSEMBLY_PUNCT_SPACE_RE.sub(r"\1", text)
+            text = re.sub(r"\s{2,}", " ", text).strip()
+            if text:
+                out.append(text)
+    return out
+
+
+PARSER_OCR_VERSION = "v8-source-words-no-translation"
+_OCR_SEMAPHORE = threading.Semaphore(int(os.getenv("OCR_CONCURRENCY_LIMIT", "2")))
+
+
+def prune_ocr_cache(max_age_days: int = 7, max_size_mb: int = 500) -> None:
+    """Prunes disk OCR cache based on TTL and aggregate size limit."""
+    api_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    cache_base = os.path.join(api_dir, "storage", "ocr_cache")
+    if not os.path.isdir(cache_base):
+        return
+
+    now = time.time()
+    max_age_sec = max_age_days * 86400
+    cached_files: list[tuple[str, float, int]] = []
+
+    for root, _, files in os.walk(cache_base):
+        for f in files:
+            fp = os.path.join(root, f)
+            try:
+                st = os.stat(fp)
+                if now - st.st_mtime > max_age_sec:
+                    os.remove(fp)
+                    continue
+                cached_files.append((fp, st.st_mtime, st.st_size))
+            except Exception:
+                pass
+
+    max_bytes = max_size_mb * 1024 * 1024
+    total_bytes = sum(item[2] for item in cached_files)
+    if total_bytes > max_bytes:
+        cached_files.sort(key=lambda x: x[1])
+        for fp, _, sz in cached_files:
+            try:
+                os.remove(fp)
+                total_bytes -= sz
+                if total_bytes <= max_bytes:
+                    break
+            except Exception:
+                pass
 
 
 def ocr_pdf_page(file_bytes: bytes | None = None, page_number: int = 1, lang: str = "ara+eng", pdfium_doc: Any = None, file_path: str | None = None) -> str:
     """
     Renders a specific PDF page to an image and performs OCR using Tesseract.
     Uses disk caching to prevent re-running OCR on previously processed pages.
+    Cache key strictly uses the full file SHA-256, page number, language, and parser version.
     """
     cache_file = None
+    cache_dir = None
     try:
         if file_bytes:
-            file_hash = hashlib.sha256(file_bytes[:100000] + str(len(file_bytes)).encode()).hexdigest()[:16]
+            file_hash = hashlib.sha256(file_bytes).hexdigest()
         elif file_path and os.path.exists(file_path):
-            file_hash = hashlib.sha256(os.path.basename(file_path).encode() + str(os.path.getsize(file_path)).encode()).hexdigest()[:16]
+            h = hashlib.sha256()
+            with open(file_path, "rb") as f:
+                while chunk := f.read(65536):
+                    h.update(chunk)
+            file_hash = h.hexdigest()
         else:
             file_hash = "generic_ocr"
-        # Check standard app storage location first
+
         api_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         possible_dirs = [
-            os.path.join(api_dir, "storage", "knowledge_center", "ocr_cache", file_hash),
-            os.path.join("storage", "knowledge_center", "ocr_cache", file_hash),
+            os.path.join(api_dir, "storage", "ocr_cache", file_hash),
+            os.path.join("storage", "ocr_cache", file_hash),
         ]
-        for cdir in possible_dirs:
-            cfile = os.path.join(cdir, f"page_{page_number}.txt")
-            if os.path.exists(cfile):
-                with open(cfile, "r", encoding="utf-8") as cf:
-                    cached_text = cf.read()
-                    if cached_text:
-                        return cached_text
         cache_dir = possible_dirs[0]
         os.makedirs(cache_dir, exist_ok=True)
-        cache_file = os.path.join(cache_dir, f"page_{page_number}.txt")
+        cache_file = os.path.join(cache_dir, f"page_{page_number}_{lang}_{PARSER_OCR_VERSION}.txt")
+        if os.path.exists(cache_file):
+            with open(cache_file, "r", encoding="utf-8") as cf:
+                cached_text = cf.read()
+                if cached_text:
+                    return cached_text
     except Exception:
         pass
 
-    if os.getenv("PROCESS_TYPE") == "api" or os.getenv("ALLOW_IN_PROCESS_OCR", "").lower() in ("false", "0", "no"):
-        if os.getenv("APP_ENV", "").lower() in ("production", "production_like"):
-            raise RuntimeError("Heavy OCR is strictly disallowed inside the Web API process in production to preserve memory. Work must be handled by Celery worker.")
+    # Quiz/assignment extraction is now the ONLY consumer of OCR, and it runs
+    # synchronously per single page/image inside the API process. The old
+    # blanket production ban made every scanned upload fail with 422. Allow
+    # in-process OCR for single-page requests, keep it configurable off.
+    if os.getenv("ALLOW_IN_PROCESS_OCR", "true").strip().lower() in ("false", "0", "no"):
+        raise RuntimeError("In-process OCR is disabled by configuration (ALLOW_IN_PROCESS_OCR=false).")
 
-    pdf = None
-    try:
-        import pypdfium2 as pdfium
-        import pytesseract
-        from app.core.config import get_tesseract_cmd
-
-        get_tesseract_cmd()  # Ensure Tesseract executable path is configured
-
-        if pdfium_doc is not None:
-            pdf = pdfium_doc
-        elif file_path:
-            pdf = pdfium.PdfDocument(file_path)
-        else:
-            pdf = pdfium.PdfDocument(file_bytes)
-        if page_number < 1 or page_number > len(pdf):
-            return ""
-        page = pdf[page_number - 1]
-        # Render at scale 1.5 (~150 DPI) with grayscale conversion to optimize memory
-        pil_image = page.render(scale=1.5).to_pil()
-        gray_image = pil_image.convert("L")
+    with _OCR_SEMAPHORE, ocr_slot():
+        pdf = None
         try:
-            ocr_text = pytesseract.image_to_string(gray_image, lang=lang)
+            import pypdfium2 as pdfium
+            import pytesseract
+            from app.core.config import get_tesseract_cmd
+
+            get_tesseract_cmd()  # Ensure Tesseract executable path is configured
+
+            if pdfium_doc is not None:
+                pdf = pdfium_doc
+            elif file_path:
+                pdf = pdfium.PdfDocument(file_path)
+            else:
+                pdf = pdfium.PdfDocument(file_bytes)
+            if page_number < 1 or page_number > len(pdf):
+                return ""
+            page = pdf[page_number - 1]
+            # Upscaling beyond native scan detail can damage Arabic OCR.
+            # Target 108 DPI, reduced BEFORE allocation to the pixel budget.
+            width, height = page.get_size()
+            scale = render_scale(width, height, desired=1.5)
+            bitmap = page.render(scale=scale)
+            pil_image = bitmap.to_pil()
+            gray_image = pil_image.convert("L")
+            try:
+                from app.services.ocr_quality import recognize
+                ocr_text = recognize(gray_image, lang=lang)
+            finally:
+                try:
+                    gray_image.close()
+                    pil_image.close()
+                    bitmap.close()
+                    page.close()
+                except Exception:
+                    pass
+            cleaned = clean_arabic_ocr_text(ocr_text or "")
+
+            if cache_file and cache_dir and cleaned:
+                try:
+                    import tempfile
+                    tmp_fd, tmp_path = tempfile.mkstemp(dir=cache_dir, prefix="ocr_tmp_")
+                    with os.fdopen(tmp_fd, "w", encoding="utf-8") as cf:
+                        cf.write(cleaned)
+                    os.replace(tmp_path, cache_file)
+                    prune_ocr_cache()
+                except Exception:
+                    pass
+
+            return cleaned
+        except ExtractionLimitError:
+            raise
+        except RuntimeError as exc:
+            raise ExtractionLimitError("OCR timed out or failed; extraction is incomplete") from exc
+        except Exception:
+            logger.warning(f"OCR fallback failed on page {page_number}")
+            raise ExtractionLimitError("OCR failed; extraction is incomplete")
         finally:
-            try:
-                gray_image.close()
-                pil_image.close()
-            except Exception:
-                pass
-        cleaned = clean_arabic_ocr_text(ocr_text or "")
-
-        if cache_file and cleaned:
-            try:
-                with open(cache_file, "w", encoding="utf-8") as cf:
-                    cf.write(cleaned)
-            except Exception:
-                pass
-
-        return cleaned
-    except Exception:
-        logger.warning(f"OCR fallback failed on page {page_number}")
-        return ""
-    finally:
-        if pdfium_doc is None and pdf is not None and hasattr(pdf, "close"):
-            try:
-                pdf.close()
-            except Exception:
-                pass
+            if pdfium_doc is None and pdf is not None and hasattr(pdf, "close"):
+                try:
+                    pdf.close()
+                except Exception:
+                    pass
 
 
 # =============================================================================
@@ -488,6 +1571,19 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
             pdfium_shared = pdfium.PdfDocument(file_path)
         elif file_bytes:
             pdfium_shared = pdfium.PdfDocument(file_bytes)
+        if pdfium_shared is not None:
+            if len(pdfium_shared) > MAX_PAGES:
+                raise ExtractionLimitError(f"PDF exceeds the {MAX_PAGES}-page extraction limit")
+            for index in range(len(pdfium_shared)):
+                safe_page = pdfium_shared[index]
+                try:
+                    render_scale(*safe_page.get_size())
+                finally:
+                    safe_page.close()
+    except ExtractionLimitError:
+        if pdfium_shared is not None:
+            pdfium_shared.close()
+        raise
     except Exception:
         pass
 
@@ -504,6 +1600,8 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
     try:
         with pdfplumber.open(pdf_source) as pdf:
             total_pages = len(pdf.pages)
+            if total_pages > MAX_PAGES:
+                raise ExtractionLimitError(f"PDF exceeds the {MAX_PAGES}-page extraction limit")
             parsed_doc.total_pages = total_pages
             
             for p_idx, page in enumerate(pdf.pages, start=1):
@@ -529,14 +1627,25 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
 
                 parsed_page = ParsedPage(page_number=p_idx)
                 page_text = ""
+                page_text_final = False
                 if fitz_doc and p_idx - 1 < len(fitz_doc):
                     try:
-                        fitz_text = fitz_doc[p_idx - 1].get_text("text") or ""
+                        # Coordinate-based line reassembly: span geometry fixes
+                        # both storage orders (logical/visual) generically.
+                        # Normalize BEFORE the corruption probe: presentation-
+                        # forms layers must be judged post-NFKC, otherwise a
+                        # healthy legacy text layer gets discarded in favour of
+                        # lossy OCR (the root cause of garbled extractions on
+                        # exam PDFs written with U+FBxx/FExx glyphs).
+                        fitz_text = "\n".join(_assemble_rtl_lines_from_fitz(fitz_doc[p_idx - 1]))
+                        fitz_text = normalize_arabic_presentation_forms(fitz_text)
                         if fitz_text and not is_text_garbled(fitz_text):
-                            page_text = normalize_arabic_presentation_forms(fitz_text)
+                            page_text = fitz_text
+                            page_text_final = True
                     except Exception as fe:
                         logger.debug(f"fitz text extraction failed on page {p_idx}: {fe}")
                         page_text = ""
+                        page_text_final = False
 
                 if not page_text:
                     raw_extracted = page.extract_text() or ""
@@ -554,6 +1663,20 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
                         parsed_doc.extracted_via_ocr = True
                         if p_idx not in parsed_doc.ocr_pages:
                             parsed_doc.ocr_pages.append(p_idx)
+
+                # Some legacy Egyptian Arabic PDFs expose a valid Unicode text
+                # layer in visual (right-to-left display) order.  It is not
+                # mojibake, so OCR is neither necessary nor desirable, but it
+                # must be restored to logical order before question assembly.
+                # The fixer leaves normal Arabic and Latin chemical formulas
+                # untouched, and reverses only when it finds concrete visual-
+                # order Arabic signals.
+                # Pages rebuilt from span geometry are already in reading
+                # order: the whole-page fixers are skipped for them (they
+                # still run for pdfplumber/OCR fallback text).
+                if not page_text_final:
+                    page_text = fix_reversed_arabic_text(page_text)
+                    page_text = fix_arabic_bidi_scrambling(page_text)
 
                 parsed_page.raw_text = page_text
 
@@ -601,20 +1724,24 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
                     r"^([\(\[]?\s*([أبجدA-Da-d1-4]|i|z|s|\)\()\s*[\)\]\.\:\-\/]|(?:الإجاب[ةه]|الجواب|الحل|Answer|Key)\b)"
                 )
                 OPT_SUFFIX_RE = re.compile(
-                    r"^(.*?)\s*[\(\[]\s*([أبجدA-Da-d1-4]|i|z|s|\)\()\s*[\)\]][\.\:\-]?$"
+                    r"^(.*[\u0600-\u06FF].*)\s*[\(\[]\s*([أبجدA-Da-d1-4]|i|z|s|\)\()\s*[\)\]][\.\:\-]?$"
                 )
                 QUESTION_HEADER_RE = re.compile(
-                    r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)|س\s*\d+|Question\s*\d+|Q\d+|^\(?\d{1,3}\)?[\.\-\:\)])\b",
+                    r"^(?:(?:السؤال|سؤال)\s*(?:الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|\d+)|س\s*\d+|Question\s*\d+|Q\d+|^\(?\d{1,3}\)?\s*[\.\-\:]\s*(?!\d))",
                     re.IGNORECASE,
                 )
                 SECTION_HEADER_RE = re.compile(
-                    r"^\s*\[?\s*(?:القسم\s+(?:الأول|الثاني|الثالث|الرابع)|أسئلة\s+الاختيار|الأسئلة\s+المقالية|أولاً|ثانياً|ثالثاً)\b",
+                    r"^\s*\[?\s*(?:القسم\s+(?:الأول|الثاني|الثالث|الرابع)|أسئلة\s+الاختيار|الأسئلة\s+المقالية|أولاً|ثانياً|ثالثاً|انتهت\s+الورق[ةه])\b",
                     re.IGNORECASE,
                 )
 
                 lines = [l.strip() for l in page_text.split("\n") if l.strip()]
                 for b_idx, line in enumerate(lines):
                     # If this line is an option or answer belonging to the previous question block
+                    # (never after a trailer/heading block: RTL column layouts
+                    # re-emit 'انتهت الورقة' banners mid-page; an option row
+                    # after such a banner belongs to a question in the OTHER
+                    # region, not to the banner)
                     if parsed_page.blocks and parsed_page.blocks[-1].block_type != "heading":
                         if OPT_OR_ANS_RE.match(line) or (OPT_SUFFIX_RE.match(line) and len(line.split()) <= 15):
                             parsed_page.blocks[-1].text += "\n" + line
@@ -629,14 +1756,21 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
                             continue
 
                     # If previous block started with a question header and current line continues the stem
+                    # (only within the SAME numbered question: a new 'N.' line
+                    # always opens its own block so column-layout regions keep
+                    # questions separated)
                     if parsed_page.blocks:
                         prev_b = parsed_page.blocks[-1]
                         first_prev_line = prev_b.text.split("\n")[0].strip()
+                        prev_num = re.match(r"^(\d{1,3})\s*[.\-:]", first_prev_line)
+                        cur_num = re.match(r"^(\d{1,3})\s*[.\-:]", line)
+                        same_question = not (prev_num and cur_num and prev_num.group(1) != cur_num.group(1))
                         if (
                             QUESTION_HEADER_RE.match(first_prev_line)
                             and not QUESTION_HEADER_RE.match(line)
                             and not SECTION_HEADER_RE.match(line)
                             and not (line.startswith("#") or line.isupper())
+                            and same_question
                         ):
                             prev_b.text += "\n" + line
                             continue
@@ -648,6 +1782,13 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
                         and not line.endswith(".")
                         and (line.startswith("#") or line.isupper() or len(line.split()) <= 6)
                     )
+                    # A numbered question line NEVER merges into a previous
+                    # non-question block (RTL column layouts split a numbered
+                    # stem across a region boundary): '5. مجموع...' after a
+                    # trailer/heading line must open a fresh paragraph block,
+                    # never append into that trailer.
+                    if QUESTION_HEADER_RE.match(line):
+                        is_heading = False
 
                     b_type = "heading" if is_heading else ("list" if line.startswith(("-", "*", "•", "1.", "2.")) else "paragraph")
                     block = ParsedBlock(
@@ -665,7 +1806,11 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
                 # PyMuPDF extraction is optional so installations without it keep the
                 # existing text/table pipeline working.
                 image_limit = int(os.getenv("IMAGE_OCR_MAX_PER_PAGE", "12"))
-                img_data_list = extract_pdf_page_images(file_bytes, p_idx)[:image_limit]
+                img_data_list = extract_pdf_page_images(
+                    file_bytes,
+                    p_idx,
+                    file_path=file_path,
+                )[:image_limit]
                 for img_idx, img_item in enumerate(img_data_list, start=1):
                     img_bytes = img_item[0]
                     width = img_item[1]
@@ -737,6 +1882,7 @@ def parse_pdf_document(file_bytes: bytes | None = None, filename: str = "", prog
 def parse_docx_document(file_source: bytes | str, filename: str) -> ParsedDocument:
     """Parses a Word DOCX document, preserving headings, paragraphs, lists, tables, and images."""
     import docx
+    check_archive(file_source)
 
     doc = docx.Document(io.BytesIO(file_source) if isinstance(file_source, bytes) else file_source)
     parsed_doc = ParsedDocument(
@@ -749,16 +1895,90 @@ def parse_docx_document(file_source: bytes | str, filename: str) -> ParsedDocume
     raw_lines: list[str] = []
     OPT_OR_ANS_RE = re.compile(r"^([\(\[]?\s*[أبجدA-Da-d]\s*[\)\]\.\:\-\/]|(?:الإجاب[ةه]|الجواب|الحل|Answer|Key)\b)")
 
-    # 1. Paragraphs & Headings
-    for idx, p in enumerate(doc.paragraphs):
+    image_by_rel_id: dict[str, ParsedImage] = {}
+    for rel_id, rel in doc.part.rels.items():
+        if "image" not in rel.target_ref:
+            continue
+        try:
+            image_bytes = rel.target_part.blob
+            image_ocr, ocr_engine = ocr_image_bytes(image_bytes)
+            parsed_image = ParsedImage(
+                id=f"docx_img_{len(image_by_rel_id)+1}",
+                page_number=1,
+                asset_kind="figure",
+                caption=f"شكل توضيحي في مستند {parsed_doc.title}",
+                image_bytes=image_bytes,
+                checksum=hashlib.sha256(image_bytes).hexdigest(),
+                ocr_text=image_ocr or None,
+                ocr_engine=ocr_engine,
+            )
+            image_by_rel_id[rel_id] = parsed_image
+            page.images.append(parsed_image)
+            parsed_doc.all_images.append(parsed_image)
+        except Exception:
+            logger.debug("DOCX image extraction skipped due to part anomaly")
+
+    def append_embedded_ocr(element: Any, block_index: int) -> None:
+        from docx.oxml.ns import qn
+
+        for image_index, blip in enumerate(element.xpath(".//a:blip"), start=1):
+            image = image_by_rel_id.get(blip.get(qn("r:embed")))
+            if image is None or not image.ocr_text:
+                continue
+            raw_lines.append(image.ocr_text)
+            page.blocks.append(ParsedBlock(
+                block_id=f"docx_imgocr_{block_index}_{image_index}",
+                block_type="paragraph",
+                text=image.ocr_text,
+                page_number=1,
+                media_ids=[image.id],
+            ))
+            page.extracted_via_ocr = True
+            parsed_doc.extracted_via_ocr = True
+            parsed_doc.ocr_pages = [1]
+            parsed_doc.metadata["ocr_pages"] = [1]
+
+    # Walk the body in source order.  doc.paragraphs/doc.tables are separate
+    # collections and lose every question placed inside a layout table.
+    for idx, item in enumerate(doc.iter_inner_content()):
+        if isinstance(item, docx.table.Table):
+            table_rows = [[cell.text.strip() for cell in row.cells] for row in item.rows]
+            table_rows = [row for row in table_rows if any(row)]
+            if not table_rows:
+                continue
+            table_text = "\n".join(" | ".join(row) for row in table_rows)
+            parsed_table = ParsedTable(
+                page_number=1,
+                headers=table_rows[0],
+                rows=table_rows[1:],
+                raw_text=table_text,
+            )
+            page.tables.append(parsed_table)
+            parsed_doc.all_tables.append(parsed_table)
+            raw_lines.extend(" | ".join(row) for row in table_rows)
+            # Single-column tables are often Word layout wrappers for a
+            # normal question/option sequence, not tabular question banks.
+            if max(len(row) for row in table_rows) == 1:
+                page.blocks.append(ParsedBlock(
+                    block_id=f"docx_table_{idx+1}",
+                    block_type="paragraph",
+                    text="\n".join(row[0] for row in table_rows),
+                    page_number=1,
+                ))
+            append_embedded_ocr(item._element, idx + 1)
+            continue
+
+        p = item
         text = p.text.strip()
         if not text:
+            append_embedded_ocr(p._element, idx + 1)
             continue
         raw_lines.append(text)
 
         # If this paragraph is an option or answer belonging to the previous question block
         if page.blocks and page.blocks[-1].block_type != "heading" and OPT_OR_ANS_RE.match(text):
             page.blocks[-1].text += "\n" + text
+            append_embedded_ocr(p._element, idx + 1)
             continue
 
         # If this paragraph is a chemical equation belonging to the previous explanatory sentence
@@ -767,6 +1987,7 @@ def parse_docx_document(file_source: bytes | str, filename: str) -> ParsedDocume
             intro_phrases = ["وفق المعادلة", "بالمعادلة", "كما يلي", "التفاعل التالي", "المعادلة الكيميائية", "المعادلة التالية", "المعادلة:"]
             if prev_text.endswith(":") or any(ip in prev_text for ip in intro_phrases):
                 page.blocks[-1].text += "\n" + text
+                append_embedded_ocr(p._element, idx + 1)
                 continue
 
         style_name = (p.style.name or "").lower()
@@ -784,44 +2005,7 @@ def parse_docx_document(file_source: bytes | str, filename: str) -> ParsedDocume
         page.blocks.append(block)
         if is_heading:
             parsed_doc.hierarchy.append({"title": text, "page": 1, "level": block.level})
-
-    # 2. Tables
-    for t_idx, table in enumerate(doc.tables):
-        table_rows: list[list[str]] = []
-        for row in table.rows:
-            cell_texts = [c.text.strip() for c in row.cells]
-            table_rows.append(cell_texts)
-        if table_rows:
-            headers = table_rows[0]
-            rows = table_rows[1:]
-            t_text = "\n".join(" | ".join(r) for r in table_rows)
-            pt = ParsedTable(page_number=1, headers=headers, rows=rows, raw_text=t_text)
-            page.tables.append(pt)
-            parsed_doc.all_tables.append(pt)
-
-    # 3. Extract Embedded Images from DOCX relationship parts
-    img_counter = 1
-    for rel in doc.part.rels.values():
-        if "image" in rel.target_ref:
-            try:
-                image_bytes = rel.target_part.blob
-                checksum = hashlib.sha256(image_bytes).hexdigest() if image_bytes else str(uuid.uuid4().hex[:16])
-                image_ocr, ocr_engine = ocr_image_bytes(image_bytes)
-                parsed_img = ParsedImage(
-                    id=f"docx_img_{img_counter}",
-                    page_number=1,
-                    asset_kind="figure",
-                    caption=f"شكل توضيحي في مستند {parsed_doc.title}",
-                    image_bytes=image_bytes,
-                    checksum=checksum,
-                    ocr_text=image_ocr or None,
-                    ocr_engine=ocr_engine,
-                )
-                page.images.append(parsed_img)
-                parsed_doc.all_images.append(parsed_img)
-                img_counter += 1
-            except Exception:
-                logger.debug("DOCX image extraction skipped due to part anomaly")
+        append_embedded_ocr(p._element, idx + 1)
 
     page.raw_text = "\n".join(raw_lines)
     parsed_doc.pages.append(page)
@@ -836,6 +2020,7 @@ def parse_pptx_document(file_source: bytes | str, filename: str) -> ParsedDocume
     """Parses a PowerPoint PPTX presentation, preserving slides, titles, notes, and diagrams."""
     import pptx
 
+    check_archive(file_source)
     prs = pptx.Presentation(io.BytesIO(file_source) if isinstance(file_source, bytes) else file_source)
     parsed_doc = ParsedDocument(
         title=os.path.splitext(filename)[0],
@@ -991,6 +2176,11 @@ def parse_image_asset(file_source: bytes | str, filename: str) -> ParsedDocument
     else:
         file_bytes = file_source
         img = Image.open(io.BytesIO(file_bytes))
+    try:
+        check_image(img)
+        width, height = img.size
+    finally:
+        img.close()
     parsed_doc = ParsedDocument(
         title=os.path.splitext(filename)[0],
         doc_type="image",
@@ -1004,8 +2194,8 @@ def parse_image_asset(file_source: bytes | str, filename: str) -> ParsedDocument
         asset_kind="figure",
         caption=f"شكل توضيحي: {parsed_doc.title}",
         image_bytes=file_bytes,
-        width=img.width,
-        height=img.height,
+        width=width,
+        height=height,
         checksum=hashlib.sha256(file_bytes).hexdigest() if file_bytes else str(uuid.uuid4().hex[:16]),
         ocr_text=image_ocr or None,
         ocr_engine=ocr_engine,
@@ -1099,47 +2289,47 @@ def parse_assessment_bank(file_bytes: bytes, filename: str) -> list[ParsedAssess
 
 
 def ocr_image_bytes(image_bytes: bytes, lang: str = "ara+eng") -> tuple[str, str | None]:
-    """Read Arabic/English text from a source image without changing the original."""
+    """Bounded local OCR; resource failures never masquerade as empty success."""
     if not image_bytes:
         return "", None
+    if os.getenv("ALLOW_IN_PROCESS_OCR", "true").strip().lower() in ("false", "0", "no"):
+        raise ExtractionLimitError("OCR is disabled by configuration")
+    import pytesseract
+    from app.core.config import get_tesseract_cmd
 
-    if os.getenv("PADDLE_OCR_ENABLED", "").lower() in {"1", "true", "yes"}:
+    get_tesseract_cmd()
+    with _OCR_SEMAPHORE, ocr_slot():
         try:
-            from paddleocr import PaddleOCR  # type: ignore[import-not-found]
-
-            ocr = PaddleOCR(lang="arabic", use_doc_orientation_classify=False, use_doc_unwarping=False)
-            result = ocr.predict(io.BytesIO(image_bytes))
-            lines: list[str] = []
-            for page in result or []:
-                payload = page.json if hasattr(page, "json") else page
-                for text in (payload.get("rec_texts", []) if isinstance(payload, dict) else []):
-                    if text:
-                        lines.append(str(text))
-            extracted = clean_arabic_ocr_text("\n".join(lines))
-            if extracted:
-                return extracted, "paddleocr-arabic"
-        except Exception:
-            logger.debug("PaddleOCR image extraction unavailable; using Tesseract fallback")
-
-    if os.getenv("PROCESS_TYPE") == "api" or os.getenv("ALLOW_IN_PROCESS_OCR", "").lower() in ("false", "0", "no"):
-        if os.getenv("APP_ENV", "").lower() in ("production", "production_like"):
-            raise RuntimeError("Heavy OCR is strictly disallowed inside the Web API process in production to preserve memory. Work must be handled by Celery worker.")
-
-    try:
-        import pytesseract
-        from app.core.config import get_tesseract_cmd
-
-        get_tesseract_cmd()
-        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        image = ImageOps.autocontrast(ImageOps.grayscale(image))
-        extracted = pytesseract.image_to_string(image, lang=lang, config="--psm 6")
-        return clean_arabic_ocr_text(extracted), "tesseract-ara+eng"
-    except Exception:
-        logger.debug("Image OCR skipped because no OCR engine is configured")
-        return "", None
+            with Image.open(io.BytesIO(image_bytes)) as source:
+                check_image(source)
+                source.thumbnail((MAX_RENDER_SIDE, MAX_RENDER_SIDE))
+                # Bound area as well as the longest side before converting.
+                scale = min(1.0, (MAX_RENDER_PIXELS / (source.width * source.height)) ** 0.5)
+                if scale < 1:
+                    source.thumbnail((max(1, int(source.width * scale)), max(1, int(source.height * scale))))
+                gray = ImageOps.grayscale(source)
+                try:
+                    image = ImageOps.autocontrast(gray)
+                    try:
+                        from app.services.ocr_quality import recognize
+                        text = recognize(image, lang=lang)
+                    finally:
+                        image.close()
+                finally:
+                    gray.close()
+            return clean_arabic_ocr_text(text), "tesseract-ara+eng"
+        except ExtractionLimitError:
+            raise
+        except Exception as exc:
+            raise ExtractionLimitError("Image OCR failed or timed out; extraction is incomplete") from exc
 
 
-def extract_pdf_page_images(file_bytes: bytes, page_number: int) -> list[tuple[bytes, int, int, list[float] | None]]:
+def extract_pdf_page_images(
+    file_bytes: bytes | None,
+    page_number: int,
+    *,
+    file_path: str | None = None,
+) -> list[tuple[bytes, int, int, list[float] | None]]:
     """Extract original raster images and their bounding box from a PDF page via PyMuPDF when available."""
     try:
         try:
@@ -1147,7 +2337,12 @@ def extract_pdf_page_images(file_bytes: bytes, page_number: int) -> list[tuple[b
         except ImportError:
             import fitz  # fallback PyMuPDF alias
 
-        document = fitz.open(stream=file_bytes, filetype="pdf")
+        if file_path and os.path.exists(file_path):
+            document = fitz.open(file_path)
+        elif file_bytes:
+            document = fitz.open(stream=file_bytes, filetype="pdf")
+        else:
+            return []
         try:
             page = document.load_page(page_number - 1)
             images: list[tuple[bytes, int, int, list[float] | None]] = []

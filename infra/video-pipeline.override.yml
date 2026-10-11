@@ -1,0 +1,78 @@
+# Opt-in after review/testing. Build the API image from the same checkout first.
+services:
+  api:
+    environment:
+      VIDEO_DIRECT_UPLOAD_ENABLED: "true"
+      VIDEO_UPLOAD_PUBLIC_ENDPOINT: ${VIDEO_UPLOAD_PUBLIC_ENDPOINT:?set HTTPS upload origin}
+  video-worker:
+    build:
+      context: ../apps/api
+      dockerfile: ../../infra/Dockerfile.video
+      args:
+        API_VIDEO_IMAGE: ${QA_PROJECT:-chemistryprodlocal}-api
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/srv/entrypoint-prod.sh"]
+    command: ["python", "-m", "scripts.video_worker"]
+    environment:
+      APP_ENV: production
+      POSTGRES_USER: ${POSTGRES_USER:-lms}
+      POSTGRES_DB: ${POSTGRES_DB:-lms}
+      DB_PASSWORD_FILE: /run/secrets/postgres_password
+      SECRET_KEY_FILE: /run/secrets/app_secret_key
+      S3_SECRET_KEY_FILE: /run/secrets/s3_password
+      SMTP_PASSWORD_FILE: /run/secrets/smtp_password
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL}
+      SMTP_TLS_VERIFY: "true"
+      PAYMENT_INSTAPAY_ACCOUNT: ${PAYMENT_INSTAPAY_ACCOUNT:-}
+      PAYMENT_VODAFONE_CASH_NUMBER: ${PAYMENT_VODAFONE_CASH_NUMBER:-}
+      PAYMENT_BANK_DETAILS: ${PAYMENT_BANK_DETAILS:-}
+      FRONTEND_ORIGINS: ${PUBLIC_ORIGIN}
+      STORAGE_BACKEND: s3
+      S3_ENDPOINT_URL: http://s3:8333
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_BUCKET: ${S3_BUCKET:-chemistry-materials}
+      S3_REGION: us-east-1
+    secrets: [postgres_password, app_secret_key, s3_password, smtp_password]
+    volumes: [video_work:/work]
+    tmpfs: [/tmp:size=128m]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 2
+    mem_limit: 2560m
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; os.kill(1,0)"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+    depends_on:
+      migration: {condition: service_completed_successfully}
+      s3-init: {condition: service_completed_successfully}
+    networks: [private]
+  upload-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
+    restart: unless-stopped
+    ports: ["${VIDEO_UPLOAD_BIND:-127.0.0.1}:${VIDEO_UPLOAD_PORT:-18544}:443"]
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN}
+      S3_BUCKET: ${S3_BUCKET:-chemistry-materials}
+      VIDEO_S3_HOST: ${VIDEO_S3_HOST:-s3}
+      NGINX_ENVSUBST_FILTER: "^(PUBLIC_ORIGIN|S3_BUCKET|VIDEO_S3_HOST)$$"
+    volumes: [./video-upload.conf.template:/etc/nginx/templates/default.conf.template:ro]
+    secrets: [tls_cert, tls_key]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--no-check-certificate", "-O", "/dev/null", "https://127.0.0.1/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      s3: {condition: service_healthy}
+    networks: [private]
+volumes:
+  video_work:

@@ -6,16 +6,18 @@ export interface StudentProfile {
   email: string;
   role: "student";
   nationalId: string;
-  nationalIdPhotoUrl?: string;
   studentPhone: string;
   guardianPhone: string;
   age: number;
   academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary";
   academicYearLabel: string;
   interestedSubjects: string[];
-  avatarUrl?: string;
   isBlocked?: boolean;
   joinedDate: string;
+  governorate?: string;
+  schoolName?: string;
+  gender?: "MALE" | "FEMALE" | string;
+  religion?: "MUSLIM" | "CHRISTIAN" | string;
 }
 
 export interface TeacherProfile {
@@ -24,16 +26,14 @@ export interface TeacherProfile {
   email: string;
   role: "teacher" | "institution_admin" | "platform_admin";
   nationalId: string;
-  nationalIdPhotoUrl?: string;
   phone: string;
   teachingYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary" | "all";
   teachingYearLabel: string;
   subject: string;
   contractAgreed: boolean;
   contractAgreedAt?: string;
-  uploadedVideosCount: number;
-  enrolledStudentsCount: number;
-  avatarUrl?: string;
+  uploadedVideosCount?: number;
+  enrolledStudentsCount?: number;
   joinedDate: string;
 }
 
@@ -82,31 +82,59 @@ export interface LessonAISignals {
 export interface VideoLesson {
   id: string;
   moduleId?: string;
+  unitTitle?: string;
+  isRevision?: boolean;
   courseId: string;
   academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary";
   title: string;
   description: string;
   durationMinutes: number;
+  durationSeconds?: number;
+  publicationStatus?: 'draft' | 'published';
+  publishAt?: string | null;
+  requiredMaterialCount?: number;
   durationFormatted: string;
   videoUrl: string;
+  /** Native videos are resolved only after the viewer obtains a scoped token. */
+  requiresProtectedPlayback?: boolean;
+  /** Public availability metadata only, independent of playback permission. */
+  hasUploadedVideo?: boolean;
+  /** Manager-only processing state; contains no private storage information. */
+  videoUpload?: { id: string; status: string; createdAt: string };
   thumbnailUrl?: string;
   price?: number; // Per-lesson price decided by teacher (0 = free)
   materials: UploadedMaterial[];
   uploadedByTeacherName: string;
   uploadedAt: string;
   order: number;
-  // AI Difficulty analytics per lesson
-  predictedDifficultyScore: number; // 0-100
-  expectedStruggleRate: number; // percentage
-  predictedMisconceptionRate: number; // percentage
-  flaggedHardConcepts: string[];
-  aiSignals?: LessonAISignals;
-  indexing_status?: "not_indexed" | "in_progress" | "indexed" | "failed";
-  indexing_error?: string;
-  indexed_chunks_count?: number;
+  // Transcript materialization status (real processing state, no AI)
+  materialization_status?: string;
+}
+
+export interface CourseAssessmentRef {
+  id: string;
+  kind: "quiz" | "assignment";
+  title: string;
+  lessonId?: string | null;
+  lessonIds?: string[];
+  moduleIds?: string[];
+  moduleId?: string | null;
+  durationMinutes?: number;
+  maxScore?: number;
+  dueLabel?: string | null;
+  startsAt?: string | null;
+  /** Total attempts this student has already consumed on this quiz. */
+  attemptsUsed?: number;
+  /** Server-confirmed official quiz or homework submission; starting is not completion. */
+  completed?: boolean;
+  /** Maximum attempts the teacher allows (undefined = unlimited display). */
+  attemptsAllowed?: number;
+  /** False when the lesson it belongs to is not paid/unlocked for this student. */
+  accessible: boolean;
 }
 
 export interface Course {
+  status?: "draft" | "published" | "archived";
   id: string;
   title: string;
   subject: string;
@@ -122,6 +150,8 @@ export interface Course {
   lessons: VideoLesson[];
   enrolledStudentsCount: number;
   price?: number;
+  /** Server-published quizzes/assignments scoped to lessons/units. */
+  assessments?: CourseAssessmentRef[];
 }
 
 export interface NotificationSchedule {
@@ -136,13 +166,14 @@ export interface NotificationItem {
   id: string;
   title: string;
   message: string;
-  type: "assignment" | "quiz" | "system" | "warning";
+  type: "assignment" | "quiz" | "system" | "warning" | "payment" | "lesson_access";
   dueDate?: string;
   targetYear?: "all" | "1st_secondary" | "2nd_secondary" | "3rd_secondary" | string;
   createdAt: string;
   read: boolean;
   actionUrl?: string;
-  actionTab?: "GeneralHome" | "MyCourses" | "MySubmissions" | "LessonManagement" | "QuizGen" | "Submissions" | "StudentAnalytics" | "Notifications" | string;
+  actionTab?: "MyCourses" | "MySubmissions" | "LessonManagement" | "QuizGen" | "Submissions" | "StudentAnalytics" | "Notifications" | "Payments" | "PaymentManagement" | string;
+  paymentOrderId?: string;
   targetCourseId?: string;
   targetLessonId?: string;
   quizDurationMinutes?: number;
@@ -165,6 +196,7 @@ export interface StudentRecord {
   id: string;
   name: string;
   nationalId: string;
+  guardianPhone?: string;
   email: string;
   academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary";
   academicYearLabel: string;
@@ -175,7 +207,16 @@ export interface StudentRecord {
   quizSuccessRate: number; // 0 - 100%
   homeworkSuccessRate: number; // 0 - 100%
   lastActiveDate: string;
+  studentPhone?: string;
+  governorate?: string;
+  schoolName?: string;
+  gender?: "MALE" | "FEMALE" | string;
+  religion?: "MUSLIM" | "CHRISTIAN" | string;
+  createdAt?: string;
   isBlocked?: boolean;
+  hasCompletedExam?: boolean;
+  pendingQuizAttempts?: number;
+  examMissedDeadline?: boolean;
   watchHistory: StudentVideoWatchLog[];
   customFieldValues: Record<string, unknown>;
 }
@@ -185,24 +226,22 @@ export interface AssignmentSubmission {
   assignmentId?: string;
   studentId: string;
   studentName: string;
+  isLate?: boolean;
   academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary";
   academicYearLabel: string;
   assignmentTitle: string;
   lessonTitle: string;
   questionPrompt: string;
   studentAnswer: string;
+  /** Student uploaded a photographed/typed solution file (PDF/image). */
+  hasFile?: boolean;
+  /** Manager-only streaming URL for the uploaded solution file. */
+  fileUrl?: string;
+  version?: number;
   submittedAt: string;
   maxScore: number;
-  aiScore: number;
   finalScore: number;
   teacherFeedback?: string;
-  aiFeedbackSummary: string;
-  criteriaScores: Array<{
-    criterion: string;
-    score: number;
-    max: number;
-    notes: string;
-  }>;
   status: "graded" | "needs_review" | "approved";
 }
 
@@ -256,4 +295,5 @@ export interface CalendarScheduleEvent {
   publishStartDate?: string;
   publishStartTime?: string;
   closeDeadline?: string; // Deadline after which quiz is locked
+  customMessage?: string; // Custom alert message for general announcements
 }

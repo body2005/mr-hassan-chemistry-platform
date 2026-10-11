@@ -41,6 +41,7 @@ function Dialog({ state }: { state: ConfirmState }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [confirm, dismiss]);
 
+
   return (
     <div
       className="confirm-wizard-overlay"
@@ -67,7 +68,7 @@ function Dialog({ state }: { state: ConfirmState }) {
 
           <div className="confirm-wizard-actions">
             <button
-              className="confirm-wizard-btn primary"
+              className={`confirm-wizard-btn primary ${state.tone === "danger" ? "tone-danger" : ""}`}
               onClick={confirm}
               autoFocus
             >

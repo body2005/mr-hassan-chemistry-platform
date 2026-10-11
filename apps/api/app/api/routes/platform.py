@@ -1,25 +1,32 @@
 from __future__ import annotations
 
-import uuid
-from datetime import datetime, timezone
-UTC = timezone.utc
-from typing import Annotated
-
-from fastapi import APIRouter, Depends, HTTPException, Request, status, UploadFile, File, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse
+import json
+import mimetypes
+import logging
+import math
 import os
+import tempfile
+import threading
+import uuid
+from datetime import datetime, timedelta, timezone
+from collections import defaultdict
+UTC = timezone.utc
+from typing import Annotated, Callable, Iterable
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status, UploadFile, File, Query
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 import shutil
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import CurrentUser, require_roles
+from app.api.dependencies import CurrentUser, OptionalUser, _active_session_family, require_roles
 from app.core.database import get_db
+from app.core.config import get_settings
+from app.core.events import event_broker
 from app.core.rate_limit import enforce_rate_limit
-from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus, Lesson, IndexingStatus
-from app.models.transcript import KnowledgeChunk, Transcript, TranscriptSegment, TranscriptionStatus
-from app.services.knowledge_pipeline import generate_grounded_answer, generate_grounded_summary
-from app.services.ai_access_policy import can_access_course_knowledge, enforce_ai_access
-from app.services.transcript_indexer import execute_lesson_indexing, sync_lesson_rag
+from app.core.storage import generate_safe_object_key, get_storage_provider
+from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus, Lesson, MaterializationStatus
 from app.models.platform import (
     Assignment,
     AssignmentStatus,
@@ -30,8 +37,12 @@ from app.models.platform import (
     Notification,
     Question,
     Quiz,
+    QuizAttemptAnswer,
+    QuizQuestion,
+    QuizStatus,
 )
 from app.models.progress import LessonProgress
+from app.models.platform import LessonComment, AttemptStatus, QuizAttempt
 from app.models.user import User, UserRole
 from app.schemas import (
     AnalyticsResponse,
@@ -41,30 +52,204 @@ from app.schemas import (
     AssignmentSubmissionCreateRequest,
     AssignmentSubmissionResponse,
     AuditLogResponse,
+    BootstrapResponse,
     CalendarEventCreateRequest,
     CalendarEventResponse,
     CertificateResponse,
+    CourseResponse,
     GradeSubmissionRequest,
+    GradeQuizAnswerRequest,
     LessonCreateRequest,
+    LessonCommentCreateRequest,
     LessonProgressResponse,
     ModuleCreateRequest,
     ModuleResponse,
     NotificationBroadcastRequest,
     NotificationCreateRequest,
     NotificationResponse,
+    PrivateUserResponse,
+    ManagedUserResponse,
     QuestionCreateRequest,
     QuestionResponse,
     QuizAttemptResponse,
     QuizAttemptSubmitRequest,
     QuizCreateRequest,
+    QuizPublishRequest,
     QuizResponse,
     UserResponse,
 )
+
 from app.services import platform_service
 from app.services.audit_service import record_audit
-from app.services.payment_service import can_access_lesson_content, student_can_use_ai_for_lesson
+from app.services.payment_service import can_access_lesson_content
+from app.schemas import LessonPublicationRequest, ApproveQuizResultRequest
+from app.services.content_access import require_assessment_access
+from app.core.upload_limits import MAX_VIDEO_BYTES, ensure_staging_capacity
+from app.models.platform import RefreshSession, RevokedSession
 
+VIDEO_TOKEN_TTL_SECONDS = 300
+# A video session is keyed by (account, lesson). Issue a token only while the
+# concurrent-session budget for that pair is not exhausted; return its expiry.
+def _register_video_session(
+    db: Session, user_id: uuid.UUID, lesson_id: uuid.UUID, session_jti: str, ttl_seconds: int,
+    *, family_id: uuid.UUID | None = None,
+) -> datetime:
+    settings = get_settings()
+    max_sessions = settings.video_max_concurrent_sessions
+    now = datetime.now(UTC)
+    base_key = f"video-session:{user_id}:{lesson_id}"
+    # Refresh rotates the access JWT's jti, not the browser/device family.
+    # Count the validated family once while keeping each playback token bound
+    # to the current jti in _authorize_video_stream. Legacy cookies have no
+    # family; retain their existing jti slots until their normal expiry.
+    slot_id = f"family:{family_id}" if family_id is not None else session_jti
+    r = _video_session_redis()
+    if r is not None:
+        try:
+            # Atomic check/update: repeated tokens from one live session do
+            # not consume additional device slots, even under concurrency.
+            admitted = r.eval(
+                """
+                redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+                if redis.call('ZSCORE', KEYS[1], ARGV[3]) or
+                   redis.call('ZCARD', KEYS[1]) < tonumber(ARGV[4]) then
+                    redis.call('ZADD', KEYS[1], ARGV[2], ARGV[3])
+                    redis.call('EXPIRE', KEYS[1], ARGV[5])
+                    return 1
+                end
+                return 0
+                """,
+                1, base_key, now.timestamp(), now.timestamp() + ttl_seconds,
+                slot_id, max_sessions, ttl_seconds + 5,
+            )
+            if not admitted:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Too many concurrent video sessions for this account.",
+                    headers={"Retry-After": "30"},
+                )
+            return now + timedelta(seconds=ttl_seconds)
+        except HTTPException:
+            raise
+        except Exception:
+            logger.warning("Redis unavailable for video session tracking")
+    if settings.redis_required or settings.deployment_environment:
+        raise HTTPException(503, "Video session service temporarily unavailable", headers={"Retry-After": "2"})
+    # Dev/test fallback: best-effort in-process ledger.
+    with _memory_video_sessions_lock:
+        entries = _memory_video_sessions[base_key]
+        for key, expiry in list(entries.items()):
+            if expiry <= now.timestamp():
+                entries.pop(key, None)
+        if slot_id not in entries and len(entries) >= max_sessions:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many concurrent video sessions for this account.",
+                headers={"Retry-After": "30"},
+            )
+        entries[slot_id] = now.timestamp() + ttl_seconds
+    return now + timedelta(seconds=ttl_seconds)
+
+
+_memory_video_sessions: dict[str, dict[str, float]] = defaultdict(dict)
+_memory_video_sessions_lock = threading.Lock()
+
+
+def clear_revoked_account_video_slots(user_id: uuid.UUID) -> None:
+    """Only after revoking ALL refresh families; dead devices must not fill the budget."""
+    from app.core.rate_limit import _get_redis_client
+    client = _get_redis_client()
+    if client is not None:
+        try:
+            for key in client.scan_iter(match=f"video-session:{user_id}:*"):
+                client.unlink(key)
+        except Exception:
+            logger.warning("Could not clear revoked video device slots")
+    with _memory_video_sessions_lock:
+        for key in list(_memory_video_sessions):
+            if key.startswith(f"video-session:{user_id}:"):
+                _memory_video_sessions.pop(key, None)
+
+
+def _video_session_redis():
+    try:
+        import redis as _redis
+
+        client = _redis.Redis.from_url(get_settings().redis_url, socket_timeout=1.0, socket_connect_timeout=1.0)
+        client.ping()
+        return client
+    except Exception:
+        return None
+
+
+def _revoke_video_sessions(
+    db: Session, user_id: uuid.UUID, family_id: uuid.UUID | None, session_jti: str | None = None
+) -> None:
+    """Revoke the logged-out family/session without blocking a fresh login."""
+    from app.core.rate_limit import _get_redis_client
+
+    now = datetime.now(UTC)
+    until = now + timedelta(seconds=VIDEO_TOKEN_TTL_SECONDS + 30)
+    r = _get_redis_client()
+    keys = []
+    if family_id is not None:
+        keys.append(f"video-deny:family:{family_id}")
+    if session_jti:
+        keys.append(f"video-deny:session:{session_jti}")
+    slots = ([f"family:{family_id}"] if family_id is not None else []) + ([session_jti] if session_jti else [])
+    if r is not None:
+        try:
+            for key in keys:
+                r.set(key, until.isoformat(), ex=VIDEO_TOKEN_TTL_SECONDS + 30)
+            if slots:
+                for key in r.scan_iter(match=f"video-session:{user_id}:*"):
+                    r.zrem(key, *slots)
+            return
+        except Exception:
+            logger.warning("Redis unavailable for video revocation; using memory marker")
+    for key in keys:
+        _memory_video_deny[key] = until
+    if slots:
+        with _memory_video_sessions_lock:
+            for key, entries in _memory_video_sessions.items():
+                if key.startswith(f"video-session:{user_id}:"):
+                    for slot in slots:
+                        entries.pop(slot, None)
+
+
+_memory_video_deny: dict[str, datetime] = {}
+
+
+def _video_denied(
+    db: Session, user_id: uuid.UUID, family_id: uuid.UUID | str | None, session_jti: str | None = None
+) -> bool:
+    from app.core.rate_limit import _get_redis_client
+
+    now = datetime.now(UTC)
+    r = _get_redis_client()
+    keys = []
+    if family_id is not None:
+        keys.append(f"video-deny:family:{family_id}")
+    if session_jti:
+        keys.append(f"video-deny:session:{session_jti}")
+    if r is not None:
+        try:
+            for key in keys:
+                if r.get(key):
+                    return True
+            return False
+        except Exception:
+            pass
+    return any(_memory_video_deny.get(key, now) > now for key in keys)
+
+
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Alias router exposing the unified bootstrap payload under /api/v1/platform/bootstrap
+# (legacy path). The canonical frontend path is /api/v1/bootstrap; both are served
+# by the same handler so the deployed backend answers either one.
+bootstrap_router = APIRouter(prefix="/platform")
 Db = Annotated[Session, Depends(get_db)]
 Manager = Annotated[
     User,
@@ -123,8 +308,7 @@ def _submission_responses(
 def _lesson_course(db: Session, lesson_id: uuid.UUID) -> tuple[Lesson, Course]:
     row = db.execute(
         select(Lesson, Course)
-        .join(CourseModule, Lesson.module_id == CourseModule.id)
-        .join(Course, CourseModule.course_id == Course.id)
+        .join(Course, Lesson.course_id == Course.id)
         .where(Lesson.id == lesson_id)
     ).first()
     if not row:
@@ -132,8 +316,14 @@ def _lesson_course(db: Session, lesson_id: uuid.UUID) -> tuple[Lesson, Course]:
     return row[0], row[1]
 
 
-def _require_lesson_access(db: Session, user: User, lesson_id: uuid.UUID) -> tuple[Lesson, Course]:
+def _require_lesson_access(
+    db: Session, user: User, lesson_id: uuid.UUID, *, same_institution: bool = False,
+) -> tuple[Lesson, Course]:
     lesson, course = _lesson_course(db, lesson_id)
+    # Discussion was institution-scoped, including platform administrators.
+    # Do not broaden it while aligning enrollment/ownership with media access.
+    if same_institution and course.institution_id != user.institution_id:
+        raise HTTPException(status_code=404, detail="Lesson not found")
     if not can_access_lesson_content(db, user, lesson_id):
         if course.institution_id != user.institution_id:
             raise HTTPException(status_code=404, detail="Lesson not found")
@@ -162,6 +352,89 @@ def _lesson_video_path(lesson_id: uuid.UUID) -> str:
     return os.path.join(upload_dir, matches[0])
 
 
+def _parse_byte_range(range_header: str | None, size: int) -> tuple[int, int] | None:
+    """Parse a single HTTP byte range, rejecting malformed or unsatisfiable input."""
+    if not range_header:
+        return None
+    if not range_header.startswith("bytes=") or "," in range_header:
+        raise HTTPException(status_code=416, detail="Invalid byte range")
+    start_text, separator, end_text = range_header[6:].partition("-")
+    if not separator:
+        raise HTTPException(status_code=416, detail="Invalid byte range")
+    try:
+        if not start_text:
+            suffix = int(end_text)
+            if suffix <= 0:
+                raise ValueError
+            start = max(size - suffix, 0)
+            end = size - 1
+        else:
+            start = int(start_text)
+            end = int(end_text) if end_text else size - 1
+    except ValueError as exc:
+        raise HTTPException(status_code=416, detail="Invalid byte range") from exc
+    if start < 0 or start >= size or end < start:
+        raise HTTPException(status_code=416, detail="Requested range is not satisfiable")
+    return start, min(end, size - 1)
+
+
+# Finish individual video transfers promptly even when a reverse proxy keeps
+# abandoned browser requests alive. Browsers request the next range as needed.
+MAX_VIDEO_RANGE_BYTES = 4 * 1024 * 1024
+
+
+def _stream_media(request: Request, size: int, read: Callable[[int, int], Iterable[bytes]], media_type: str) -> Response:
+    byte_range = _parse_byte_range(request.headers.get("range"), size)
+    start, end = byte_range if byte_range else (0, size - 1)
+    if byte_range and media_type.startswith("video/"):
+        end = min(end, start + MAX_VIDEO_RANGE_BYTES - 1)
+    length = end - start + 1
+    headers = {
+        "Content-Disposition": "inline",
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(length),
+        "Cache-Control": "private, no-cache, no-store",
+        "Referrer-Policy": "no-referrer",
+        "Cross-Origin-Resource-Policy": "same-origin",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if byte_range:
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    return StreamingResponse(read(start, length), status_code=206 if byte_range else 200,
+                             media_type=media_type, headers=headers)
+
+
+def _stream_legacy_video(request: Request, lesson_id: uuid.UUID) -> Response:
+    path = _lesson_video_path(lesson_id)
+
+    def read(start: int, length: int):
+        with open(path, "rb") as source:
+            source.seek(start)
+            while length > 0:
+                chunk = source.read(min(length, 64 * 1024))
+                if not chunk:
+                    break
+                length -= len(chunk)
+                yield chunk
+
+    return _stream_media(request, os.path.getsize(path), read, "video/mp4")
+
+
+def _stream_stored_media(request: Request, storage_key: str, filename: str, media_type: str) -> Response:
+    """Serve local or object-storage media without exposing a storage URL."""
+    storage = get_storage_provider()
+    try:
+        size = storage.get_size(storage_key)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Video not found") from exc
+    except Exception as exc:
+        # Storage providers intentionally avoid exposing upstream bucket errors.
+        raise HTTPException(status_code=404, detail="Video not found") from exc
+
+    return _stream_media(request, size, lambda start, length: storage.open_stream(
+        storage_key, start=start, length=length), media_type)
+
+
 @router.post("/courses/{course_id}/modules", response_model=ModuleResponse, status_code=201)
 def create_module(
     course_id: uuid.UUID, payload: ModuleCreateRequest, user: Manager, db: Db
@@ -179,11 +452,10 @@ async def upload_lesson_video(
     lesson_id: uuid.UUID,
     user: Manager,
     db: Db,
-    background_tasks: BackgroundTasks,
     request: Request,
     file: UploadFile = File(...),
 ) -> dict:
-    enforce_rate_limit(request, bucket="video_upload", limit=5, window_seconds=60)
+    enforce_rate_limit(request, bucket="upload", limit=5, window_seconds=60)
     lesson, course = _lesson_course(db, lesson_id)
     if user.role != UserRole.PLATFORM_ADMIN and course.institution_id != user.institution_id:
         raise HTTPException(status_code=404, detail="Lesson not found")
@@ -198,13 +470,23 @@ async def upload_lesson_video(
         raise HTTPException(status_code=422, detail="Unsupported video format")
     if file.content_type and not file.content_type.startswith("video/"):
         raise HTTPException(status_code=422, detail="Uploaded file is not a video")
+    signature = await file.read(16)
+    await file.seek(0)
+    valid_container = (
+        signature.startswith(b"\x1a\x45\xdf\xa3")
+        if ext == ".webm"
+        else len(signature) >= 12 and signature[4:8] in {b"ftyp", b"moov"}
+    )
+    if not valid_container:
+        raise HTTPException(status_code=422, detail="Uploaded file does not match its video format")
 
-    upload_dir = _lesson_upload_dir()
-    os.makedirs(upload_dir, exist_ok=True)
     filename = f"{lesson_id}{ext}"
-    filepath = os.path.join(upload_dir, filename)
+    ensure_staging_capacity(file.size or MAX_VIDEO_BYTES)
+    temp_file = tempfile.NamedTemporaryFile(prefix="lesson-video-", suffix=ext, delete=False)
+    filepath = temp_file.name
+    temp_file.close()
 
-    file_size_limit = 500 * 1024 * 1024
+    file_size_limit = MAX_VIDEO_BYTES
     written = 0
     try:
         with open(filepath, "wb") as buffer:
@@ -213,184 +495,223 @@ async def upload_lesson_video(
                 if written > file_size_limit:
                     raise HTTPException(
                         status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                        detail={"code": "FILE_TOO_LARGE", "message": "حجم ملف الفيديو لا يجب أن يتجاوز 500 ميجابايت."},
+                        detail={"code": "FILE_TOO_LARGE", "message": f"حد الفيديو {MAX_VIDEO_BYTES} بايت (5 GiB)."},
                     )
                 buffer.write(chunk)
-    except Exception:
+    except BaseException:
         if os.path.exists(filepath):
             os.remove(filepath)
         raise
 
+    storage = get_storage_provider()
+    storage_key = generate_safe_object_key(f"lesson_videos/{lesson.id}", filename)
+    try:
+        from app.core.storage_async import save_file_async
+        stored_path = await save_file_async(storage, filepath, storage_key, file.content_type or mimetypes.guess_type(filename)[0])
+    except BaseException as exc:
+        # Safe operational evidence: do not log exception messages, which may
+        # contain signed object URLs or credentials from a storage SDK.
+        logging.getLogger(__name__).error(
+            "Video storage upload failed: lesson_id=%s bytes=%s error_type=%s",
+            lesson_id, written, type(exc).__name__,
+        )
+        from app.services.storage_cleanup import compensate_upload
+        db.rollback()
+        compensate_upload(db, storage_key)
+        if not isinstance(exc, Exception):
+            raise
+        from boto3.exceptions import S3UploadFailedError
+        from botocore.exceptions import BotoCoreError, ClientError
+        if isinstance(exc, (S3UploadFailedError, BotoCoreError, ClientError)):
+            raise HTTPException(status_code=503, detail="Video storage temporarily unavailable; retry the upload") from exc
+        raise HTTPException(status_code=500, detail="Unable to store lesson video") from exc
+    finally:
+        if os.path.exists(filepath):
+            os.remove(filepath)
+
+    previous_asset = lesson.video_asset_key
     video_url = f"/api/v1/lessons/{lesson_id}/video"
-    lesson.video_asset_key = video_url
-    lesson.indexing_status = IndexingStatus.NOT_INDEXED
+    lesson.video_asset_key = stored_path
+    lesson.materialization_status = MaterializationStatus.NOT_INDEXED
     lesson.indexing_error = None
-    db.commit()
+    quality_job = None
+    from app.services.storage_cleanup import compensate_upload, enqueue_cleanup
+    if previous_asset != stored_path:
+        enqueue_cleanup(db, previous_asset)
+    try:
+        if get_settings().video_processing_enabled:
+            from app.services.video_uploads import enqueue_published_source
+            quality_job = enqueue_published_source(db, user, lesson)
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        compensate_upload(db, stored_path)
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        compensate_upload(db, stored_path)
+        raise HTTPException(status_code=500, detail="Unable to save lesson video") from exc
     db.refresh(lesson)
 
     return {
         "id": str(lesson.id),
         "video_url": video_url,
         "filename": filename,
+        "video_upload_id": str(quality_job.id) if quality_job else None,
         "message": "Video uploaded successfully as a protected playback asset.",
     }
 
 
 @router.get("/lessons/{lesson_id}/video")
-def stream_lesson_video(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> FileResponse:
+def stream_lesson_video(lesson_id: uuid.UUID, request: Request, user: CurrentUser, db: Db) -> Response:
+    # Teacher/admin management preview. Students must use the token stream.
+    if user.role == UserRole.STUDENT:
+        raise HTTPException(status_code=403, detail="Student playback requires a video stream token")
+    enforce_rate_limit(request, bucket="lesson-video-preview", category="read")
     lesson, _ = _require_lesson_access(db, user, lesson_id)
-    return FileResponse(
-        _lesson_video_path(lesson.id),
-        media_type="video/mp4",
-        headers={
-            "Content-Disposition": "inline",
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "private, no-cache, no-store",
-            "Referrer-Policy": "strict-origin-when-cross-origin",
-            "X-Content-Type-Options": "nosniff",
-        },
-    )
+    db.close()
+    if lesson.video_asset_key and not lesson.video_asset_key.startswith("/api/"):
+        media_type = mimetypes.guess_type(lesson.video_asset_key)[0] or "video/mp4"
+        return _stream_stored_media(request, lesson.video_asset_key, f"lesson-{lesson.id}", media_type)
+    return _stream_legacy_video(request, lesson.id)
+
+
+def _live_video_cookie(db: Session, request: Request, user: User) -> dict | None:
+    """Validate the cookie itself, even when another Bearer session is present."""
+    from app.core.security import decode_session_token
+
+    raw_cookie = request.cookies.get(get_settings().session_cookie_name)
+    session = decode_session_token(raw_cookie) if raw_cookie else None
+    if not session or not session.get("jti"):
+        return None
+    if (
+        str(session.get("sub")) != str(user.id)
+        or str(session.get("institution_id")) != str(user.institution_id)
+        or session.get("role") != user.role.value
+    ):
+        return None
+    if db.scalar(select(RevokedSession.id).where(RevokedSession.jti == str(session["jti"]))):
+        return None
+    if not _active_session_family(db, session):
+        return None
+    return session
 
 
 @router.post("/lessons/{lesson_id}/video-token")
-def create_lesson_video_token(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
+def create_lesson_video_token(lesson_id: uuid.UUID, request: Request, response: Response, user: CurrentUser, db: Db) -> dict:
     from app.core.security import create_video_token
+
+    enforce_rate_limit(request, bucket="lesson-video-token", category="read")
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
     lesson, _ = _require_lesson_access(db, user, lesson_id)
-    token = create_video_token(user=user, lesson_id=lesson.id, expires_in_seconds=300)
+    if get_settings().video_drm_required:
+        raise HTTPException(503, "Licensed DRM playback is not configured")
+    if lesson.video_asset_key and lesson.video_asset_key.startswith(("http://", "https://")):
+        raise HTTPException(status_code=404, detail="Protected video not available")
+
+    session_payload = _live_video_cookie(db, request, user)
+    if not session_payload:
+        raise HTTPException(status_code=401, detail="A live session is required for video playback")
+    if _video_denied(db, user.id, session_payload.get("family_id"), session_payload.get("jti")):
+        raise HTTPException(status_code=403, detail="Video access has been revoked")
+    session_id = str(session_payload.get("jti") or "")
+    if not session_id:
+        raise HTTPException(status_code=401, detail="A live session is required for video playback")
+    family_id: uuid.UUID | None = None
+    raw_family = session_payload.get("family_id")
+    if raw_family:
+        try:
+            family_id = uuid.UUID(str(raw_family))
+        except (TypeError, ValueError):
+            family_id = None
+    expires_at = _register_video_session(
+        db, user.id, lesson.id, session_id, VIDEO_TOKEN_TTL_SECONDS, family_id=family_id,
+    )
+    token = create_video_token(
+        user=user,
+        lesson_id=lesson.id,
+        expires_in_seconds=VIDEO_TOKEN_TTL_SECONDS,
+        nonce=session_id,
+        family_id=family_id,
+    )
+    from app.models.video_upload import VideoUpload
+    adaptive = db.scalar(select(VideoUpload).where(VideoUpload.lesson_id == lesson.id,
+        VideoUpload.status == "ready").order_by(VideoUpload.created_at.desc()).limit(1))
+    hls = bool(adaptive and lesson.video_asset_key and lesson.video_asset_key.endswith(f"/{adaptive.manifest_key}"))
+    stream_url = (f"/api/v1/lessons/{lesson.id}/hls/{adaptive.id}/master.m3u8?token={token}" if hls
+                  else f"/api/v1/lessons/{lesson.id}/stream?token={token}")
     return {
         "video_token": token,
-        "stream_url": f"/api/v1/lessons/{lesson.id}/stream?token={token}",
-        "expires_in": 300,
+        "stream_url": stream_url,
+        "format": "hls" if hls else "progressive",
+        "expires_in": VIDEO_TOKEN_TTL_SECONDS,
     }
 
 
-@router.get("/lessons/{lesson_id}/stream")
-def stream_lesson_authenticated_range(
+def _authorize_video_stream(
     lesson_id: uuid.UUID,
     request: Request,
     db: Db,
     token: str | None = None,
-) -> FileResponse:
+) -> Lesson:
     from app.core.security import decode_video_token
-    if token:
-        payload = decode_video_token(token)
-        if not payload or payload.get("lesson_id") != str(lesson_id):
-            raise HTTPException(status_code=403, detail="Invalid or expired video stream token")
-    else:
-        raise HTTPException(status_code=401, detail="Authentication required for video stream")
 
-    return FileResponse(
-        _lesson_video_path(lesson_id),
-        media_type="video/mp4",
-        headers={
-            "Content-Disposition": "inline",
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "private, no-cache, no-store",
-            "Referrer-Policy": "strict-origin-when-cross-origin",
-            "X-Content-Type-Options": "nosniff",
-        },
+    if get_settings().video_drm_required:
+        # Fail closed for previously issued progressive URLs too. Enabling
+        # the DRM requirement must not leave an unencrypted fallback open.
+        raise HTTPException(503, "DRM playback provider is not configured")
+    enforce_rate_limit(request, bucket="lesson-video-stream", category="read")
+    payload = decode_video_token(token) if token else None
+    if not payload or payload.get("lesson_id") != str(lesson_id):
+        raise HTTPException(status_code=403, detail="Invalid or expired video stream token")
+    if payload.get("purpose") != "video_stream" or payload.get("aud") != "video_stream":
+        raise HTTPException(status_code=403, detail="Invalid or expired video stream token")
+    nonce = str(payload.get("nonce") or "")
+    if not nonce:
+        raise HTTPException(status_code=403, detail="Invalid or expired video stream token")
+
+    user_id = uuid.UUID(str(payload["sub"]))
+    user = db.get(User, user_id)
+    if user is None or not user.is_active or user.deleted_at is not None:
+        raise HTTPException(status_code=403, detail="Invalid or expired video stream token")
+    if payload.get("role") != user.role.value or str(payload.get("institution_id")) != str(user.institution_id):
+        raise HTTPException(status_code=403, detail="Invalid or expired video stream token")
+
+    # Replay the same authorization the token endpoint enforced at issue time.
+    if _video_denied(db, user.id, payload.get("family_id"), nonce):
+        raise HTTPException(status_code=403, detail="Video access has been revoked")
+    # Strict session binding: the streaming client must present the live
+    # session that requested the token (nonce == session jti, same subject).
+    # Same-origin <video> requests carry cookies automatically, so browser
+    # playback works; link sharing, other accounts, and anonymous replays die.
+    session_payload = _live_video_cookie(db, request, user)
+    session_ok = bool(
+        session_payload
+        and str(session_payload.get("sub")) == str(user.id)
+        and str(session_payload.get("jti") or "") == nonce
     )
+    if not session_ok:
+        raise HTTPException(status_code=403, detail="Video session is no longer active")
 
-
-@router.get("/lessons/{lesson_id}/transcript")
-def get_lesson_transcript(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
     lesson, _ = _require_lesson_access(db, user, lesson_id)
-    transcript = db.query(Transcript).filter(Transcript.lesson_id == lesson_id).first()
-    if not transcript:
-        return {
-            "lesson_id": str(lesson.id),
-            "status": "not_indexed" if lesson.indexing_status == IndexingStatus.NOT_INDEXED else "processing",
-            "language": "ar",
-            "duration_seconds": 0.0,
-            "full_text": lesson.transcript_text or "",
-            "segments_count": 0,
-        }
-    return {
-        "lesson_id": str(lesson.id),
-        "transcript_id": str(transcript.id),
-        "status": transcript.status.value if hasattr(transcript.status, "value") else str(transcript.status),
-        "language": transcript.language,
-        "duration_seconds": transcript.duration_seconds,
-        "full_text": transcript.full_text,
-        "provider": transcript.provider,
-        "provider_model": transcript.provider_model,
-        "completed_at": transcript.completed_at.isoformat() if transcript.completed_at else None,
-    }
+    if lesson.video_asset_key and lesson.video_asset_key.startswith(("http://", "https://")):
+        raise HTTPException(status_code=404, detail="Protected video not available")
+    return lesson
 
 
-@router.get("/lessons/{lesson_id}/transcript/segments")
-def get_lesson_transcript_segments(
-    lesson_id: uuid.UUID, user: CurrentUser, db: Db, q: str | None = None
-) -> dict:
-    lesson, _ = _require_lesson_access(db, user, lesson_id)
-
-    query = db.query(TranscriptSegment).filter(TranscriptSegment.lesson_id == lesson_id)
-    if q and q.strip():
-        search_term = f"%{q.strip()}%"
-        query = query.filter(TranscriptSegment.text.ilike(search_term))
-
-    segments = query.order_by(TranscriptSegment.sequence).all()
-    return {
-        "lesson_id": str(lesson.id),
-        "count": len(segments),
-        "segments": [
-            {
-                "id": str(s.id),
-                "sequence": s.sequence,
-                "start_time": s.start_time,
-                "end_time": s.end_time,
-                "time_formatted": f"{int(s.start_time)//60:02d}:{int(s.start_time)%60:02d}",
-                "text": s.text,
-            }
-            for s in segments
-        ],
-    }
-
-
-@router.post("/lessons/{lesson_id}/ai/ask")
-def ask_ai_about_lesson(
-    lesson_id: uuid.UUID,
-    payload: dict,
-    user: CurrentUser,
-    request: Request,
-    db: Db,
-) -> dict:
-    lesson, course = _require_lesson_access(db, user, lesson_id)
-    course_id = course.id
-    enforce_ai_access(db, user, request, {"feature": "lesson_ask", "lesson_id": str(lesson_id)})
-    if user.role == UserRole.STUDENT and not student_can_use_ai_for_lesson(db, user, lesson_id):
-        raise HTTPException(status_code=402, detail="An AI subscription or paid lesson entitlement is required")
-    if not can_access_course_knowledge(db, user, course_id):
-        raise HTTPException(status_code=403, detail="Course access denied")
-
-    question = payload.get("question", "").strip()
-    if not question:
-        raise HTTPException(status_code=422, detail="Question cannot be empty")
-
-    return generate_grounded_answer(
-        db=db,
-        course_id=course_id,
-        lesson_id=lesson_id,
-        student_id=user.id,
-        question=question,
-    )
-
-
-@router.get("/lessons/{lesson_id}/ai/summary")
-def get_lesson_ai_summary(
-    lesson_id: uuid.UUID,
-    user: CurrentUser,
-    request: Request,
-    db: Db,
-) -> dict:
-    lesson, course = _require_lesson_access(db, user, lesson_id)
-    course_id = course.id
-    enforce_ai_access(db, user, request, {"feature": "lesson_summary", "lesson_id": str(lesson_id)})
-    if user.role == UserRole.STUDENT and not student_can_use_ai_for_lesson(db, user, lesson_id):
-        raise HTTPException(status_code=402, detail="An AI subscription or paid lesson entitlement is required")
-    if not can_access_course_knowledge(db, user, course_id):
-        raise HTTPException(status_code=403, detail="Course access denied")
-    return generate_grounded_summary(db=db, lesson_id=lesson_id)
+@router.get("/lessons/{lesson_id}/stream")
+def stream_lesson_authenticated_range(lesson_id: uuid.UUID, request: Request, db: Db, token: str | None = None) -> Response:
+    lesson = _authorize_video_stream(lesson_id, request, db, token)
+    # Authentication is complete; do not hold a DB connection while a student
+    # watches a long video or the browser buffers parallel byte ranges.
+    db.close()
+    if lesson.video_asset_key and lesson.video_asset_key.endswith("/master.m3u8"):
+        raise HTTPException(409, "Adaptive video requires HLS playback")
+    if lesson.video_asset_key and not lesson.video_asset_key.startswith("/api/"):
+        media_type = mimetypes.guess_type(lesson.video_asset_key)[0] or "video/mp4"
+        return _stream_stored_media(request, lesson.video_asset_key, f"lesson-{lesson.id}", media_type)
+    return _stream_legacy_video(request, lesson_id)
 
 
 @router.post("/modules/{module_id}/lessons", response_model=dict, status_code=201)
@@ -399,15 +720,14 @@ def create_lesson(
     payload: LessonCreateRequest,
     user: Manager,
     db: Db,
-    background_tasks: BackgroundTasks,
 ) -> dict:
     try:
         lesson = platform_service.add_lesson(db, user, module_id, payload)
     except (LookupError, PermissionError, ValueError) as exc:
         raise _bad_request(exc) from exc
 
-    # Video files are pure playback assets; AI indexing is permanently disabled for video lessons.
-    lesson.indexing_status = IndexingStatus.NOT_INDEXED
+    # Video files are pure playback assets; no transcription/indexing is performed.
+    lesson.materialization_status = MaterializationStatus.NOT_INDEXED
     db.commit()
 
     return {
@@ -415,96 +735,10 @@ def create_lesson(
         "title": lesson.title,
         "kind": lesson.kind,
         "position": lesson.position,
-        "indexing_status": "not_indexed",
+        "materialization_status": "not_indexed",
         "price_egp": float(lesson.price_egp or 0),
     }
 
-
-@router.post("/lessons/{lesson_id}/reindex", status_code=200)
-def reindex_lesson(
-    lesson_id: uuid.UUID,
-    db: Db,
-    user: Manager,
-) -> JSONResponse:
-    lesson, course = _lesson_course(db, lesson_id)
-    try:
-        platform_service.ensure_course_manager(user, course)
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-    lesson.indexing_status = IndexingStatus.NOT_INDEXED
-    lesson.indexing_error = None
-    db.commit()
-
-    return JSONResponse(
-        status_code=status.HTTP_200_OK,
-        content={"status": "not_indexed", "lesson_id": str(lesson.id), "message": "Video indexing is permanently disabled."},
-    )
-
-
-@router.get("/lessons/{lesson_id}/indexing-status")
-def get_lesson_indexing_status(
-    lesson_id: uuid.UUID,
-    db: Db,
-    user: CurrentUser,
-) -> dict:
-    lesson, _ = _require_lesson_access(db, user, lesson_id)
-
-    status_val = lesson.indexing_status.value if hasattr(lesson.indexing_status, "value") else str(lesson.indexing_status)
-    return {
-        "status": status_val,
-        "indexed_chunks_count": lesson.indexed_chunks_count or 0,
-        "error": lesson.indexing_error,
-        "rag_synced": bool(getattr(lesson, "rag_synced", False)),
-    }
-
-
-@router.post("/lessons/{lesson_id}/sync-rag")
-async def sync_lesson_rag_endpoint(
-    lesson_id: uuid.UUID,
-    db: Db,
-    user: Manager,
-) -> dict:
-    lesson, course = _lesson_course(db, lesson_id)
-    try:
-        platform_service.ensure_course_manager(user, course)
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-    result = await sync_lesson_rag(str(lesson.id), max_retries=3)
-    return {
-        "lesson_id": str(lesson.id),
-        **result,
-    }
-
-
-@router.post("/courses/{course_id}/reindex-all")
-def reindex_all_course_lessons(
-    course_id: uuid.UUID,
-    db: Db,
-    user: Manager,
-    background_tasks: BackgroundTasks,
-) -> dict:
-    try:
-        course = platform_service.course_for_user(db, user, course_id)
-        platform_service.ensure_course_manager(user, course)
-    except (LookupError, PermissionError) as exc:
-        raise _bad_request(exc) from exc
-
-    query = (
-        select(Lesson)
-        .join(CourseModule, Lesson.module_id == CourseModule.id)
-        .where(CourseModule.course_id == course_id)
-    )
-    lessons = db.scalars(query).all()
-
-    queued = 0
-    skipped = []
-
-    for l in lessons:
-        skipped.append({"lesson_id": str(l.id), "reason": "فهرسة الفيديو معطلة بالكامل"})
-
-    return {"queued_lessons": 0, "skipped": skipped}
 
 @router.delete("/modules/{module_id}/lessons/{lesson_id}", status_code=204)
 def delete_lesson(module_id: uuid.UUID, lesson_id: uuid.UUID, user: Manager, db: Db) -> None:
@@ -514,13 +748,43 @@ def delete_lesson(module_id: uuid.UUID, lesson_id: uuid.UUID, user: Manager, db:
         raise _bad_request(exc) from exc
 
 
+@router.post("/courses/{course_id}/lessons", status_code=201)
+def create_unitless_lesson(course_id: uuid.UUID, payload: LessonCreateRequest, user: Manager, db: Db):
+    try:
+        lesson = platform_service.add_lesson(db, user, None, payload, course_id=course_id)
+        return {"id": str(lesson.id), "course_id": str(lesson.course_id), "module_id": None}
+    except (LookupError, PermissionError, ValueError) as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.delete("/lessons/{lesson_id}", status_code=204)
+def delete_unitless_lesson(lesson_id: uuid.UUID, user: Manager, db: Db):
+    try:
+        platform_service.delete_lesson(db, user, None, lesson_id)
+    except (LookupError, PermissionError, ValueError) as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.patch("/lessons/{lesson_id}/publication")
+def update_lesson_publication(lesson_id: uuid.UUID, payload: "LessonPublicationRequest", user: Manager, db: Db):
+    lesson, course = _lesson_course(db, lesson_id)
+    try:
+        platform_service.ensure_course_manager(user, course)
+    except PermissionError as exc:
+        raise HTTPException(404, "Lesson not found") from exc
+    lesson.publication_status = payload.publication_status
+    lesson.publish_at = platform_service._as_utc(payload.publish_at)
+    db.commit()
+    return {"id": str(lesson.id), "publication_status": lesson.publication_status, "publish_at": lesson.publish_at}
+
+
 @router.get("/progress/lessons/{lesson_id}", response_model=LessonProgressResponse)
 def lesson_progress(lesson_id: uuid.UUID, user: Student, db: Db) -> LessonProgressResponse:
+    _require_lesson_access(db, user, lesson_id)
     progress = db.scalar(
         select(LessonProgress)
         .join(Lesson, Lesson.id == LessonProgress.lesson_id)
-        .join(CourseModule, CourseModule.id == Lesson.module_id)
-        .join(Course, Course.id == CourseModule.course_id)
+        .join(Course, Lesson.course_id == Course.id)
         .join(Enrollment, Enrollment.course_id == Course.id)
         .where(
             LessonProgress.lesson_id == lesson_id,
@@ -549,11 +813,13 @@ def my_progress(user: Student, db: Db) -> list[LessonProgressResponse]:
 @router.post("/progress/lessons/{lesson_id}/complete", response_model=LessonProgressResponse)
 def complete_lesson(lesson_id: uuid.UUID, user: Student, db: Db) -> LessonProgressResponse:
     _require_lesson_access(db, user, lesson_id)
+    # Share the existing-user lock with video telemetry, including the first
+    # progress insertion. Different students do not block each other.
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
     progress = db.scalar(
         select(LessonProgress)
         .join(Lesson, Lesson.id == LessonProgress.lesson_id)
-        .join(CourseModule, CourseModule.id == Lesson.module_id)
-        .join(Course, Course.id == CourseModule.course_id)
+        .join(Course, Lesson.course_id == Course.id)
         .join(Enrollment, Enrollment.course_id == Course.id)
         .where(
             LessonProgress.lesson_id == lesson_id,
@@ -566,8 +832,7 @@ def complete_lesson(lesson_id: uuid.UUID, user: Student, db: Db) -> LessonProgre
     if progress is None:
         lesson = db.scalar(
             select(Lesson)
-            .join(CourseModule, CourseModule.id == Lesson.module_id)
-            .join(Course, Course.id == CourseModule.course_id)
+            .join(Course, Lesson.course_id == Course.id)
             .join(Enrollment, Enrollment.course_id == Course.id)
             .where(
                 Lesson.id == lesson_id,
@@ -589,8 +854,7 @@ def complete_lesson(lesson_id: uuid.UUID, user: Student, db: Db) -> LessonProgre
     progress.last_event_at = progress.completed_at
     course_id = db.scalar(
         select(Course.id)
-        .join(CourseModule, CourseModule.course_id == Course.id)
-        .join(Lesson, Lesson.module_id == CourseModule.id)
+        .join(Lesson, Lesson.course_id == Course.id)
         .where(Lesson.id == lesson_id)
     )
     if course_id:
@@ -602,15 +866,13 @@ def complete_lesson(lesson_id: uuid.UUID, user: Student, db: Db) -> LessonProgre
         )
         total_lessons = db.scalar(
             select(func.count(Lesson.id))
-            .join(CourseModule, CourseModule.id == Lesson.module_id)
-            .where(CourseModule.course_id == course_id)
+            .where(Lesson.course_id == course_id)
         ) or 0
         completed_lessons = db.scalar(
             select(func.count(LessonProgress.id))
             .join(Lesson, Lesson.id == LessonProgress.lesson_id)
-            .join(CourseModule, CourseModule.id == Lesson.module_id)
             .where(
-                CourseModule.course_id == course_id,
+                Lesson.course_id == course_id,
                 LessonProgress.student_id == user.id,
                 LessonProgress.completion_percent >= 100,
             )
@@ -654,10 +916,26 @@ def list_questions(
     )
     if course_id:
         query = query.where(Question.course_id == course_id)
+    if user.role == UserRole.TEACHER:
+        managed_courses = select(Course.id).where(Course.teacher_id == user.id)
+        query = query.where(
+            (Question.author_id == user.id) | (Question.course_id.in_(managed_courses))
+        )
     return [
         QuestionResponse.model_validate(item)
         for item in db.scalars(query.order_by(Question.created_at.desc())).all()
     ]
+
+
+@router.post("/quizzes/publish-draft", response_model=QuizResponse, status_code=201)
+def publish_quiz_draft(payload: QuizPublishRequest,
+                       user: Manager, db: Db) -> QuizResponse:
+    try:
+        quiz = platform_service.publish_quiz_atomic(db, user, payload)
+    except (LookupError, PermissionError, ValueError) as exc:
+        db.rollback()
+        raise _bad_request(exc) from exc
+    return QuizResponse.model_validate(quiz)
 
 
 @router.post("/quizzes", response_model=QuizResponse, status_code=201)
@@ -696,7 +974,13 @@ def list_quizzes(
     if course_id:
         query = query.where(Quiz.course_id == course_id)
     if user.role == UserRole.STUDENT:
-        query = query.where(Quiz.status == "published")
+        enrolled_courses = select(Enrollment.course_id).where(
+            Enrollment.student_id == user.id,
+            Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+        )
+        query = query.where(Quiz.status == QuizStatus.PUBLISHED, Quiz.course_id.in_(enrolled_courses))
+    elif user.role == UserRole.TEACHER:
+        query = query.where(Quiz.course_id.in_(select(Course.id).where(Course.teacher_id == user.id)))
     return [
         QuizResponse.model_validate(item)
         for item in db.scalars(query.order_by(Quiz.created_at.desc())).all()
@@ -709,7 +993,8 @@ def start_quiz(quiz_id: uuid.UUID, user: Student, db: Db) -> QuizAttemptResponse
         attempt = platform_service.start_quiz(db, user, quiz_id)
     except (LookupError, PermissionError, ValueError) as exc:
         raise _bad_request(exc) from exc
-    return QuizAttemptResponse.model_validate(attempt)
+    from app.services.quiz_results import student_attempt_response
+    return student_attempt_response(attempt)
 
 
 @router.post("/quiz-attempts/{attempt_id}/submit", response_model=QuizAttemptResponse)
@@ -720,7 +1005,8 @@ def submit_quiz(
         attempt = platform_service.submit_quiz(db, user, attempt_id, payload)
     except (LookupError, PermissionError, ValueError) as exc:
         raise _bad_request(exc) from exc
-    return QuizAttemptResponse.model_validate(attempt)
+    from app.services.quiz_results import student_attempt_response
+    return student_attempt_response(attempt)
 
 
 @router.post("/assignments", response_model=AssignmentResponse, status_code=201)
@@ -751,7 +1037,18 @@ def list_assignments(
     if course_id:
         query = query.where(Assignment.course_id == course_id)
     if user.role == UserRole.STUDENT:
-        query = query.where(Assignment.status == AssignmentStatus.PUBLISHED)
+        enrolled_courses = select(Enrollment.course_id).where(
+            Enrollment.student_id == user.id,
+            Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+        )
+        query = query.where(
+            Assignment.status == AssignmentStatus.PUBLISHED,
+            Assignment.course_id.in_(enrolled_courses),
+        )
+    elif user.role == UserRole.TEACHER:
+        query = query.where(
+            Assignment.course_id.in_(select(Course.id).where(Course.teacher_id == user.id))
+        )
     return [
         AssignmentResponse.model_validate(item)
         for item in db.scalars(query.order_by(Assignment.created_at.desc())).all()
@@ -776,6 +1073,8 @@ def submit_assignment(
     user: Student,
     db: Db,
 ) -> AssignmentSubmissionResponse:
+    if payload.object_key:
+        raise HTTPException(422, "Use the authenticated file-upload endpoint for attachments")
     try:
         submission = platform_service.submit_assignment(db, user, assignment_id, payload)
     except (LookupError, PermissionError, ValueError) as exc:
@@ -797,6 +1096,7 @@ def list_submissions(
     if assignment is None:
         raise HTTPException(status_code=404, detail="Assignment not found")
     if user.role == UserRole.STUDENT:
+        require_assessment_access(db, user, assignment)
         query = select(AssignmentSubmission).where(
             AssignmentSubmission.assignment_id == assignment_id,
             AssignmentSubmission.student_id == user.id,
@@ -827,18 +1127,84 @@ def my_submissions(user: Student, db: Db) -> list[AssignmentSubmissionResponse]:
         )
         .order_by(AssignmentSubmission.submitted_at.desc())
     ).all()
-    return _submission_responses(db, list(items))
+    accessible = []
+    for item in items:
+        try:
+            require_assessment_access(db, user, db.get(Assignment, item.assignment_id))
+        except HTTPException as exc:
+            if exc.status_code in {403, 404}:
+                continue
+            raise
+        accessible.append(item)
+    return _submission_responses(db, accessible)
 
 
 @router.get("/submissions", response_model=list[AssignmentSubmissionResponse])
 def all_submissions(user: Manager, db: Db) -> list[AssignmentSubmissionResponse]:
-    items = db.scalars(
-        select(AssignmentSubmission)
-        .where(AssignmentSubmission.institution_id == user.institution_id)
-        .order_by(AssignmentSubmission.submitted_at.desc())
-        .limit(500)
-    ).all()
+    query = select(AssignmentSubmission).where(
+        AssignmentSubmission.institution_id == user.institution_id
+    )
+    if user.role == UserRole.TEACHER:
+        query = query.join(Assignment, Assignment.id == AssignmentSubmission.assignment_id).join(
+            Course, Course.id == Assignment.course_id
+        ).where(Course.teacher_id == user.id)
+    items = db.scalars(query.order_by(AssignmentSubmission.submitted_at.desc()).limit(500)).all()
     return _submission_responses(db, list(items))
+
+
+@router.get("/submissions/{submission_id}/file")
+def download_submission_file(
+    submission_id: uuid.UUID,
+    user: CurrentUser,
+    db: Db,
+):
+    """Stream a student's uploaded solution file to the course manager.
+
+    Managers only; the owning student has no re-download path here (their
+    copy was the upload itself). The native object_key never appears in the
+    response — the file is streamed from storage.
+    """
+    submission = db.get(AssignmentSubmission, submission_id)
+    if submission is None or submission.institution_id != user.institution_id:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    assignment = db.get(Assignment, submission.assignment_id)
+    if assignment is None:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    course = db.get(Course, assignment.course_id)
+    if course is None:
+        raise HTTPException(status_code=404, detail="Course not found")
+    if user.role == UserRole.STUDENT:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    try:
+        platform_service.ensure_course_manager(user, course)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    if not submission.object_key:
+        raise HTTPException(status_code=404, detail="Submission has no attached file")
+
+    from app.core.storage import get_storage_provider
+    from urllib.parse import quote
+
+    storage = get_storage_provider()
+    if not storage.exists(submission.object_key):
+        raise HTTPException(status_code=404, detail="File missing from storage")
+
+    import mimetypes
+    guessed_type = mimetypes.guess_type(submission.object_key)[0] or "application/pdf"
+    ext = submission.object_key.split(".")[-1] if "." in submission.object_key else "pdf"
+    filename = f"{str(submission.student_id)[:8]}-v{submission.version}.{ext}"
+    stream = storage.open_stream(submission.object_key)
+    return StreamingResponse(
+        stream,
+        media_type=guessed_type,
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 @router.post("/submissions/{submission_id}/grade", response_model=AssignmentSubmissionResponse)
@@ -870,15 +1236,36 @@ def grade_submission(
 def list_notifications(
     user: CurrentUser, db: Db, unread_only: bool = False
 ) -> list[NotificationResponse]:
+    if user.role != UserRole.STUDENT:
+        # Teachers and admins see notifications addressed directly to them,
+        # PLUS all distinct student broadcast and scheduled notifications sent in their institution.
+        query = select(Notification).where(
+            Notification.institution_id == user.institution_id,
+        )
+        if user.role == UserRole.TEACHER:
+            query = query.where(Notification.recipient_id == user.id)
+        if unread_only:
+            query = query.where(Notification.read_at.is_(None))
+        all_notifs = db.scalars(query.order_by(Notification.created_at.desc()).limit(500)).all()
+        seen: set[tuple[str, str, str, str | None]] = set()
+        result: list[NotificationResponse] = []
+        for n in all_notifs:
+            sig = (n.kind, n.title, n.message, n.action_url)
+            if sig not in seen:
+                seen.add(sig)
+                result.append(NotificationResponse.model_validate(n))
+        return result
+
     query = select(Notification).where(
         Notification.recipient_id == user.id,
         Notification.institution_id == user.institution_id,
     )
     if unread_only:
         query = query.where(Notification.read_at.is_(None))
+    from app.services.lesson_announcements import visible_lesson_notifications
     return [
         NotificationResponse.model_validate(item)
-        for item in db.scalars(query.order_by(Notification.created_at.desc()).limit(200)).all()
+        for item in visible_lesson_notifications(db, user, db.scalars(query.order_by(Notification.created_at.desc()).limit(200)).all())
     ]
 
 
@@ -924,7 +1311,11 @@ def mark_notification_read(
 
 
 @router.get("/calendar", response_model=list[CalendarEventResponse])
-def list_calendar(user: CurrentUser, db: Db) -> list[CalendarEventResponse]:
+def list_calendar(
+    user: CurrentUser, db: Db,
+    limit: Annotated[int, Query(ge=1, le=500)] = 500,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[CalendarEventResponse]:
     query = select(CalendarEvent).where(CalendarEvent.institution_id == user.institution_id)
     if user.role == UserRole.STUDENT:
         query = query.where(
@@ -932,7 +1323,10 @@ def list_calendar(user: CurrentUser, db: Db) -> list[CalendarEventResponse]:
         )
     return [
         CalendarEventResponse.model_validate(item)
-        for item in db.scalars(query.order_by(CalendarEvent.starts_at.asc()).limit(500)).all()
+        for item in db.scalars(
+            query.order_by(CalendarEvent.starts_at.asc(), CalendarEvent.id.asc())
+            .offset(offset).limit(limit)
+        ).all()
     ]
 
 
@@ -961,6 +1355,19 @@ def cancel_calendar(event_id: uuid.UUID, user: Manager, db: Db) -> CalendarEvent
     event.cancelled_at = datetime.now(UTC)
     db.commit()
     db.refresh(event)
+    try:
+        event_broker.publish_event(
+            institution_id=event.institution_id,
+            event_type="calendar_updated",
+            data={
+                "event_id": str(event.id),
+                "action": "cancelled",
+                "title": event.title,
+                "event_type": event.event_type,
+            },
+        )
+    except Exception:
+        pass
     return CalendarEventResponse.model_validate(event)
 
 
@@ -988,6 +1395,21 @@ def update_calendar(
     event.cancelled_at = None
     db.commit()
     db.refresh(event)
+    try:
+        event_broker.publish_event(
+            institution_id=event.institution_id,
+            event_type="calendar_updated",
+            data={
+                "event_id": str(event.id),
+                "action": "updated",
+                "title": event.title,
+                "event_type": event.event_type,
+                "starts_at": event.starts_at.isoformat() if event.starts_at else None,
+                "ends_at": event.ends_at.isoformat() if event.ends_at else None,
+            },
+        )
+    except Exception:
+        pass
     return CalendarEventResponse.model_validate(event)
 
 
@@ -1026,6 +1448,8 @@ def analytics(course_id: uuid.UUID, user: Manager, db: Db) -> AnalyticsResponse:
 @router.get("/audit-logs", response_model=list[AuditLogResponse])
 def audit_logs(user: Manager, db: Db, limit: int = 100) -> list[AuditLogResponse]:
     query = select(AuditLog).where(AuditLog.institution_id == user.institution_id)
+    if user.role == UserRole.TEACHER:
+        query = query.where(AuditLog.actor_id == user.id)
     return [
         AuditLogResponse.model_validate(item)
         for item in db.scalars(
@@ -1034,18 +1458,52 @@ def audit_logs(user: Manager, db: Db, limit: int = 100) -> list[AuditLogResponse
     ]
 
 
-@router.get("/users", response_model=list[UserResponse])
-def list_users(user: Manager, db: Db, role: UserRole | None = None) -> list[UserResponse]:
+@router.get("/users", response_model=list[ManagedUserResponse])
+def list_users(user: Manager, db: Db, role: UserRole | None = None) -> list[ManagedUserResponse]:
     query = select(User).where(
         User.institution_id == user.institution_id,
         User.deleted_at.is_(None),
     )
     if role:
         query = query.where(User.role == role)
-    return [
-        UserResponse.model_validate(item)
-        for item in db.scalars(query.order_by(User.created_at.desc())).all()
-    ]
+    if user.role == UserRole.TEACHER:
+        enrolled_students = select(Enrollment.student_id).join(
+            Course, Course.id == Enrollment.course_id
+        ).where(Course.teacher_id == user.id)
+        query = query.where((User.id == user.id) | (User.id.in_(enrolled_students)))
+    users = db.scalars(query.order_by(User.created_at.desc())).all()
+    ids = [item.id for item in users]
+    attempts_query = select(QuizAttempt).join(Quiz).join(Course).where(
+        QuizAttempt.student_id.in_(ids),
+        QuizAttempt.institution_id == user.institution_id,
+        QuizAttempt.status == AttemptStatus.SUBMITTED,
+        QuizAttempt.is_practice.is_(False),
+    )
+    if user.role == UserRole.TEACHER:
+        attempts_query = attempts_query.where(Course.teacher_id == user.id)
+    attempts = db.scalars(attempts_query).all()
+    pending_ids = set(db.scalars(select(QuizAttemptAnswer.attempt_id).where(
+        QuizAttemptAnswer.attempt_id.in_([attempt.id for attempt in attempts]),
+        QuizAttemptAnswer.graded_at.is_(None),
+    )).all())
+    by_student = defaultdict(list)
+    for attempt in attempts:
+        by_student[attempt.student_id].append(attempt)
+    result = []
+    for item in users:
+        visible = by_student[item.id]
+        finalized = [attempt for attempt in visible if attempt.id not in pending_ids and attempt.total_points > 0]
+        percent = (sum(float(attempt.score or 0) / float(attempt.total_points) * 100 for attempt in finalized)
+                   / len(finalized)) if finalized else None
+        response = ManagedUserResponse.model_validate(item)
+        result.append(response.model_copy(update={
+            "quiz_attempts_count": len(visible),
+            "has_completed_exam": bool(visible),
+            "pending_quiz_attempts": sum(attempt.id in pending_ids for attempt in visible),
+            "average_quiz_score": percent,
+            "quiz_success_rate": percent,
+        }))
+    return result
 
 
 @router.post("/users/{user_id}/block", response_model=UserResponse)
@@ -1116,28 +1574,1246 @@ def delete_user(user_id: uuid.UUID, actor: Manager, db: Db, request: Request) ->
     db.commit()
 
 
-from pydantic import BaseModel
+# ---------------------------------------------------------------------------
+# Lesson materials (standalone; replaces Knowledge-Center based materials)
+# ---------------------------------------------------------------------------
 
-class ASRConfigPayload(BaseModel):
-    kaggle_asr_url: str = ""
+@router.post("/lessons/{lesson_id}/materials", status_code=201)
+async def upload_lesson_material(
+    request: Request,
+    lesson_id: uuid.UUID,
+    user: Manager,
+    db: Db,
+    file: UploadFile = File(...),
+) -> dict:
+    enforce_rate_limit(request, bucket="upload")
+    from app.services.lesson_materials import upload_material
 
-@router.get("/system/asr-config")
-def get_asr_config():
-    from app.core.config import get_settings
+    asset = await upload_material(db, user, lesson_id, file)
+    return {
+        "id": str(asset.id),
+        "lesson_id": str(asset.lesson_id),
+        "filename": asset.filename,
+        "size_bytes": asset.size_bytes or 0,
+        "mime_type": asset.mime_type,
+        "download_url": f"/api/v1/lessons/{asset.lesson_id}/materials/{asset.id}/download",
+    }
+
+
+@router.get("/lessons/{lesson_id}/materials/{asset_id}/download")
+def download_lesson_material(
+    lesson_id: uuid.UUID,
+    asset_id: uuid.UUID,
+    user: CurrentUser,
+    db: Db,
+):
+    from app.services.lesson_materials import open_material_stream
+
+    stream, media_type, filename = open_material_stream(db, user, lesson_id, asset_id, as_attachment=True)
+    from urllib.parse import quote
+
+    return StreamingResponse(
+        stream,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename or 'material')}",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.delete("/lessons/{lesson_id}/materials/{asset_id}", status_code=204)
+def delete_lesson_material(
+    lesson_id: uuid.UUID,
+    asset_id: uuid.UUID,
+    user: Manager,
+    db: Db,
+) -> Response:
+    from app.services.lesson_materials import delete_material
+
+    delete_material(db, user, lesson_id, asset_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/courses/{course_id}/assessments")
+def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
+    """Student-facing per-lesson/unit assessments with access gating.
+
+    Returns published quizzes/assignments for this course grouped by
+    lesson_id/module_id. Every item carries `accessible`: whether this student
+    may open/attempt it (enrollment + payment/entitlement on the lesson).
+    """
+    lesson_ids: list[uuid.UUID] = []
+    lesson_titles: dict[uuid.UUID, str] = {}
+    accessible_lessons: set[uuid.UUID] = set()
+    course = db.get(Course, course_id)
+    if course is None or course.institution_id != user.institution_id:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    if user.role == UserRole.TEACHER and course.teacher_id != user.id:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    enrolled = db.scalar(
+        select(Enrollment.id).where(
+            Enrollment.course_id == course_id,
+            Enrollment.student_id == user.id,
+            Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+        )
+    )
+    lessons = list(db.scalars(select(Lesson).where(Lesson.course_id == course_id)
+        .order_by(Lesson.position, Lesson.id)).all())
+    from app.services.payment_service import accessible_course_lesson_ids
+    accessible_lessons = accessible_course_lesson_ids(db, user, course, lessons, enrolled=enrolled is not None)
+    lesson_ids = [lesson.id for lesson in lessons]
+    lesson_titles = {lesson.id: lesson.title for lesson in lessons}
+    from app.services.lesson_release import available_lesson_ids
+    visible_lessons = available_lesson_ids(db, lessons, {course.id: course}) if user.role == UserRole.STUDENT else set(lesson_ids)
+
+    quizzes = list(
+        db.scalars(
+            select(Quiz)
+            .where(
+                Quiz.course_id == course_id,
+                Quiz.institution_id == user.institution_id,
+                Quiz.status == "published",
+            )
+            .order_by(Quiz.published_at.desc())
+        ).all()
+    )
+    assignments = list(
+        db.scalars(
+            select(Assignment)
+            .where(
+                Assignment.course_id == course_id,
+                Assignment.institution_id == user.institution_id,
+                Assignment.status == "published",
+            )
+            .order_by(Assignment.created_at.desc())
+        ).all()
+    )
+
+    attempt_counts = dict(db.execute(select(QuizAttempt.quiz_id, func.count(QuizAttempt.id))
+        .join(Quiz, Quiz.id == QuizAttempt.quiz_id)
+        .where(Quiz.course_id == course_id, Quiz.institution_id == user.institution_id,
+               QuizAttempt.student_id == user.id, QuizAttempt.is_practice.is_(False))
+        .group_by(QuizAttempt.quiz_id)).all()) if user.role == UserRole.STUDENT else {}
+    # Consuming an attempt (including merely starting it) is not completion.
+    # Two set queries keep this independent of the number of assessments.
+    completed_quizzes = set(db.scalars(select(QuizAttempt.quiz_id).join(Quiz, Quiz.id == QuizAttempt.quiz_id)
+        .where(Quiz.course_id == course_id, Quiz.institution_id == user.institution_id,
+               QuizAttempt.institution_id == user.institution_id, QuizAttempt.student_id == user.id,
+               QuizAttempt.is_practice.is_(False), QuizAttempt.status == AttemptStatus.SUBMITTED,
+               QuizAttempt.submitted_at.is_not(None)).distinct())) if user.role == UserRole.STUDENT else set()
+    completed_assignments = set(db.scalars(select(AssignmentSubmission.assignment_id)
+        .join(Assignment, Assignment.id == AssignmentSubmission.assignment_id)
+        .where(Assignment.course_id == course_id, Assignment.institution_id == user.institution_id,
+               AssignmentSubmission.institution_id == user.institution_id,
+               AssignmentSubmission.student_id == user.id).distinct())) if user.role == UserRole.STUDENT else set()
+    course_access = user.role != UserRole.STUDENT or enrolled is not None
+
+    def scope_accessible(assessment):
+        required = set(assessment.lesson_ids)
+        required.update(lesson.id for lesson in lessons if lesson.module_id in assessment.module_ids)
+        return course_access and required.issubset(accessible_lessons)
+
+    def quiz_item(q: Quiz) -> dict:
+        return {
+            "id": str(q.id),
+            "kind": "quiz",
+            "title": q.title,
+            "course_id": str(q.course_id),
+            "module_id": str(q.module_id) if q.module_id else None,
+            "lesson_id": str(q.lesson_id) if q.lesson_id else None,
+            "lesson_ids": [str(value) for value in q.lesson_ids],
+            "module_ids": [str(value) for value in q.module_ids],
+            "duration_seconds": q.duration_seconds,
+            "starts_at": q.starts_at.isoformat() if q.starts_at else None,
+            "ends_at": q.ends_at.isoformat() if q.ends_at else None,
+            "attempts_allowed": q.attempts_allowed,
+            "attempts_used": attempt_counts.get(q.id, 0),
+            "completed": q.id in completed_quizzes,
+            # Unscoped quizzes fall back to: any enrolled student can try.
+            "accessible": scope_accessible(q),
+        }
+
+    def assignment_item(a: Assignment) -> dict:
+        return {
+            "id": str(a.id),
+            "kind": "assignment",
+            "title": a.title,
+            "course_id": str(a.course_id),
+            "module_id": str(a.module_id) if a.module_id else None,
+            "lesson_id": str(a.lesson_id) if a.lesson_id else None,
+            "lesson_ids": [str(value) for value in a.lesson_ids],
+            "module_ids": [str(value) for value in a.module_ids],
+            "due_at": a.due_at.isoformat() if a.due_at else None,
+            "max_score": float(a.max_score or 0),
+            "completed": a.id in completed_assignments,
+            "accessible": scope_accessible(a),
+        }
+
+    return {
+        "course_id": str(course_id),
+        "lessons": [
+            {"id": str(lid), "title": lesson_titles[lid], "accessible": lid in accessible_lessons}
+            for lid in lesson_ids if lid in visible_lessons
+        ],
+        "quizzes": [quiz_item(q) for q in quizzes],
+        "assignments": [assignment_item(a) for a in assignments],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Standalone solving pages: quiz questions for the student + assignment PDF
+# ---------------------------------------------------------------------------
+
+
+def _quiz_for_student(db: Session, quiz_id: uuid.UUID, user: CurrentUser) -> Quiz:
+    quiz = db.scalar(
+        select(Quiz).where(
+            Quiz.id == quiz_id,
+            Quiz.institution_id == user.institution_id,
+            Quiz.status == QuizStatus.PUBLISHED,
+        )
+    )
+    require_assessment_access(db, user, quiz)
+    return quiz
+
+
+@router.get("/quizzes/{quiz_id}/solve")
+def get_quiz_solve_view(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
+    """Questions for the standalone quiz-solving page.
+
+    Serves the published quiz's questions WITHOUT `correct_answer` — the
+    correct answer is only applied server-side at submit time.
+    """
+    from app.services.platform_service import _as_utc, _enrolled
+
+    quiz = db.scalar(
+        select(Quiz).where(
+            Quiz.id == quiz_id,
+            Quiz.institution_id == user.institution_id,
+            Quiz.status == QuizStatus.PUBLISHED,
+        )
+    )
+    if quiz is None:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    require_assessment_access(db, user, quiz, writing=True)
+    if user.role == UserRole.STUDENT:
+        if not _enrolled(db, user, quiz.course_id):
+            raise HTTPException(status_code=403, detail="Not enrolled")
+        # Lesson/payment gating mirrors the assessments listing.
+        if quiz.lesson_id is not None and not can_access_lesson_content(db, user, quiz.lesson_id):
+            raise HTTPException(status_code=403, detail="Lesson not unlocked")
+        now = datetime.now(UTC)
+        if _as_utc(quiz.starts_at) and _as_utc(quiz.starts_at) > now:
+            raise HTTPException(status_code=403, detail="Quiz is not open yet")
+        if _as_utc(quiz.ends_at) and _as_utc(quiz.ends_at) <= now:
+            raise HTTPException(status_code=403, detail="Quiz is closed")
+
+    # The attempt clock starts when the student opens the solving page (or
+    # resumes the already-running attempt) — otherwise duration_seconds would
+    # never constrain anything. The countdown must be server-authoritative.
+    attempt = None
+    expires_at_iso: str | None = None
+    if user.role == UserRole.STUDENT:
+        try:
+            attempt = platform_service.start_quiz(db, user, quiz.id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if attempt.expires_at is not None:
+            expires_at_iso = attempt.expires_at.isoformat()
+
+    from app.services.quiz_snapshot import question_rows
+    rows = question_rows(db, quiz, attempt)
+    total_points = attempt.total_points if attempt is not None else sum(qq.points for qq, _ in rows)
+
+    def _safe_options(raw: object) -> object:
+        """Strip answer-revealing flags (is_correct) from stored options."""
+        if not isinstance(raw, list):
+            return raw
+        cleaned: list = []
+        for opt in raw:
+            if isinstance(opt, dict):
+                cleaned.append({k: v for k, v in opt.items() if k not in {"is_correct", "correct"}})
+            else:
+                cleaned.append(opt)
+        return cleaned
+
+    return {
+        "quiz": {
+            "id": str(quiz.id),
+            "title": quiz.title,
+            "course_id": str(quiz.course_id),
+            "lesson_id": str(quiz.lesson_id) if quiz.lesson_id else None,
+            "duration_seconds": quiz.duration_seconds,
+            "attempts_allowed": quiz.attempts_allowed,
+            "starts_at": quiz.starts_at.isoformat() if quiz.starts_at else None,
+            "ends_at": quiz.ends_at.isoformat() if quiz.ends_at else None,
+            "total_points": float(total_points),
+        },
+        "attempt": (
+            {
+                "id": str(attempt.id),
+                "attempt_number": attempt.attempt_number,
+                "started_at": attempt.started_at.isoformat() if attempt.started_at else None,
+                "expires_at": expires_at_iso,
+                "is_practice": bool(attempt.is_practice),
+            }
+            if attempt is not None
+            else None
+        ),
+        "questions": [
+            {
+                "id": str(question.id),
+                "question_type": question.question_type,
+                "prompt": question.prompt,
+                "options": _safe_options(question.options),
+                "points": float(qq.points),
+            }
+            for qq, question in rows
+        ],
+    }
+
+
+@router.post("/quiz-attempts/{attempt_id}/answers/{question_id}/grade", response_model=QuizAttemptResponse)
+def grade_quiz_answer(attempt_id: uuid.UUID, question_id: uuid.UUID, payload: GradeQuizAnswerRequest,
+                      user: Manager, db: Db, request: Request):
+    attempt = db.scalar(select(QuizAttempt).where(QuizAttempt.id == attempt_id).with_for_update())
+    if not attempt:
+        raise HTTPException(404, "Attempt not found")
+    quiz = db.get(Quiz, attempt.quiz_id)
+    course = db.get(Course, quiz.course_id) if quiz else None
+    if course is None or (user.role != UserRole.PLATFORM_ADMIN and course.institution_id != user.institution_id):
+        raise HTTPException(404, "Attempt not found")
+    try:
+        platform_service.ensure_course_manager(user, course)
+    except PermissionError as exc:
+        raise HTTPException(404, "Attempt not found") from exc
+    if attempt.status != AttemptStatus.SUBMITTED:
+        raise HTTPException(409, "Only submitted attempts can be graded")
+    if attempt.results_approved_at is not None:
+        raise HTTPException(409, "Approved results cannot be changed")
+    answer = db.scalar(select(QuizAttemptAnswer).where(QuizAttemptAnswer.attempt_id == attempt.id,
+        QuizAttemptAnswer.question_id == question_id))
+    if answer is None:
+        raise HTTPException(404, "Answer not found")
+    if answer.question_snapshot is None:
+        raise HTTPException(409, "Legacy answer has no frozen rubric; historical evidence review is required")
+    if payload.awarded_points > answer.question_snapshot["points"]:
+        raise HTTPException(422, "Grade exceeds the question's points")
+    answer.awarded_points = payload.awarded_points
+    answer.feedback = payload.feedback
+    answer.graded_at = datetime.now(UTC)
+    answer.graded_by = user.id
+    db.flush()
+    attempt.score = db.scalar(select(func.sum(QuizAttemptAnswer.awarded_points)).where(
+        QuizAttemptAnswer.attempt_id == attempt.id, QuizAttemptAnswer.graded_at.is_not(None))) or 0
+    record_audit(db, request, action="quiz_answer_graded", resource_type="quiz_attempt", resource_id=str(attempt.id), actor=user)
+    db.commit()
+    db.refresh(attempt)
+    return attempt
+
+
+@router.post("/quiz-attempts/{attempt_id}/approve", response_model=QuizAttemptResponse)
+def approve_quiz_result(attempt_id: uuid.UUID, user: Manager, db: Db, request: Request, payload: "ApproveQuizResultRequest | None" = None):
+    attempt = db.scalar(select(QuizAttempt).where(QuizAttempt.id == attempt_id).with_for_update())
+    quiz = db.get(Quiz, attempt.quiz_id) if attempt else None
+    course = db.get(Course, quiz.course_id) if quiz else None
+    if course is None or (user.role != UserRole.PLATFORM_ADMIN and course.institution_id != user.institution_id):
+        raise HTTPException(404, "Attempt not found")
+    try:
+        platform_service.ensure_course_manager(user, course)
+    except PermissionError as exc:
+        raise HTTPException(404, "Attempt not found") from exc
+    if attempt.is_practice or attempt.status != AttemptStatus.SUBMITTED:
+        raise HTTPException(409, "Only submitted official attempts can be approved")
+    if attempt.results_approved_at is not None:
+        return attempt
+    if not attempt.question_snapshot:
+        raise HTTPException(409, "Legacy attempt requires historical evidence review")
+    answers = db.scalars(select(QuizAttemptAnswer).where(QuizAttemptAnswer.attempt_id == attempt.id)).all()
+    by_question = {str(answer.question_id): answer for answer in answers}
+    if any(item["question_id"] not in by_question or by_question[item["question_id"]].graded_at is None
+           for item in attempt.question_snapshot):
+        raise HTTPException(409, "صحح كل الأسئلة المقالية قبل اعتماد النتيجة")
+    # Approve only the frozen rubric, never stray answers or invalid historical
+    # totals. Both grading and approval lock the same attempt row.
+    frozen = attempt.question_snapshot
+    expected_ids = {item["question_id"] for item in frozen}
+    if set(by_question) != expected_ids or len(expected_ids) != len(frozen):
+        raise HTTPException(409, "Attempt answers do not match the frozen assessment")
+    maximum = sum(item["points"] for item in frozen)
+    if (not math.isfinite(maximum) or maximum <= 0 or attempt.total_points != maximum or
+            any(not math.isfinite(by_question[item["question_id"]].awarded_points) or
+                not 0 <= by_question[item["question_id"]].awarded_points <= item["points"] for item in frozen)):
+        raise HTTPException(409, "Attempt requires a valid frozen grading total")
+    attempt.calculated_score = sum(by_question[item["question_id"]].awarded_points for item in frozen)
+    attempt.final_percentage = payload.final_percentage if payload else None
+    attempt.approval_notes = payload.notes if payload else None
+    attempt.score = (maximum * attempt.final_percentage / 100 if attempt.final_percentage is not None else attempt.calculated_score)
+    attempt.results_approved_at = datetime.now(UTC)
+    attempt.results_approved_by = user.id
+    record_audit(db, request, action="quiz_result_approved", resource_type="quiz_attempt", resource_id=str(attempt.id), actor=user)
+    db.commit()
+    db.refresh(attempt)
+    return attempt
+
+
+@router.get("/quizzes/{quiz_id}/result")
+def get_quiz_result_view(
+    quiz_id: uuid.UUID,
+    user: CurrentUser,
+    db: Db,
+    attempt_id: uuid.UUID | None = None,
+) -> dict:
+    """Full graded result of a student's attempt on a quiz.
+
+    Serves the standalone result page: per-question correctness, the student's
+    answer vs the correct one, and the question's explanation. Only the owning
+    student may read it — the native question pool is never exposed to anyone
+    else, and teacher-facing analytics never surface practice attempts.
+    """
+    from app.services.platform_service import _as_utc, _enrolled
+
+    quiz = db.scalar(
+        select(Quiz).where(
+            Quiz.id == quiz_id,
+            Quiz.institution_id == user.institution_id,
+            Quiz.status == QuizStatus.PUBLISHED,
+        )
+    )
+    if quiz is None:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    if user.role != UserRole.STUDENT:
+        raise HTTPException(status_code=403, detail="Student only")
+    require_assessment_access(db, user, quiz)
+    if not _enrolled(db, user, quiz.course_id):
+        raise HTTPException(status_code=403, detail="Not enrolled")
+
+    all_attempts = db.scalars(
+        select(QuizAttempt)
+        .where(
+            QuizAttempt.quiz_id == quiz.id,
+            QuizAttempt.student_id == user.id,
+            QuizAttempt.status.in_([AttemptStatus.SUBMITTED, AttemptStatus.EXPIRED]),
+        )
+        .order_by(QuizAttempt.attempt_number.desc())
+    ).all()
+    if not all_attempts:
+        raise HTTPException(status_code=404, detail="No graded attempt yet")
+
+    if attempt_id is not None:
+        attempt = next((a for a in all_attempts if a.id == attempt_id), None)
+        if attempt is None:
+            raise HTTPException(status_code=404, detail="Attempt not found")
+    else:
+        attempt = all_attempts[0]
+
+    from app.services.quiz_results import result_is_visible, PENDING_RESULT_MESSAGE
+    if not result_is_visible(attempt):
+        answers = db.scalars(select(QuizAttemptAnswer).where(QuizAttemptAnswer.attempt_id == attempt.id)).all()
+        return {
+            "quiz": {"id": str(quiz.id), "title": quiz.title},
+            "attempt": {"id": str(attempt.id), "attempt_number": attempt.attempt_number,
+                        "is_practice": bool(attempt.is_practice),
+                        "submitted_at": attempt.submitted_at.isoformat() if attempt.submitted_at else None,
+                        "duration_seconds": None},
+            "score": None, "total_points": attempt.total_points,
+            "approval_status": "pending", "grading_status": "pending", "message": PENDING_RESULT_MESSAGE,
+            "summary": None,
+            "questions": [{"id": str(answer.question_id), "student_answer": answer.answer} for answer in answers],
+        }
+
+    from app.services.quiz_snapshot import question_rows
+    rows = question_rows(db, quiz, attempt)
+
+    answer_rows = {
+        item.question_id: item
+        for item in db.scalars(
+            select(QuizAttemptAnswer).where(QuizAttemptAnswer.attempt_id == attempt.id)
+        ).all()
+    }
+
+    def _answer_text(raw: object) -> str:
+        if raw is None:
+            return ""
+        if isinstance(raw, str):
+            return raw
+        return json.dumps(raw, ensure_ascii=False)
+
+    def _normalize(value: object) -> str:
+        return _answer_text(value).strip()
+
+    items = []
+    correct_count = 0
+    wrong_count = 0
+    skipped_count = 0
+    pending_count = 0
+    earned = 0.0
+    possible = 0.0
+    for qq, question in rows:
+        given = answer_rows.get(question.id)
+        given_text = _answer_text(given.answer) if given else ""
+        correct_text = _answer_text(question.correct_answer)
+        points = float(qq.points)
+        awarded = float(given.awarded_points) if given else 0.0
+        possible += points
+        earned += awarded
+        answered = bool(given and given_text.strip())
+        if attempt.status == AttemptStatus.SUBMITTED and question.question_type in {"essay", "short_answer"} and (given is None or given.graded_at is None):
+            state = "pending"
+            pending_count += 1
+        elif awarded >= points > 0:
+            state = "correct"
+            correct_count += 1
+        elif answered:
+            state = "wrong"
+            wrong_count += 1
+        else:
+            state = "skipped"
+            skipped_count += 1
+        # Option labels for MCQ: map the stored answer text back to its letter.
+        options = question.options if isinstance(question.options, list) else []
+        opt_texts: list[str] = []
+        for opt in options:
+            if isinstance(opt, dict):
+                opt_texts.append(_normalize(opt.get("text", "")))
+            else:
+                opt_texts.append(_normalize(opt))
+        from app.core.mcq_answers import option_index
+        chosen_letter = option_index(given.answer, options) if given else None
+        correct_letter = option_index(question.correct_answer, options)
+        items.append(
+            {
+                "id": str(question.id),
+                "question_type": question.question_type,
+                "prompt": question.prompt,
+                "learning_objective": question.learning_objective,
+                "points": points,
+                "awarded": awarded,
+                "feedback": given.feedback if given else None,
+                "state": state,
+                "answered": answered,
+                "student_answer": given_text,
+                "student_answer_letter": chosen_letter,
+                "correct_answer": correct_text,
+                "correct_answer_letter": correct_letter,
+                "options": opt_texts,
+            }
+        )
+
+    duration_seconds = None
+    if attempt.submitted_at and attempt.started_at:
+        duration_seconds = max(0, int((_as_utc(attempt.submitted_at) - _as_utc(attempt.started_at)).total_seconds()))
+
+    return {
+        "quiz": {"id": str(quiz.id), "title": quiz.title},
+        "attempt": {
+            "id": str(attempt.id),
+            "attempt_number": attempt.attempt_number,
+            "is_practice": bool(attempt.is_practice),
+            "submitted_at": attempt.submitted_at.isoformat() if attempt.submitted_at else None,
+            "duration_seconds": duration_seconds,
+        },
+        "attempts_history": [
+            {
+                "id": str(att.id),
+                "attempt_number": att.attempt_number,
+                "is_practice": bool(att.is_practice),
+                "score": float(att.score or 0.0) if result_is_visible(att) else None,
+                "approval_status": "approved" if att.results_approved_at else "practice" if result_is_visible(att) else "pending",
+                "total_points": float(att.total_points) if att.total_points is not None else None,
+                "submitted_at": att.submitted_at.isoformat() if att.submitted_at else None,
+                "duration_seconds": max(0, int((_as_utc(att.submitted_at) - _as_utc(att.started_at)).total_seconds())) if att.submitted_at and att.started_at else None,
+            }
+            for att in all_attempts
+        ],
+        "score": float(attempt.score or 0.0),
+        "calculated_score": attempt.calculated_score,
+        "final_percentage": attempt.final_percentage,
+        "approval_status": "approved" if attempt.results_approved_at else "practice",
+        "results_approved_at": attempt.results_approved_at.isoformat() if attempt.results_approved_at else None,
+        "grading_status": "pending" if pending_count else "complete",
+        "total_points": float(attempt.total_points) if attempt.total_points is not None else None,
+        "history_state": "frozen" if attempt.question_snapshot is not None else "legacy-unverified",
+        "history_warning": (None if attempt.question_snapshot is not None else
+            "لا توجد نسخة تاريخية موثقة للأسئلة؛ الدرجة المحفوظة لم تتغير، وتفاصيل الأسئلة تحتاج مراجعة المدرس."),
+        "summary": {
+            "correct": correct_count,
+            "wrong": wrong_count,
+            "skipped": skipped_count,
+            "pending": pending_count,
+            "total": len(items),
+        },
+        "questions": items,
+    }
+
+
+@router.get("/students/{student_id}/quiz-solution")
+def get_student_quiz_solution(
+    student_id: uuid.UUID,
+    user: Manager,
+    db: Db,
+    quiz_id: uuid.UUID | None = None,
+    attempt_id: uuid.UUID | None = None,
+) -> dict:
+    """Return the completed quiz questions and student's submitted answers for the teacher."""
+    from app.services.platform_service import _as_utc
+
+    target_student = db.scalar(
+        select(User).where(
+            User.id == student_id,
+            User.institution_id == user.institution_id,
+        )
+    )
+    if not target_student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    attempt_query = select(QuizAttempt).join(Quiz, Quiz.id == QuizAttempt.quiz_id).join(Course, Course.id == Quiz.course_id).where(
+        QuizAttempt.student_id == student_id,
+        QuizAttempt.institution_id == user.institution_id,
+        QuizAttempt.status.in_([AttemptStatus.SUBMITTED, AttemptStatus.EXPIRED]),
+    )
+    if user.role == UserRole.TEACHER:
+        attempt_query = attempt_query.where(Course.teacher_id == user.id)
+    if quiz_id is not None:
+        attempt_query = attempt_query.where(QuizAttempt.quiz_id == quiz_id)
+    attempt_query = attempt_query.where(QuizAttempt.is_practice.is_(False))
+    attempt_choices = db.execute(attempt_query.add_columns(Quiz.title).order_by(QuizAttempt.submitted_at.desc(), QuizAttempt.id.desc()).limit(100)).all()
+    if attempt_id is not None:
+        attempt_query = attempt_query.where(QuizAttempt.id == attempt_id)
+    attempt = db.scalar(attempt_query.order_by(QuizAttempt.submitted_at.desc()))
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="No completed quiz attempt found for this student")
+
+    quiz = db.get(Quiz, attempt.quiz_id)
+    if quiz is None:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    from app.services.quiz_snapshot import question_rows
+    rows = question_rows(db, quiz, attempt)
+
+    answer_rows = {
+        item.question_id: item
+        for item in db.scalars(
+            select(QuizAttemptAnswer).where(QuizAttemptAnswer.attempt_id == attempt.id)
+        ).all()
+    }
+
+    def _answer_text(raw: object) -> str:
+        if raw is None:
+            return ""
+        if isinstance(raw, str):
+            return raw
+        return json.dumps(raw, ensure_ascii=False)
+
+    def _normalize(value: object) -> str:
+        return _answer_text(value).strip()
+
+    items = []
+    correct_count = 0
+    wrong_count = 0
+    skipped_count = 0
+    pending_count = 0
+    possible = 0.0
+    earned = 0.0
+
+    for qq, question in rows:
+        given = answer_rows.get(question.id)
+        given_text = _answer_text(given.answer) if given else ""
+        correct_text = _answer_text(question.correct_answer)
+        points = float(qq.points)
+        awarded = float(given.awarded_points) if given else 0.0
+        possible += points
+        earned += awarded
+        answered = bool(given and given_text.strip())
+        if attempt.status == AttemptStatus.SUBMITTED and question.question_type in {"essay", "short_answer"} and (given is None or given.graded_at is None):
+            state = "pending"
+            pending_count += 1
+        elif awarded >= points > 0:
+            state = "correct"
+            correct_count += 1
+        elif answered:
+            state = "wrong"
+            wrong_count += 1
+        else:
+            state = "skipped"
+            skipped_count += 1
+
+        options = question.options if isinstance(question.options, list) else []
+        opt_texts: list[str] = []
+        for opt in options:
+            if isinstance(opt, dict):
+                opt_texts.append(_normalize(opt.get("text", "")))
+            else:
+                opt_texts.append(_normalize(opt))
+
+        from app.core.mcq_answers import option_index
+        chosen_index = option_index(given.answer, options) if given else None
+        correct_index = option_index(question.correct_answer, options)
+        chosen_letter = chr(65 + chosen_index) if chosen_index is not None else None
+        correct_letter = chr(65 + correct_index) if correct_index is not None else None
+
+        items.append(
+            {
+                "id": str(question.id),
+                "question_type": question.question_type,
+                "prompt": question.prompt,
+                "learning_objective": question.learning_objective,
+                "points": points,
+                "awarded": awarded,
+                "feedback": given.feedback if given else None,
+                "state": state,
+                "answered": answered,
+                "student_answer": given_text,
+                "student_answer_letter": chosen_letter,
+                "correct_answer": correct_text,
+                "correct_answer_letter": correct_letter,
+                "options": opt_texts,
+            }
+        )
+
+    duration_seconds = None
+    if attempt.submitted_at and attempt.started_at:
+        duration_seconds = max(0, int((_as_utc(attempt.submitted_at) - _as_utc(attempt.started_at)).total_seconds()))
+
+    return {
+        "student_id": str(student_id),
+        "student_name": target_student.display_name,
+        "available_attempts": [{"id": str(item.id), "title": title, "attempt_number": item.attempt_number,
+            "submitted_at": item.submitted_at.isoformat() if item.submitted_at else None} for item, title in attempt_choices],
+        "approval_status": "approved" if attempt.results_approved_at else "pending",
+        "results_approved_at": attempt.results_approved_at.isoformat() if attempt.results_approved_at else None,
+        "history_state": "frozen" if attempt.question_snapshot is not None else "legacy-unverified",
+        "history_warning": (None if attempt.question_snapshot is not None else
+            "لا توجد نسخة تاريخية موثقة للأسئلة؛ الدرجة المحفوظة لم تتغير، وتفاصيل الأسئلة تحتاج مراجعة المدرس."),
+        "grading_status": "pending" if pending_count else "complete",
+        "quiz": {"id": str(quiz.id), "title": quiz.title},
+        "attempt": {
+            "id": str(attempt.id),
+            "attempt_number": attempt.attempt_number,
+            "submitted_at": attempt.submitted_at.isoformat() if attempt.submitted_at else None,
+            "duration_seconds": duration_seconds,
+        },
+        "score": float(attempt.score or 0.0),
+        "calculated_score": attempt.calculated_score,
+        "final_percentage": attempt.final_percentage,
+        "total_points": float(attempt.total_points) if attempt.total_points is not None else None,
+        "summary": {
+            "correct": correct_count,
+            "wrong": wrong_count,
+            "skipped": skipped_count,
+            "pending": pending_count,
+            "total": len(items),
+        },
+        "questions": items,
+    }
+
+
+@router.get("/quizzes/{quiz_id}/attempts-history")
+def get_quiz_attempts_history(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> list[dict]:
+    """List all completed attempts for the current student on a quiz."""
+    from app.services.platform_service import _as_utc, _enrolled
+
+    quiz = db.scalar(
+        select(Quiz).where(
+            Quiz.id == quiz_id,
+            Quiz.institution_id == user.institution_id,
+            Quiz.status == QuizStatus.PUBLISHED,
+        )
+    )
+    if quiz is None:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    if user.role != UserRole.STUDENT:
+        raise HTTPException(status_code=403, detail="Student only")
+    require_assessment_access(db, user, quiz)
+    if not _enrolled(db, user, quiz.course_id):
+        raise HTTPException(status_code=403, detail="Not enrolled")
+
+    attempts = db.scalars(
+        select(QuizAttempt)
+        .where(
+            QuizAttempt.quiz_id == quiz.id,
+            QuizAttempt.student_id == user.id,
+            QuizAttempt.status.in_([AttemptStatus.SUBMITTED, AttemptStatus.EXPIRED]),
+        )
+        .order_by(QuizAttempt.attempt_number.desc())
+    ).all()
+
+    from app.services.quiz_results import result_is_visible
+    return [
+        {
+            "id": str(att.id),
+            "attempt_number": att.attempt_number,
+            "grading_status": att.grading_status if result_is_visible(att) else "pending",
+            "approval_status": "approved" if att.results_approved_at else "practice" if result_is_visible(att) else "pending",
+            "is_practice": bool(att.is_practice),
+            "score": float(att.score or 0.0) if result_is_visible(att) else None,
+            "total_points": float(att.total_points or 0.0),
+            "submitted_at": att.submitted_at.isoformat() if att.submitted_at else None,
+            "duration_seconds": max(0, int((_as_utc(att.submitted_at) - _as_utc(att.started_at)).total_seconds())) if att.submitted_at and att.started_at else None,
+        }
+        for att in attempts
+    ]
+
+
+@router.get("/assignments/{assignment_id}/solve")
+def get_assignment_solve_view(assignment_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
+    """Assignment details for the standalone solving page (download + upload)."""
+    from app.services.platform_service import _as_utc, _enrolled
+
+    assignment = db.scalar(
+        select(Assignment).where(
+            Assignment.id == assignment_id,
+            Assignment.institution_id == user.institution_id,
+            Assignment.status == AssignmentStatus.PUBLISHED,
+        )
+    )
+    if assignment is None:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    require_assessment_access(db, user, assignment)
+    if user.role == UserRole.STUDENT:
+        if not _enrolled(db, user, assignment.course_id):
+            raise HTTPException(status_code=403, detail="Not enrolled")
+        if assignment.lesson_id is not None and not can_access_lesson_content(db, user, assignment.lesson_id):
+            raise HTTPException(status_code=403, detail="Lesson not unlocked")
+
+    latest_submission = db.scalar(
+        select(AssignmentSubmission)
+        .where(
+            AssignmentSubmission.assignment_id == assignment.id,
+            AssignmentSubmission.student_id == user.id,
+        )
+        .order_by(AssignmentSubmission.version.desc())
+    ) if user.role == UserRole.STUDENT else None
+
+    return {
+        "id": str(assignment.id),
+        "title": assignment.title,
+        "prompt": assignment.prompt,
+        "course_id": str(assignment.course_id),
+        "lesson_id": str(assignment.lesson_id) if assignment.lesson_id else None,
+        "due_at": assignment.due_at.isoformat() if assignment.due_at else None,
+        "max_score": float(assignment.max_score or 0),
+        "my_latest_submission": (
+            {
+                "id": str(latest_submission.id),
+                "version": latest_submission.version,
+                "status": latest_submission.status,
+                "submitted_at": latest_submission.submitted_at.isoformat() if latest_submission.submitted_at else None,
+                "has_file": bool(latest_submission.object_key),
+            }
+            if latest_submission
+            else None
+        ),
+    }
+
+
+ALLOWED_SUBMISSION_EXT = {".pdf", ".png", ".jpg", ".jpeg"}
+MAX_SUBMISSION_BYTES = 50 * 1024 * 1024  # 50MB
+
+
+@router.get("/assignments/{assignment_id}/sheet.pdf")
+def download_assignment_sheet(assignment_id: uuid.UUID, user: CurrentUser, db: Db):
+    """Render the assignment questions as a printable Arabic PDF sheet.
+
+    Students download this, solve on paper, then upload photographed/scanned
+    copies through the submission endpoint. Content comes only from the
+    assignment record — nothing is invented.
+    """
+    from app.services.assignment_sheet import render_assignment_sheet_pdf
+
+    assignment = db.scalar(
+        select(Assignment).where(
+            Assignment.id == assignment_id,
+            Assignment.institution_id == user.institution_id,
+            Assignment.status == AssignmentStatus.PUBLISHED,
+        )
+    )
+    if assignment is None:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    require_assessment_access(db, user, assignment)
+    if user.role == UserRole.STUDENT:
+        from app.services.platform_service import _enrolled
+
+        if not _enrolled(db, user, assignment.course_id):
+            raise HTTPException(status_code=403, detail="Not enrolled")
+        if assignment.lesson_id is not None and not can_access_lesson_content(db, user, assignment.lesson_id):
+            raise HTTPException(status_code=403, detail="Lesson not unlocked")
+
+    try:
+        pdf_bytes = render_assignment_sheet_pdf(
+            title=assignment.title,
+            prompt=assignment.prompt,
+            max_score=float(assignment.max_score or 0),
+            due_at=assignment.due_at,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    from urllib.parse import quote
+
+    filename = f"assignment-{assignment.id}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+@router.post("/assignments/{assignment_id}/submissions/file", status_code=201)
+async def upload_assignment_submission_file(
+    request: Request,
+    assignment_id: uuid.UUID,
+    user: Student,
+    db: Db,
+    file: UploadFile = File(...),
+) -> dict:
+    """Store the student's photographed/typed solution file (PDF or image)."""
+    enforce_rate_limit(request, bucket="upload")
+
+    from app.core.storage import generate_safe_object_key, get_storage_provider
+    from app.services.platform_service import _as_utc, _enrolled, submit_assignment
+
+    assignment = db.scalar(
+        select(Assignment).where(
+            Assignment.id == assignment_id,
+            Assignment.institution_id == user.institution_id,
+            Assignment.status == AssignmentStatus.PUBLISHED,
+        )
+    )
+    require_assessment_access(db, user, assignment, writing=True)
+
+    filename = os.path.basename(file.filename or "submission")
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ALLOWED_SUBMISSION_EXT:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unsupported submission type: {ext or 'unknown'} — upload a PDF or image",
+        )
+
+    storage = get_storage_provider()
+    object_key = generate_safe_object_key("assignment_submissions", filename)
+    signature = await file.read(16)
+    await file.seek(0)
+    from app.services.lesson_materials import _matches_material_format
+    if not _matches_material_format(ext, signature):
+        raise HTTPException(422, "Uploaded submission does not match its format")
+    size = 0
+    tmp_dir = os.path.join(os.getenv("STORAGE_DIR", "storage"), "extraction_tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    staged = os.path.join(tmp_dir, f"sub_{uuid.uuid4().hex[:12]}_{filename}")
+    try:
+        with open(staged, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_SUBMISSION_BYTES:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail="Submission exceeds the 50MB limit",
+                    )
+                out.write(chunk)
+        if size == 0:
+            raise HTTPException(status_code=400, detail="Empty file")
+        try:
+            from app.core.storage_async import save_file_async
+            await save_file_async(storage, staged, object_key)
+        except BaseException as exc:
+            from app.services.storage_cleanup import compensate_upload
+            db.rollback()
+            compensate_upload(db, object_key)
+            if not isinstance(exc, Exception):
+                raise
+            raise HTTPException(503, "Submission storage temporarily unavailable") from exc
+    finally:
+        if os.path.exists(staged):
+            try:
+                os.remove(staged)
+            except OSError:
+                pass
+
+    try:
+        submission = submit_assignment(
+            db,
+            user,
+            assignment_id,
+            AssignmentSubmissionCreateRequest(
+                answer_text=f"تسليم بملف: {filename}",
+                object_key=object_key,
+                idempotency_key=f"file-{uuid.uuid4().hex[:24]}",
+            ),
+        )
+    except (LookupError, PermissionError, ValueError, SQLAlchemyError, HTTPException) as exc:
+        # Roll the stored file back if the submission is not acceptable.
+        from app.services.storage_cleanup import compensate_upload
+        db.rollback()
+        compensate_upload(db, object_key)
+        if isinstance(exc, HTTPException):
+            raise
+        if isinstance(exc, SQLAlchemyError):
+            raise HTTPException(500, "Unable to save submission") from exc
+        detail = str(exc) or "Submission rejected"
+        code = 404 if isinstance(exc, LookupError) else (403 if isinstance(exc, PermissionError) else 422)
+        raise HTTPException(status_code=code, detail=detail) from exc
+
+    return {
+        "id": str(submission.id),
+        "version": submission.version,
+        "has_file": bool(submission.object_key),
+        "status": submission.status,
+        "submitted_at": submission.submitted_at.isoformat() if submission.submitted_at else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Lesson comments (discussion under each lesson's video)
+# ---------------------------------------------------------------------------
+
+
+def _comment_tree(db: Session, lesson_id: uuid.UUID, user: CurrentUser) -> list[dict]:
+    rows = list(
+        db.scalars(
+            select(LessonComment)
+            .where(LessonComment.lesson_id == lesson_id)
+            .order_by(LessonComment.created_at.asc())
+        ).all()
+    )
+    author_ids = {c.student_id for c in rows}
+    user_map = {
+        u.id: u
+        for u in db.scalars(select(User).where(User.id.in_(author_ids))).all()
+    } if author_ids else {}
+
+    def to_dict(c: LessonComment) -> dict:
+        u = user_map.get(c.student_id)
+        is_teacher = bool(u and u.role == UserRole.TEACHER)
+        return {
+            "id": str(c.id),
+            "author": (u.display_name if u else None) or ("المعلم" if is_teacher else "طالب"),
+            "is_teacher": is_teacher,
+            "role": u.role.value if u else "student",
+            "is_mine": c.student_id == user.id,
+            "parent_id": str(c.parent_id) if c.parent_id else None,
+            "body": c.body,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+        }
+
+    tops = [to_dict(c) for c in rows if c.parent_id is None]
+    replies = [to_dict(c) for c in rows if c.parent_id is not None]
+    by_parent: dict[str, list[dict]] = {}
+    for r in replies:
+        by_parent.setdefault(r["parent_id"] or "", []).append(r)
+    for t in tops:
+        t["replies"] = by_parent.get(t["id"], [])
+    tops.reverse()  # newest first, replies stay chronological
+    return tops
+
+
+@router.get("/lessons/{lesson_id}/comments")
+def list_lesson_comments(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
+    _require_lesson_access(db, user, lesson_id, same_institution=True)
+    return {"comments": _comment_tree(db, lesson_id, user)}
+
+
+@router.post("/lessons/{lesson_id}/comments", status_code=201)
+def add_lesson_comment(
+    lesson_id: uuid.UUID,
+    payload: LessonCommentCreateRequest,
+    user: CurrentUser,
+    db: Db,
+    request: Request,
+) -> dict:
+    enforce_rate_limit(request, bucket="read")
+    lesson, course = _require_lesson_access(db, user, lesson_id, same_institution=True)
+    parent: LessonComment | None = None
+    if payload.parent_id is not None:
+        parent = db.get(LessonComment, payload.parent_id)
+        if parent is None or parent.lesson_id != lesson.id or parent.parent_id is not None:
+            raise HTTPException(status_code=422, detail="Parent comment not found")
+    comment = LessonComment(
+        institution_id=course.institution_id,
+        lesson_id=lesson.id,
+        student_id=user.id,
+        parent_id=parent.id if parent else None,
+        body=payload.body,
+    )
+    db.add(comment)
+    db.commit()
+    db.refresh(comment)
+    is_teacher = user.role == UserRole.TEACHER
+    saved_response = {
+        'id': str(comment.id), 'author': user.display_name or ('المعلم' if is_teacher else 'طالب'),
+        'is_teacher': is_teacher, 'role': user.role.value, 'is_mine': True,
+        'parent_id': str(comment.parent_id) if comment.parent_id else None, 'body': comment.body,
+        'created_at': comment.created_at.isoformat() if comment.created_at else None, 'replies': [],
+    }
+    from app.core.events import event_broker
+    # Event is a hint only; all content is re-read through authorized GET.
+    try:
+        recipients = {course.teacher_id, user.id}
+        enrolled_users = db.scalars(select(User).join(Enrollment, Enrollment.student_id == User.id).where(
+            Enrollment.course_id == course.id, Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+            User.role == UserRole.STUDENT, User.institution_id == course.institution_id,
+            User.is_active.is_(True), User.deleted_at.is_(None))).all()
+        recipients.update(student.id for student in enrolled_users if can_access_lesson_content(db, student, lesson.id))
+        event_broker.publish_event(course.institution_id, 'lesson_comment_created',
+            {'lesson_id': str(lesson.id), 'comment_id': str(comment.id)}, target_user_ids=recipients)
+    except Exception:
+        # The comment is already committed. A failed hint must not make a client
+        # retry the POST and create a duplicate. Reconnection reloads the thread.
+        logger.warning('Comment saved; realtime notification temporarily unavailable')
+        db.rollback()
+    return saved_response
+
+
+@router.get("/bootstrap", response_model=BootstrapResponse, include_in_schema=False)
+@bootstrap_router.get("/bootstrap", response_model=BootstrapResponse, include_in_schema=False)
+def get_bootstrap_data(
+    user: OptionalUser,
+    db: Db,
+    request: Request,
+) -> BootstrapResponse:
+    """Unified application bootstrap endpoint returning essential startup data in 1 request.
+
+    Replaces initial multi-endpoint request waterfalls (/auth/me, /notifications, /courses,
+    /courses/me/enrollments, /payments/me/entitlements).
+    """
     settings = get_settings()
-    url = os.getenv("KAGGLE_ASR_URL") or settings.kaggle_asr_url or os.getenv("REMOTE_ASR_URL") or ""
-    return {
-        "kaggle_asr_url": url,
-        "mode": "remote_kaggle" if url else "local_whisper",
-        "provider": "QwenCleo-ASR (Kaggle GPU)" if url else "Faster-Whisper Small (Local CPU)"
+    app_settings = {
+        "app_name": settings.app_name,
+        "api_v1_prefix": settings.api_v1_prefix,
+        "default_institution_slug": settings.default_institution_slug,
     }
+    if user is None:
+        # The access cookie can expire before its path-scoped refresh cookie.
+        # A surviving CSRF cookie is only a hint to re-probe/refresh, NEVER
+        # proof of identity. Do not race renewal by returning guest success.
+        if (request.cookies.get(settings.session_cookie_name)
+                or request.cookies.get(settings.csrf_cookie_name)
+                or request.headers.get('Authorization')):
+            raise HTTPException(status_code=401, detail='Invalid or expired session')
+        return BootstrapResponse(
+            authenticated=False,
+            user=None,
+            unread_notifications_count=0,
+            notifications=[],
+            courses=[],
+            enrolled_course_ids=[],
+            entitlements=[],
+            settings=app_settings,
+        )
 
-@router.post("/system/asr-config")
-def update_asr_config(payload: ASRConfigPayload):
-    os.environ["KAGGLE_ASR_URL"] = payload.kaggle_asr_url.strip()
-    return {
-        "status": "success",
-        "kaggle_asr_url": os.environ["KAGGLE_ASR_URL"],
-        "mode": "remote_kaggle" if os.environ["KAGGLE_ASR_URL"] else "local_whisper",
-        "provider": "QwenCleo-ASR (Kaggle GPU)" if os.environ["KAGGLE_ASR_URL"] else "Faster-Whisper Small (Local CPU)"
-    }
+    # 1. User identity
+    user_res = PrivateUserResponse.model_validate(user)
+
+    # 2. Notifications (capped at 50 to avoid oversized responses)
+    notif_list: list[NotificationResponse] = []
+    unread_count = 0
+    try:
+        if user.role != UserRole.STUDENT:
+            query = select(Notification).where(
+                Notification.institution_id == user.institution_id,
+            )
+            if user.role == UserRole.TEACHER:
+                query = query.where(Notification.recipient_id == user.id)
+            all_notifs = db.scalars(query.order_by(Notification.created_at.desc()).limit(50)).all()
+            seen: set[tuple[str, str, str, str | None]] = set()
+            for n in all_notifs:
+                sig = (n.kind, n.title, n.message, n.action_url)
+                if sig not in seen:
+                    seen.add(sig)
+                    notif_list.append(NotificationResponse.model_validate(n))
+                if n.read_at is None:
+                    unread_count += 1
+        else:
+            q = select(Notification).where(
+                Notification.recipient_id == user.id,
+                Notification.institution_id == user.institution_id,
+            )
+            student_notifs = db.scalars(q.order_by(Notification.created_at.desc()).limit(50)).all()
+            from app.services.lesson_announcements import visible_lesson_notifications
+            for n in visible_lesson_notifications(db, user, student_notifs):
+                notif_list.append(NotificationResponse.model_validate(n))
+                if n.read_at is None:
+                    unread_count += 1
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(503, "Bootstrap data is temporarily unavailable", headers={"Retry-After": "3"}) from exc
+
+    # 3. Essential courses
+    courses_res: list[CourseResponse] = []
+    try:
+        from app.api.routes.courses import _safe_course_responses
+        from app.services import course_service
+        raw_courses, _ = course_service.list_courses(db, user, page=1, page_size=100, search=None, sort="created_at")
+        courses_res = _safe_course_responses(db, user, raw_courses)
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(503, "Bootstrap data is temporarily unavailable", headers={"Retry-After": "3"}) from exc
+
+    # 4. Enrolled course IDs and Entitlements for students
+    enrolled_ids: list[str] = []
+    entitlements_list: list[dict[str, Any]] = []
+    if user.role == UserRole.STUDENT:
+        try:
+            enrolled_ids = [
+                str(cid)
+                for cid in db.scalars(
+                    select(Enrollment.course_id).where(
+                        Enrollment.student_id == user.id,
+                        Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+                    )
+                ).all()
+            ]
+            from app.models.payment import StudentEntitlement
+            from app.services.payment_service import is_entitlement_active
+            rows = db.scalars(
+                select(StudentEntitlement)
+                .where(
+                    StudentEntitlement.student_id == user.id,
+                    StudentEntitlement.institution_id == user.institution_id,
+                    StudentEntitlement.revoked_at.is_(None),
+                )
+                .order_by(StudentEntitlement.created_at.desc())
+            ).all()
+            now = datetime.now(timezone.utc)
+            entitlements_list = [
+                {
+                    "id": str(r.id),
+                    "entitlement_type": r.entitlement_type.value,
+                    "resource_id": str(r.resource_id) if r.resource_id else None,
+                    "starts_at": r.starts_at.isoformat(),
+                    "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+                    "active": is_entitlement_active(r, now),
+                }
+                for r in rows
+            ]
+        except Exception as exc:
+            db.rollback()
+            raise HTTPException(503, "Bootstrap data is temporarily unavailable", headers={"Retry-After": "3"}) from exc
+
+    return BootstrapResponse(
+        authenticated=True,
+        user=user_res,
+        unread_notifications_count=unread_count,
+        notifications=notif_list,
+        courses=courses_res,
+        enrolled_course_ids=enrolled_ids,
+        entitlements=entitlements_list,
+        settings=app_settings,
+    )
+

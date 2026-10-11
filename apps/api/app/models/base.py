@@ -2,10 +2,12 @@ import uuid
 from datetime import datetime
 try:
     from enum import StrEnum
-except ImportError:
+except ImportError:  # Python 3.10: enum.StrEnum arrived in 3.11
     from enum import Enum
+
     class StrEnum(str, Enum):
-        pass
+        def __str__(self) -> str:
+            return str(self.value)
 
 
 from sqlalchemy import DateTime, MetaData, Uuid, func

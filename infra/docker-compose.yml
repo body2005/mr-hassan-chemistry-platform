@@ -1,113 +1,329 @@
-version: "3.9"
+# Production deployment template. Supply an HTTPS hostname and secret files
+# outside Git; see docs/PRODUCTION_DOCKER_RUNBOOK.md before using this file.
+x-api-env: &api-env
+  APP_ENV: production
+  POSTGRES_USER: ${POSTGRES_USER:-lms}
+  POSTGRES_DB: ${POSTGRES_DB:-lms}
+  DB_PASSWORD_FILE: /run/secrets/postgres_password
+  SECRET_KEY_FILE: /run/secrets/app_secret_key
+  S3_SECRET_KEY_FILE: /run/secrets/s3_password
+  SMTP_PASSWORD_FILE: /run/secrets/smtp_password
+  SMTP_HOST: ${SMTP_HOST:?set SMTP_HOST}
+  SMTP_PORT: ${SMTP_PORT:-465}
+  SMTP_USER: ${SMTP_USER:?set SMTP_USER}
+  SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:?set SMTP_FROM_EMAIL}
+  SMTP_TLS_VERIFY: "true"
+  # Configured SMTP is usable by default; operators may explicitly opt out.
+  EMAIL_ENABLED: ${EMAIL_ENABLED:-true}
+  PAYMENT_INSTAPAY_ACCOUNT: ${PAYMENT_INSTAPAY_ACCOUNT:-}
+  PAYMENT_VODAFONE_CASH_NUMBER: ${PAYMENT_VODAFONE_CASH_NUMBER:-}
+  PAYMENT_BANK_DETAILS: ${PAYMENT_BANK_DETAILS:-}
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: redis://redis:6379/1
+  CELERY_RESULT_BACKEND: redis://redis:6379/2
+  REDIS_REQUIRED: "true"
+  S3_ENDPOINT_URL: http://s3:8333
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY}
+  S3_REGION: us-east-1
+  S3_BUCKET: ${S3_BUCKET:-chemistry-materials}
+  STORAGE_BACKEND: s3
+  FRONTEND_ORIGINS: ${PUBLIC_ORIGIN:?set PUBLIC_ORIGIN to https://your-host}
+  COOKIE_SECURE: "true"
+  COOKIE_CROSS_SITE: "false"
+  INGESTION_BACKEND: celery
+  ALLOW_LOCAL_INGESTION: "false"
+  TRUSTED_PROXIES: ${PRIVATE_SUBNET:-172.30.120.0/24}
 
-# Unified production-shaped stack for the Educational LMS Platform.
-# Development defaults; override secrets via environment/.env.
+x-api-build: &api-build
+  context: ../apps/api
+  dockerfile: ../../infra/Dockerfile.api
+
+x-app-secrets: &app-secrets
+  - postgres_password
+  - app_secret_key
+  - s3_password
+  - smtp_password
 
 services:
   postgres:
-    image: pgvector/pgvector:pg16
-    container_name: lms_postgres
+    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-lms}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-lms}
-    ports:
-      - "5432:5432"
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./backup:/backup
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+    networks: [private]
 
   redis:
-    image: redis:7-alpine
-    container_name: lms_redis
+    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "6379:6379"
     volumes:
       - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 3s
-      retries: 5
+      retries: 10
+    networks: [private]
 
-  minio:
-    image: minio/minio:latest
-    container_name: lms_minio
-    command: server /data --console-address ":9001"
+  s3:
+    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/s3_password)";
+        exec /entrypoint.sh mini -dir=/data -s3.readerCacheSizeMB=64 -s3.cacheCapacityMB=0
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-lms-storage}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
-    ports:
-      - "9000:9000"
-      - "9001:9001"
+      # Soft Go runtime budget, not a hard RSS/cgroup bound. Leave headroom
+      # for native/mapped memory and filesystem cache; size the host separately.
+      GOMEMLIMIT: ${S3_GOMEMLIMIT:-384MiB}
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY}
+      S3_BUCKET: ${S3_BUCKET:-chemistry-materials}
+    secrets:
+      - s3_password
     volumes:
-      - miniodata:/data
+      # Never mount an old MinIO volume here: formats are incompatible.
+      - s3data:/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 15s
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8333"]
+      interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+    networks: [private]
+
+  s3-init:
+    build: *api-build
+    entrypoint: ["/bin/sh", "/srv/entrypoint-prod.sh"]
+    command: ["python", "scripts/s3_snapshot.py", "init"]
+    environment: *api-env
+    secrets: *app-secrets
+    depends_on:
+      s3:
+        condition: service_healthy
+    networks: [private]
+
+  migration:
+    build: *api-build
+    entrypoint: ["/bin/sh", "/srv/entrypoint-prod.sh"]
+    command: ["alembic", "upgrade", "head"]
+    environment: *api-env
+    secrets: *app-secrets
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [private]
 
   api:
-    build:
-      context: ../apps/api
-      dockerfile: ../../infra/Dockerfile.api
-    container_name: lms_api
-    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
-    environment:
-      APP_ENV: production
-      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-lms}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lms}
-      REDIS_URL: redis://redis:6379/0
-      S3_ENDPOINT_URL: http://minio:9000
-      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-lms-storage}
-      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
-      FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://localhost:5173}
-      USE_CELERY_INGESTION: "true"
-    ports:
-      - "8000:8000"
+    build: *api-build
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/srv/entrypoint-prod.sh"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    environment: *api-env
+    secrets: *app-secrets
+    volumes:
+      - video_uploads:/srv/uploads
     depends_on:
-      postgres:
-        condition: service_healthy
+      upload-permissions:
+        condition: service_completed_successfully
+      migration:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
+      s3-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/ready', timeout=5).read()"]
+      interval: 15s
+      timeout: 8s
+      retries: 8
+      start_period: 30s
+    networks: [private]
+
+  upload-permissions:
+    # One-shot migration of the existing named staging volume. No secrets,
+    # network, deletion or root API process; S3 object data is untouched.
+    build: *api-build
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE]
+    security_opt: [no-new-privileges:true]
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["test -d /srv/uploads && chown -R -h 10001:10001 /srv/uploads"]
+    volumes:
+      - video_uploads:/srv/uploads
 
   worker:
-    build:
-      context: ../apps/api
-      dockerfile: ../../infra/Dockerfile.api
-    container_name: lms_worker
-    command: celery -A app.tasks.celery_app.celery_app worker --loglevel=info --concurrency=2 -Q ai,notifications,reports,analytics
-    environment:
-      APP_ENV: production
-      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-lms}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lms}
-      REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    build: *api-build
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/srv/entrypoint-prod.sh"]
+    command: ["celery", "-A", "app.tasks.celery_app.celery_app", "worker", "--loglevel=info", "--concurrency=2", "-Q", "notifications,reports,analytics"]
+    environment: *api-env
+    secrets: *app-secrets
     depends_on:
-      postgres:
-        condition: service_healthy
+      migration:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
+      s3-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app.celery_app inspect ping -d celery@$$(hostname) --timeout=5 | grep -q pong"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 30s
+    networks: [private]
 
   web:
     build:
       context: ../apps/web
       dockerfile: ../../infra/Dockerfile.web
-    container_name: lms_web
-    ports:
-      - "8080:80"
+      args:
+        VITE_API_URL: /api/v1
+    restart: unless-stopped
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [private]
+
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
+    restart: unless-stopped
+    ports:
+      - "${PUBLIC_HTTP_BIND:-0.0.0.0}:${PUBLIC_HTTP_PORT:-80}:80"
+      - "${PUBLIC_HTTPS_BIND:-0.0.0.0}:${PUBLIC_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx-https.conf:/etc/nginx/conf.d/default.conf:ro
+    secrets:
+      - tls_cert
+      - tls_key
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [private]
+
+  backup-permissions:
+    profiles: ["ops"]
+    image: python:3.12.15-slim-trixie@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: [no-new-privileges:true]
+    entrypoint: ["/bin/sh", "/usr/local/bin/backup-permissions.sh"]
+    volumes:
+      - ${BACKUP_DIR:?set BACKUP_DIR to an external writable directory}:/backups
+      - ./backup-permissions.sh:/usr/local/bin/backup-permissions.sh:ro
+
+  backup-postgres:
+    profiles: ["ops"]
+    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        umask 077;
+        export PGPASSWORD="$$(cat /run/secrets/postgres_password)";
+        backup="/backups/postgres-$$(date -u +%Y%m%dT%H%M%SZ).dump";
+        pg_dump -h postgres -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -Fc -f "$${backup}";
+        pg_restore --list "$${backup}" >/dev/null
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lms}
+      POSTGRES_DB: ${POSTGRES_DB:-lms}
+    secrets:
+      - postgres_password
+    volumes:
+      - ${BACKUP_DIR:?set BACKUP_DIR to an external writable directory}:/backups
+    depends_on:
+      backup-permissions:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    networks: [private]
+
+  backup-s3:
+    profiles: ["ops"]
+    build: *api-build
+    entrypoint: ["/bin/sh", "/srv/entrypoint-prod.sh"]
+    command: ["/bin/sh", "-ec", "umask 077; exec python scripts/s3_snapshot.py backup --directory /backups/s3"]
+    environment: *api-env
+    secrets: *app-secrets
+    volumes:
+      - ${BACKUP_DIR:?set BACKUP_DIR to an external writable directory}:/backups
+    depends_on:
+      backup-permissions:
+        condition: service_completed_successfully
+      s3:
+        condition: service_healthy
+    networks: [private]
+
+  backup-videos:
+    profiles: ["ops"]
+    build: *api-build
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        umask 077;
+        tar -C /srv/uploads -czf "/backups/videos-$$(date -u +%Y%m%dT%H%M%SZ).tar.gz" .
+    volumes:
+      - video_uploads:/srv/uploads:ro
+      - ${BACKUP_DIR:?set BACKUP_DIR to an external writable directory}:/backups
+    depends_on:
+      backup-permissions:
+        condition: service_completed_successfully
+    networks: [private]
+
+networks:
+  private:
+    ipam:
+      config:
+        - subnet: ${PRIVATE_SUBNET:-172.30.120.0/24}
 
 volumes:
   pgdata:
   redisdata:
-  miniodata:
+  s3data:
+  video_uploads:
+
+secrets:
+  postgres_password:
+    file: ${POSTGRES_PASSWORD_FILE:?set POSTGRES_PASSWORD_FILE}
+  app_secret_key:
+    file: ${APP_SECRET_KEY_FILE:?set APP_SECRET_KEY_FILE}
+  s3_password:
+    file: ${S3_PASSWORD_FILE:?set S3_PASSWORD_FILE}
+  smtp_password:
+    file: ${SMTP_PASSWORD_FILE:?set SMTP_PASSWORD_FILE}
+  tls_cert:
+    file: ${TLS_CERT_FILE:?set TLS_CERT_FILE}
+  tls_key:
+    file: ${TLS_KEY_FILE:?set TLS_KEY_FILE}

@@ -2,10 +2,12 @@ import uuid
 from datetime import datetime
 try:
     from enum import StrEnum
-except ImportError:
+except ImportError:  # Python 3.10: enum.StrEnum arrived in 3.11
     from enum import Enum
+
     class StrEnum(str, Enum):
-        pass
+        def __str__(self) -> str:
+            return str(self.value)
 
 
 from sqlalchemy import (
@@ -43,7 +45,7 @@ class LessonKind(StrEnum):
     LIVE = "live"
 
 
-class IndexingStatus(StrEnum):
+class MaterializationStatus(StrEnum):
     NOT_INDEXED = "not_indexed"
     IN_PROGRESS = "in_progress"
     INDEXED = "indexed"
@@ -77,6 +79,7 @@ class Course(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     price_egp: Mapped[float] = mapped_column(Numeric(10, 2), default=0, nullable=False)
+    grade_level: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
 
     institution = relationship("Institution", back_populates="courses")
     teacher = relationship("User", back_populates="taught_courses")
@@ -106,9 +109,15 @@ class Lesson(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "lessons"
     __table_args__ = (UniqueConstraint("module_id", "position", name="uq_lessons_module_position"),)
 
-    module_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("course_modules.id", ondelete="CASCADE"), index=True, nullable=False
+    module_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("course_modules.id", ondelete="CASCADE"), index=True, nullable=True
     )
+    course_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("courses.id", ondelete="CASCADE"), index=True, nullable=False)
+    publication_status: Mapped[str] = mapped_column(String(20), default="published", server_default="published", nullable=False)
+    publish_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    release_announced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    release_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    required_material_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     kind: Mapped[LessonKind] = mapped_column(
         Enum(LessonKind, name="lesson_kind", native_enum=False, values_callable=enum_values),
@@ -118,18 +127,29 @@ class Lesson(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     content: Mapped[str | None] = mapped_column(Text)
     video_asset_key: Mapped[str | None] = mapped_column(String(512))
     video_duration_seconds: Mapped[int | None] = mapped_column(Integer)
-    indexing_status: Mapped[IndexingStatus] = mapped_column(
-        Enum(IndexingStatus, name="indexing_status", native_enum=False, values_callable=enum_values),
-        default=IndexingStatus.NOT_INDEXED,
+    materialization_status: Mapped[MaterializationStatus] = mapped_column(
+        Enum(MaterializationStatus, name="materialization_status", native_enum=False, values_callable=enum_values),
+        default=MaterializationStatus.NOT_INDEXED,
         nullable=False,
     )
-    indexing_error: Mapped[str | None] = mapped_column(Text)
-    indexed_chunks_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    materialization_error: Mapped[str | None] = mapped_column(Text)
     transcript_text: Mapped[str | None] = mapped_column(Text)
-    rag_synced: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     price_egp: Mapped[float] = mapped_column(Numeric(10, 2), default=0, nullable=False)
 
     module = relationship("CourseModule", back_populates="lessons")
+
+
+# Keep older authorized import scripts that construct module-bound lessons
+# compatible; the database still requires a real course FK for every lesson.
+from sqlalchemy import event, select
+
+@event.listens_for(Lesson, "before_insert")
+def _derive_lesson_course(mapper, connection, target):
+    if target.module_id:
+        course_id = connection.scalar(select(CourseModule.course_id).where(CourseModule.id == target.module_id))
+        if target.course_id is not None and target.course_id != course_id:
+            raise ValueError("Lesson unit and course do not match")
+        target.course_id = course_id
 
 
 class Enrollment(UUIDPrimaryKeyMixin, TimestampMixin, Base):

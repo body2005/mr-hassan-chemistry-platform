@@ -66,16 +66,41 @@ def _clear_auth_cookies(response: JSONResponse) -> None:
     secure = True if settings.cookie_cross_site else settings.secure_cookies
     response.delete_cookie(settings.session_cookie_name, path="/", samesite=samesite, secure=secure)
     response.delete_cookie(settings.csrf_cookie_name, path="/", samesite=samesite, secure=secure)
+    response.delete_cookie(settings.refresh_cookie_name, path="/api/v1/auth", samesite=samesite, secure=secure)
+
+
+def _refresh_rejected(request: Request, status_code: int) -> bool:
+    from app.core.config import get_settings
+    # An expired access cookie is recoverable using the refresh cookie AND
+    # the CSRF cookie. Clearing CSRF on arbitrary 401 responses breaks secure
+    # refresh, including SSE probes. Only a rejected refresh clears the family
+    # credentials here; logout/reset/revocation retain their explicit checks.
+    return status_code == status.HTTP_401_UNAUTHORIZED and request.url.path == f"{get_settings().api_v1_prefix}/auth/refresh"
 
 
 def install_error_handlers(app: FastAPI) -> None:
+    from botocore.exceptions import BotoCoreError, ClientError
+    from sqlalchemy.exc import OperationalError, TimeoutError as DatabaseTimeout
+
+    async def dependency_unavailable(request: Request, exc: Exception) -> JSONResponse:
+        # Never log exception strings: DB URLs and signed S3 URLs may contain
+        # credentials. Connectivity failures are retryable, not lost files/500.
+        import logging
+        logging.getLogger("matgar.server").warning("Dependency unavailable: %s", type(exc).__name__)
+        return JSONResponse(status_code=503,
+                            content=_error_payload(request, "SERVICE_UNAVAILABLE", "A required service is temporarily unavailable"),
+                            headers={"Retry-After": "3"})
+
+    for exception_type in (OperationalError, DatabaseTimeout, BotoCoreError, ClientError):
+        app.add_exception_handler(exception_type, dependency_unavailable)
+
     @app.exception_handler(ApiError)
     async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
         res = JSONResponse(
             status_code=exc.status_code,
             content=_error_payload(request, exc.code, exc.message),
         )
-        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+        if _refresh_rejected(request, exc.status_code):
             _clear_auth_cookies(res)
         return res
 
@@ -92,7 +117,7 @@ def install_error_handlers(app: FastAPI) -> None:
         response = JSONResponse(status_code=exc.status_code, content=content)
         if exc.headers:
             response.headers.update(exc.headers)
-        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+        if _refresh_rejected(request, exc.status_code):
             _clear_auth_cookies(response)
         return response
 

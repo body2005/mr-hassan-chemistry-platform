@@ -19,7 +19,9 @@ def test_readiness_check() -> None:
 
     assert response.status_code == 200
     assert response.json()["status"] in {"ready", "degraded"}
-    assert response.json()["dependencies"]["database"] == "ok"
+    assert set(response.json()) == {"status"}
+    assert client.get("/api/v1/ready/details").status_code == 401
+    assert client.get("/api/v1/metrics").status_code == 401
 
 
 def test_root_points_to_discovery_endpoints() -> None:

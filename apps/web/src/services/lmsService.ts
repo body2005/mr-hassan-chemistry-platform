@@ -1,4 +1,22 @@
-import { apiRequest, uploadWithProgress, ApiClientError } from "./apiClient";
+import {
+  apiRequest,
+  apiUrl,
+  uploadWithProgress,
+  ApiClientError,
+  markBrowserSessionActive,
+  isSessionKnownInvalid,
+  setApiAuthScope,
+  getApiAuthGeneration,
+  clearApiCache,
+  invalidateApiCache,
+  getCachedData,
+  setCachedData,
+  beginBrowserLogout,
+} from "./apiClient";
+import type { StudentEntitlement } from "./paymentService";
+import { assessmentWindow } from "./assessmentSchedule";
+import { canonicalQuestionType } from "./questionType";
+import { canonicalEditorOptionKey } from "./mcqOptions";
 /**
  * ============================================================================
  * MATGAR LMS - UNIFIED DATA ACCESS LAYER (DAL)
@@ -14,6 +32,7 @@ import {
   AssignmentSubmission,
   CalendarScheduleEvent,
   Course,
+  CourseAssessmentRef,
   CurrentUser,
   NotificationItem,
   NotificationSchedule,
@@ -36,17 +55,28 @@ export const STORAGE_KEYS = {
 } as const;
 
 type ApiUser = {
+  uploaded_videos_count?: number | null;
+  enrolled_students_count?: number | null;
   id: string;
   institution_id: string;
   username: string;
   email: string;
   display_name: string;
   role: "student" | "teacher" | "institution_admin" | "platform_admin";
+  grade_level: "SECONDARY_1" | "SECONDARY_2" | "SECONDARY_3" | null;
+  governorate: string | null;
+  school_name: string | null;
+  gender: "MALE" | "FEMALE" | null;
+  student_phone?: string | null;
+  guardian_phone?: string | null;
+  national_id?: string | null;
+  religion?: "MUSLIM" | "CHRISTIAN" | "OTHER" | "PREFER_NOT_TO_SAY" | null;
   is_active: boolean;
   created_at: string;
 };
 
 type ApiCourse = {
+  grade_level?: "SECONDARY_1" | "SECONDARY_2" | "SECONDARY_3" | null;
   id: string;
   institution_id: string;
   teacher_id: string;
@@ -59,21 +89,27 @@ type ApiCourse = {
   updated_at: string;
   price_egp: number;
   modules: Array<{
+    is_unassigned?: boolean;
     id: string;
     title: string;
     position: number;
     lessons: Array<{
       id: string;
+      publication_status?: 'draft' | 'published';
+      publish_at?: string | null;
+      required_material_count?: number;
       title: string;
       kind: "video" | "article" | "live";
       position: number;
       content: string | null;
-      video_asset_key: string | null;
+      /** The private storage key is never serialized by the API. */
+      has_video?: boolean;
+      has_uploaded_video?: boolean;
+      video_upload?: { id: string; status: string; created_at: string } | null;
+      video_url?: string | null;
       video_duration_seconds: number | null;
-      indexing_status?: "not_indexed" | "in_progress" | "indexed" | "failed";
-      indexing_error?: string | null;
-      indexed_chunks_count?: number;
       price_egp?: number;
+      materialization_status?: string;
       materials?: Array<{
         id: string;
         filename: string;
@@ -146,26 +182,37 @@ type ApiLessonProgress = {
   completed_at: string | null;
 };
 
-export { apiRequest, ApiClientError };
+export { apiRequest, ApiClientError, clearApiCache, invalidateApiCache };
 
 function mapApiUser(user: ApiUser): CurrentUser {
+  const gradeMap = {
+    SECONDARY_1: { value: "1st_secondary", label: "الصف الأول الثانوي" },
+    SECONDARY_2: { value: "2nd_secondary", label: "الصف الثاني الثانوي" },
+    SECONDARY_3: { value: "3rd_secondary", label: "الصف الثالث الثانوي" },
+  } as const;
   const base = {
     id: user.id,
     name: user.display_name,
     email: user.email,
-    nationalId: "",
+    nationalId: user.national_id || "",
     joinedDate: user.created_at.slice(0, 10),
   };
   if (user.role === "student") {
+    const grade = user.grade_level ? gradeMap[user.grade_level] : undefined;
+    if (!grade) throw new ApiClientError("INVALID_STUDENT_GRADE", "Student grade is missing", 422);
     return {
       ...base,
       role: "student",
-      studentPhone: "",
-      guardianPhone: "",
+      studentPhone: user.student_phone || "",
+      guardianPhone: user.guardian_phone || "",
       age: 0,
-      academicYear: "1st_secondary",
-      academicYearLabel: "الصف الأول الثانوي",
+      academicYear: grade.value,
+      academicYearLabel: grade.label,
       interestedSubjects: [],
+      governorate: user.governorate || "",
+      schoolName: user.school_name || "",
+      gender: user.gender || undefined,
+      religion: user.religion || undefined,
     };
   }
   return {
@@ -176,12 +223,19 @@ function mapApiUser(user: ApiUser): CurrentUser {
     teachingYearLabel: "جميع الصفوف الثانوية",
     subject: "",
     contractAgreed: false,
-    uploadedVideosCount: 0,
-    enrolledStudentsCount: 0,
+    uploadedVideosCount: user.uploaded_videos_count ?? undefined,
+    enrolledStudentsCount: user.enrolled_students_count ?? undefined,
   };
 }
 
 function mapApiCourse(course: ApiCourse): Course {
+  const courseGrades = {
+    SECONDARY_1: { value: "1st_secondary", label: "الصف الأول الثانوي" },
+    SECONDARY_2: { value: "2nd_secondary", label: "الصف الثاني الثانوي" },
+    SECONDARY_3: { value: "3rd_secondary", label: "الصف الثالث الثانوي" },
+  } as const;
+  const grade = course.grade_level ? courseGrades[course.grade_level] : undefined;
+  const academicYear = grade?.value || (course.code.startsWith("2ND_SECONDARY-") ? "2nd_secondary" : course.code.startsWith("3RD_SECONDARY-") ? "3rd_secondary" : "1st_secondary");
   const lessons = course.modules
     .slice()
     .sort((a, b) => a.position - b.position)
@@ -189,52 +243,67 @@ function mapApiCourse(course: ApiCourse): Course {
       module.lessons
         .slice()
         .sort((a, b) => a.position - b.position)
-        .map((lesson) => ({
-          id: lesson.id,
-          moduleId: module.id,
-          courseId: course.id,
-          academicYear: "1st_secondary" as const,
-          title: lesson.title,
-          description: lesson.content || "",
-          durationMinutes: Math.ceil((lesson.video_duration_seconds || 0) / 60),
-          durationFormatted: lesson.video_duration_seconds
-            ? `${Math.ceil(lesson.video_duration_seconds / 60)} دقيقة`
-            : "",
-          // Native uploads are never handed to the player as a reusable raw
-          // storage/API URL. MyCourses exchanges this marker for a short-lived
-          // scoped stream token when the entitled learner opens the lesson.
-          videoUrl: lesson.video_asset_key
-            ? /^https?:\/\//i.test(lesson.video_asset_key)
-              ? lesson.video_asset_key
-              : `protected:${lesson.id}`
-            : "",
-          price: Number(lesson.price_egp || 0),
-          materials: (lesson.materials || []).map((m) => ({
-            id: m.id,
-            title: m.filename,
-            fileType: (m.file_format === "pdf" ? "pdf" : "doc") as "pdf" | "video" | "doc",
-            fileUrl: m.download_url,
-            fileSize: `${Math.round(m.size_bytes / 1024)} KB`,
-            uploadedAt: m.created_at,
-          })),
-          uploadedByTeacherName: "",
-          uploadedAt: lesson.video_duration_seconds ? course.updated_at : course.created_at,
-          order: lesson.position,
-          predictedDifficultyScore: 0,
-          expectedStruggleRate: 0,
-          predictedMisconceptionRate: 0,
-          flaggedHardConcepts: [],
-          indexing_status: lesson.indexing_status || "not_indexed",
-          indexing_error: lesson.indexing_error || undefined,
-          indexed_chunks_count: lesson.indexed_chunks_count || 0,
-        })),
+        .map((lesson) => {
+          const isRevision = Boolean(
+            (lesson.content && lesson.content.includes("<!--is_revision:true-->")) ||
+            lesson.title.includes("مراجعة") ||
+            module.title.includes("مراجعة")
+          );
+          return {
+            id: lesson.id,
+            moduleId: module.is_unassigned ? undefined : module.id,
+            unitTitle: module.title,
+            isRevision,
+            courseId: course.id,
+            academicYear,
+            title: lesson.title,
+            description: (lesson.content || "").replace("<!--is_revision:true-->", "").trim(),
+            durationMinutes: Math.ceil((lesson.video_duration_seconds || 0) / 60),
+            durationSeconds: lesson.video_duration_seconds || undefined,
+            publicationStatus: lesson.publication_status,
+            publishAt: lesson.publish_at,
+            requiredMaterialCount: lesson.required_material_count,
+            durationFormatted: lesson.video_duration_seconds
+              ? `${Math.ceil(lesson.video_duration_seconds / 60)} دقيقة`
+              : "",
+            // Playback entry points only: the API never exposes the private
+            // storage key. External URLs entered by the teacher stay as-is;
+            // native uploads resolve through the short-lived token endpoint.
+            videoUrl: lesson.video_url || "",
+            hasUploadedVideo: Boolean(lesson.has_uploaded_video),
+            videoUpload: lesson.video_upload ? {
+              id: lesson.video_upload.id, status: lesson.video_upload.status, createdAt: lesson.video_upload.created_at,
+            } : undefined,
+            // A student's catalog can redact playback fields for a locked
+            // video. Ask the admission endpoint for the actual access result
+            // instead of treating that redaction as a missing upload.
+            requiresProtectedPlayback: Boolean(
+              lesson.video_url?.startsWith("/api/v1/lessons/") ||
+              (!lesson.video_url && (lesson.kind === "video" || lesson.has_uploaded_video)),
+            ),
+            price: Number(lesson.price_egp || 0),
+            materials: (lesson.materials || []).map((m) => ({
+              id: m.id,
+              title: m.filename,
+              fileType: (m.file_format === "pdf" ? "pdf" : "doc") as "pdf" | "video" | "doc",
+              fileUrl: m.download_url,
+              fileSize: `${Math.round(m.size_bytes / 1024)} KB`,
+              uploadedAt: m.created_at,
+            })),
+            uploadedByTeacherName: "",
+            uploadedAt: lesson.video_duration_seconds ? course.updated_at : course.created_at,
+            order: lesson.position,
+            materialization_status: lesson.materialization_status || "NOT_INDEXED",
+          };
+        }),
     );
   return {
     id: course.id,
     title: course.title,
     subject: course.code,
-    academicYear: "1st_secondary",
-    academicYearLabel: "الصف الأول الثانوي",
+    academicYear,
+    academicYearLabel: grade?.label || (academicYear === "2nd_secondary" ? "الصف الثاني الثانوي" : academicYear === "3rd_secondary" ? "الصف الثالث الثانوي" : "الصف الأول الثانوي"),
+    status: course.status,
     teacherName: "",
     teacherTitle: "",
     description: course.description || "",
@@ -244,23 +313,47 @@ function mapApiCourse(course: ApiCourse): Course {
     lessons,
     enrolledStudentsCount: 0,
     price: Number(course.price_egp || 0),
+    assessments: [],
   };
 }
 
 function mapApiNotification(item: ApiNotification): NotificationItem {
-  const type: NotificationItem["type"] = ["assignment", "quiz", "warning"].includes(item.kind)
+  const isPayment = item.kind === "payment" || (item.action_url && item.action_url.includes("/payments/orders/"));
+  const type: NotificationItem["type"] = isPayment
+    ? "payment"
+    : ["assignment", "quiz", "warning"].includes(item.kind)
     ? (item.kind as NotificationItem["type"])
     : "system";
+
+  let paymentOrderId: string | undefined = undefined;
+  if (isPayment && item.action_url) {
+    const match = item.action_url.match(/\/payments\/orders\/([0-9a-fA-F-]+)/);
+    if (match) paymentOrderId = match[1];
+  }
+
+  // Detect target academic year from content/action_url so teachers & students can filter properly
+  let targetYear: NotificationItem["targetYear"] = "all";
+  const combinedText = `${item.title || ""} ${item.message || ""} ${item.action_url || ""}`;
+  if (combinedText.includes("1st_secondary") || combinedText.includes("الأول الثانوي")) {
+    targetYear = "1st_secondary";
+  } else if (combinedText.includes("2nd_secondary") || combinedText.includes("الثاني الثانوي")) {
+    targetYear = "2nd_secondary";
+  } else if (combinedText.includes("3rd_secondary") || combinedText.includes("الثالث الثانوي")) {
+    targetYear = "3rd_secondary";
+  }
+
   return {
     id: item.id,
     title: item.title,
     message: item.message,
     type,
+    targetYear,
     createdAt: item.created_at,
     read: Boolean(item.read_at),
     dueDate: item.scheduled_for || undefined,
     actionUrl: item.action_url || undefined,
-    actionTab: item.action_url?.replace(/^#/, "") as NotificationItem["actionTab"],
+    actionTab: isPayment ? "PaymentManagement" : (item.action_url?.replace(/^#/, "") as NotificationItem["actionTab"]),
+    paymentOrderId,
   };
 }
 
@@ -276,6 +369,7 @@ function mapApiCalendarEvent(item: ApiCalendarEvent): CalendarScheduleEvent {
   let quizDurationMinutes: number | undefined = undefined;
   let publishStartDate: string | undefined = undefined;
   let publishStartTime: string | undefined = undefined;
+  let customMessage: string | undefined = undefined;
 
   if (item.description) {
     try {
@@ -288,6 +382,7 @@ function mapApiCalendarEvent(item: ApiCalendarEvent): CalendarScheduleEvent {
         if (parsed.quizDurationMinutes !== undefined) quizDurationMinutes = parsed.quizDurationMinutes;
         if (parsed.publishStartDate) publishStartDate = parsed.publishStartDate;
         if (parsed.publishStartTime) publishStartTime = parsed.publishStartTime;
+        if (parsed.customMessage) customMessage = parsed.customMessage;
       }
     } catch {
       if (item.description.includes("2nd_secondary") || item.description.includes("الثاني الثانوي")) {
@@ -313,6 +408,7 @@ function mapApiCalendarEvent(item: ApiCalendarEvent): CalendarScheduleEvent {
     quizDurationMinutes,
     publishStartDate,
     publishStartTime,
+    customMessage,
   };
 }
 
@@ -328,13 +424,13 @@ function mapApiSubmission(item: ApiSubmission): AssignmentSubmission {
     lessonTitle: item.course_title || "—",
     questionPrompt: item.assignment_prompt || "—",
     studentAnswer: item.answer_text,
+    hasFile: !!item.object_key,
+    fileUrl: item.object_key ? apiUrl(`/submissions/${item.id}/file`) : undefined,
+    version: item.version,
     submittedAt: item.submitted_at,
     maxScore: item.max_score || 100,
-    aiScore: item.ai_score || 0,
     finalScore: item.final_score || 0,
     teacherFeedback: item.teacher_feedback || undefined,
-    aiFeedbackSummary: item.ai_feedback || "",
-    criteriaScores: [],
     status: item.status === "approved" ? "approved" : item.status === "graded" ? "graded" : "needs_review",
   };
 }
@@ -381,20 +477,174 @@ export function deduplicateNotifications(list: NotificationItem[]): Notification
 // the browser. The server session is the only source of authentication state.
 
 // ============================================================================
+// 0. BOOTSTRAP SERVICE (Unified 1-roundtrip initial startup)
+// ============================================================================
+export interface BootstrapData {
+  authenticated: boolean;
+  user: CurrentUser | null;
+  unread_notifications_count: number;
+  notifications: NotificationItem[];
+  courses: Course[];
+  enrolledCourseIds: string[];
+  entitlements: StudentEntitlement[];
+  settings: Record<string, unknown>;
+}
+
+export const bootstrapService = {
+  async getBootstrap(): Promise<BootstrapData> {
+    const generation = getApiAuthGeneration();
+    // On reload, bootstrap determines cookie identity. No JS-readable token
+    // is needed; only a proven invalid in-memory session skips the probe.
+    if (isSessionKnownInvalid()) {
+      markBrowserSessionActive(false);
+      setApiAuthScope("anonymous");
+      return {
+        authenticated: false,
+        user: null,
+        unread_notifications_count: 0,
+        notifications: [],
+        courses: [],
+        enrolledCourseIds: [],
+        entitlements: [],
+        settings: {},
+      };
+    }
+    try {
+      const res = await apiRequest<{
+        authenticated: boolean;
+        user: ApiUser | null;
+        unread_notifications_count: number;
+        notifications: ApiNotification[];
+        courses: ApiCourse[];
+        enrolled_course_ids: string[];
+        entitlements: StudentEntitlement[];
+        settings: Record<string, unknown>;
+      }>("/bootstrap", { cacheTtlMs: 15_000 });
+
+      if (generation !== getApiAuthGeneration()) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
+
+      if (!res.authenticated || !res.user) {
+        markBrowserSessionActive(false);
+        setApiAuthScope("anonymous");
+        return {
+          authenticated: false,
+          user: null,
+          unread_notifications_count: 0,
+          notifications: [],
+          courses: [],
+          enrolledCourseIds: [],
+          entitlements: [],
+          settings: res.settings || {},
+        };
+      }
+
+      markBrowserSessionActive(true);
+      const user = mapApiUser(res.user);
+      setApiAuthScope(user.id);
+
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem("lms_cached_user", JSON.stringify(user));
+      }
+
+      // Prepopulate cache for /auth/me so any subsequent call hits cache in 0ms.
+      // Keys must match the apiRequest cache format "METHOD:url" exactly.
+      setCachedData(`GET:${apiUrl("/auth/me")}`, res.user, 30_000);
+
+      // Map notifications
+      const notifs = Array.isArray(res.notifications)
+        ? deduplicateNotifications(res.notifications.map(mapApiNotification))
+        : [];
+      setCachedData(`GET:${apiUrl("/notifications")}`, res.notifications || [], 10_000);
+
+      // Map courses — key must match getCourses' real request URL (/courses?page=1&page_size=100)
+      const mappedCourses = Array.isArray(res.courses) ? res.courses.map(mapApiCourse) : [];
+      setCachedData(
+        `GET:${apiUrl("/courses?page=1&page_size=100")}`,
+        { items: res.courses || [], pagination: { total: mappedCourses.length, page: 1, page_size: 100, pages: 1 } },
+        30_000
+      );
+      if (typeof localStorage !== "undefined" && mappedCourses.length > 0) {
+        localStorage.setItem("lms_courses_v2", JSON.stringify(mappedCourses));
+      }
+
+      // Enrolled courses
+      const enrolled = Array.isArray(res.enrolled_course_ids) ? res.enrolled_course_ids : [];
+      setCachedData(
+        `GET:${apiUrl("/courses/me/enrollments")}`,
+        (res.enrolled_course_ids || []).map((cid) => ({ course_id: cid, status: "active" })),
+        60_000
+      );
+
+      // Entitlements
+      const entitlements = Array.isArray(res.entitlements) ? res.entitlements : [];
+      setCachedData(`GET:${apiUrl("/payments/me/entitlements")}`, entitlements, 60_000);
+
+      return {
+        authenticated: true,
+        user,
+        unread_notifications_count: res.unread_notifications_count || 0,
+        notifications: notifs,
+        courses: mappedCourses,
+        enrolledCourseIds: enrolled,
+        entitlements,
+        settings: res.settings || {},
+      };
+    } catch (err) {
+      // Preserve the existing in-memory snapshot in App, but surface the
+      // outage. Treating a cached identity as a successful bootstrap hides
+      // unavailable services and empties live entitlements/courses.
+      console.warn("Bootstrap request failed; awaiting retry", err);
+      throw err;
+    }
+  },
+};
+
+// ============================================================================
 // 1. AUTH & USER SERVICE (Server session is the ONLY source of identity)
 // ============================================================================
+let meInFlight: Promise<CurrentUser | null> | null = null;
+
 export const authService = {
+  async getFeatures(): Promise<{ password_reset_enabled: boolean }> {
+    return apiRequest<{ password_reset_enabled: boolean }>("/auth/features");
+  },
+
   async getRegisteredUsers(): Promise<never[]> {
     return [];
   },
 
-  async getCurrentUser(): Promise<CurrentUser | null> {
-    const hasSession = typeof localStorage !== "undefined"
-      && Boolean(localStorage.getItem("lms_session_token") || localStorage.getItem("lms_cached_user"));
-    if (!hasSession) return null;
-
+  getCachedUser(): CurrentUser | null {
+    if (typeof localStorage === "undefined") return null;
     try {
-      const apiUser = await apiRequest<ApiUser>("/auth/me");
+      const raw = localStorage.getItem("lms_cached_user");
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  },
+
+  async getCurrentUser(): Promise<CurrentUser | null> {
+    // Skip the probe entirely when a previous request already proved the
+    // session is gone. Re-probing only generates duplicate 401/refresh churn.
+    if (isSessionKnownInvalid()) {
+      markBrowserSessionActive(false);
+      setApiAuthScope("anonymous");
+      return null;
+    }
+    // Concurrent callers (mount + sync events) share one in-flight /me call
+    // instead of firing several identical requests in parallel.
+    if (meInFlight) return meInFlight;
+    meInFlight = this.getCurrentUserUncached().finally(() => {
+      meInFlight = null;
+    });
+    return meInFlight;
+  },
+
+  async getCurrentUserUncached(): Promise<CurrentUser | null> {
+    try {
+      const apiUser = await apiRequest<ApiUser>("/auth/me", { cacheTtlMs: 30_000 });
+      markBrowserSessionActive(true);
+      setApiAuthScope(apiUser.id);
       const user = mapApiUser(apiUser);
       if (typeof localStorage !== "undefined") {
         localStorage.setItem("lms_cached_user", JSON.stringify(user));
@@ -403,6 +653,8 @@ export const authService = {
     } catch (err: unknown) {
       // ONLY genuine 401 Unauthenticated means the session is expired or invalid
       if (err instanceof ApiClientError && err.status === 401) {
+        markBrowserSessionActive(false);
+        setApiAuthScope("anonymous");
         if (typeof localStorage !== "undefined") {
           localStorage.removeItem("lms_session_token");
           localStorage.removeItem("lms_cached_user");
@@ -417,20 +669,20 @@ export const authService = {
 
   async login(email: string, pass: string, institutionSlug = "demo"): Promise<{ success: boolean; user?: CurrentUser; error?: string }> {
     const cleanEmail = (email || "").trim().toLowerCase();
-    const cleanPass = (pass || "").trim();
+    const cleanPass = pass || "";
 
     try {
-      const result = await apiRequest<{ user: ApiUser; token?: string }>("/auth/login", {
+      const result = await apiRequest<{ user: ApiUser; expires_at: string }>("/auth/login", {
         method: "POST",
         body: JSON.stringify({ email: cleanEmail, password: cleanPass, institution_slug: institutionSlug }),
       });
       const user = mapApiUser(result.user);
+      markBrowserSessionActive(true);
+      setApiAuthScope(user.id);
+      clearApiCache();
       if (typeof localStorage !== "undefined") {
-        if (result.token) {
-          localStorage.setItem("lms_session_token", result.token);
-        }
         localStorage.setItem("lms_cached_user", JSON.stringify(user));
-        const targetTab = user.role === "student" ? "GeneralHome" : "LessonManagement";
+        const targetTab = user.role === "student" ? "MyCourses" : "LessonManagement";
         localStorage.setItem("lms_active_tab", targetTab);
       }
       window.dispatchEvent(new Event("lms_user_updated"));
@@ -448,28 +700,55 @@ export const authService = {
     email: string;
     password: string;
     institutionSlug?: string;
-    [key: string]: unknown;
+    academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary";
+    studentPhone?: string;
+    guardianPhone?: string;
+    motherPhone?: string;
+    city?: string;
+    educationDivision?: 'GENERAL' | 'AZHAR';
+    specialization?: 'SCIENCE' | 'MATH';
+    nationalId?: string;
+    governorate: string;
+    schoolName: string;
+    gender: "MALE" | "FEMALE";
+    religion?: "MUSLIM" | "CHRISTIAN" | "OTHER" | "PREFER_NOT_TO_SAY" | null;
   }): Promise<{ success: boolean; user?: CurrentUser; error?: string }> {
     const cleanEmail = (userData.email || "").trim().toLowerCase();
 
     // 1. Try FastAPI backend API
     try {
-      const result = await apiRequest<{ user: ApiUser; token?: string }>("/auth/register", {
+      const result = await apiRequest<{ user: ApiUser; expires_at: string }>("/auth/register", {
         method: "POST",
         body: JSON.stringify({
           display_name: userData.name,
           email: cleanEmail,
           password: userData.password,
           institution_slug: userData.institutionSlug || "demo",
+          grade_level: {
+            "1st_secondary": "SECONDARY_1",
+            "2nd_secondary": "SECONDARY_2",
+            "3rd_secondary": "SECONDARY_3",
+          }[userData.academicYear],
+          student_phone: userData.studentPhone || null,
+          guardian_phone: userData.guardianPhone || null,
+          mother_phone: userData.motherPhone || null,
+          city: userData.city || null,
+          education_division: userData.educationDivision || null,
+          specialization: userData.specialization || null,
+          national_id: userData.nationalId || null,
+          governorate: userData.governorate,
+          school_name: userData.schoolName,
+          gender: userData.gender,
+          religion: userData.religion || null,
         }),
       });
       const user = mapApiUser(result.user);
+      markBrowserSessionActive(true);
+      setApiAuthScope(user.id);
+      clearApiCache();
       if (typeof localStorage !== "undefined") {
-        if (result.token) {
-          localStorage.setItem("lms_session_token", result.token);
-        }
         localStorage.setItem("lms_cached_user", JSON.stringify(user));
-        const targetTab = user.role === "student" ? "GeneralHome" : "LessonManagement";
+        const targetTab = user.role === "student" ? "MyCourses" : "LessonManagement";
         localStorage.setItem("lms_active_tab", targetTab);
       }
       window.dispatchEvent(new Event("lms_user_updated"));
@@ -483,20 +762,54 @@ export const authService = {
   },
 
   async logout(): Promise<void> {
-    try {
-      await apiRequest<void>("/auth/logout", { method: "POST" });
-    } catch {
-      // Logout is local-first so an unavailable server cannot trap the user in the UI.
-    }
+    // Fence queued/in-flight reads before the server can revoke the cookie.
+    // Waiting until after POST lets queued private requests start with a dead
+    // session, producing 401s and racing a subsequent login.
+    beginBrowserLogout();
+    const logoutGeneration = getApiAuthGeneration();
+    clearApiCache();
     if (typeof localStorage !== "undefined") {
       localStorage.removeItem("lms_session_token");
       localStorage.removeItem("lms_cached_user");
       localStorage.setItem("lms_active_tab", "Landing");
     }
-    if (typeof window !== "undefined") {
+    try {
+      await apiRequest<void>("/auth/logout", { method: "POST" });
+    } catch {
+      // Local-first logout remains available during an outage. Do not clear
+      // another account's state when this old request eventually returns.
+    }
+    if (logoutGeneration === getApiAuthGeneration() && typeof window !== "undefined") {
+      // Keep the existing logout action pending until the response settles:
+      // a late cookie-clearing response must not race a new UI login.
       window.location.hash = "";
       window.dispatchEvent(new Event("lms_user_updated"));
     }
+  },
+
+  async requestPasswordReset(email: string): Promise<void> {
+    await apiRequest<{ message: string }>("/auth/password-reset/request", {
+      method: "POST",
+      body: JSON.stringify({ email: email.trim().toLowerCase(), institution_slug: "demo" }),
+    });
+  },
+
+  async confirmPasswordReset(token: string, newPassword: string): Promise<void> {
+    await apiRequest<void>("/auth/password-reset/confirm", {
+      method: "POST",
+      body: JSON.stringify({ token, new_password: newPassword }),
+    });
+  },
+
+  async changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    await apiRequest<void>("/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    });
+  },
+
+  async revokeAllSessions(): Promise<void> {
+    await apiRequest<void>("/auth/revoke-all", { method: "POST" });
   },
 };
 
@@ -505,23 +818,30 @@ export const authService = {
 // ============================================================================
 export const notificationService = {
   async getNotifications(): Promise<NotificationItem[]> {
-    const result = await apiRequest<ApiNotification[]>("/notifications");
+    const result = await apiRequest<ApiNotification[]>("/notifications", { cacheTtlMs: 10_000 });
     return Array.isArray(result) ? deduplicateNotifications(result.map(mapApiNotification)) : [];
   },
 
   async saveNotification(item: NotificationItem): Promise<NotificationItem[]> {
-    await apiRequest<ApiNotification[]>("/notifications/broadcast", {
+    const actionUrl = item.actionUrl || (item.actionTab ? `#${item.actionTab}` : undefined);
+    const result = await apiRequest<ApiNotification[]>("/notifications/broadcast", {
       method: "POST",
       body: JSON.stringify({
         kind: item.type,
         title: item.title,
         message: item.message,
-        action_url: item.actionTab ? `#${item.actionTab}` : item.actionUrl,
+        target_grade: item.targetYear && item.targetYear !== 'all' ? ({'1st_secondary': 'SECONDARY_1', '2nd_secondary': 'SECONDARY_2', '3rd_secondary': 'SECONDARY_3'} as const)[item.targetYear] : null,
+        action_url: item.targetYear ? `${actionUrl || "#Notifications"}?grade=${item.targetYear}` : actionUrl,
         dedup_key: item.id,
         scheduled_for: item.createdAt.includes("T") ? item.createdAt : undefined,
       }),
     });
-    return this.getNotifications();
+    invalidateApiCache("/notifications");
+    const mappedNew = Array.isArray(result) ? result.map(mapApiNotification) : [];
+    const all = await this.getNotifications();
+    const merged = deduplicateNotifications([...mappedNew, ...all]);
+    window.dispatchEvent(new Event("lms_notifications_updated"));
+    return merged;
   },
 
   async saveNotifications(list: NotificationItem[]): Promise<void> {
@@ -530,6 +850,7 @@ export const notificationService = {
 
   async markAsRead(id: string): Promise<NotificationItem[]> {
     await apiRequest(`/notifications/${id}/read`, { method: "POST" });
+    invalidateApiCache("/notifications");
     return this.getNotifications();
   },
 };
@@ -538,9 +859,43 @@ export const notificationService = {
 // 3. CALENDAR & SCHEDULE SERVICE
 // ============================================================================
 export const calendarService = {
+  getCachedCalendarEvents(): CalendarScheduleEvent[] {
+    // Derived state belongs to the active auth scope, never a shared disk key.
+    return getCachedData<CalendarScheduleEvent[]>('composed:/calendar') || [];
+  },
+
   async getCalendarEvents(): Promise<CalendarScheduleEvent[]> {
-    const result = await apiRequest<ApiCalendarEvent[]>("/calendar");
-    return result.map(mapApiCalendarEvent);
+    const cached = getCachedData<CalendarScheduleEvent[]>('composed:/calendar');
+    if (cached) return cached;
+    const generation = getApiAuthGeneration();
+    const result: ApiCalendarEvent[] = [];
+    const seen = new Set<string>();
+    let complete = false;
+    // Bound work and fail visibly rather than silently returning a truncated
+    // calendar. Never replay429/503 pages; a new call is an explicit retry.
+    for (let offset = 0; offset < 50_000; offset += 500) {
+      const page = await apiRequest<ApiCalendarEvent[]>(`/calendar?limit=500&offset=${offset}`, { cacheTtlMs: 30_000 });
+      if (generation !== getApiAuthGeneration()) {
+        throw new ApiClientError('REQUEST_CANCELLED', 'Calendar identity changed', 0);
+      }
+      if (!Array.isArray(page) || page.length > 500 || page.some(item => !item?.id)) {
+        throw new ApiClientError('INVALID_CALENDAR_PAGE', 'تعذر قراءة جميع المواعيد؛ أعد المحاولة.', 0);
+      }
+      for (const item of page) {
+        if (seen.has(item.id)) throw new ApiClientError('INVALID_CALENDAR_PAGE', 'تعذر قراءة جميع المواعيد؛ أعد المحاولة.', 0);
+        seen.add(item.id); result.push(item);
+      }
+      if (page.length < 500) { complete = true; break; }
+    }
+    if (!complete) throw new ApiClientError('CALENDAR_TOO_LARGE', 'تعذر تحميل جميع المواعيد؛ تواصل مع الدعم.', 0);
+    const mapped = result.map(mapApiCalendarEvent);
+    setCachedData('composed:/calendar', mapped, 30_000);
+    try {
+      localStorage.removeItem("lms_calendar_events_cache");
+    } catch {
+      // Remove only obsolete derived data; browser storage may be unavailable.
+    }
+    return mapped;
   },
 
   async saveCalendarEvent(event: CalendarScheduleEvent): Promise<CalendarScheduleEvent[]> {
@@ -551,8 +906,10 @@ export const calendarService = {
       quizDurationMinutes: event.quizDurationMinutes,
       publishStartDate: event.publishStartDate,
       publishStartTime: event.publishStartTime,
+      customMessage: event.customMessage,
     };
     const payload = {
+      idempotency_key: event.id.startsWith('evt_') ? event.id : undefined,
       title: event.dayName,
       description: JSON.stringify(metaPayload),
       event_type: event.contentType,
@@ -565,6 +922,7 @@ export const calendarService = {
       method: isServerId ? "PUT" : "POST",
       body: JSON.stringify(payload),
     });
+    invalidateApiCache("/calendar");
     return this.getCalendarEvents();
   },
 
@@ -577,6 +935,7 @@ export const calendarService = {
         .filter((event) => !event.isCancelled)
         .map((event) => apiRequest(`/calendar/${event.id}/cancel`, { method: "POST" })),
     );
+    invalidateApiCache("/calendar");
     return this.getCalendarEvents();
   },
 
@@ -618,13 +977,78 @@ function parseScheduleClock(value: string): string {
 // ============================================================================
 // 4. COURSES & ENROLLMENT SERVICE
 // ============================================================================
+let composedCoursesInFlight: { generation: number; promise: Promise<Course[]> } | null = null;
+
+async function validateAssessmentScope(payload: { course_id: string; title: string; lesson_id?: string; module_id?: string; lesson_ids?: string[]; module_ids?: string[] }) {
+  if (payload.title.trim().length < 2 || payload.title.length > 200) {
+    throw new Error('اسم النشاط يجب أن يحتوي على حرفين إلى 200 حرف.');
+  }
+  const lessonIds = [...(payload.lesson_ids || []), ...(payload.lesson_id ? [payload.lesson_id] : [])];
+  const moduleIds = [...(payload.module_ids || []), ...(payload.module_id ? [payload.module_id] : [])];
+  if (!lessonIds.length && !moduleIds.length) return;
+  const course = await apiRequest<ApiCourse>(`/courses/${payload.course_id}`, { skipCache: true });
+  if (moduleIds.some(id => !course.modules.some(module => module.id === id)) || lessonIds.some(id => !course.modules.some(module => module.lessons.some(lesson => lesson.id === id)))) {
+    throw new Error('الدرس المرتبط بالمسودة لم يعد موجودًا في هذا المقرر. اختر الدرس من القائمة مجددًا قبل النشر.');
+  }
+}
+
 export const courseService = {
-  async getCourses(): Promise<Course[]> {
-    const result = await apiRequest<{ items: ApiCourse[] }>("/courses?page=1&page_size=100");
-    return Array.isArray(result.items) ? result.items.map(mapApiCourse) : [];
+  async getPublicCatalogPage(page: number, search: string, grade: Course['academicYear'] | '', signal?: AbortSignal): Promise<{ courses: Course[]; pages: number; total: number }> {
+    const params = new URLSearchParams({ page: String(page), page_size: '24', public_only: 'true' });
+    if (search) params.set('search', search.normalize('NFKC').trim().slice(0, 100));
+    if (grade) params.set('grade_level', ({ '1st_secondary': 'SECONDARY_1', '2nd_secondary': 'SECONDARY_2', '3rd_secondary': 'SECONDARY_3' } as const)[grade]);
+    const result = await apiRequest<{ items: ApiCourse[]; pagination: { pages: number; total: number } }>(`/courses?${params}`, {
+      signal, skipCache: true, cacheTtlMs: 0,
+    });
+    return { courses: result.items.map(mapApiCourse), pages: result.pagination.pages, total: result.pagination.total };
+  },
+  async getCatalogPage(page: number): Promise<{ courses: Course[]; pages: number }> {
+    const result = await apiRequest<{ items: ApiCourse[]; pagination: { pages: number } }>(`/courses?page=${page}&page_size=100`);
+    return { courses: result.items.map(mapApiCourse), pages: result.pagination.pages };
+  },
+  async getEnrolledCatalogPage(page: number): Promise<{ courses: Course[]; pages: number }> {
+    const result = await apiRequest<{ items: ApiCourse[]; pagination: { pages: number } }>(
+      `/courses?page=${page}&page_size=100&enrolled_only=true`);
+    return { courses: result.items.map(mapApiCourse), pages: result.pagination.pages };
+  },
+  async getCourses(options?: { skipCache?: boolean }): Promise<Course[]> {
+    const composedKey = "composed:/courses";
+    const generation = getApiAuthGeneration();
+    if (!options?.skipCache) {
+      const cached = getCachedData<Course[]>(composedKey);
+      if (cached) return cached;
+      if (composedCoursesInFlight?.generation === generation) return composedCoursesInFlight.promise;
+    }
+
+    const fetchPromise = (async () => {
+      const result = await apiRequest<{ items: ApiCourse[] }>("/courses?page=1&page_size=100", {
+        cacheTtlMs: 60_000,
+        skipCache: options?.skipCache,
+      });
+      const courses = Array.isArray(result.items) ? result.items.map(mapApiCourse) : [];
+      if (generation !== getApiAuthGeneration()) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
+      setCachedData(composedKey, courses, 60_000);
+
+      // Assessment refs are loaded only for the student's selected course.
+      // Never mutate returned React state in an unobserved background batch.
+      return courses;
+    })();
+
+    const shared: Promise<Course[]> = fetchPromise.finally(() => {
+      if (composedCoursesInFlight?.promise === shared) composedCoursesInFlight = null;
+    });
+    composedCoursesInFlight = { generation, promise: shared };
+    return shared;
+  },
+
+  getCachedCourses(): Course[] {
+    const cached = getCachedData<Course[]>("composed:/courses");
+    if (cached && Array.isArray(cached) && cached.length > 0) return cached;
+    return [];
   },
 
   async saveCourses(courses: Course[]): Promise<void> {
+    invalidateApiCache("/courses");
     if (typeof localStorage !== "undefined") {
       localStorage.setItem("lms_courses_v2", JSON.stringify(courses));
       window.dispatchEvent(new Event("lms_courses_updated"));
@@ -632,139 +1056,261 @@ export const courseService = {
   },
 
   async getEnrolledCourseIds(): Promise<string[]> {
-    const result = await apiRequest<ApiEnrollment[]>("/courses/me/enrollments");
+    const result = await apiRequest<ApiEnrollment[]>("/courses/me/enrollments", { cacheTtlMs: 60_000 });
     return Array.isArray(result) ? result.map((enrollment) => enrollment.course_id) : [];
   },
 
   async enrollCourse(courseId: string): Promise<string[]> {
     await apiRequest(`/courses/${courseId}/enroll`, { method: "POST" });
+    invalidateApiCache("/courses");
     return this.getEnrolledCourseIds();
   },
 
   async getLessonProgress(): Promise<ApiLessonProgress[]> {
-    return apiRequest<ApiLessonProgress[]>("/progress/me");
+    return apiRequest<ApiLessonProgress[]>("/progress/me", { cacheTtlMs: 15_000 });
   },
 
   async completeLesson(lessonId: string): Promise<ApiLessonProgress> {
-    return apiRequest<ApiLessonProgress>(`/progress/lessons/${lessonId}/complete`, { method: "POST" });
+    const res = await apiRequest<ApiLessonProgress>(`/progress/lessons/${lessonId}/complete`, { method: "POST" });
+    invalidateApiCache("/progress");
+    invalidateApiCache("/courses");
+    return res;
   },
 
-  async createCourse(payload: { code: string; title: string; description?: string; price_egp?: number }): Promise<ApiCourse> {
-    return apiRequest<ApiCourse>("/courses", { method: "POST", body: JSON.stringify(payload) });
+  async createCourse(payload: { code: string; title: string; description?: string; price_egp?: number; grade_level?: "SECONDARY_1" | "SECONDARY_2" | "SECONDARY_3" }): Promise<ApiCourse> {
+    const res = await apiRequest<ApiCourse>("/courses", { method: "POST", body: JSON.stringify(payload) });
+    invalidateApiCache("/courses");
+    return res;
   },
 
   async getCourseContent(courseId: string): Promise<ApiCourse> {
-    return apiRequest<ApiCourse>(`/courses/${courseId}`);
+    return apiRequest<ApiCourse>(`/courses/${courseId}`, { cacheTtlMs: 60_000 });
+  },
+
+  async publishCourse(courseId: string): Promise<void> {
+    await apiRequest(`/courses/${courseId}/publish`, { method: "POST" });
+    invalidateApiCache("/courses");
+  },
+
+  async getMappedCourseContent(courseId: string): Promise<Course> {
+    return mapApiCourse(await courseService.getCourseContent(courseId));
+  },
+
+  /** Server-side shape of a published assessment the student can attempt. */
+  async getCourseAssessments(courseId: string, options?: { skipCache?: boolean; signal?: AbortSignal }): Promise<{
+    course_id: string;
+    lessons: Array<{ id: string; title: string; accessible: boolean }>;
+    quizzes: Array<{
+      id: string;
+      kind: "quiz";
+      title: string;
+      module_id: string | null;
+      lesson_id: string | null;
+      lesson_ids?: string[];
+      module_ids?: string[];
+      duration_seconds: number | null;
+      starts_at: string | null;
+      ends_at: string | null;
+      attempts_allowed: number;
+      attempts_used: number;
+      completed: boolean;
+      accessible: boolean;
+    }>;
+    assignments: Array<{
+      id: string;
+      kind: "assignment";
+      title: string;
+      module_id: string | null;
+      lesson_id: string | null;
+      lesson_ids?: string[];
+      module_ids?: string[];
+      due_at: string | null;
+      max_score: number;
+      completed: boolean;
+      accessible: boolean;
+    }>;
+  }> {
+    return apiRequest(`/courses/${courseId}/assessments`, { cacheTtlMs: 60_000, ...options });
+  },
+
+  async getCourseAssessmentRefs(courseId: string, options?: { skipCache?: boolean; signal?: AbortSignal }): Promise<CourseAssessmentRef[]> {
+    const data = await courseService.getCourseAssessments(courseId, options);
+    return [
+      ...data.quizzes.map((q) => ({
+        id: q.id,
+        kind: "quiz" as const,
+        title: q.title,
+        lessonId: q.lesson_id,
+        lessonIds: q.lesson_ids,
+        moduleIds: q.module_ids,
+        moduleId: q.module_id,
+        durationMinutes: q.duration_seconds ? Math.ceil(q.duration_seconds / 60) : undefined,
+        dueLabel: q.ends_at,
+        startsAt: q.starts_at,
+        attemptsUsed: q.attempts_used,
+        attemptsAllowed: q.attempts_allowed,
+        completed: q.completed === true,
+        accessible: q.accessible,
+      })),
+      ...data.assignments.map((a) => ({
+        id: a.id,
+        kind: "assignment" as const,
+        title: a.title,
+        lessonId: a.lesson_id,
+        lessonIds: a.lesson_ids,
+        moduleIds: a.module_ids,
+        moduleId: a.module_id,
+        maxScore: a.max_score,
+        completed: a.completed === true,
+        dueLabel: a.due_at,
+        accessible: a.accessible,
+      })),
+    ];
+  },
+
+  /** Publish a real quiz to the server: questions -> quiz -> publish. */
+  async publishQuizToServer(payload: {
+    idempotency_key: string;
+    course_id: string;
+    module_id?: string;
+    lesson_id?: string;
+    lesson_ids?: string[];
+    module_ids?: string[];
+    title: string;
+    duration_minutes?: number;
+    starts_at?: string | null;
+    ends_at?: string | null;
+    questions: Array<{
+      question_text: string;
+      question_type: string;
+      options?: Array<{ key: string; text: string; is_correct: boolean }>;
+      correct_answer?: string | null;
+      points?: number;
+    }>;
+  }): Promise<{ quiz_id: string }> {
+    // Validate before creating questions: malformed schedules must not leave orphans.
+    const schedule = assessmentWindow(payload.starts_at, payload.ends_at);
+    const questions = payload.questions.map(q => {
+      const type = canonicalQuestionType(q.question_type);
+      if (type === 'unknown') throw new Error('نوع سؤال غير مدعوم؛ راجع نوع السؤال قبل النشر.');
+      // Never invent an answer. A marked radio option is the teacher's
+      // explicit choice; use its text because the solving UI submits text.
+      const selected = (q.options || []).filter(option => option.is_correct);
+      if (selected.length > 1 && ['multiple_choice', 'true_false'].includes(type)) {
+        throw new Error('يلزم تحديد إجابة صحيحة واحدة لكل سؤال.');
+      }
+      let answer = ['multiple_choice', 'true_false'].includes(type)
+        ? selected[0]?.text ?? q.correct_answer : q.correct_answer;
+      if (type === 'multiple_choice' && !selected.length && typeof answer === 'string') {
+        answer = q.options?.find(option => option.key.trim() === answer?.trim())?.text ?? answer;
+      }
+      if (!['essay', 'short_answer'].includes(type) && !answer?.trim()) {
+        throw new Error('يلزم تحديد الإجابة الصحيحة للأسئلة ذات التصحيح التلقائي قبل النشر.');
+      }
+      const options = type === 'multiple_choice'
+        ? q.options?.map(option => ({ ...option, key: canonicalEditorOptionKey(option.key) })) : q.options;
+      return { question_type: type, prompt: q.question_text, options: options ?? null,
+        correct_answer: answer ?? null, points: q.points ?? 1 };
+    });
+    await validateAssessmentScope(payload);
+    const quiz = await apiRequest<{ id: string }>("/quizzes/publish-draft", {
+      method: "POST",
+      body: JSON.stringify({
+        course_id: payload.course_id,
+        quiz_title: payload.title,
+        module_id: payload.module_id || null,
+        lesson_id: payload.lesson_id || null,
+        lesson_ids: payload.lesson_ids || [],
+        module_ids: payload.module_ids || [],
+        duration_seconds: payload.duration_minutes ? payload.duration_minutes * 60 : null,
+        starts_at: schedule.startsAt,
+        ends_at: schedule.endsAt,
+        idempotency_key: payload.idempotency_key,
+        questions,
+      }),
+    });
+    invalidateApiCache("/courses");
+    return { quiz_id: quiz.id };
+  },
+
+  /** Publish a real assignment to the server. */
+  async publishAssignmentToServer(payload: {
+    course_id: string;
+    module_id?: string;
+    lesson_id?: string;
+    lesson_ids?: string[];
+    module_ids?: string[];
+    title: string;
+    prompt: string;
+    starts_at?: string | null;
+    due_at?: string | null;
+    max_score?: number;
+  }): Promise<{ assignment_id: string }> {
+    const schedule = assessmentWindow(payload.starts_at, payload.due_at);
+    await validateAssessmentScope(payload);
+    const created = await apiRequest<{ id: string }>("/assignments", {
+      method: "POST",
+      body: JSON.stringify({
+        course_id: payload.course_id,
+        assignment_title: payload.title,
+        prompt: payload.prompt || payload.title,
+        starts_at: schedule.startsAt,
+        due_at: schedule.endsAt,
+        max_score: payload.max_score ?? 100,
+        module_id: payload.module_id || null,
+        lesson_id: payload.lesson_id || null,
+        lesson_ids: payload.lesson_ids || [],
+        module_ids: payload.module_ids || [],
+      }),
+    });
+    await apiRequest(`/assignments/${created.id}/publish`, {
+      method: "POST",
+    });
+    invalidateApiCache("/courses");
+    return { assignment_id: created.id };
   },
 
   async addModule(courseId: string, payload: { title: string; position: number }): Promise<ApiCourse["modules"][number]> {
-    return apiRequest<ApiCourse["modules"][number]>(`/courses/${courseId}/modules`, {
+    const res = await apiRequest<ApiCourse["modules"][number]>(`/courses/${courseId}/modules`, {
       method: "POST",
       body: JSON.stringify(payload),
     });
+    invalidateApiCache("/courses");
+    return res;
   },
 
-  async addLesson(moduleId: string, payload: {
+  async addLesson(moduleId: string | undefined, payload: {
+    course_id?: string;
+    publication_status?: 'draft' | 'published';
+    publish_at?: string | null;
+    required_material_count?: number;
     title: string;
     kind: "video" | "article" | "live";
     position: number;
     content?: string;
-    video_asset_key?: string;
+    external_video_url?: string;
     video_duration_seconds?: number;
     price_egp?: number;
   }): Promise<{ id: string }> {
-    return apiRequest<{ id: string }>(`/modules/${moduleId}/lessons`, {
+    const res = await apiRequest<{ id: string }>(moduleId ? `/modules/${moduleId}/lessons` : `/courses/${payload.course_id}/lessons`, {
       method: "POST",
       body: JSON.stringify(payload),
     });
+    invalidateApiCache("/courses");
+    return res;
   },
 
-  async reindexLesson(lessonId: string): Promise<{ status: string; lesson_id: string }> {
-    return apiRequest<{ status: string; lesson_id: string }>(`/lessons/${lessonId}/reindex`, {
-      method: "POST",
-    });
-  },
 
-  async getLessonIndexingStatus(lessonId: string): Promise<{ status: "not_indexed" | "in_progress" | "indexed" | "failed"; indexed_chunks_count: number; error?: string }> {
-    return apiRequest<{ status: "not_indexed" | "in_progress" | "indexed" | "failed"; indexed_chunks_count: number; error?: string }>(`/lessons/${lessonId}/indexing-status`);
-  },
-
-  async getLessonTranscript(lessonId: string): Promise<{
-    lesson_id: string;
-    transcript_id?: string;
-    status: string;
-    language: string;
-    duration_seconds: number;
-    full_text: string;
-    provider?: string;
-    completed_at?: string;
-  }> {
-    return apiRequest(`/lessons/${lessonId}/transcript`);
-  },
-
-  async getLessonSegments(lessonId: string, q?: string): Promise<{
-    lesson_id: string;
-    count: number;
-    segments: Array<{
-      id: string;
-      sequence: number;
-      start_time: number;
-      end_time: number;
-      time_formatted: string;
-      text: string;
-    }>;
-  }> {
-    const queryStr = q ? `?q=${encodeURIComponent(q)}` : "";
-    return apiRequest(`/lessons/${lessonId}/transcript/segments${queryStr}`);
-  },
-
-  async askAIAboutLesson(lessonId: string, question: string): Promise<{
-    answer: string;
-    is_grounded: boolean;
-    citations: Array<{
-      chunk_id: string;
-      start_time: number;
-      end_time: number;
-      time_formatted: string;
-      text_snippet: string;
-    }>;
-  }> {
-    return apiRequest(`/lessons/${lessonId}/ai/ask`, {
-      method: "POST",
-      body: JSON.stringify({ question }),
-    });
-  },
-
-  async getLessonAISummary(lessonId: string): Promise<{
-    title: string;
-    full_overview: string;
-    total_duration_sec: number;
-    language: string;
-    sections: Array<{
-      time_range: string;
-      start_time: number;
-      end_time: number;
-      summary_snippet: string;
-    }>;
-  }> {
-    return apiRequest(`/lessons/${lessonId}/ai/summary`);
-  },
-
-  async reindexAllCourseLessons(courseId: string): Promise<{ queued_lessons: number; skipped: Array<{ lesson_id: string; reason: string }> }> {
-    return apiRequest<{ queued_lessons: number; skipped: Array<{ lesson_id: string; reason: string }> }>(`/courses/${courseId}/reindex-all`, {
-      method: "POST",
-    });
-  },
 
   async uploadLessonVideo(
     lessonId: string,
     file: File,
     onProgress?: (percent: number) => void,
     onXhrCreated?: (xhr: XMLHttpRequest) => void
-  ): Promise<{ id: string; video_url: string; filename: string }> {
+  ): Promise<{ id: string; video_url: string; filename: string; video_upload_id?: string | null }> {
     const formData = new FormData();
     formData.append("file", file);
-    return uploadWithProgress<{ id: string; video_url: string; filename: string }>(
+    return uploadWithProgress<{ id: string; video_url: string; filename: string; video_upload_id?: string | null }>(
       `/lessons/${lessonId}/video`,
       formData,
       onProgress,
@@ -773,8 +1319,13 @@ export const courseService = {
     );
   },
 
-  async deleteLesson(moduleId: string, lessonId: string): Promise<void> {
-    await apiRequest<void>(`/modules/${moduleId}/lessons/${lessonId}`, { method: "DELETE" });
+  async updateLessonPublication(lessonId: string, publication_status: 'draft' | 'published', publish_at: string | null): Promise<void> {
+    await apiRequest(`/lessons/${lessonId}/publication`, { method: 'PATCH', body: JSON.stringify({ publication_status, publish_at }) });
+    invalidateApiCache('/courses');
+  },
+  async deleteLesson(moduleId: string | undefined, lessonId: string): Promise<void> {
+    await apiRequest<void>(moduleId ? `/modules/${moduleId}/lessons/${lessonId}` : `/lessons/${lessonId}`, { method: "DELETE" });
+    invalidateApiCache("/courses");
   },
 };
 
@@ -796,12 +1347,12 @@ export const analyticsService = {
 // ============================================================================
 export const submissionService = {
   async getStudentSubmissions(): Promise<AssignmentSubmission[]> {
-    const result = await apiRequest<ApiSubmission[]>("/submissions/me");
+    const result = await apiRequest<ApiSubmission[]>("/submissions/me", { cacheTtlMs: 30_000 });
     return Array.isArray(result) ? result.map(mapApiSubmission) : [];
   },
 
   async getTeacherSubmissions(): Promise<AssignmentSubmission[]> {
-    const result = await apiRequest<ApiSubmission[]>("/submissions");
+    const result = await apiRequest<ApiSubmission[]>("/submissions", { cacheTtlMs: 30_000 });
     return Array.isArray(result) ? result.map(mapApiSubmission) : [];
   },
 
@@ -814,36 +1365,66 @@ export const submissionService = {
       method: "POST",
       body: JSON.stringify({ final_score: finalScore, teacher_feedback: teacherFeedback, approve }),
     });
+    invalidateApiCache("/submissions");
     return mapApiSubmission(result);
   },
 };
 
-type ApiManagedUser = Pick<ApiUser, "id" | "email" | "display_name" | "role" | "is_active" | "created_at">;
+import { lessonAccessService } from "./paymentService";
+
+export type ApiManagedUser = Pick<
+  ApiUser,
+  | "id"
+  | "email"
+  | "display_name"
+  | "role"
+  | "grade_level"
+  | "student_phone"
+  | "guardian_phone"
+  | "national_id"
+  | "governorate"
+  | "school_name"
+  | "gender"
+  | "religion"
+  | "is_active"
+  | "created_at"
+> & {
+  parent_phone?: string | null;
+  phone?: string | null;
+  overall_attendance_ratio?: number;
+  assignment_submission_ratio?: number;
+  average_quiz_score?: number | null;
+  homework_success_rate?: number;
+  quiz_success_rate?: number | null;
+  total_overall_grade?: number;
+  last_active_date?: string | null;
+  quizzes_taken?: number;
+  quiz_attempts_count?: number;
+  pending_quiz_attempts?: number;
+  has_completed_exam?: boolean;
+  exam_missed_deadline?: boolean;
+};
 
 export const userService = {
+  async getProfileSummary(): Promise<{enrolled_students_count?: number; uploaded_videos_count?: number; progress?: Array<{lesson_id: string; title: string; completion_percent: number}>}> {
+    return apiRequest('/auth/profile-summary');
+  },
   async getStudents(): Promise<ApiManagedUser[]> {
-    const res = await apiRequest<ApiManagedUser[]>("/users?role=student");
+    const res = await apiRequest<ApiManagedUser[]>("/users?role=student", { cacheTtlMs: 60_000 });
     return Array.isArray(res) ? res : [];
   },
 
   async toggleBlock(studentId: string): Promise<ApiManagedUser> {
-    return apiRequest<ApiManagedUser>(`/users/${studentId}/block`, { method: "POST" });
+    const res = await apiRequest<ApiManagedUser>(`/users/${studentId}/block`, { method: "POST" });
+    invalidateApiCache("/users");
+    return res;
   },
 
   async deleteStudent(studentId: string): Promise<void> {
     await apiRequest<void>(`/users/${studentId}`, { method: "DELETE" });
+    invalidateApiCache("/users");
   },
 };
 
-export const systemService = {
-  async getASRConfig(): Promise<{ kaggle_asr_url: string; mode: string; provider: string }> {
-    return apiRequest<{ kaggle_asr_url: string; mode: string; provider: string }>("/system/asr-config");
-  },
+export const accessService = lessonAccessService;
 
-  async updateASRConfig(kaggleAsrUrl: string): Promise<{ kaggle_asr_url: string; mode: string; provider: string }> {
-    return await apiRequest<{ kaggle_asr_url: string; mode: string; provider: string }>("/system/asr-config", {
-      method: "POST",
-      body: JSON.stringify({ kaggle_asr_url: kaggleAsrUrl }),
-    });
-  },
-};

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import CurrentUser, OptionalUser, require_roles
 from app.core.database import get_db
-from app.models.user import User, UserRole
+from app.models.user import GradeLevel, User, UserRole
 from app.models.course import Enrollment, EnrollmentStatus
 from app.models.payment import EntitlementType, StudentEntitlement
 from app.schemas import (
@@ -31,43 +31,108 @@ CourseManager = Annotated[
 Student = Annotated[User, Depends(require_roles(UserRole.STUDENT))]
 
 
+def _video_playback_fields(lesson, *, allow_external: bool = False) -> tuple[bool, str | None]:
+    """Playback info without ever serializing the private storage key.
+
+    Legacy external URLs are visible only to managers for migration; giving
+    them to students would bypass every protected playback control.
+    every locally-stored video is only reachable through the token-gated
+    stream endpoint, so the client just gets that entry point.
+    """
+    key = lesson.video_asset_key
+    if not key:
+        return False, None
+    if key.startswith("http://") or key.startswith("https://"):
+        return (True, key) if allow_external else (False, None)
+    return True, f"/api/v1/lessons/{lesson.id}/video-token"
+
+
 def _safe_course_responses(db: Session, user: User | None, courses: list) -> list[CourseResponse]:
     responses = [CourseResponse.model_validate(course) for course in courses]
+    from app.models.course import Lesson
+    from app.schemas import ModuleResponse, LessonResponse
+    from app.services.lesson_release import available_lesson_ids
+    unitless = list(db.scalars(select(Lesson).where(Lesson.course_id.in_([c.id for c in courses]), Lesson.module_id.is_(None)).order_by(Lesson.position, Lesson.id))) if courses else []
+    for response in responses:
+        unassigned = [LessonResponse.model_validate(lesson) for lesson in unitless if lesson.course_id == response.id]
+        if unassigned:
+            # Display-only grouping; no CourseModule or fake default unit is
+            # created. is_unassigned excludes it from unit selection fields.
+            response.modules.append(ModuleResponse(id=response.id, title="بدون وحدة", position=10001, is_unassigned=True, lessons=unassigned))
+    # Pair each serialized lesson with its ORM source so playback fields can be
+    # derived from the private key without ever serializing the key itself.
+    orm_lessons_by_id = {
+        lesson.id: lesson
+        for course in courses
+        for module in getattr(course, "modules", [])
+        for lesson in getattr(module, "lessons", [])
+    }
+    orm_lessons_by_id.update({lesson.id: lesson for lesson in unitless})
+    if user is None or user.role == UserRole.STUDENT:
+        ready = available_lesson_ids(db, list(orm_lessons_by_id.values()), {c.id: c for c in courses})
+        for response in responses:
+            for module in response.modules:
+                module.lessons = [lesson for lesson in module.lessons if lesson.id in ready]
+
+    for course in responses:
+        for module in course.modules:
+            for lesson in module.lessons:
+                source = orm_lessons_by_id.get(lesson.id)
+                key = source.video_asset_key if source else None
+                lesson.has_uploaded_video = bool(key and not key.startswith(("http://", "https://")))
     
     # Collect all lesson IDs across returned courses
     all_lesson_ids = [lesson.id for course in responses for module in course.modules for lesson in module.lessons]
     materials_by_lesson: dict[uuid.UUID, list[LessonMaterialSummary]] = {}
     if all_lesson_ids:
-        from app.models.knowledge_center import KnowledgeSource, SourceStatus, SourceRole
+        from app.models.extended import LessonAsset
         from app.schemas import LessonMaterialSummary
-        sources = db.scalars(
-            select(KnowledgeSource).where(
-                KnowledgeSource.lesson_id.in_(all_lesson_ids),
-                KnowledgeSource.status != SourceStatus.DELETING,
-                KnowledgeSource.source_role == SourceRole.LESSON_MATERIAL,
-                KnowledgeSource.is_current == True,
+
+        assets = db.scalars(
+            select(LessonAsset).where(
+                LessonAsset.lesson_id.in_(all_lesson_ids),
+                LessonAsset.asset_kind.in_(["pdf", "document", "attachment"]),
             )
         ).all()
-        for s in sources:
-            if not s.lesson_id:
-                continue
-            materials_by_lesson.setdefault(s.lesson_id, []).append(
+        for a in assets:
+            ext = (a.filename or "").rsplit(".", 1)[-1].lower() if a.filename else "bin"
+            materials_by_lesson.setdefault(a.lesson_id, []).append(
                 LessonMaterialSummary(
-                    id=s.id,
-                    filename=s.filename,
-                    file_format=s.file_format,
-                    size_bytes=s.size_bytes,
-                    source_role=s.source_role,
-                    download_url=f"/api/v1/knowledge-center/sources/{s.id}/download",
-                    created_at=s.created_at,
+                    id=a.id,
+                    filename=a.filename or "material",
+                    file_format=ext,
+                    size_bytes=a.size_bytes or 0,
+                    source_role="LESSON_MATERIAL",
+                    download_url=f"/api/v1/lessons/{a.lesson_id}/materials/{a.id}/download",
+                    created_at=a.created_at,
                 )
             )
 
     if user and user.role != UserRole.STUDENT:
+        # One bulk read restores processing state after navigation or reload;
+        # never expose source keys, worker errors, or jobs to the public catalog.
+        from app.models.video_upload import VideoUpload
+        from app.schemas import VideoProcessingSummary
+
+        latest_uploads = {}
+        if all_lesson_ids:
+            uploads = db.execute(
+                select(VideoUpload.lesson_id, VideoUpload.id, VideoUpload.status, VideoUpload.created_at)
+                .where(VideoUpload.lesson_id.in_(all_lesson_ids))
+                .order_by(VideoUpload.created_at.desc(), VideoUpload.id.desc())
+            ).all()
+            for upload in uploads:
+                latest_uploads.setdefault(upload.lesson_id, VideoProcessingSummary(
+                    id=upload.id, status=upload.status, created_at=upload.created_at,
+                ))
         for course in responses:
             for module in course.modules:
                 for lesson in module.lessons:
                     lesson.materials = materials_by_lesson.get(lesson.id, [])
+                    lesson.video_upload = latest_uploads.get(lesson.id)
+                    orm_lesson = orm_lessons_by_id.get(lesson.id)
+                    if orm_lesson is not None:
+                        lesson.has_video, lesson.video_url = _video_playback_fields(orm_lesson, allow_external=True)
         return responses
 
     enrolled_course_ids: set[uuid.UUID] = set()
@@ -110,9 +175,13 @@ def _safe_course_responses(db: Session, user: User | None, courses: list) -> lis
                 )
                 if has_lesson_access:
                     lesson.materials = materials_by_lesson.get(lesson.id, [])
+                    orm_lesson = orm_lessons_by_id.get(lesson.id)
+                    if orm_lesson is not None:
+                        lesson.has_video, lesson.video_url = _video_playback_fields(orm_lesson)
                 else:
                     lesson.content = None
-                    lesson.video_asset_key = None
+                    lesson.has_video = False
+                    lesson.video_url = None
                     lesson.materials = []
     return responses
 
@@ -125,10 +194,23 @@ def list_courses(
     page_size: int = Query(default=20, ge=1, le=100),
     search: str | None = Query(default=None, max_length=100),
     sort: Literal["created_at", "title"] = "created_at",
+    grade_level: GradeLevel | None = None,
+    public_only: bool = False,
+    enrolled_only: bool = False,
 ) -> PageResponse[CourseResponse]:
-    courses, total = course_service.list_courses(db, user, page, page_size, search, sort)
+    if enrolled_only:
+        if public_only:
+            raise HTTPException(400, "Public and enrolled catalog filters cannot be combined")
+        if user is None:
+            raise HTTPException(401, "Authentication required")
+        if user.role != UserRole.STUDENT:
+            raise HTTPException(403, "Student identity required")
+    # A public landing view must never hydrate a teacher's private drafts or
+    # lesson content even if an existing cookie accompanies the request.
+    catalog_user = None if public_only else user
+    courses, total = course_service.list_courses(db, catalog_user, page, page_size, search, sort, grade_level, enrolled_only)
     return PageResponse(
-        items=_safe_course_responses(db, user, courses),
+        items=_safe_course_responses(db, catalog_user, courses),
         pagination=PageInfo(
             page=page,
             page_size=page_size,

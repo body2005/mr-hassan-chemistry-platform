@@ -1,22 +1,98 @@
-FROM python:3.12-slim
+FROM python:3.12.15-slim-trixie@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016 AS native-security-build
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl ca-certificates xz-utils gnupg \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY scripts/build_native_expat.sh /build/build_native_expat.sh
+RUN sh /build/build_native_expat.sh
+COPY scripts/build_python_xml.sh scripts/run_python_xml_tests.py /build/
+RUN sh /build/build_python_xml.sh
+
+FROM python:3.12.15-slim-trixie@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016 AS ocr-native-build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential autoconf automake autoconf-archive libtool pkg-config \
+    libleptonica-dev libtiff-dev curl ca-certificates xz-utils gpgv debian-keyring \
+    git libgtest-dev libgmock-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY scripts/build_native_tesseract.sh /build/build_native_tesseract.sh
+COPY scripts/native/tesseract /build/native-tesseract
+RUN sh /build/build_native_tesseract.sh
+
+FROM python:3.12.15-slim-trixie@sha256:dddfd7e07f9d15aeeca61529320492139d21cac7f0070c00609243e51e4e0016
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# The official pinned3.12.15 image bundles Expat2.8.5. Replace both XML
+# bindings from the exact matching signed CPython source against Expat2.9.0;
+# updating only the OS package leaves the bundled interpreter copy unchanged.
+
 WORKDIR /srv
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Intentional security-index refresh, not an unstable suite or scanner bypass.
+# Bump on reviewed stable update intake; CLI may set a later audit stamp.
+ARG DEBIAN_SECURITY_REFRESH=2026-10-08
+RUN test -n "$DEBIAN_SECURITY_REFRESH" && apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+    openssl \
+    libssl3t64 \
     build-essential \
-    curl \
-    tesseract-ocr \
+    libleptonica6 \
+    libgomp1 \
     tesseract-ocr-ara \
     tesseract-ocr-eng \
+    tesseract-ocr-osd \
+    fonts-noto-core \
+    fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements.lock ./
+COPY --from=native-security-build /build/libexpat1.deb /tmp/libexpat1.deb
+COPY --from=ocr-native-build /build/libtesseract5.deb /build/tesseract-ocr.deb /tmp/
+RUN dpkg -i /tmp/libexpat1.deb /tmp/libtesseract5.deb /tmp/tesseract-ocr.deb \
+    && ldconfig && rm /tmp/libexpat1.deb /tmp/libtesseract5.deb /tmp/tesseract-ocr.deb
+COPY --from=native-security-build /build/python-xml-modules/ /usr/local/lib/python3.12/lib-dynload/
+RUN python -c "import pyexpat,_elementtree; import xml.etree.ElementTree as et; assert pyexpat.version_info == (2,9,0); assert et.Element is _elementtree.Element"
+RUN python -m pip install --no-cache-dir --upgrade pip==26.2.1 \
+    && python -m pip install --no-cache-dir -r requirements.txt \
+    && python -m pip uninstall -y pip \
+    && apt-get purge -y --auto-remove build-essential perl \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libssl3t64)" ge '3.5.7-1~deb13u3' \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libpcre2-8-0)" ge '10.46-1~deb13u3' \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' liblzma5)" ge '5.8.1-1+deb13u2' \
+    && ldd /usr/bin/tesseract > /tmp/ocr-library-links.txt \
+    && ! grep -E 'not found|libarchive|libcurl|libxml2|libpango|libcairo|libicu' /tmp/ocr-library-links.txt \
+    && ! dpkg-query -W -f='${db:Status-Status} ${Package}\n' libxml2 libpoppler147 libarchive13t64 libcurl4t64 2>/dev/null | grep '^installed ' \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY . .
+# Keep nonsecret build provenance outside dpkg's slim-image documentation
+# exclusions. The source version/signature are evidence, not a scanner waiver.
+COPY --from=native-security-build /build/package/usr/share/doc/libexpat1/chemistry-source.txt /usr/local/share/chemistry-native/expat/source.txt
+COPY --from=native-security-build /build/expat-signature-status.txt /usr/local/share/chemistry-native/expat/signature.txt
+COPY --from=native-security-build /build/expat-tests.log /usr/local/share/chemistry-native/expat/upstream-tests.log
+COPY --from=native-security-build /build/python-xml-source.txt /build/python-xml-signature-status.txt /build/python-xml-tests.json /build/python-xml-links.txt /build/python-xml-license.txt /usr/local/share/chemistry-native/python-xml/
+COPY --from=ocr-native-build /build/tesseract-cli-package/usr/share/doc/tesseract-ocr/chemistry-source.txt /usr/local/share/chemistry-native/tesseract/source.txt
+COPY --from=ocr-native-build /build/tesseract-signature-status.txt /usr/local/share/chemistry-native/tesseract/signature.txt
+COPY --from=ocr-native-build /build/tesseract-security-evidence/security-tests.xml /usr/local/share/chemistry-native/tesseract/security/tests.xml
+COPY --from=ocr-native-build /build/tesseract-security-evidence/inttemp-stable-backport.patch /build/tesseract-security-evidence/inttemp-context-adaptations.diff /build/tesseract-security-evidence/stable-callsite.patch /usr/local/share/chemistry-native/tesseract/security/
+COPY --from=ocr-native-build /build/native-tesseract/backports.tsv /usr/local/share/chemistry-native/tesseract/backports.tsv
+# The native test executable, static library and GoogleTest stay in the builder.
+RUN python -m scripts.verify_native_expat
+RUN chmod 755 scripts/tesseract_limited.py
+ENV TESSERACT_CMD=/srv/scripts/tesseract_limited.py OMP_THREAD_LIMIT=1 \
+    TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
+RUN test -f "$TESSDATA_PREFIX/ara.traineddata" && test -f "$TESSDATA_PREFIX/eng.traineddata" \
+    && /usr/bin/tesseract --list-langs
+
+# Application code stays root-owned/read-only to the runtime user. Only
+# staging and the unprivileged home/cache directories are writable.
+RUN groupadd --gid 10001 chemistry \
+    && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin chemistry \
+    && mkdir -p /srv/uploads \
+    && chown 10001:10001 /srv/uploads
+ENV STORAGE_DIR=/srv/uploads
+USER 10001:10001
 
 # Run migrations, then start (command overridden by compose)
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,28 +1,30 @@
 import { PageLoadingScreen } from "./components/PageLoadingScreen";
+import { readSharedLesson, clearSharedLesson } from './utils/sharedLesson';
 import { lazy, Suspense, useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Sidebar, NavTab } from "./components/Sidebar";
 import { Header } from "./components/Header";
-import { FloatingAITutor } from "./components/FloatingAITutor";
 import { GlobalUploadWidget } from "./components/GlobalUploadWidget";
 import { Course, CurrentUser, NotificationItem } from "./types/lms";
 import { useTranslation } from "./utils/i18n";
 
-import { ApiClientError, authService, courseService, notificationService } from "./services/lmsService";
-import { useConfirm } from "./components/ConfirmWizard";
+import { ApiClientError, authService, bootstrapService, courseService, notificationService } from "./services/lmsService";
 import { PaymentTarget, StudentEntitlement, paymentService } from "./services/paymentService";
+import { realtimeService } from "./services/realtimeService";
+import { LessonAccessModal } from "./components/LessonAccessModal";
+import { readEnrollmentIntent, saveEnrollmentIntent, type EnrollmentIntent } from './services/catalogState';
+import { authTabHash, readAuthTab } from './services/authNavigation';
+import { bootstrapRetryDelay, type BootstrapFailure } from './utils/bootstrapRecovery';
 
 // Views
 import { LandingPageView } from "./views/LandingPageView";
-// View chunk loaders for background prefetching & instant navigation
+// View chunk loaders stay lazy. A chunk is only preloaded after the user
+// expresses intent on the corresponding navigation item.
 const viewLoaders = {
-  GeneralHome: () => import("./views/GeneralHomeView"),
   MyCourses: () => import("./views/MyCoursesView"),
   MySubmissions: () => import("./views/MySubmissionsView"),
   LessonManagement: () => import("./views/LessonManagementView"),
-  AIKnowledgeCenter: () => import("./views/AIKnowledgeCenterView"),
   QuizGen: () => import("./views/QuizGeneratorView"),
   Submissions: () => import("./views/SubmissionsView"),
-  StudentAnalytics: () => import("./views/StudentAnalyticsView"),
   Notifications: () => import("./views/NotificationsView"),
   Profile: () => import("./views/ProfileView"),
   Payments: () => import("./views/PaymentView"),
@@ -40,14 +42,11 @@ function preloadView(tabName: keyof typeof viewLoaders) {
   }
 }
 
-const GeneralHomeView = lazy(() => viewLoaders.GeneralHome().then((m) => ({ default: m.GeneralHomeView })));
 const MyCoursesView = lazy(() => viewLoaders.MyCourses().then((m) => ({ default: m.MyCoursesView })));
 const MySubmissionsView = lazy(() => viewLoaders.MySubmissions().then((m) => ({ default: m.MySubmissionsView })));
 const LessonManagementView = lazy(() => viewLoaders.LessonManagement().then((m) => ({ default: m.LessonManagementView })));
-const AIKnowledgeCenterView = lazy(() => viewLoaders.AIKnowledgeCenter().then((m) => ({ default: m.AIKnowledgeCenterView })));
 const QuizGeneratorView = lazy(() => viewLoaders.QuizGen().then((m) => ({ default: m.QuizGeneratorView })));
 const SubmissionsView = lazy(() => viewLoaders.Submissions().then((m) => ({ default: m.SubmissionsView })));
-const StudentAnalyticsView = lazy(() => viewLoaders.StudentAnalytics().then((m) => ({ default: m.StudentAnalyticsView })));
 const NotificationsView = lazy(() => viewLoaders.Notifications().then((m) => ({ default: m.NotificationsView })));
 const ProfileView = lazy(() => viewLoaders.Profile().then((m) => ({ default: m.ProfileView })));
 const PaymentView = lazy(() => viewLoaders.Payments().then((m) => ({ default: m.PaymentView })));
@@ -57,14 +56,11 @@ import { AuthView } from "./views/AuthView";
 const VALID_TABS = [
   "Landing",
   "Auth",
-  "GeneralHome",
   "MyCourses",
   "MySubmissions",
   "LessonManagement",
-  "AIKnowledgeCenter",
   "QuizGen",
   "Submissions",
-  "StudentAnalytics",
   "Notifications",
   "Profile",
   "Payments",
@@ -73,11 +69,11 @@ const VALID_TABS = [
 
 type AllTabs = (typeof VALID_TABS)[number];
 
-const STUDENT_TABS = new Set<AllTabs>(["GeneralHome", "MyCourses", "MySubmissions", "Notifications", "Payments", "Profile"]);
-const STAFF_TABS = new Set<AllTabs>(["LessonManagement", "AIKnowledgeCenter", "QuizGen", "Submissions", "StudentAnalytics", "Notifications", "PaymentManagement", "Profile"]);
+const STUDENT_TABS = new Set<AllTabs>(["MyCourses", "MySubmissions", "Notifications", "Payments", "Profile"]);
+const STAFF_TABS = new Set<AllTabs>(["LessonManagement", "QuizGen", "Submissions", "Notifications", "PaymentManagement", "Profile"]);
 
 function homeTab(user: CurrentUser): AllTabs {
-  return user.role === "student" ? "GeneralHome" : "LessonManagement";
+  return user.role === "student" ? "MyCourses" : "LessonManagement";
 }
 
 function tabAllowed(tab: AllTabs, user: CurrentUser): boolean {
@@ -85,8 +81,9 @@ function tabAllowed(tab: AllTabs, user: CurrentUser): boolean {
 }
 
 function getTabFromHash(): AllTabs | null {
-  const raw = window.location.hash.replace("#", "").trim().toLowerCase();
+  const raw = window.location.hash.replace("#", "").split("?", 1)[0].trim().toLowerCase();
   if (!raw) return null;
+  if (raw === "studentanalytics") return "Submissions";
   const match = VALID_TABS.find((t) => t.toLowerCase() === raw);
   return match || null;
 }
@@ -94,24 +91,14 @@ function getTabFromHash(): AllTabs | null {
 export type AuthStatus = "loading" | "authenticated" | "unauthenticated" | "temporarily_unavailable";
 
 function App() {
-  const confirm = useConfirm();
-  // Cached identity is used for optimistic rendering and offline resilience.
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(() => {
-    try {
-      const cached = typeof localStorage !== "undefined" ? localStorage.getItem("lms_cached_user") : null;
-      return cached ? (JSON.parse(cached) as CurrentUser) : null;
-    } catch {
-      return null;
-    }
-  });
-  const [authStatus, setAuthStatus] = useState<AuthStatus>(() => {
-    const hasToken = typeof localStorage !== "undefined" && Boolean(localStorage.getItem("lms_session_token") || localStorage.getItem("lms_cached_user"));
-    return hasToken ? "loading" : "unauthenticated";
-  });
+  const cachedUser = useMemo(() => authService.getCachedUser(), []);
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(() => cachedUser);
+  const [authStatus, setAuthStatus] = useState<AuthStatus>(() => (cachedUser ? "authenticated" : "loading"));
   const [retryAttempt, setRetryAttempt] = useState(0);
+  const [bootstrapFailure, setBootstrapFailure] = useState<BootstrapFailure | null>(null);
+  const [bootstrapChecking, setBootstrapChecking] = useState(true);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [isInitialRefresh, setIsInitialRefresh] = useState(true);
-  const [authLoading, setAuthLoading] = useState(true);
+  const [authLoading, setAuthLoading] = useState(() => !cachedUser);
   const authSyncId = useRef(0);
 
   const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -119,23 +106,23 @@ function App() {
     return (saved as "light" | "dark") || "light";
   });
 
-    // Manage Refresh / Initial Page Load splash duration
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setIsInitialRefresh(false);
-    }, 600);
-    return () => clearTimeout(timer);
-  }, []);
-
   const { lang, toggleLang: handleToggleLang } = useTranslation();
 
-  const [courses, setCourses] = useState<Course[]>([]);
+  const [courses, setCourses] = useState<Course[]>(() => courseService.getCachedCourses());
+  // Cached identity does not imply that this user's course catalog is loaded.
+  // Keep teacher mutations unavailable until the matching bootstrap arrives.
+  const [courseScopeReady, setCourseScopeReady] = useState<string | null>(null);
+  const [courseHydrationIssue, setCourseHydrationIssue] = useState(false);
   const [enrolledCourseIds, setEnrolledCourseIds] = useState<string[]>([]);
+  const [enrollmentIntent, setEnrollmentIntent] = useState<EnrollmentIntent | null>(readEnrollmentIntent);
+  const [enrollmentBusy, setEnrollmentBusy] = useState(false);
+  const [enrollmentError, setEnrollmentError] = useState('');
   const [entitlements, setEntitlements] = useState<StudentEntitlement[]>([]);
   const [checkoutTarget, setCheckoutTarget] = useState<PaymentTarget | null>(null);
-  const [aiAccessAllowed, setAiAccessAllowed] = useState(false);
 
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [selectedAccessRequestId, setSelectedAccessRequestId] = useState<string | null>(null);
+  const [isAccessModalOpen, setIsAccessModalOpen] = useState(false);
 
   // Real-time synchronization for courses, notifications, and auth sessions via DAL
   useEffect(() => {
@@ -148,97 +135,153 @@ function App() {
       }
     }
 
-    async function handleUserSync() {
+    async function handleBootstrapSync() {
       const requestId = ++authSyncId.current;
+      setBootstrapChecking(true);
       try {
-        const user = await authService.getCurrentUser();
+        const bootstrap = await bootstrapService.getBootstrap();
         if (requestId !== authSyncId.current) return;
-        setCurrentUser(user);
-        if (user) {
+        if (bootstrap.authenticated && bootstrap.user) {
+          setCurrentUser(bootstrap.user);
           setAuthStatus("authenticated");
           setRetryAttempt(0);
-          await handleNotificationsSync();
+          setBootstrapFailure(null);
+          setNotifications(bootstrap.notifications);
+          setCourses(bootstrap.courses);
+          setCourseScopeReady(bootstrap.user.id);
+          setCourseHydrationIssue(false);
+          if (bootstrap.user.role === "student") {
+            setEnrolledCourseIds(bootstrap.enrolledCourseIds);
+            setEntitlements(bootstrap.entitlements);
+            // Fill omitted enrolled courses in pages, not one request per
+            // enrollment. Selected-course assessment loading is independent.
+            if (bootstrap.enrolledCourseIds.some(id => !bootstrap.courses.some(course => course.id === id))) {
+              void (async () => {
+                try {
+                  let pages = 1;
+                  for (let page = 1; page <= pages; page++) {
+                    if (requestId !== authSyncId.current) return;
+                    const result = await courseService.getEnrolledCatalogPage(page);
+                    if (requestId !== authSyncId.current) return;
+                    pages = result.pages;
+                    setCourses(existing => {
+                      const byId = new Map(existing.map(course => [course.id, course]));
+                      for (const course of result.courses) byId.set(course.id, course);
+                      return [...byId.values()];
+                    });
+                  }
+                } catch {
+                  if (requestId === authSyncId.current) setCourseHydrationIssue(true);
+                }
+              })();
+            }
+          } else {
+            setEnrolledCourseIds([]);
+            setEntitlements([]);
+          }
         } else {
+          setCurrentUser(null);
+          setCourseScopeReady(null);
           setAuthStatus("unauthenticated");
           setRetryAttempt(0);
+          setBootstrapFailure(null);
         }
       } catch (error) {
         if (requestId !== authSyncId.current) return;
-        console.error("Session verification error", error);
-        let cachedUser: CurrentUser | null = null;
-        try {
-          const cached = typeof localStorage !== "undefined" ? localStorage.getItem("lms_cached_user") : null;
-          if (cached) cachedUser = JSON.parse(cached) as CurrentUser;
-        } catch {
-          cachedUser = null;
+        if (error instanceof ApiClientError && error.code === 'REQUEST_CANCELLED') return;
+        if (error instanceof ApiClientError && error.status === 401) {
+          setCurrentUser(null);
+          setCourseScopeReady(null);
+          setAuthStatus('unauthenticated');
+          setBootstrapFailure(null);
+          setRetryAttempt(0);
+          return;
         }
-
-        if (cachedUser) {
-          setCurrentUser(cachedUser);
-          setAuthStatus("temporarily_unavailable");
-        } else {
-          setAuthStatus("temporarily_unavailable");
-        }
+        console.error("Bootstrap sync error", error);
+        setBootstrapFailure(error instanceof ApiClientError ? error : {});
+        setAuthStatus("temporarily_unavailable");
       } finally {
-        if (requestId === authSyncId.current) setAuthLoading(false);
+        if (requestId === authSyncId.current) {
+          setAuthLoading(false);
+          setBootstrapChecking(false);
+        }
       }
     }
 
     async function handleCoursesSync() {
       try {
+        if (authService.getCachedUser()?.role === 'student') {
+          // Keep older enrolled courses when a local update arrives; the
+          // general public catalog's first page is not this student's list.
+          const requestId = authSyncId.current;
+          let pages = 1;
+          const enrolled: Course[] = [];
+          for (let page = 1; page <= pages; page++) {
+            const result = await courseService.getEnrolledCatalogPage(page);
+            if (requestId !== authSyncId.current) return;
+            pages = result.pages;
+            enrolled.push(...result.courses);
+          }
+          setCourses(enrolled);
+          setCourseHydrationIssue(false);
+          return;
+        }
         const data = await courseService.getCourses();
         setCourses(data);
       } catch (err) {
+        if (authService.getCachedUser()?.role === 'student') setCourseHydrationIssue(true);
         console.error("Courses sync error", err);
       }
     }
 
     // Local in-window custom event listeners
     window.addEventListener("lms_notifications_updated", handleNotificationsSync);
-    window.addEventListener("lms_user_updated", handleUserSync);
+    window.addEventListener("lms_user_updated", handleBootstrapSync);
     window.addEventListener("lms_courses_updated", handleCoursesSync);
 
-    void handleUserSync();
+    void handleBootstrapSync();
 
     return () => {
       window.removeEventListener("lms_notifications_updated", handleNotificationsSync);
-      window.removeEventListener("lms_user_updated", handleUserSync);
+      window.removeEventListener("lms_user_updated", handleBootstrapSync);
       window.removeEventListener("lms_courses_updated", handleCoursesSync);
     };
   }, []);
 
-  // Exponential backoff retry when auth server is temporarily unavailable
+  // Bounded recovery for temporary outages, never a timed replay of429.
   useEffect(() => {
-    if (authStatus !== "temporarily_unavailable") return;
-    const delay = Math.min(2000 * Math.pow(1.5, retryAttempt), 30000);
+    if (authStatus !== "temporarily_unavailable" || bootstrapChecking) return;
+    const delay = bootstrapRetryDelay(bootstrapFailure, retryAttempt);
+    if (delay === null) return;
     const timer = setTimeout(() => {
       setRetryAttempt((prev) => prev + 1);
       window.dispatchEvent(new Event("lms_user_updated"));
     }, delay);
     return () => clearTimeout(timer);
-  }, [authStatus, retryAttempt]);
+  }, [authStatus, retryAttempt, bootstrapFailure, bootstrapChecking]);
 
   // Track active navigation tab with Google Chrome native History & Hash support
   const [activeTab, setActiveTab] = useState<AllTabs>(() => {
+    if (typeof window !== "undefined" && window.location.hash.toLowerCase() === "#generalhome") {
+      window.location.hash = "#mycourses";
+    }
+    if (typeof window !== "undefined" && window.location.hash.toLowerCase() === "#studentanalytics") {
+      window.location.hash = "#submissions";
+    }
     const fromHash = getTabFromHash();
-    if (fromHash && fromHash !== "Landing" && fromHash !== "Auth") return fromHash;
-
-    let user: CurrentUser | null = null;
-    try {
-      const cached = typeof localStorage !== "undefined" ? localStorage.getItem("lms_cached_user") : null;
-      user = cached ? (JSON.parse(cached) as CurrentUser) : null;
-    } catch {
-      user = null;
+    if (fromHash && fromHash !== "Landing") {
+      return fromHash;
     }
 
     const savedTab = typeof localStorage !== "undefined" ? localStorage.getItem("lms_active_tab") : null;
-    if (user) {
-      if (savedTab && VALID_TABS.includes(savedTab as AllTabs) && savedTab !== "Landing" && savedTab !== "Auth") {
-        return savedTab as AllTabs;
-      }
-      return user.role === "student" ? "GeneralHome" : "LessonManagement";
+    if (savedTab === "GeneralHome" && typeof localStorage !== "undefined") {
+      localStorage.setItem("lms_active_tab", "MyCourses");
+      return "MyCourses";
     }
-
+    if (savedTab === "StudentAnalytics" && typeof localStorage !== "undefined") {
+      localStorage.setItem("lms_active_tab", "Submissions");
+      return "Submissions";
+    }
     if (savedTab && VALID_TABS.includes(savedTab as AllTabs)) {
       return savedTab as AllTabs;
     }
@@ -246,14 +289,16 @@ function App() {
     return "Landing";
   });
 
-  const [authInitialTab, setAuthInitialTab] = useState<"signin" | "register">("signin");
+  const [authInitialTab, setAuthInitialTab] = useState(() => readAuthTab(window.location.hash));
+  const [sharedLessonTarget, setSharedLessonTarget] = useState(readSharedLesson);
   const [menuOpen, setMenuOpen] = useState(false);
 
   // Navigate to Tab and push to Google Chrome history stack
-  const navigateToTab = useCallback((requestedTab: AllTabs) => {
-    const targetTab = currentUser && requestedTab !== "Landing" && requestedTab !== "Auth" && !tabAllowed(requestedTab, currentUser)
+  const navigateToTab = useCallback((requestedTab: AllTabs | NavTab | string) => {
+    const rawTab = (requestedTab === "GeneralHome" ? "MyCourses" : requestedTab) as AllTabs;
+    const targetTab = currentUser && rawTab !== "Landing" && rawTab !== "Auth" && !tabAllowed(rawTab, currentUser)
       ? homeTab(currentUser)
-      : requestedTab;
+      : rawTab;
     setActiveTab(targetTab);
     localStorage.setItem("lms_active_tab", targetTab);
     const targetHash = `#${targetTab.toLowerCase()}`;
@@ -263,64 +308,27 @@ function App() {
   }, [currentUser]);
 
   useEffect(() => {
+    if (sharedLessonTarget && authStatus === 'unauthenticated' && activeTab !== 'Auth') {
+      setAuthInitialTab('signin');
+      navigateToTab('Auth');
+    }
+  }, [sharedLessonTarget, authStatus, activeTab, navigateToTab]);
+
+  useEffect(() => {
+    const receiveLink = () => {
+      if (window.location.hash.toLowerCase().startsWith('#mycourses?')) setSharedLessonTarget(readSharedLesson());
+    };
+    window.addEventListener('hashchange', receiveLink);
+    return () => window.removeEventListener('hashchange', receiveLink);
+  }, []);
+
+  useEffect(() => {
     if (currentUser && (activeTab === "Landing" || activeTab === "Auth")) {
       navigateToTab(homeTab(currentUser));
     } else if (currentUser && !tabAllowed(activeTab, currentUser)) {
       navigateToTab(homeTab(currentUser));
     }
   }, [currentUser, activeTab, navigateToTab]);
-
-  // Intelligent Background Prefetch: Preload all other views while the user is on any page
-  useEffect(() => {
-    if (!currentUser) return;
-
-    const isStaff = currentUser.role !== "student";
-    const priorityList: Array<keyof typeof viewLoaders> = isStaff
-      ? ["LessonManagement", "QuizGen", "StudentAnalytics", "AIKnowledgeCenter", "Submissions", "PaymentManagement", "Notifications", "Profile"]
-      : ["GeneralHome", "MyCourses", "MySubmissions", "Payments", "Notifications", "Profile"];
-
-    // Filter out current view since it is already rendered
-    const viewsToPrefetch = priorityList.filter((tab) => tab !== activeTab);
-
-    let currentIndex = 0;
-    let isCancelled = false;
-
-    const prefetchNext = () => {
-      if (isCancelled || currentIndex >= viewsToPrefetch.length) return;
-
-      const tab = viewsToPrefetch[currentIndex];
-      currentIndex++;
-
-      const loader = viewLoaders[tab];
-      if (loader) {
-        loader()
-          .catch(() => undefined)
-          .finally(() => {
-            if (!isCancelled) {
-              if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-                window.requestIdleCallback(prefetchNext, { timeout: 1200 });
-              } else {
-                setTimeout(prefetchNext, 120);
-              }
-            }
-          });
-      }
-    };
-
-    // Start background prefetch shortly after page mount (700ms)
-    const timer = setTimeout(() => {
-      if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-        window.requestIdleCallback(prefetchNext, { timeout: 1500 });
-      } else {
-        setTimeout(prefetchNext, 150);
-      }
-    }, 700);
-
-    return () => {
-      isCancelled = true;
-      clearTimeout(timer);
-    };
-  }, [currentUser, activeTab]);
 
   // Listen to Google Chrome Native Back & Forward Buttons (hashchange + popstate)
   useEffect(() => {
@@ -362,32 +370,98 @@ function App() {
     localStorage.setItem("lms_lang", lang);
   }, [lang]);
 
-  // Load business data from the backend after the server session is known.
+  // Lock page background scrolling whenever any wizard, modal, or popup dialog is open
   useEffect(() => {
-    void courseService.getCourses().then(setCourses).catch(() => setCourses([]));
-    if (!currentUser) {
-      setEnrolledCourseIds([]);
-      setEntitlements([]);
-      return;
+    let isCurrentlyLocked = false;
+
+    function updateModalScrollLock() {
+      const hasModal = !!document.querySelector(
+        ".modal-overlay, .confirm-wizard-overlay, [role='dialog'], [aria-modal='true']"
+      );
+      if (hasModal === isCurrentlyLocked) return;
+      isCurrentlyLocked = hasModal;
+
+      if (hasModal) {
+        document.body.classList.add("modal-open");
+        document.documentElement.classList.add("modal-open");
+      } else {
+        document.body.classList.remove("modal-open");
+        document.documentElement.classList.remove("modal-open");
+      }
     }
-    if (currentUser.role === "student") {
-      void courseService.getEnrolledCourseIds().then(setEnrolledCourseIds).catch(() => setEnrolledCourseIds([]));
-      void paymentService.getMyEntitlements().then(setEntitlements).catch(() => setEntitlements([]));
-    } else {
+
+    // Only observe DOM insertions/removals (childList) so we NEVER react to our own class mutations
+    const observer = new MutationObserver(() => {
+      updateModalScrollLock();
+    });
+
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+
+    updateModalScrollLock();
+
+    return () => {
+      observer.disconnect();
+      document.body.classList.remove("modal-open");
+      document.documentElement.classList.remove("modal-open");
+    };
+  }, []);
+
+  // Clear identity-scoped data when the session ends. Bootstrap supplies the
+  // initial data, so a second startup fetch would repeat the same requests.
+  useEffect(() => {
+    if (!currentUser) {
+      setCourses([]);
       setEnrolledCourseIds([]);
       setEntitlements([]);
     }
   }, [currentUser]);
 
+  // Stable callbacks so the SSE lifecycle effect below doesn't tear down and
+  // re-open the stream whenever these identities change.
+  const studentUserId = currentUser?.role === "student" ? currentUser.id : null;
+  const realtimeUserId = courseScopeReady === currentUser?.id ? currentUser?.id : undefined;
   const refreshStudentAccess = useCallback(() => {
-    if (currentUser?.role !== "student") return;
+    if (!studentUserId) return;
     void Promise.all([courseService.getEnrolledCourseIds(), paymentService.getMyEntitlements()])
       .then(([enrollments, access]) => {
         setEnrolledCourseIds(enrollments);
         setEntitlements(access);
       })
       .catch(() => undefined);
-  }, [currentUser]);
+  }, [studentUserId]);
+
+  const refreshNotifications = useCallback(() => {
+    void notificationService.getNotifications().then(setNotifications).catch(() => undefined);
+  }, []);
+
+  // Real-time EventSource connection lifecycle — keyed ONLY on user identity.
+  // The previous version also depended on refreshStudentAccess, whose identity
+  // changed on every notifications/state update, tearing down and re-opening
+  // the SSE connection (the duplicate /realtime/stream entries in DevTools).
+  useEffect(() => {
+    if (!realtimeUserId) {
+      realtimeService.disconnect();
+      return;
+    }
+
+    realtimeService.connect();
+
+    const handleLessonUnlocked = () => {
+      refreshStudentAccess();
+    };
+
+    window.addEventListener("lms_lesson_unlocked", handleLessonUnlocked);
+    window.addEventListener("lms_payment_updated", handleLessonUnlocked);
+
+    return () => {
+      window.removeEventListener("lms_lesson_unlocked", handleLessonUnlocked);
+      window.removeEventListener("lms_payment_updated", handleLessonUnlocked);
+      realtimeService.disconnect();
+    };
+  }, [realtimeUserId, refreshStudentAccess]);
 
   function handleToggleTheme() {
     setTheme((prev) => (prev === "light" ? "dark" : "light"));
@@ -396,21 +470,25 @@ function App() {
   async function handleEnrollCourse(courseId: string) {
     try {
       const updated = await courseService.enrollCourse(courseId);
+      if (!updated.includes(courseId)) throw new Error('لم يؤكد الخادم الاشتراك في المقرر. حاول مرة أخرى.');
       setEnrolledCourseIds(updated);
+      if (enrollmentIntent?.id === courseId) {
+        setEnrollmentIntent(null); saveEnrollmentIntent(null); setEnrollmentError('');
+      }
+      const course = await courseService.getMappedCourseContent(courseId);
+      const assessments = await courseService.getCourseAssessmentRefs(courseId);
+      setCourses(existing => [...existing.filter(c => c.id !== courseId), { ...course, assessments }]);
     } catch (error) {
       if (error instanceof ApiClientError && error.status === 402) {
         // Whole-course checkout is no longer offered to students.  Send them
         // to the lesson-only checkout picker instead.
         setCheckoutTarget({ productType: "lesson" });
         navigateToTab("Payments");
-        return;
+        throw new Error('هذا المقرر يحتاج تفعيل المحتوى؛ اختر الدرس المطلوب من صفحة الاشتراكات.');
       }
-      await confirm({
-        title: "تعذر التسجيل في المقرر",
-        message: error instanceof Error ? error.message : "حدث خطأ غير متوقع. حاول مرة أخرى.",
-        cancelLabel: "إغلاق",
-        tone: "warning",
-      });
+      // The caller keeps a persistent error beside its enrollment control.
+      // A rejected enrollment must never look like success to the catalog.
+      throw error;
     }
   }
 
@@ -418,13 +496,34 @@ function App() {
     void notificationService.markAsRead(id).then(setNotifications).catch(() => undefined);
   }
 
-  function handleAddNotification(notif: NotificationItem) {
-    void notificationService.saveNotification(notif).then(setNotifications).catch(() => undefined);
+  async function handleAddNotification(notif: NotificationItem): Promise<void> {
+    setNotifications(await notificationService.saveNotification(notif));
   }
 
   function handleSelectNotification(notif: NotificationItem) {
     handleMarkNotificationRead(notif.id);
+    if (
+      notif.type === "lesson_access" ||
+      (notif.actionUrl && (notif.actionUrl.includes("/access-requests/") || notif.actionUrl.includes("/lessons/access-requests/")))
+    ) {
+      const match = notif.actionUrl?.match(/\/access-requests\/([0-9a-fA-F-]+)/);
+      if (match && match[1]) {
+        setSelectedAccessRequestId(match[1]);
+        setIsAccessModalOpen(true);
+        return;
+      }
+    }
+    if (notif.type === "payment" || notif.paymentOrderId || (notif.actionUrl && notif.actionUrl.includes("/payments/orders/"))) {
+      navigateToTab("PaymentManagement");
+      return;
+    }
     if (notif.actionTab) {
+      if (currentUser?.role === 'student' && notif.actionUrl?.startsWith('#mycourses?')) {
+        window.location.hash = notif.actionUrl;
+        setSharedLessonTarget(readSharedLesson());
+        setActiveTab('MyCourses');
+        return;
+      }
       navigateToTab(notif.actionTab as NavTab);
     } else if (notif.type === "assignment") {
       navigateToTab(currentUser?.role === "teacher" ? "Submissions" : "MySubmissions");
@@ -437,23 +536,34 @@ function App() {
 
   async function handleLogout() {
     try {
+      realtimeService.disconnect();
       await authService.logout();
     } catch {
       // Clear the local UI even if the session endpoint is temporarily unavailable.
     } finally {
       authSyncId.current += 1;
+      clearSharedLesson(); setSharedLessonTarget(null);
       setCurrentUser(null);
+      setCourseScopeReady(null);
+      setCourseHydrationIssue(false);
+      setBootstrapChecking(false);
+      setBootstrapFailure(null);
+      setRetryAttempt(0);
       setAuthStatus("unauthenticated");
       setAuthLoading(false);
-      localStorage.removeItem("lms_session_token");
-      localStorage.removeItem("lms_cached_user");
       navigateToTab("Landing");
     }
   }
 
-  function handleNavigateToAuth(tab: "signin" | "register" = "signin") {
+  function handleNavigateToAuth(tab: "signin" | "register" = "signin", course?: Course) {
+    if (course) {
+      const selected = { id: course.id, title: course.title, academicYear: course.academicYear };
+      setEnrollmentIntent(selected); saveEnrollmentIntent(selected); setEnrollmentError('');
+    }
     setAuthInitialTab(tab);
     navigateToTab("Auth");
+    // Keep the selected auth tab across reload; enrollment intent is separate.
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${authTabHash(tab)}`);
   }
 
   const enrolledCoursesList = courses.filter((c) => {
@@ -461,32 +571,8 @@ function App() {
   });
 
   const activeEntitlements = useMemo(() => entitlements.filter((item) => item.active), [entitlements]);
-  const globalAIEntitlement = activeEntitlements.some((item) => item.entitlement_type === "ai_global");
-  const activeCourse = enrolledCoursesList[0];
-  const activeLesson = activeCourse?.lessons.find((lesson) => {
-    if (Number(activeCourse.price || 0) > 0) return activeEntitlements.some((item) => item.entitlement_type === "course" && item.resource_id === activeCourse.id);
-    return Number(lesson.price || 0) === 0 || activeEntitlements.some((item) => item.entitlement_type === "lesson" && item.resource_id === lesson.id);
-  });
 
-  useEffect(() => {
-    if (!currentUser) {
-      setAiAccessAllowed(false);
-      return;
-    }
-    if (currentUser.role !== "student") {
-      setAiAccessAllowed(true);
-      return;
-    }
-    if (!activeLesson) {
-      setAiAccessAllowed(globalAIEntitlement);
-      return;
-    }
-    void paymentService.getAIAccess(activeLesson.id)
-      .then((result) => setAiAccessAllowed(result.allowed))
-      .catch(() => setAiAccessAllowed(false));
-  }, [currentUser, activeLesson, globalAIEntitlement]);
-
-  if (isInitialRefresh || (authLoading && !currentUser && authStatus === "loading") || isLoggingIn) {
+  if ((authLoading && !currentUser && authStatus === "loading") || isLoggingIn) {
     return <PageLoadingScreen brandTitle="منصة الكيمياء التعليمية — مستر حسن شعبان" />;
   }
 
@@ -497,12 +583,11 @@ function App() {
         <AuthView
           initialTab={authInitialTab}
           onLoginSuccess={(user) => {
-            authSyncId.current += 1;
             setIsLoggingIn(true);
             setCurrentUser(user);
             setAuthStatus("authenticated");
             setRetryAttempt(0);
-            const targetTab = user.role === "student" ? "GeneralHome" : "LessonManagement";
+            const targetTab = user.role === "student" ? "MyCourses" : "LessonManagement";
             navigateToTab(targetTab);
             setTimeout(() => {
               setIsLoggingIn(false);
@@ -539,11 +624,14 @@ function App() {
               boxShadow: "0 2px 8px rgba(0,0,0,0.18)",
             }}
           >
-            <span>⚠️ الخدمة غير متاحة مؤقتًا، جاري محاولة إعادة الاتصال بالخادم...</span>
+            <span>{lang === 'ar'
+              ? '⚠️ الخدمة غير متاحة مؤقتًا. إذا استمر الانقطاع، استخدم إعادة المحاولة.'
+              : 'The service is temporarily unavailable. If it persists, retry manually.'}</span>
             <button
               type="button"
               onClick={() => {
                 setRetryAttempt(0);
+                setBootstrapFailure(null);
                 window.dispatchEvent(new Event("lms_user_updated"));
               }}
               style={{
@@ -562,7 +650,6 @@ function App() {
           </div>
         )}
         <LandingPageView
-          courses={courses}
           onNavigateToAuth={handleNavigateToAuth}
           lang={lang}
           onToggleLang={handleToggleLang}
@@ -596,11 +683,14 @@ function App() {
             boxShadow: "0 2px 8px rgba(0,0,0,0.18)",
           }}
         >
-          <span>⚠️ الخدمة غير متاحة مؤقتًا، جاري محاولة إعادة الاتصال بالخادم... (البيانات المعروضة من الذاكرة المؤقتة)</span>
+          <span>{lang === 'ar'
+            ? '⚠️ الخدمة غير متاحة مؤقتًا. بياناتك محفوظة؛ إذا استمر الانقطاع، استخدم إعادة المحاولة.'
+            : 'The service is temporarily unavailable. Your data is preserved; retry manually if it persists.'}</span>
           <button
             type="button"
             onClick={() => {
               setRetryAttempt(0);
+              setBootstrapFailure(null);
               window.dispatchEvent(new Event("lms_user_updated"));
             }}
             style={{
@@ -645,32 +735,68 @@ function App() {
           onToggleTheme={handleToggleTheme}
           lang={lang}
           onToggleLang={handleToggleLang}
-          onNavigateHome={() => navigateToTab(currentUser?.role === "teacher" ? "LessonManagement" : "GeneralHome")}
+          onNavigateHome={() => navigateToTab(currentUser?.role === "teacher" ? "LessonManagement" : "MyCourses")}
           currentUser={currentUser}
         />
 
+        {courseHydrationIssue && authStatus !== 'temporarily_unavailable' && (
+          <div role="alert" className="course-hydration-warning">
+            <span>{lang === 'ar'
+              ? 'تعذر تحميل بعض بيانات المقررات. بيانات حسابك محفوظة؛ يمكنك إعادة المحاولة.'
+              : 'Some course data could not load. Your account is preserved; you can retry.'}</span>
+            <button type="button" onClick={() => window.dispatchEvent(new Event('lms_user_updated'))}>
+              {lang === 'ar' ? 'إعادة تحميل المقررات' : 'Retry course loading'}
+            </button>
+          </div>
+        )}
+
         <Suspense fallback={<div className="page-container" style={{ minHeight: "60vh" }} />}>
+          {courseScopeReady !== currentUser.id ? (
+            <div className="page-container" role="status">{lang === 'ar'
+              ? 'جارٍ التحقق من الحساب قبل إتاحة المحتوى والتعديل…'
+              : 'Verifying your account before enabling content and changes…'}</div>
+          ) : <>
+          {currentUser.role === 'student' && enrollmentIntent && !enrolledCourseIds.includes(enrollmentIntent.id) && (
+            <section className="enrollment-intent" aria-label="المقرر المختار للاشتراك">
+              <h2>{enrollmentIntent.title}</h2>
+              <p>احتفظنا بالمقرر الذي اخترته. تسجيل الدخول وحده لا يعني الاشتراك فيه.</p>
+              {enrollmentError && <p role="alert">{enrollmentError}</p>}
+              <button className="btn-primary" disabled={enrollmentBusy} onClick={async () => {
+                setEnrollmentBusy(true); setEnrollmentError('');
+                try { await handleEnrollCourse(enrollmentIntent.id); }
+                catch (error) { setEnrollmentError(error instanceof Error ? error.message : 'تعذر إتمام الاشتراك. حاول مرة أخرى.'); }
+                finally { setEnrollmentBusy(false); }
+              }}>{enrollmentBusy ? 'جارٍ تأكيد الاشتراك…' : 'متابعة الاشتراك في هذا المقرر'}</button>
+              <button className="btn-secondary" onClick={() => {
+                setEnrollmentIntent(null); saveEnrollmentIntent(null); setEnrollmentError('');
+              }} disabled={enrollmentBusy}>إلغاء الاختيار</button>
+            </section>
+          )}
           {/* Dynamic Route Views */}
           {/* Student Views */}
-          {activeTab === "GeneralHome" && currentUser.role === "student" && (
-          <GeneralHomeView
-            courses={courses}
-            enrolledCourseIds={enrolledCourseIds}
-            onEnrollCourse={handleEnrollCourse}
-            onNavigateToMyCourses={() => navigateToTab("MyCourses")}
-            currentUser={currentUser}
-            lang={lang}
-          />
-          )}
-
           {activeTab === "MyCourses" && currentUser.role === "student" && (
           <MyCoursesView
+            initialCourseId={sharedLessonTarget?.courseId || enrollmentIntent?.id}
+            initialLessonId={sharedLessonTarget?.lessonId}
+            onInitialLessonHandled={() => { clearSharedLesson(); setSharedLessonTarget(null); }}
             enrolledCourses={enrolledCoursesList}
-            onNavigateToCatalog={() => navigateToTab("GeneralHome")}
+            onEnrollCourse={handleEnrollCourse}
+            onNavigateToCatalog={() => navigateToTab("Payments")}
             lang={lang}
             currentUser={currentUser}
             purchasedLessonIds={activeEntitlements.filter((item) => item.entitlement_type === "lesson").map((item) => item.resource_id || "")}
+            accessRevision={activeEntitlements.map(item => item.id).sort().join(':')}
             onCheckout={(target) => { setCheckoutTarget(target); navigateToTab("Payments"); }}
+            onToggleMenu={() => setMenuOpen(!menuOpen)}
+            menuOpen={menuOpen}
+            notifications={notifications}
+            onMarkNotificationRead={handleMarkNotificationRead}
+            onSelectNotification={handleSelectNotification}
+            onNavigateToNotifications={() => navigateToTab("Notifications")}
+            theme={theme}
+            onToggleTheme={handleToggleTheme}
+            onToggleLang={handleToggleLang}
+            onNavigateHome={() => navigateToTab("MyCourses")}
           />
           )}
 
@@ -696,22 +822,23 @@ function App() {
             currentUser={currentUser}
             courses={courses}
             onCoursesChanged={setCourses}
+            initialSharedLesson={sharedLessonTarget}
+            onSharedLessonHandled={() => { clearSharedLesson(); setSharedLessonTarget(null); }}
           />
           )}
 
-          {activeTab === "AIKnowledgeCenter" && currentUser.role !== "student" && (
-            <AIKnowledgeCenterView lang={lang} />
+          {activeTab === "QuizGen" && currentUser.role !== "student" && (
+            courseScopeReady === currentUser.id
+              ? <QuizGeneratorView courses={courses} currentUser={currentUser} />
+              : <div className="page-container" role="status">{lang === 'ar' ? 'جارٍ تحميل المقررات قبل فتح محرر النشر…' : 'Loading courses before opening the publisher…'}</div>
           )}
 
-          {activeTab === "QuizGen" && currentUser.role !== "student" && <QuizGeneratorView courses={courses} />}
-
           {activeTab === "Submissions" && currentUser.role !== "student" && <SubmissionsView />}
-
-          {activeTab === "StudentAnalytics" && currentUser.role !== "student" && <StudentAnalyticsView />}
 
           {activeTab === "Payments" && currentUser.role === "student" && (
             <PaymentView
               courses={courses}
+              currentUser={currentUser}
               initialTarget={checkoutTarget}
               onEntitlementsChanged={refreshStudentAccess}
             />
@@ -723,33 +850,33 @@ function App() {
 
         {/* Full-Page Profile Route */}
           {activeTab === "Profile" && currentUser && (
-          <ProfileView
-            user={currentUser}
-            onLogout={handleLogout}
-            lang={lang}
-          />
+            courseScopeReady === currentUser.id
+              ? <ProfileView user={currentUser} onLogout={handleLogout} lang={lang} />
+              : <div className="page-container" role="status">{lang === 'ar' ? 'جارٍ التحقق من الحساب قبل إتاحة تعديل بياناته…' : 'Verifying your account before enabling profile changes…'}</div>
           )}
+          </>}
         </Suspense>
       </main>
 
-      {/* Floating AI Assistant FAB at Bottom-Left in Emerald */}
-      <FloatingAITutor
-        currentCourseId={currentUser.role === "student" ? activeCourse?.id : courses[0]?.id}
-        currentLessonId={currentUser.role === "student" ? activeLesson?.id : undefined}
-        currentCourseTitle={(currentUser.role === "student" ? activeCourse?.title : courses[0]?.title) || (lang === "ar" ? "الكيمياء" : "Chemistry")}
-        currentUser={currentUser}
-        lang={lang}
-        accessAllowed={aiAccessAllowed}
-        onRequestAccess={() => {
-          setCheckoutTarget({ productType: "ai_subscription" });
-          navigateToTab("Payments");
-        }}
-      />
-
       {/* Global Background Upload Manager Widget - strictly for teachers only */}
-      {currentUser?.role !== "student" && (
+      {courseScopeReady === currentUser.id && currentUser.role !== "student" && (
         <GlobalUploadWidget currentUser={currentUser} menuOpen={menuOpen} />
       )}
+
+      {/* Lesson Access Approval Modal for Teachers and Students */}
+      <LessonAccessModal
+        requestId={selectedAccessRequestId}
+        isOpen={isAccessModalOpen && courseScopeReady === currentUser.id}
+        onClose={() => {
+          setIsAccessModalOpen(false);
+          setSelectedAccessRequestId(null);
+        }}
+        onUpdated={() => {
+          refreshStudentAccess();
+          refreshNotifications();
+        }}
+        isTeacher={currentUser?.role !== "student"}
+      />
     </div>
   );
 }

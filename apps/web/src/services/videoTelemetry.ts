@@ -1,4 +1,5 @@
 import { apiRequest } from "./lmsService";
+import { ApiClientError } from "./apiClient";
 
 type VideoEventType =
   | "play"
@@ -33,6 +34,9 @@ export class VideoTelemetryTracker {
   private pendingWatchedSeconds = 0;
   private lastObservedTime: number | null = null;
   private playing = false;
+  private flushing = false;
+  private retryAt = 0;
+  private disabled = false;
 
   constructor(lessonId: string) {
     this.lessonId = lessonId;
@@ -83,6 +87,7 @@ export class VideoTelemetryTracker {
   }
 
   record(type: VideoEventType, video: HTMLVideoElement): void {
+    if (this.disabled) return;
     this.events.push({
       client_event_id: eventId(),
       lesson_id: this.lessonId,
@@ -97,16 +102,30 @@ export class VideoTelemetryTracker {
   }
 
   async flush(): Promise<void> {
-    if (!this.events.length) return;
-    const batch = this.events.splice(0, this.events.length);
+    if (this.disabled || !this.events.length || this.flushing || Date.now() < this.retryAt) return;
+    this.flushing = true;
+    const batch = this.events.splice(0, 100);
     try {
       await apiRequest("/telemetry/video-events", {
         method: "POST",
+        suppressErrorToast: true,
         body: JSON.stringify({ events: batch }),
       });
-    } catch {
+      this.retryAt = 0;
+    } catch (error) {
+      if (error instanceof ApiClientError && [401, 403].includes(error.status)) {
+        this.disabled = true;
+        this.events.length = 0;
+        this.detach();
+        return;
+      }
       // Preserve events for a later retry when the network is offline.
       this.events.unshift(...batch);
+      this.events.splice(500);
+      this.retryAt = Date.now() + (error instanceof ApiClientError && error.status === 429
+        ? Math.max(10000, error.retryAfterMs ?? 30000) : 10000);
+    } finally {
+      this.flushing = false;
     }
   }
 

@@ -1,4 +1,9 @@
-# HANDOFF.md — حالة المشروع الموثقة
+# HANDOFF.md — أرشيف تاريخي، ليس وصف النسخة الحالية
+
+Archived2026-10-06: claims below describe an old environment, not current
+verification. Whisper/gTTS/Knowledge Center/AI routes were intentionally removed.
+Do not reinstall them from this document. Current contracts: docs/API.md,
+docs/SECURITY.md and dated QA ledgers. Git push is not deployment evidence.
 ## هوية المشروع
 - منصة LMS قائمة وناضجة: FastAPI + React/Vite + SQLite. ممنوع البدء من الصفر.
 - المسارات: apps/api (venv في apps/api/.venv، Python 3.10) و apps/web فقط.

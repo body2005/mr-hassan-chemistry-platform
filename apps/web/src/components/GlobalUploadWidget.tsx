@@ -91,33 +91,35 @@ export const CircularProgress: React.FC<CircularProgressProps> = ({
 };
 
 interface GlobalUploadWidgetProps {
-  currentUser?: { role?: string } | null;
+  currentUser?: { id?: string; role?: string } | null;
   menuOpen?: boolean;
 }
 
 export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentUser, menuOpen = false }) => {
-  const [tasks, setTasks] = useState<UploadTask[]>([]);
+  const [allTasks, setTasks] = useState<UploadTask[]>([]);
+  // Filter at render time too: an account switch must not expose the old
+  // account's filenames for even one frame before the subscription effect runs.
+  const tasks = allTasks.filter(task => !!currentUser?.id && task.ownerScope === currentUser.id);
   const [isExpanded, setIsExpanded] = useState(false);
 
   // Strictly enforce role: Upload widget is exclusively for teachers
-  let role = currentUser?.role;
-  if (!role && typeof localStorage !== "undefined") {
-    try {
-      const cached = localStorage.getItem("lms_cached_user");
-      if (cached) {
-        role = JSON.parse(cached).role;
-      }
-    } catch {
-      role = undefined;
-    }
-  }
+  const role = currentUser?.role;
 
   useEffect(() => {
+    uploadManager.pauseOtherAccounts();
     const unsubscribe = uploadManager.subscribe((newTasks) => {
       setTasks(newTasks);
     });
-    return () => unsubscribe();
-  }, []);
+    if (currentUser?.id && role === 'teacher') void uploadManager.reconcileVideos();
+    // A cached profile may mount before /bootstrap establishes the API scope.
+    // The user ID can stay identical, so a props-only effect misses this transition.
+    const onScope = () => {
+      uploadManager.pauseOtherAccounts();
+      if (role === 'teacher') void uploadManager.reconcileVideos();
+    };
+    window.addEventListener('lms_auth_scope_updated', onScope);
+    return () => { unsubscribe(); window.removeEventListener('lms_auth_scope_updated', onScope); };
+  }, [currentUser?.id, role]);
 
   const activeTasks = tasks.filter(
     (t) => t.status === "uploading" || t.status === "queued" || t.status === "processing"
@@ -136,7 +138,8 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  if (role !== "teacher") {
+  // Strictly enforce role and active uploads: hide widget if no active upload
+  if (role !== "teacher" || tasks.length === 0) {
     return null;
   }
 
@@ -364,11 +367,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                           }}
                           title={task.title}
                         >
-                          {task.title.startsWith("فهرسة:")
-                            ? task.title
-                            : task.type === "knowledge_source"
-                            ? `فهرسة: ${task.fileName || task.title}`
-                            : task.title}
+                          {task.title}
                         </div>
                         <div style={{ fontSize: "10px", color: "var(--text-muted, #64748b)" }}>
                           {task.formattedSize}
@@ -383,9 +382,9 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                           type="button"
                           onClick={() => uploadManager.cancelUpload(task.id)}
                           style={{
-                            background: "rgba(239, 68, 68, 0.1)",
+                            background: "rgb(118, 40, 40)",
                             border: "none",
-                            color: "#ef4444",
+                            color: "#ffffff",
                             cursor: "pointer",
                             padding: "4px",
                             borderRadius: "6px",
@@ -393,7 +392,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                             alignItems: "center",
                             justifyContent: "center",
                           }}
-                          title="إيقاف الفهرسة (مع حفظ الملف بالسيرفر)"
+                          title="إلغاء الرفع"
                         >
                           <X size={15} />
                         </button>
@@ -421,7 +420,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                           style={{
                             background: "transparent",
                             border: "none",
-                            color: "var(--text-muted, #94a3b8)",
+                            color: "rgb(118, 40, 40)",
                             cursor: "pointer",
                             padding: "4px",
                           }}
@@ -466,7 +465,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                       >
                         <span>
                           {isProcessing
-                            ? "جاري المعالجة بالسيرفر..."
+                            ? task.statusDetail || "اكتمل نقل الملف؛ جارٍ تجهيز الفيديو."
                             : (() => {
                                 const totalMB = ((task.fileSizeBytes || 0) / (1024 * 1024)).toFixed(1);
                                 const loadedBytes = task.loadedBytes ?? ((task.fileSizeBytes || 0) * (task.progress || 0)) / 100;
@@ -474,7 +473,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                                 return `جاري رفع الملفات: MB ${loadedMB} من MB ${totalMB}`;
                               })()}
                         </span>
-                        <strong style={{ color: isProcessing ? "#0284c7" : "#059669" }}>{task.progress}%</strong>
+                        <strong style={{ color: isProcessing ? "#0284c7" : "#059669", whiteSpace: 'nowrap' }}>{isProcessing ? 'الرفع 100%' : `${task.progress}%`}</strong>
                       </div>
                     </div>
                   )}
@@ -509,6 +508,15 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                     >
                       <AlertCircle size={13} />
                       <span>{task.error || "تعذر إكمال الرفع"}</span>
+                      {task.type === "lesson_video" && (
+                        <label>
+                          اختيار نفس الفيديو للاستئناف
+                          <input type="file" accept=".mp4,.m4v,.mov,.webm" aria-label="اختيار الفيديو للاستئناف" onChange={event => {
+                            const file = event.target.files?.[0];
+                            if (file) uploadManager.resumeVideo(task.id, file);
+                          }} />
+                        </label>
+                      )}
                     </div>
                   )}
                 </div>

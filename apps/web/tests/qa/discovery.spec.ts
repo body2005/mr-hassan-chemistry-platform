@@ -1,0 +1,1035 @@
+/** Exploratory regressions. Failures are deliberately not marked expected/skipped.
+ * Uses disposable accounts/content in the allowlisted local QA project only.
+ * Run after the standard journeys; do not overlap shared-IP auth tests.
+ */
+import type { Browser, Page } from '@playwright/test';
+import { execFile, execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
+import { promisify } from 'node:util';
+import { expect, test } from './qaTest';
+import { assertAccessible } from './accessibility';
+
+const base = process.env.QA_BASE_URL || 'https://localhost:18543';
+const runDocker = promisify(execFile);
+function pdfText(pdf: Buffer) {
+  return execFileSync(process.env.QA_PYTHON || 'python', ['-c',
+    'import io,sys; from pypdf import PdfReader; print("\\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(sys.stdin.buffer.read())).pages))'],
+  { input: pdf, encoding: 'utf8', timeout: 10_000, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
+}
+async function signIn(page: Page, email: string, password: string) {
+  // Use the actual guest sign-in control, including after a real logout.
+  // A hash alone is not the modal's public navigation contract.
+  await page.goto(base);
+  await page.getByRole('button', {name: 'تسجيل الدخول', exact: true}).click();
+  const form = page.locator('form').first();
+  await form.locator('input[type="text"]').fill(email);
+  await form.locator('input[type="password"]').fill(password);
+  // Separate the real15s transport budget from the unchanged5s UI budget.
+  // A successful cookie login must hydrate the SAME server identity, not
+  // merely expose a cached profile while the origin is unauthenticated.
+  const loggedIn = page.waitForResponse(response => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/auth/login', { timeout: 15_000 });
+  const hydrated = page.waitForResponse(async response =>
+    new URL(response.url()).pathname === '/api/v1/bootstrap' && response.status() === 200
+    && (await response.json()).authenticated === true, { timeout: 15_000 })
+    .then(response => ({ response }), (error: unknown) => ({ error }));
+  const [loginResponse] = await Promise.all([loggedIn, form.locator('button[type="submit"]').click()]);
+  expect(loginResponse.status(), 'Real login must succeed; do not retry429/401').toBe(200);
+  const identity = await loginResponse.json();
+  const hydration = await hydrated;
+  if ('error' in hydration) throw hydration.error;
+  const bootstrap = await hydration.response.json();
+  expect(bootstrap.user.id).toBe(identity.user.id);
+  expect(bootstrap.user.email).toBe(email);
+  await expect(page.locator('.profile-button')).toHaveCount(1);
+}
+async function teacher(page: Page) {
+  const project = process.env.QA_REDIS_CONTAINER?.replace(/-redis-1$/, '');
+  if (project !== 'chemistryaudit2') throw new Error('Discovery requires chemistryaudit2');
+  const { stdout } = await runDocker(process.env.QA_DOCKER || 'docker', ['exec', '-e', 'QA_ISOLATED=true', '-e', `QA_PROJECT=${project}`,
+    `${project}-api-1`, 'sh', '/srv/entrypoint-prod.sh', 'python', '-m', 'scripts.seed_qa_teacher'], { encoding: 'utf8', timeout: 20_000 });
+  const identity = JSON.parse(stdout.trim());
+  await signIn(page, identity.email, identity.password);
+  return identity;
+}
+async function post(page: Page, path: string, data: unknown, status = 201) {
+  const csrf = (await page.context().cookies()).find(c => c.name === 'matgar_csrf')?.value || '';
+  const response = await page.request.post(`${base}/api/v1/${path}`, { data, headers: { 'X-CSRF-Token': csrf } });
+  expect(response.status(), await response.text()).toBe(status);
+  return response.json();
+}
+async function student(browser: Browser, grade = 'SECONDARY_1') {
+  const context = await browser.newContext({ baseURL: base, ignoreHTTPSErrors: false });
+  const page = await context.newPage();
+  const email = `qa-discovery-${crypto.randomUUID()}@demo.com`;
+  const password = 'qa-discovery-only-pass';
+  const response = await page.request.post(`${base}/api/v1/auth/register`, { data: { display_name: 'QA Discovery Student', email,
+    password, grade_level: grade, governorate: 'CAIRO', school_name: 'QA local school', gender: 'MALE' } });
+  expect(response.status(), await response.text()).toBe(201);
+  // Registration establishes the real session cookies; #auth correctly
+  // redirects an authenticated student, so no second sign-in form exists.
+  await page.goto(base);
+  await expect(page.locator('.profile-button')).toHaveCount(1);
+  return { page, close: async () => {
+    if (page.isClosed()) return;
+    const csrf = (await context.cookies()).find(c => c.name === 'matgar_csrf')?.value;
+    if (csrf) expect((await page.request.post(`${base}/api/v1/auth/logout`, { headers: { 'X-CSRF-Token': csrf } })).status()).toBe(204);
+    await context.close();
+  } };
+}
+async function courseWithLesson(page: Page, suffix = '', grade = 'SECONDARY_1', price = 0) {
+  const course = await post(page, 'courses', { code: `QAD-${crypto.randomUUID().slice(0, 8)}`, title: `QA discovery course ${suffix}`, grade_level: grade });
+  const module = await post(page, `courses/${course.id}/modules`, { title: 'QA Unit', position: 1 });
+  const lesson = await post(page, `modules/${module.id}/lessons`, { title: `QA discovery lesson ${suffix}`, kind: 'article', position: 1, price_egp: price });
+  await post(page, `courses/${course.id}/publish`, {}, 200);
+  return { course, lesson };
+}
+type DraftQuestion = { id: string; question_text: string; question_type: string; points: number; correct_answer?: string | null; options?: { key: string; text: string; is_correct: boolean }[] };
+async function prepareDraft(page: Page, lessonId: string, kind: string, questions: DraftQuestion[], future = false) {
+  const me = await (await page.request.get(`${base}/api/v1/auth/me`)).json();
+  const title = `QA Discovery ${kind} ${Date.now()}`;
+  await page.evaluate(({ id, draft }) => localStorage.setItem(`lms_quiz_maker_unuploaded_draft_v2:${id}`, JSON.stringify(draft)), {
+    id: me.id, draft: { title, assessmentType: kind, selectedAcademicYear: '1st_secondary', selectedLessonIds: [lessonId],
+      quizDurationMinutes: 45, publishStartDate: new Date(Date.now() + (future ? 86400_000 : 0)).toISOString().slice(0, 10),
+      publishStartTime: '00:00', closeDeadlineDate: new Date(Date.now() + 3 * 86400_000).toISOString().slice(0, 10),
+      closeDeadlineTime: '23:59', showOnStudentCalendar: false, sendScheduledNotification: false, questions },
+  });
+  await page.goto(`${base}/#quizgen`);
+  await page.reload();
+  return title;
+}
+async function publish(page: Page, kind: string) {
+  await page.getByRole('button', { name: `حفظ ونشر ${kind === 'quiz' ? 'الاختبار' : 'الواجب'} للطلاب`, exact: true }).first().click();
+  await page.getByRole('button', { name: 'تأكيد الرفع والنشر الآن' }).click();
+}
+const mcq: DraftQuestion = { id: 'q1', question_text: 'Choose the mass unit.', question_type: 'multiple_choice', points: 7,
+  options: [{ key: 'A', text: 'kilogram QA option', is_correct: true }, { key: 'B', text: 'second QA option', is_correct: false }] };
+
+for (const touch of [false, true]) {
+test(`catalog search, grade selection and enrollment intent work with ${touch ? 'touch' : 'mouse'} without hover`, async ({ page, browser }) => {
+  await teacher(page);
+  const marker = `qa-catalog-${randomUUID().slice(0, 8)}`;
+  const first = await courseWithLesson(page, `${marker} first`, 'SECONDARY_1');
+  const third = await courseWithLesson(page, `${marker} third`, 'SECONDARY_3');
+  const context = await browser.newContext({ baseURL: base, ignoreHTTPSErrors: false,
+    hasTouch: touch, viewport: touch ? { width: 375, height: 812 } : { width: 1440, height: 900 }, timezoneId: 'Africa/Cairo' });
+  const guest = await context.newPage();
+  const activate = async (target: ReturnType<Page['locator']>) => touch ? target.tap() : target.click();
+  try {
+    for (const theme of ['light', 'dark']) {
+      await guest.goto(base);
+      await guest.evaluate(value => localStorage.setItem('lms_theme', value), theme);
+      await guest.reload();
+      await expect(guest.locator('html')).toHaveAttribute('data-theme', theme);
+      const search = guest.getByLabel('ابحث في المقررات', { exact: true });
+      await search.fill(marker);
+      const catalog = guest.locator('#courses');
+      await expect(catalog.locator('h3')).toHaveCount(2);
+      await expect(catalog.getByRole('status')).toContainText('2 مقرر');
+      if (touch) {
+        await activate(guest.getByRole('button', { name: 'القائمة', exact: true }));
+        await activate(guest.getByRole('button', { name: 'السنوات الدراسية', exact: true }).last());
+        await activate(guest.getByRole('link', { name: 'الصف الثالث الثانوي', exact: true }).last());
+      } else {
+        const menu = guest.getByRole('button', { name: 'السنوات الدراسية', exact: true });
+        await activate(menu);
+        await expect(menu).toHaveAttribute('aria-expanded', 'true');
+        await activate(guest.locator('#catalog-grade-menu').getByRole('link', { name: /^الصف الثالث الثانوي/ }));
+        await expect(menu).toHaveAttribute('aria-expanded', 'false');
+      }
+      await expect(catalog.locator('h3')).toHaveText([third.course.title]);
+      await expect(catalog.getByRole('button', { name: 'الصف الثالث الثانوي', exact: true })).toHaveAttribute('aria-pressed', 'true');
+      await guest.reload();
+      await expect(search).toHaveValue(marker);
+      await expect(catalog.locator('h3')).toHaveText([third.course.title]);
+      await search.fill(`${marker}-absent`);
+      await expect(catalog.locator('.catalog-empty')).toBeVisible();
+      await expect(catalog.getByRole('status')).toContainText('0 مقرر');
+      await activate(catalog.getByRole('button', { name: 'مسح البحث والتصفية', exact: true }));
+      await expect(search).toHaveValue('');
+      await search.fill(marker);
+      await expect(catalog.locator('h3')).toHaveCount(2);
+      expect(await guest.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+      await guest.screenshot({ path: test.info().outputPath(`catalog-${touch ? 'touch' : 'mouse'}-${theme}.png`), fullPage: true });
+    }
+    const chosen = guest.locator('#courses h3').filter({ hasText: first.course.title }).locator('..');
+    await activate(chosen.getByRole('button', { name: 'سجّل للاشتراك', exact: true }));
+    await expect(guest.getByRole('heading', { name: 'تسجيل حساب جديد', exact: true })).toBeVisible();
+    const intent = await guest.evaluate(() => JSON.parse(sessionStorage.getItem('lms_catalog_enrollment_intent') || 'null'));
+    expect(intent?.id).toBe(first.course.id);
+    expect(await guest.evaluate(() => localStorage.getItem('lms_session_token'))).toBeNull();
+    await guest.reload();
+    expect(await guest.evaluate(() => JSON.parse(sessionStorage.getItem('lms_catalog_enrollment_intent') || 'null'))).toEqual(intent);
+    await guest.getByLabel('الاسم الأول').fill('أحمد');
+    await guest.getByLabel('الاسم الأوسط').fill('محمد');
+    await guest.getByLabel('الاسم الأخير').fill('حسن');
+    await guest.getByRole('radio', { name: 'ذكر', exact: true }).check();
+    await guest.getByLabel('السنة الدراسية').selectOption('1st_secondary');
+    await activate(guest.getByRole('button', { name: 'التالي', exact: true }));
+    await guest.getByLabel('رقم تليفونك الشخصي').fill('01012345678');
+    await guest.getByLabel('رقم ولي الأمر').fill('01112345678');
+    await guest.getByLabel('المحافظة').selectOption('CAIRO');
+    await guest.getByLabel('المدينة أو المنطقة').fill('منطقة QA');
+    await guest.getByLabel('اسم المدرسة').fill('مدرسة QA المحلية');
+    await guest.getByLabel('البريد الإلكتروني').fill(`qa-catalog-${randomUUID()}@example.com`);
+    await guest.locator('input[name="password"]').fill('Qa-Catalog-Registration-2026!');
+    await guest.getByLabel('تأكيد كلمة المرور').fill('Qa-Catalog-Registration-2026!');
+    const registered = guest.waitForResponse(r => r.request().method() === 'POST' && r.url().endsWith('/auth/register'));
+    await activate(guest.getByRole('button', { name: 'إنشاء حسابي', exact: true }));
+    expect((await registered).status()).toBe(201);
+    const selected = guest.getByRole('region', { name: 'المقرر المختار للاشتراك', exact: true });
+    await expect(selected.getByRole('heading')).toHaveText(first.course.title);
+    expect(await (await guest.request.get(`${base}/api/v1/courses/me/enrollments`)).json()).toEqual([]);
+    const enrolled = guest.waitForResponse(r => r.request().method() === 'POST' && r.url().endsWith(`/courses/${first.course.id}/enroll`));
+    await activate(selected.getByRole('button', { name: 'متابعة الاشتراك في هذا المقرر', exact: true }));
+    expect((await enrolled).status()).toBe(200);
+    await expect(selected).toHaveCount(0);
+    const memberships = await (await guest.request.get(`${base}/api/v1/courses/me/enrollments`)).json();
+    expect(memberships.map((entry: { course_id: string }) => entry.course_id)).toEqual([first.course.id]);
+    expect(await guest.evaluate(() => sessionStorage.getItem('lms_catalog_enrollment_intent'))).toBeNull();
+    await guest.screenshot({ path: test.info().outputPath(`catalog-${touch ? 'touch' : 'mouse'}-registered-enrolled.png`), fullPage: true });
+  } finally {
+    const csrf = (await context.cookies()).find(cookie => cookie.name === 'matgar_csrf')?.value;
+    if (csrf) expect.soft((await guest.request.post(`${base}/api/v1/auth/logout`, { headers: { 'X-CSRF-Token': csrf } })).status()).toBe(204);
+    await context.close();
+  }
+});
+}
+
+test('active navigation keeps real text contrast in both themes and hover states', async ({ page }) => {
+  await teacher(page);
+  await page.goto(`${base}/#quizgen`);
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(value => localStorage.setItem('lms_theme', value), theme);
+    await page.reload();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+    const active = page.locator('.nav-item.active');
+    await expect(active).toHaveCount(1);
+    await page.getByRole('button', { name: 'Open Menu', exact: true }).click();
+    await expect(active).toBeInViewport();
+    for (const hovered of [false, true]) {
+      if (hovered) await active.hover(); else await page.mouse.move(0, 0);
+      const colors = await active.evaluate(element => {
+        const style = getComputedStyle(element);
+        const luminance = (color: string) => {
+          const values = color.match(/[\d.]+/g)?.slice(0, 3).map(Number);
+          if (!values || values.length !== 3) throw new Error('Unknown computed color');
+          return values.map(n => n / 255).map(n => n <= .04045 ? n / 12.92 : ((n + .055) / 1.055) ** 2.4)
+            .reduce((sum, n, i) => sum + n * [.2126, .7152, .0722][i], 0);
+        };
+        const fg = luminance(style.color), bg = luminance(style.backgroundColor);
+        return { foreground: style.color, background: style.backgroundColor,
+          contrast: (Math.max(fg, bg) + .05) / (Math.min(fg, bg) + .05) };
+      });
+      expect(colors.contrast, JSON.stringify({ theme, hovered, ...colors })).toBeGreaterThanOrEqual(4.5);
+    }
+    await page.screenshot({ path: test.info().outputPath(`active-navigation-${theme}.png`), fullPage: true });
+  }
+});
+
+async function observeNativePaymentStream(page: Page) {
+  // No successful responses/events are synthesized. This only observes the
+  // browser's native EventSource, including the server's subscription event.
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    const state = { connected: 0, errors: 0, reviews: [] as Array<{ id: string; status: string }>, unlocks: [] as unknown[] };
+    Object.assign(window, { qaPaymentStream: state });
+    window.addEventListener('lms_payment_updated', e => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.id) state.reviews.push(detail);
+    });
+    window.addEventListener('lms_lesson_unlocked', e => state.unlocks.push((e as CustomEvent).detail));
+    window.EventSource = class extends NativeEventSource {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        this.addEventListener('connected', () => state.connected++);
+        this.addEventListener('error', () => state.errors++);
+      }
+    };
+  });
+  return () => page.evaluate(() => (window as unknown as { qaPaymentStream: { connected: number; errors: number; reviews: Array<{ id: string; status: string }>; unlocks: unknown[] } }).qaPaymentStream);
+}
+
+test('new student discovers and enrolls a free course entirely from the catalog UI', async ({ page, browser }) => {
+  await teacher(page);
+  const { course } = await courseWithLesson(page, `catalog ${Date.now()}`);
+  const learner = await student(browser);
+  try {
+    const before = await (await learner.page.request.get(`${base}/api/v1/courses/me/enrollments`)).json();
+    expect(before).toHaveLength(0);
+    const card = learner.page.getByRole('region', { name: 'المقررات المجانية' }).locator('article').filter({ hasText: course.title });
+    await expect(card).toBeVisible();
+    const enrolled = learner.page.waitForResponse(r => r.request().method() === 'POST' && r.url().endsWith(`/courses/${course.id}/enroll`));
+    await card.getByRole('button', { name: 'التسجيل مجانًا', exact: true }).click();
+    expect((await enrolled).status()).toBe(200);
+    await expect(learner.page.getByText(`مقرر ${course.title}`, { exact: true })).toBeVisible();
+    const after = await (await learner.page.request.get(`${base}/api/v1/courses/me/enrollments`)).json();
+    expect(after.map((e: {course_id: string}) => e.course_id)).toEqual([course.id]);
+    await learner.page.screenshot({ path: test.info().outputPath('free-catalog-enrolled.png'), fullPage: true });
+  } finally { await learner.close(); }
+});
+
+for (const streamOutage of [false, true]) test(`rejected payment ${streamOutage ? 'missed during stream outage reconciles after real SSE reconnect' : 'arrives over real SSE and updates the history'} without unlocking the student lesson`, async ({ page, browser }) => {
+  await teacher(page);
+  const { course, lesson } = await courseWithLesson(page, 'rejected payment', 'SECONDARY_1', 25);
+  const learner = await student(browser);
+  try {
+    await post(learner.page, `courses/${course.id}/enroll`, {}, 200);
+    // Chromium offline mode need not terminate an already-open TCP stream.
+    // Abort the real SSE transport while keeping the document/API available;
+    // never synthesize a review/connected event or a successful SSE response.
+    if (streamOutage) await learner.page.route('**/api/v1/realtime/stream', route => route.abort('internetdisconnected'));
+    // Observe the UNMOCKED native stream. A profile button or response headers
+    // do not prove the new document subscribed after its bootstrap/reload.
+    const observed = await observeNativePaymentStream(learner.page);
+    await learner.page.reload();
+    if (streamOutage) {
+      await expect.poll(async () => (await observed()).errors, { timeout: 15_000 }).toBeGreaterThan(0);
+      expect((await observed()).connected).toBe(0);
+    } else {
+      await expect.poll(async () => (await observed()).connected, { timeout: 15_000 }).toBeGreaterThan(0);
+    }
+    const order = await post(learner.page, 'payments/orders', { product_type: 'lesson', product_id: lesson.id, payment_method: 'instapay' });
+    await learner.page.goto(`${base}/#payments`);
+    const row = learner.page.locator('article').filter({ hasText: lesson.title });
+    await expect(row.getByText('بانتظار رفع الإيصال', { exact: true })).toBeVisible();
+    const connected = (await observed()).connected;
+    await post(page, `payments/orders/${order.id}/reject`, { note: 'QA rejected receipt' }, 200);
+    if (streamOutage) {
+      expect((await observed()).reviews.some(e => e.id === order.id)).toBe(false);
+      await learner.page.unroute('**/api/v1/realtime/stream');
+      await expect.poll(async () => (await observed()).connected, { timeout: 25_000 }).toBeGreaterThan(connected);
+    } else {
+      await expect.poll(async () => (await observed()).reviews.some(e => e.id === order.id && e.status === 'rejected')).toBe(true);
+    }
+    // Exercise the REAL still-mounted PaymentView, not just a DOM event or
+    // an API read. No reload/manual refresh/cache-expiry delay masks staleness.
+    await expect(row.getByText('مرفوض', { exact: true })).toBeVisible();
+    await expect(row.getByText('ملاحظة المراجعة: QA rejected receipt', { exact: true })).toBeVisible();
+    expect((await observed()).unlocks).toEqual([]);
+    await expect(learner.page.getByText('تمت إتاحة الدرس بنجاح من المعلم!', { exact: true })).toHaveCount(0);
+    const persisted = await learner.page.request.get(`${base}/api/v1/payments/orders/${order.id}`);
+    expect(persisted.status()).toBe(200); expect((await persisted.json()).status).toBe('rejected');
+    const access = await (await learner.page.request.get(`${base}/api/v1/payments/me/entitlements`)).json();
+    expect(access.filter((e: { resource_id: string }) => e.resource_id === lesson.id)).toHaveLength(0);
+    expect((await learner.page.request.post(`${base}/api/v1/lessons/${lesson.id}/video-token`, { headers: { 'X-CSRF-Token': (await learner.page.context().cookies()).find(c => c.name === 'matgar_csrf')?.value || '' } })).status()).toBe(403);
+  } finally { await learner.page.unroute('**/api/v1/realtime/stream'); await learner.close(); }
+});
+
+test('teacher receives a newly uploaded receipt in the mounted review UI without reload', async ({ page, browser }) => {
+  const observed = await observeNativePaymentStream(page);
+  await teacher(page);
+  const { course, lesson } = await courseWithLesson(page, 'teacher payment live', 'SECONDARY_1', 25);
+  const learner = await student(browser);
+  try {
+    await post(learner.page, `courses/${course.id}/enroll`, {}, 200);
+    await page.goto(`${base}/#paymentmanagement`);
+    await expect(page.getByRole('heading', { name: 'طلبات الطلاب', exact: true })).toBeVisible();
+    await expect.poll(async () => (await observed()).connected, { timeout: 15_000 }).toBeGreaterThan(0);
+    await expect(page.getByText('لا توجد طلبات في هذه الحالة.', { exact: true })).toBeVisible();
+    const order = await post(learner.page, 'payments/orders', { product_type: 'lesson', product_id: lesson.id, payment_method: 'instapay' });
+    const row = page.locator('.review-row').filter({ hasText: lesson.title });
+    // Pending checkout creation persists a visible reviewer-owned order, but
+    // the backend deliberately emits payment_created only when its receipt
+    // is uploaded. Do not assert an undocumented pre-receipt broadcast.
+    const pendingOrder = await page.request.get(`${base}/api/v1/payments/orders/${order.id}`);
+    expect(pendingOrder.status()).toBe(200); expect((await pendingOrder.json()).status).toBe('pending');
+    const csrf = (await learner.page.context().cookies()).find(c => c.name === 'matgar_csrf')?.value || '';
+    const receipt = await learner.page.request.post(`${base}/api/v1/payments/orders/${order.id}/receipt`, {
+      headers: { 'X-CSRF-Token': csrf },
+      multipart: { receipt: { name: 'qa-synthetic-receipt.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAE0lEQVR4nGP8//8/AwMDEwMYAAAkBgMBXaJOiAAAAABJRU5ErkJggg==', 'base64') } },
+    });
+    expect(receipt.status(), await receipt.text()).toBe(200);
+    await expect.poll(async () => (await observed()).reviews.some(e => e.id === order.id && e.status === 'under_review')).toBe(true);
+    await expect(row.getByText('قيد المراجعة', { exact: true })).toBeVisible();
+    await expect(row.getByRole('button', { name: 'الإيصال', exact: true })).toBeVisible();
+    await row.getByRole('button', { name: 'رفض', exact: true }).click();
+    await page.getByRole('dialog', { name: 'رفض طلب الدفع', exact: true }).getByRole('button', { name: 'رفض الطلب', exact: true }).click();
+    await expect(row.getByText('rejected', { exact: true })).toBeVisible();
+    const access = await (await learner.page.request.get(`${base}/api/v1/payments/me/entitlements`)).json();
+    expect(access.some((item: { resource_id: string }) => item.resource_id === lesson.id)).toBe(false);
+  } finally { await learner.close(); }
+});
+
+test('immediate quiz practice uses a fresh PostgreSQL attempt without waiting for cache expiry', async ({ page, browser }) => {
+  await teacher(page);
+  const { course, lesson } = await courseWithLesson(page, 'immediate practice');
+  const record = await post(page, 'quizzes/publish-draft', { course_id: course.id, lesson_id: lesson.id,
+    title: `QA immediate practice ${Date.now()}`, attempts_allowed: 1, idempotency_key: crypto.randomUUID(),
+    questions: [{ prompt: mcq.question_text, question_type: 'mcq', options: ['kilogram QA option', 'second QA option'], correct_answer: 'kilogram QA option', points: 7 }] });
+  const learner = await student(browser);
+  try {
+    await post(learner.page, `courses/${course.id}/enroll`, {}, 200);
+    await learner.page.reload();
+    await learner.page.getByRole('button', { name: /الاختبارات/ }).first().click();
+    const solves: Array<{ attempt: { id: string; is_practice: boolean } }> = [];
+    learner.page.on('response', async r => { if (r.url().endsWith(`/quizzes/${record.id}/solve`) && r.status() === 200) solves.push(await r.json()); });
+    // Exercise the real component + apiClient; no fetch mocks or artificial wait.
+    await learner.page.getByRole('button', { name: 'بدء حل الاختبار', exact: true }).click();
+    await expect.poll(() => solves.length).toBe(1);
+    const firstStartedAt = Date.now();
+    await learner.page.getByText('kilogram QA option', { exact: true }).click();
+    const submitted = learner.page.waitForResponse(r => r.request().method() === 'POST' && r.url().endsWith(`/quiz-attempts/${solves[0].attempt.id}/submit`));
+    await learner.page.getByRole('button', { name: /تسليم الاختبار/ }).first().click();
+    await learner.page.getByRole('button', { name: /تأكيد.*تسليم|تسليم الآن/ }).click();
+    const firstResult = await submitted;
+    expect(firstResult.status()).toBe(200);
+    expect((await firstResult.json()).score).toBeNull();
+    await expect(learner.page.getByText('تم تسليم الاختبار، والنتيجة في انتظار اعتماد المدرس', { exact: true })).toBeVisible();
+    await learner.page.getByRole('button', { name: 'العودة إلى المقرر', exact: true }).click();
+    await learner.page.getByRole('button', { name: /امتحن نفسك|بدء حل الاختبار/ }).first().click();
+    await expect.poll(() => solves.length).toBe(2);
+    expect(solves[1].attempt.id).not.toBe(solves[0].attempt.id);
+    expect(solves[1].attempt.is_practice).toBe(true);
+    expect(Date.now() - firstStartedAt).toBeLessThan(15_000);
+    await learner.page.getByText('second QA option', { exact: true }).click();
+    const resubmitted = learner.page.waitForResponse(r => r.request().method() === 'POST' && r.url().endsWith(`/quiz-attempts/${solves[1].attempt.id}/submit`));
+    await learner.page.getByRole('button', { name: /تسليم الاختبار/ }).first().click();
+    await learner.page.getByRole('button', { name: /تأكيد.*تسليم|تسليم الآن/ }).click();
+    const secondResult = await resubmitted;
+    expect(secondResult.status()).toBe(200);
+    expect((await secondResult.json()).score).toBe(0);
+  } finally { await learner.close(); }
+});
+
+test('manual Arabic choices publish from the editor and are graded in the student browser', async ({ page, browser }) => {
+  await teacher(page);
+  const { course, lesson } = await courseWithLesson(page, 'Arabic manual choices');
+  await prepareDraft(page, lesson.id, 'quiz', []);
+  await page.getByRole('button', { name: 'بدء إضافة أسئلة الاختبار يدوياً', exact: true }).click();
+  const card = page.locator('[data-testid^="question-card-"]');
+  await expect(card).toHaveCount(1);
+  await card.locator('[contenteditable="true"]').fill('Choose the SI mass unit.');
+  const choices = ['gram QA Arabic choice', 'kilogram QA Arabic choice', 'metre QA Arabic choice', 'second QA Arabic choice'];
+  for (const [index, key] of ['أ', 'ب', 'ج', 'د'].entries()) {
+    await card.getByRole('textbox', { name: new RegExp(`^نص الخيار ${key} للسؤال `) }).fill(choices[index]);
+  }
+  await card.getByRole('button', { name: /^تعيين الخيار ب إجابة صحيحة للسؤال / }).click();
+  await card.getByRole('button', { name: 'حفظ التعديل', exact: true }).click();
+  const published = page.waitForResponse(r => r.request().method() === 'POST'
+    && new URL(r.url()).pathname === '/api/v1/quizzes/publish-draft');
+  await publish(page, 'quiz');
+  const response = await published;
+  expect(response.status(), await response.text()).toBe(201);
+  const record = await response.json();
+  const sent = response.request().postDataJSON().questions[0];
+  expect(sent.options).toEqual(choices.map((text, index) => ({ key: String.fromCharCode(65 + index), text, is_correct: index === 1 })));
+  expect(sent.correct_answer).toBe(choices[1]);
+  const learner = await student(browser);
+  try {
+    await post(learner.page, `courses/${course.id}/enroll`, {}, 200);
+    await learner.page.reload();
+    if (await learner.page.getByLabel('اختر المقرر').count()) await learner.page.getByLabel('اختر المقرر').selectOption(course.id);
+    await learner.page.getByRole('button', { name: /الاختبارات/ }).first().click();
+    const solve = learner.page.waitForResponse(r => r.url().endsWith(`/quizzes/${record.id}/solve`) && r.status() === 200);
+    await learner.page.getByRole('button', { name: 'بدء حل الاختبار', exact: true }).click();
+    const attempt = (await (await solve).json()).attempt;
+    await learner.page.getByText(choices[1], { exact: true }).click();
+    const submitted = learner.page.waitForResponse(r => r.request().method() === 'POST'
+      && r.url().endsWith(`/quiz-attempts/${attempt.id}/submit`));
+    await learner.page.getByRole('button', { name: /تسليم الاختبار/ }).first().click();
+    await learner.page.getByRole('button', { name: /تأكيد.*تسليم|تسليم الآن/ }).click();
+    const result = await submitted;
+    expect(result.status()).toBe(200);
+    expect((await result.json()).score).toBeNull();
+    const pending = await (await learner.page.request.get(`${base}/api/v1/quizzes/${record.id}/result`)).json();
+    expect(pending.summary).toBeNull();
+    expect(pending.approval_status).toBe('pending');
+    await post(page, `quiz-attempts/${attempt.id}/approve`, {}, 200);
+    const released = await (await learner.page.request.get(`${base}/api/v1/quizzes/${record.id}/result`)).json();
+    expect(released.score).toBe(5);
+    expect(released.approval_status).toBe('approved');
+  } finally { await learner.close(); }
+});
+
+test('reviewed FILL_BLANK Extract question publishes through the teacher interface', async ({ page }) => {
+  await teacher(page);
+  const { lesson } = await courseWithLesson(page, 'fill blank');
+  const title = await prepareDraft(page, lesson.id, 'quiz', [{ id: 'fill', question_type: 'FILL_BLANK',
+    question_text: 'The SI unit of mass is ____.', points: 2 }]);
+  await page.getByRole('button', { name: 'حفظ ونشر الاختبار للطلاب', exact: true }).first().click();
+  await expect(page.getByRole('button', { name: 'تأكيد الرفع والنشر الآن' })).toHaveCount(0);
+  const card = page.getByTestId('question-card-fill');
+  await card.getByRole('button', { name: 'تعديل', exact: true }).click();
+  await card.getByPlaceholder('اكتب الكلمة أو المصطلح الصحيح الذي يملأ الفراغ...').fill('kg');
+  await card.getByRole('button', { name: 'حفظ التعديل', exact: true }).click();
+  const created = page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/v1/quizzes/publish-draft');
+  await publish(page, 'quiz');
+  const response = await created;
+  expect(response.status(), await response.text()).toBe(201);
+  const record = await response.json();
+  const quizResponse = await page.request.get(`${base}/api/v1/quizzes/${record.id}/solve`);
+  expect(quizResponse.status()).toBe(200);
+  const quiz = await quizResponse.json();
+  expect(quiz.questions[0].question_type).toBe('fill_in_blank');
+  expect(record.title).toBe(title);
+});
+
+test('teacher edits segmented Arabic time manually and with options, and publishes the same enlarged dates', async ({ page }) => {
+  await teacher(page);
+  const { lesson } = await courseWithLesson(page, 'clock');
+  await prepareDraft(page, lesson.id, 'quiz', [{ id: 'essay', question_type: 'essay', question_text: 'Explain mass.', points: 2 }]);
+  await page.getByRole('combobox', { name: 'ساعة بداية الإتاحة', exact: true }).fill('٠٣');
+  await page.getByRole('combobox', { name: 'دقيقة بداية الإتاحة', exact: true }).fill('٣٠');
+  await page.getByLabel('فترة بداية الإتاحة', { exact: true }).selectOption('م');
+  await page.getByRole('combobox', { name: 'ساعة نهاية الإتاحة', exact: true }).click();
+  await page.getByRole('listbox', { name: 'اختيارات الساعة نهاية الإتاحة' }).getByRole('option', { name: '08', exact: true }).click();
+  await page.getByRole('combobox', { name: 'دقيقة نهاية الإتاحة', exact: true }).click();
+  await page.getByRole('listbox', { name: 'اختيارات الدقيقة نهاية الإتاحة' }).getByRole('option', { name: '45', exact: true }).click();
+  await page.getByLabel('فترة نهاية الإتاحة', { exact: true }).selectOption('م');
+  expect(await page.locator('input[type="date"]').first().evaluate(el => parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(18);
+  await page.screenshot({ path: test.info().outputPath('segmented-clock-desktop.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('navigation', { name: 'مراحل إعداد الامتحان', exact: true }).getByRole('button', { name: 'النشر', exact: true }).click();
+  await page.getByRole('combobox', { name: 'ساعة نهاية الإتاحة', exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: test.info().outputPath('segmented-clock-mobile.png'), fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  const created = page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/v1/quizzes/publish-draft');
+  await publish(page, 'quiz');
+  const response = await created;
+  expect(response.status(), await response.text()).toBe(201);
+  const body = response.request().postDataJSON();
+  // API timestamps are UTC; assert the entered clock in the browser's actual
+  // timezone instead of assuming Cairo's current UTC offset is zero.
+  const clocks = await page.evaluate(({ start, end }) => {
+    const clock = (iso: string) => { const date = new Date(iso); return [date.getHours(), date.getMinutes()]; };
+    return [clock(start), clock(end)];
+  }, { start: body.starts_at, end: body.ends_at });
+  expect(clocks).toEqual([[15, 30], [20, 45]]);
+});
+
+test('ready video job recovers automatically after teacher reload without a repeated upload', async ({ page, playwright }) => {
+  test.setTimeout(180_000);
+  await teacher(page);
+  const { course, lesson } = await courseWithLesson(page, 'resume ready video');
+  const media = readFileSync(process.env.QA_VIDEO_FILE || '../../.qa/audit2/media/video.webm');
+  const session = await post(page, `lessons/${lesson.id}/video-uploads`, { filename: 'qa-resume.webm', content_type: 'video/webm',
+    size_bytes: media.length, fingerprint: createHash('sha256').update(media).digest('hex'), request_key: randomUUID() });
+  const direct = await playwright.request.newContext({ ignoreHTTPSErrors: false });
+  try {
+    for (let number = 1; number <= Math.ceil(media.length / session.part_bytes); number++) {
+      const signed = await post(page, `video-uploads/${session.id}/parts/${number}`, {}, 200);
+      expect((await direct.put(signed.url, { data: media.subarray((number - 1) * session.part_bytes,
+        (number - 1) * session.part_bytes + signed.size_bytes) })).status()).toBe(200);
+    }
+  } finally { await direct.dispose(); }
+  await post(page, `video-uploads/${session.id}/complete`, {}, 202);
+  await expect.poll(async () => (await (await page.request.get(`${base}/api/v1/video-uploads/${session.id}`)).json()).status,
+    { timeout: 120_000, intervals: [1000, 3000] }).toBe('ready');
+  const me = await (await page.request.get(`${base}/api/v1/auth/me`)).json();
+  await page.evaluate(({ task }) => localStorage.setItem('lms_global_upload_tasks_v3', JSON.stringify([task])), { task: {
+    id: 'qa-reload-task', ownerScope: me.id, title: 'QA resume completed video', fileName: 'qa-resume.webm', type: 'lesson_video',
+    lessonId: lesson.id, courseId: course.id, videoUploadId: session.id, fileSizeBytes: media.length, formattedSize: 'QA file',
+    status: 'processing', progress: 99, uploadPercent: 100, createdAt: Date.now() } });
+  const repeatedWrites: string[] = [];
+  page.on('request', r => { if (r.method() !== 'GET' && /\/api\/v1\/(video-uploads|lessons\/.*\/video-uploads)/.test(r.url())) repeatedWrites.push(r.url()); });
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('lms_global_upload_tasks_v3') || '[]')[0]?.status),
+    { timeout: 15_000 }).toBe('completed');
+  expect(repeatedWrites).toEqual([]);
+  await page.screenshot({ path: test.info().outputPath('video-reconciled-ready.png'), fullPage: true });
+});
+
+for (const kind of ['quiz', 'assignment']) {
+  test(`${kind} cannot publish OCR content until source review, including after edits and reload`, async ({ page }) => {
+    test.setTimeout(120_000);
+    await teacher(page);
+    const { course, lesson } = await courseWithLesson(page, 'OCR review');
+    const csrf = (await page.context().cookies()).find(c => c.name === 'matgar_csrf')?.value || '';
+    // Real raster, real local OCR endpoint; no mocked extracted text.
+    const extracted = await page.request.post(`${base}/api/v1/quiz/extract-from-file`, {
+      headers: { 'X-CSRF-Token': csrf }, multipart: { course_id: course.id, lesson_id: lesson.id, target_type: kind,
+        file: { name: '05_biology_first_page.png', mimeType: 'image/png',
+          buffer: readFileSync('../api/tests/fixtures/blind_inputs/05_biology_first_page.png') } }, timeout: 60_000,
+    });
+    expect(extracted.status(), await extracted.text()).toBe(200);
+    const source = await extracted.json();
+    expect(source.questions).toHaveLength(5);
+    expect(source.questions.every((q: { needs_content_review: boolean }) => q.needs_content_review)).toBe(true);
+    const questions = source.questions.map((q: DraftQuestion) => ({ ...q, id: String(q.id), points: 2,
+      needs_points_assignment: false, needs_answer_review: false,
+      // Synthetic reviewed keys exercise publication, NOT OCR answer accuracy.
+      correct_answer: /true_false/i.test(q.question_type) ? 'صح'
+        : /fill/i.test(q.question_type) ? 'إجابة QA للتصحيح' : null,
+      options: q.options?.map((o, i) => ({ ...o, is_correct: i === 0 })) }));
+    const title = await prepareDraft(page, lesson.id, kind, questions);
+    const writes: string[] = [];
+    page.on('request', r => { if (r.method() === 'POST' && /\/api\/v1\/(quizzes\/publish-draft|assignments)$/.test(new URL(r.url()).pathname)) writes.push(r.url()); });
+    const publishButton = page.getByRole('button', { name: `حفظ ونشر ${kind === 'quiz' ? 'الاختبار' : 'الواجب'} للطلاب`, exact: true }).first();
+    await publishButton.click();
+    await expect(page.getByRole('button', { name: 'تأكيد الرفع والنشر الآن' })).toHaveCount(0);
+    expect(writes).toHaveLength(0);
+    const reviews = page.getByRole('checkbox', { name: /مراجعة نص السؤال .* مع المصدر/ });
+    await expect(reviews).toHaveCount(5);
+    for (let i = 0; i < 5; i++) await reviews.nth(i).check();
+    await page.reload();
+    for (let i = 0; i < 5; i++) await expect(reviews.nth(i)).toBeChecked();
+    const card = page.getByTestId('question-card-1');
+    await card.getByRole('button', { name: 'تعديل', exact: true }).click();
+    await card.locator('[contenteditable="true"]').first().fill(`${questions[0].question_text} (مراجعة QA).`);
+    await card.getByRole('button', { name: 'حفظ التعديل', exact: true }).click();
+    await expect(reviews.first()).not.toBeChecked();
+    await publishButton.click();
+    await expect(page.getByRole('button', { name: 'تأكيد الرفع والنشر الآن' })).toHaveCount(0);
+    expect(writes).toHaveLength(0);
+    await reviews.first().check();
+    await page.screenshot({ path: test.info().outputPath(`ocr-review-${kind}.png`), fullPage: true });
+    await publish(page, kind);
+    await expect.poll(() => writes.length).toBe(1);
+    await expect.poll(async () => {
+      const assessments = await (await page.request.get(`${base}/api/v1/courses/${course.id}/assessments`)).json();
+      return (kind === 'quiz' ? assessments.quizzes : assessments.assignments).filter((a: { title: string }) => a.title === title).length;
+    }).toBe(1);
+  });
+}
+
+for (const check of ['options', 'score', 'future start'] as const) {
+  test(`assignment preserves ${check} from teacher to student`, async ({ page, browser }) => {
+    await teacher(page);
+    const { course, lesson } = await courseWithLesson(page);
+    const title = await prepareDraft(page, lesson.id, 'assignment', [mcq], check === 'future start');
+    const created = page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/v1/assignments');
+    await publish(page, 'assignment');
+    const response = await created;
+    expect(response.status()).toBe(201);
+    const record = await response.json();
+    await expect.poll(async () => (await (await page.request.get(`${base}/api/v1/assignments?course_id=${course.id}`)).json())[0]?.status).toBe('published');
+    const learner = await student(browser);
+    try {
+      await post(learner.page, `courses/${course.id}/enroll`, {}, 200);
+      await learner.page.reload();
+      if (await learner.page.getByLabel('اختر المقرر').count()) await learner.page.getByLabel('اختر المقرر').selectOption(course.id);
+      await learner.page.getByRole('button', { name: 'الواجبات والتكليفات' }).click();
+      await expect(learner.page.getByText(title, { exact: true }).first()).toBeVisible();
+      await learner.page.getByRole('button', { name: 'فتح الواجب وتسليم الحل' }).click();
+      await learner.page.screenshot({ path: test.info().outputPath(`assignment-${check.replaceAll(' ', '-')}.png`), fullPage: true });
+      if (check === 'options') {
+        // Homework intentionally renders its questions in a PDF, not inline
+        // in the HTML. Inspect the actual student-visible paper as well as
+        // the stored prompt; an absent HTML text alone is not evidence.
+        const sheet = await learner.page.request.get(`${base}/api/v1/assignments/${record.id}/sheet.pdf`);
+        expect(sheet.status()).toBe(200);
+        const pdf = await sheet.body();
+        await test.info().attach('student-assignment-sheet', { body: pdf, contentType: 'application/pdf' });
+        const paperText = pdfText(pdf);
+        console.log(JSON.stringify({ case: 'assignment-paper', sheet_status: sheet.status(), contains_choices: paperText.includes(mcq.options![0].text) }));
+        expect.soft(record.prompt, 'Published prompt must retain MCQ choices').toContain(mcq.options![0].text);
+        expect(paperText, 'Student PDF must retain the multiple-choice options').toContain(mcq.options![0].text);
+      } else if (check === 'score') {
+        expect(record.max_score, 'Teacher assigned seven points, not the default one hundred').toBe(7);
+      } else {
+        const csrf = (await learner.page.context().cookies()).find(c => c.name === 'matgar_csrf')?.value || '';
+        const attempt = await learner.page.request.post(`${base}/api/v1/assignments/${record.id}/attempts`, { headers: { 'X-CSRF-Token': csrf } });
+        console.log(JSON.stringify({ case: 'future-assignment', start_is_tomorrow: true, actual_attempt_status: attempt.status() }));
+        expect.soft(attempt.status(), 'Future assignment must not be open before the teacher-selected start').toBe(403);
+        const submitted = await learner.page.request.post(`${base}/api/v1/assignments/${record.id}/submissions`, {
+          headers: { 'X-CSRF-Token': csrf }, data: { answer_text: 'QA submitted before future release', idempotency_key: crypto.randomUUID() },
+        });
+        console.log(JSON.stringify({ case: 'future-assignment-submit', actual_status: submitted.status() }));
+        expect(submitted.status()).toBe(403);
+      }
+    } finally { await learner.close(); }
+  });
+}
+
+test('failed quiz publishing is atomic and retry does not duplicate questions', async ({ page }) => {
+  await teacher(page);
+  const { course, lesson } = await courseWithLesson(page);
+  await prepareDraft(page, lesson.id, 'quiz', [{ id: 'valid', question_text: 'Explain conservation of mass.', question_type: 'essay', points: 5 },
+    { id: 'second', question_text: 'Explain the unit of mass.', question_type: 'essay', points: 5 }]);
+  // Keep the editor draft valid, then make the FIRST request invalid in transit
+  // to exercise real server-side422/rollback, not bypass client validation or
+  // synthesize a successful response. Retry sends the unchanged valid draft.
+  let corruptFirstRequest = true;
+  await page.route('**/api/v1/quizzes/publish-draft', async route => {
+    if (corruptFirstRequest) {
+      corruptFirstRequest = false;
+      const body = route.request().postDataJSON();
+      body.questions[1].prompt = 'x';
+      await route.continue({ postData: JSON.stringify(body) });
+    } else await route.continue();
+  });
+  const outcomes: number[] = [];
+  // Publication is now one HTTP transaction; the same invariant remains:
+  // rejected drafts and retries must create no question/quiz records.
+  page.on('response', r => { if (r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/v1/quizzes/publish-draft') outcomes.push(r.status()); });
+  await publish(page, 'quiz');
+  await expect.poll(() => outcomes.includes(422)).toBe(true);
+  const questions = await (await page.request.get(`${base}/api/v1/questions?course_id=${course.id}`)).json();
+  console.log(JSON.stringify({ case: 'partial-quiz', statuses: outcomes, orphan_count: questions.length }));
+  await page.screenshot({ path: test.info().outputPath('partial-quiz.png'), fullPage: true });
+  expect.soft(questions).toHaveLength(0);
+  // A failed publication leaves the confirmation modal open; retry the
+  // visible confirmation instead of clicking the obscured page underneath.
+  await page.getByRole('button', { name: 'تأكيد الرفع والنشر الآن' }).click();
+  await expect.poll(() => outcomes.length).toBe(2);
+  const afterRetry = await (await page.request.get(`${base}/api/v1/questions?course_id=${course.id}`)).json();
+  console.log(JSON.stringify({ case: 'partial-quiz-retry', statuses: outcomes, orphan_count: afterRetry.length }));
+  expect(outcomes).toEqual([422, 201]);
+  expect(afterRetry).toHaveLength(2);
+  const assessments = await (await page.request.get(`${base}/api/v1/courses/${course.id}/assessments`)).json();
+  expect(assessments.quizzes).toHaveLength(1);
+});
+
+test('student PDF retains Latin question text and title present in the server record', async ({ page, browser }) => {
+  await teacher(page);
+  const { course, lesson } = await courseWithLesson(page);
+  const prompt = 'Choose the mass unit. 12 kg.';
+  const title = 'QA Science Units';
+  const assignment = await post(page, 'assignments', { course_id: course.id, lesson_id: lesson.id, title, prompt, max_score: 5 });
+  expect(assignment.prompt).toBe(prompt);
+  expect(assignment.title).toBe(title);
+  await post(page, `assignments/${assignment.id}/publish`, {}, 200);
+  const learner = await student(browser);
+  try {
+    await post(learner.page, `courses/${course.id}/enroll`, {}, 200);
+    const response = await learner.page.request.get(`${base}/api/v1/assignments/${assignment.id}/sheet.pdf`);
+    expect(response.status()).toBe(200);
+    const pdf = await response.body();
+    await test.info().attach('latin-student-paper', { body: pdf, contentType: 'application/pdf' });
+    const text = pdfText(pdf);
+    console.log(JSON.stringify({ case: 'latin-pdf', stored_text_correct: true, sheet_status: response.status(), contains_question: text.includes(prompt), contains_title: text.includes(title) }));
+    expect.soft(text, 'Stored Latin title must be legible in the student PDF').toContain(title);
+    expect(text, 'Stored Latin question and units must be legible in the student PDF').toContain(prompt);
+  } finally { await learner.close(); }
+});
+
+test('closed assignment rejects direct submission even without an active attempt', async ({ page, browser }) => {
+  await teacher(page);
+  const { course, lesson } = await courseWithLesson(page);
+  const assignment = await post(page, 'assignments', { course_id: course.id, lesson_id: lesson.id, title: 'QA closed assignment',
+    prompt: 'Explain the unit of mass', due_at: new Date(Date.now() - 3600_000).toISOString(), max_score: 5 });
+  await post(page, `assignments/${assignment.id}/publish`, {}, 200);
+  const learner = await student(browser);
+  try {
+    await post(learner.page, `courses/${course.id}/enroll`, {}, 200);
+    const csrf = (await learner.page.context().cookies()).find(c => c.name === 'matgar_csrf')?.value || '';
+    const start = await learner.page.request.post(`${base}/api/v1/assignments/${assignment.id}/attempts`, { headers: { 'X-CSRF-Token': csrf } });
+    expect(start.status(), 'Normal start must respect the deadline').toBe(403);
+    const response = await learner.page.request.post(`${base}/api/v1/assignments/${assignment.id}/submissions`, {
+      headers: { 'X-CSRF-Token': csrf }, data: { answer_text: 'QA submitted after deadline without starting', idempotency_key: crypto.randomUUID() },
+    });
+    console.log(JSON.stringify({ case: 'closed-assignment-bypass', start_status: start.status(), submit_status: response.status() }));
+    expect(response.status()).toBe(403);
+  } finally { await learner.close(); }
+});
+
+for (const failure of ['empty notification body', 'calendar outage'] as const) {
+  test(`calendar wizard reports ${failure} honestly`, async ({ page }) => {
+    await teacher(page);
+    await page.goto(`${base}/#notifications`);
+    await page.getByRole('button', { name: 'إضافة موعد جديد', exact: true }).click();
+    await page.getByPlaceholder('مثال: الثلاثاء - المحاضرة الأسبوعية').fill(`QA Calendar ${Date.now()}`);
+    await page.getByRole('button', { name: 'التالي: تحديد التوقيت', exact: true }).click();
+    await page.getByRole('button', { name: /التالي:.*مراجعة/ }).click();
+    if (failure === 'calendar outage') await page.route('**/api/v1/calendar', route => route.request().method() === 'POST'
+      ? route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'QA calendar outage' }) }) : route.continue());
+    const path = failure === 'calendar outage' ? '/calendar' : '/notifications/broadcast';
+    const written = page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname.endsWith(path));
+    await page.getByRole('button', { name: 'تأكيد وحفظ الموعد في الجدول', exact: true }).click();
+    const response = await written;
+    console.log(JSON.stringify({ case: failure, actual_status: response.status() }));
+    await page.screenshot({ path: test.info().outputPath(`calendar-${failure.replaceAll(' ', '-')}.png`), fullPage: true });
+    if (failure === 'empty notification body') expect(response.status(), 'Default calendar lesson notification must be valid').toBe(201);
+    else {
+      const falseSuccess = await page.getByText('تم حفظ وتحديث الموعد في جدول الصف الدراسي بنجاح!', { exact: true }).isVisible();
+      console.log(JSON.stringify({ case: failure, false_success_visible: falseSuccess }));
+      expect(falseSuccess, 'Do not wait for the false-success toast to expire and miscount that as a pass').toBe(false);
+    }
+  });
+}
+
+for (const { role, slowBootstrap } of [
+  { role: 'teacher', slowBootstrap: false },
+  { role: 'student', slowBootstrap: false },
+  { role: 'student', slowBootstrap: true },
+]) {
+  // Avatar upload journeys were replaced by the user's explicit no-personal-
+  // photos requirement, not removed to hide the historical failed test.
+  test(`${role} account has no personal photo controls${slowBootstrap ? ' after delayed identity hydration' : ''}`, async ({ page, browser }) => {
+    const learner = role === 'student' ? await student(browser) : null;
+    const author = !learner ? await teacher(page) : null;
+    const target = learner?.page || page;
+    const photoRequests: string[] = [];
+    target.on('request', request => {
+      if (new URL(request.url()).pathname === '/api/v1/auth/avatar') photoRequests.push(request.method());
+    });
+    try {
+      await target.goto(`${base}/#profile`);
+      await expect(target.getByRole('heading', { name: 'الملف التعريفي للحساب' })).toBeVisible();
+      if (slowBootstrap) {
+        let held = false;
+        let release!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        await target.route('**/api/v1/bootstrap', async route => {
+          const response = await route.fetch();
+          held = true;
+          await gate;
+          await route.fulfill({ response });
+        });
+        const hydrated = target.waitForResponse(response =>
+          new URL(response.url()).pathname === '/api/v1/bootstrap' && response.status() === 200);
+        try {
+          await target.reload();
+          await expect.poll(() => held).toBe(true);
+          await expect(target.getByRole('button', { name: 'تغيير كلمة المرور', exact: true }), 'Cached identity must not allow account changes before server hydration').toHaveCount(0);
+        } finally { release(); }
+        await hydrated;
+        await expect(target.getByRole('heading', { name: 'الملف التعريفي للحساب' })).toBeVisible();
+        await target.unroute('**/api/v1/bootstrap');
+      }
+      await expect(target.locator('main input[type="file"]')).toHaveCount(0);
+      await expect(target.locator('main img[src*="/auth/avatar"]')).toHaveCount(0);
+      await target.screenshot({ path: test.info().outputPath(`account-no-photos-${role}.png`), fullPage: true });
+      const me = await (await target.request.get(`${base}/api/v1/auth/me`)).json();
+      expect(me).not.toHaveProperty('avatar_url');
+      // Even a previously cached URL must not cause a personal photo fetch.
+      await target.evaluate(() => {
+        const cached = JSON.parse(localStorage.getItem('lms_cached_user')!);
+        cached.avatarUrl = '/api/v1/auth/avatar';
+        localStorage.setItem('lms_cached_user', JSON.stringify(cached));
+      });
+      if (role === 'student' && !slowBootstrap) {
+        // Observe a REAL origin response under a bounded transport delay,
+        // not fabricated identity or a weakened visibility assertion. This
+        // reproduces the fixture's former5s bootstrap/render race reliably.
+        await target.route('**/api/v1/bootstrap', async route => {
+          const response = await route.fetch();
+          await delay(5500);
+          await route.fulfill({ response });
+        });
+      }
+      const reloadedIdentity = target.waitForResponse(response =>
+        new URL(response.url()).pathname === '/api/v1/bootstrap' && response.status() === 200,
+      { timeout: 15_000 });
+      await target.reload();
+      const reloadedBootstrap = await (await reloadedIdentity).json();
+      expect(reloadedBootstrap.authenticated).toBe(true);
+      expect(reloadedBootstrap.user.id).toBe(me.id);
+      await expect(target.getByRole('heading', { name: 'الملف التعريفي للحساب' })).toBeVisible();
+      await target.unroute('**/api/v1/bootstrap');
+      await expect(target.locator('main input[type="file"], main img[src*="/auth/avatar"]')).toHaveCount(0);
+      expect(photoRequests).toEqual([]);
+      const csrf = (await target.context().cookies()).find(c => c.name === 'matgar_csrf')!.value;
+      expect((await target.request.get(`${base}/api/v1/auth/avatar`)).status()).toBe(410);
+      expect((await target.request.post(`${base}/api/v1/auth/avatar`, { data: {}, headers: {'X-CSRF-Token': csrf} })).status()).toBe(410);
+      expect((await target.request.post(`${base}/api/v1/auth/logout`, {headers: {'X-CSRF-Token': csrf}})).status()).toBe(204);
+      await target.reload();
+      if (role === 'teacher') {
+        // Keep successful login data opaque and delay only its delivery.
+        // Login remains the real API/cookies with real rate limiting.
+        await target.route('**/api/v1/auth/login', async route => {
+          const response = await route.fetch();
+          await delay(5500);
+          await route.fulfill({ response });
+        });
+      }
+      await signIn(target, me.email, author?.password || 'qa-discovery-only-pass');
+      await target.goto(`${base}/#profile`);
+      await expect(target.getByRole('heading', { name: 'الملف التعريفي للحساب' })).toBeVisible();
+      await expect(target.locator('main input[type="file"], main img[src*="/auth/avatar"]')).toHaveCount(0);
+    } finally {
+      if (learner) {
+        await learner.close();
+      }
+    }
+  });
+}
+
+test('teacher can select both courses when they share the same grade', async ({ page }) => {
+  await teacher(page);
+  const a = await courseWithLesson(page, 'A', 'SECONDARY_2');
+  const b = await courseWithLesson(page, 'B', 'SECONDARY_2');
+  await page.goto(`${base}/#lessonmanagement`);
+  await page.reload();
+  await page.getByRole('button', { name: 'الصف الثاني الثانوي', exact: true }).click();
+  await page.screenshot({ path: test.info().outputPath('same-grade-courses.png'), fullPage: true });
+  // The product requires a course selector, not simultaneous concatenation.
+  await page.getByLabel('اختر المقرر').selectOption(a.course.id);
+  await expect(page.getByText(a.lesson.title, { exact: true })).toBeVisible();
+  await page.getByLabel('اختر المقرر').selectOption(b.course.id);
+  await expect(page.getByText(b.lesson.title, { exact: true })).toBeVisible();
+});
+
+for (const kind of ['quiz', 'assignment']) {
+  test(`${kind} persists the explicitly selected second course and lesson after reload`, async ({page}) => {
+    await teacher(page);
+    const a = await courseWithLesson(page, 'A');
+    const b = await courseWithLesson(page, 'B');
+    await prepareDraft(page, a.lesson.id, kind, [{id: 'essay', question_text: 'Explain a source of energy.', question_type: 'essay', points: 7}]);
+    await page.getByLabel('اختر المقرر').selectOption(b.course.id);
+    const lessonSelect = page.locator(`select:has(option[value="${b.lesson.id}"])`);
+    await lessonSelect.selectOption(b.lesson.id);
+    await expect.poll(async () => page.evaluate(() => {
+      const key = Object.keys(localStorage).find(key => key.startsWith('lms_quiz_maker_unuploaded_draft_v2:'));
+      return key ? JSON.parse(localStorage.getItem(key)!).selectedCourseId : null;
+    })).toBe(b.course.id);
+    await page.reload();
+    await expect(page.getByLabel('اختر المقرر')).toHaveValue(b.course.id);
+    await expect(lessonSelect).toHaveValue(b.lesson.id);
+    const endpoint = kind === 'quiz' ? '/quizzes/publish-draft' : '/assignments';
+    const saved = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1${endpoint}` && response.request().method() === 'POST');
+    await publish(page, kind);
+    const response = await saved;
+    expect(response.status(), await response.text()).toBe(201);
+    const item = await response.json();
+    // These resources expose collection/solve routes, not GET /{id}.
+    // Read the saved record independently from the supported collection API.
+    const collection = kind === 'quiz' ? 'quizzes' : 'assignments';
+    const records = await page.request.get(`${base}/api/v1/${collection}?course_id=${b.course.id}`);
+    expect(records.status(), await records.text()).toBe(200);
+    const persisted = (await records.json()).find((record: {id: string}) => record.id === item.id);
+    expect(persisted, 'Published assessment must exist in the stored course collection').toBeDefined();
+    expect(persisted.course_id).toBe(b.course.id);
+    expect(persisted.lesson_id).toBe(b.lesson.id);
+    const wrongCourse = await (await page.request.get(`${base}/api/v1/${kind === 'quiz' ? 'quizzes' : 'assignments'}?course_id=${a.course.id}`)).json();
+    expect(wrongCourse).toHaveLength(0);
+  });
+}
+
+test('quiz publication retries after a lost response reuse the saved quiz and question records', async ({page}) => {
+  await teacher(page);
+  const {course, lesson} = await courseWithLesson(page);
+  const title = await prepareDraft(page, lesson.id, 'quiz', [{id: 'essay', question_text: 'Explain the energy conversion.', question_type: 'essay', points: 5}]);
+  let dropped = false;
+  await page.route('**/api/v1/quizzes/publish-draft', async route => {
+    if (!dropped) { dropped = true; await route.fetch(); await route.abort('failed'); }
+    else await route.continue();
+  });
+  await publish(page, 'quiz');
+  await expect(page.getByRole('button', {name: 'تأكيد الرفع والنشر الآن'})).toBeEnabled();
+  await expect(page.getByRole('alert').last()).toBeVisible();
+  await page.getByRole('button', {name: 'تأكيد الرفع والنشر الآن'}).click();
+  await expect.poll(async () => (await (await page.request.get(`${base}/api/v1/quizzes?course_id=${course.id}`)).json()).filter((quiz: {title: string}) => quiz.title === title).length).toBe(1);
+  await expect(page.getByRole('button', {name: 'تأكيد الرفع والنشر الآن'})).toHaveCount(0);
+  expect(await (await page.request.get(`${base}/api/v1/questions?course_id=${course.id}`)).json()).toHaveLength(1);
+});
+
+test('saved calendar plus failed notification keeps a truthful draft and retry creates one of each', async ({page}) => {
+  await teacher(page);
+  await page.goto(`${base}/#notifications`);
+  await page.getByRole('button', {name: 'إضافة موعد جديد', exact: true}).click();
+  const title = `QA Partial Calendar ${Date.now()}`;
+  await page.getByPlaceholder('مثال: الثلاثاء - المحاضرة الأسبوعية').fill(title);
+  await page.getByRole('button', {name: 'التالي: تحديد التوقيت', exact: true}).click();
+  await page.getByRole('button', {name: /التالي:.*مراجعة/}).click();
+  let fail = true;
+  await page.route('**/api/v1/notifications/broadcast', route => fail ? route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({detail: 'QA partial send outage'})}) : route.continue());
+  await page.getByRole('button', {name: 'تأكيد وحفظ الموعد في الجدول', exact: true}).click();
+  await expect(page.getByRole('alert')).toContainText('حُفظ الموعد');
+  fail = false;
+  await page.getByRole('button', {name: 'تأكيد وحفظ الموعد في الجدول', exact: true}).click();
+  await expect(page.getByRole('button', {name: 'تأكيد وحفظ الموعد في الجدول', exact: true})).toHaveCount(0);
+  const events: {title: string; id: string}[] = [];
+  for (let offset = 0; offset < 50_000; offset += 500) {
+    const response = await page.request.get(`${base}/api/v1/calendar?limit=500&offset=${offset}`);
+    expect(response.status(), await response.text()).toBe(200);
+    const records = await response.json();
+    events.push(...records);
+    if (records.length < 500) break;
+    expect(offset, 'Calendar pagination must terminate within the bounded client range').toBeLessThan(49_500);
+  }
+  expect(new Set(events.map(event => event.id)).size).toBe(events.length);
+  expect(events.filter((event: {title: string}) => event.title === title)).toHaveLength(1);
+  const notifications = await (await page.request.get(`${base}/api/v1/notifications`)).json();
+  expect(notifications.filter((item: {title: string}) => item.title.includes(title))).toHaveLength(1);
+});
+
+test('calendar429 is visible, stops automatic replay and recovers with a keyboard retry', async ({page}) => {
+  await teacher(page);
+  let unavailable = true;
+  const requests: string[] = [];
+  await page.route('**/api/v1/calendar?**', async route => {
+    if (route.request().method() !== 'GET') { await route.continue(); return; }
+    requests.push(new URL(route.request().url()).search);
+    if (unavailable) await route.fulfill({ status: 429, contentType: 'application/json',
+      body: JSON.stringify({ detail: 'QA calendar read window' }) });
+    else await route.continue();
+  });
+  await page.goto(`${base}/#notifications`);
+  await expect(page.getByRole('alert')).toContainText('تعذر تحديث المواعيد');
+  await assertAccessible(page, test.info(), 'calendar-refresh-failed');
+  await expect.poll(() => requests.length).toBe(1);
+  await page.waitForTimeout(2100); // observation only: no background429 timer may replay
+  expect(requests).toHaveLength(1);
+  unavailable = false;
+  await page.getByRole('button', { name: 'إعادة تحميل المواعيد', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'جدول مواعيد الإرسال والتقويم الشهري' })).toBeVisible();
+  await expect.poll(() => requests.length).toBeGreaterThan(1);
+  expect((await page.request.get(`${base}/api/v1/auth/me`)).status()).toBe(200);
+  console.log(JSON.stringify({ case: 'calendar429-manual-recovery', requests, automatic_outage_requests: 1 }));
+});
+
+test('new teacher does not show a fabricated verified identity', async ({ page }) => {
+  await teacher(page);
+  const me = await (await page.request.get(`${base}/api/v1/auth/me`)).json();
+  expect(me.national_id).toBeFalsy();
+  await page.goto(`${base}/#profile`);
+  await expect(page.getByRole('heading', { name: 'الملف التعريفي للحساب' })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath('teacher-verification.png'), fullPage: true });
+  await expect(page.getByText('تم التحقق من بطاقة الرقم القومي واعتماد عقد التدريس والسياسات التربوية للمنصة بنجاح')).toHaveCount(0);
+});
+
+test('new student profile has no invented completed watch history', async ({ browser }) => {
+  const learner = await student(browser);
+  try {
+    const progress = await (await learner.page.request.get(`${base}/api/v1/progress/me`)).json();
+    expect(progress).toHaveLength(0);
+    await learner.page.goto(`${base}/#profile`);
+    await expect(learner.page.getByRole('heading', { name: 'الملف التعريفي للحساب' })).toBeVisible();
+    await learner.page.screenshot({ path: test.info().outputPath('student-invented-history.png'), fullPage: true });
+    await expect(learner.page.getByText('الدرس 1: مدخل إلى الكيمياء وأدوات القياس المعملي', { exact: true })).toHaveCount(0);
+  } finally { await learner.close(); }
+});
+
+test('teacher retains notification draft and sees a failure when broadcast returns 503', async ({ page }) => {
+  await teacher(page);
+  await page.goto(`${base}/#notifications`);
+  await page.getByRole('button', { name: 'إرسال إشعار فوري للطلاب', exact: true }).click();
+  const title = page.getByPlaceholder('مثال: تنبيه هام حول موعد حل الاختبار القادم');
+  await title.fill('QA outage draft');
+  await page.getByPlaceholder('اكتب التوجيهات أو التعليمات التي تريد وصولها للطلاب فوراً...').fill('QA outage message');
+  await page.route('**/api/v1/notifications/broadcast', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'QA injected outage' }) }));
+  const failed = page.waitForResponse(r => r.url().endsWith('/notifications/broadcast') && r.status() === 503);
+  await page.getByRole('button', { name: 'إرسال الإشعار الآن', exact: true }).click();
+  await failed;
+  await page.screenshot({ path: test.info().outputPath('false-notification-success.png'), fullPage: true });
+  await expect(title, 'Failure must preserve the teacher draft rather than close it and report success').toBeVisible({ timeout: 2000 });
+});
+
+test('teacher profile enrollment count reflects a real enrolled QA student', async ({ page, browser }) => {
+  await teacher(page);
+  const { course } = await courseWithLesson(page);
+  const learner = await student(browser);
+  try {
+    await post(learner.page, `courses/${course.id}/enroll`, {}, 200);
+    await page.goto(`${base}/#profile`);
+    const count = page.getByText('الطلاب المسجلون', { exact: true }).locator('..').locator('strong');
+    await expect(count).toHaveText('1');
+  } finally { await learner.close(); }
+});
+
+test('grade-targeted teacher notification is not delivered to another grade', async ({ page, browser }) => {
+  await teacher(page);
+  const learner = await student(browser, 'SECONDARY_2');
+  try {
+    await page.goto(`${base}/#notifications`);
+    await page.getByRole('button', { name: /إرسال إشعار/ }).first().click();
+    const form = page.locator('form').filter({ has: page.getByPlaceholder('مثال: تنبيه هام حول موعد حل الاختبار القادم') });
+    await form.locator('select').first().selectOption('1st_secondary');
+    const title = `QA restricted grade ${Date.now()}`;
+    await form.getByPlaceholder('مثال: تنبيه هام حول موعد حل الاختبار القادم').fill(title);
+    await form.getByPlaceholder('اكتب التوجيهات أو التعليمات التي تريد وصولها للطلاب فوراً...').fill('QA message for grade one only');
+    const sent = page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname.endsWith('/notifications/broadcast'));
+    await form.getByRole('button', { name: 'إرسال الإشعار الآن' }).click();
+    expect((await sent).status()).toBe(201);
+    const notifications = await (await learner.page.request.get(`${base}/api/v1/notifications`)).json();
+    console.log(JSON.stringify({ case: 'grade-target', wrong_grade_received: notifications.filter((n: { title: string }) => n.title === title).length }));
+    expect(notifications.filter((n: { title: string }) => n.title === title)).toHaveLength(0);
+  } finally { await learner.close(); }
+});

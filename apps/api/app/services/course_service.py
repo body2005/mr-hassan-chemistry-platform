@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import uuid
+import unicodedata
 from datetime import datetime, timezone
 UTC = timezone.utc
 
@@ -10,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.course import Course, CourseModule, CourseStatus, Enrollment, EnrollmentStatus
-from app.models.user import User, UserRole
+from app.models.user import GradeLevel, User, UserRole
 from app.schemas import CourseCreateRequest
 
 
@@ -34,19 +35,31 @@ def list_courses(
     page_size: int,
     search: str | None,
     sort: str,
+    grade_level: GradeLevel | None = None,
+    enrolled_only: bool = False,
 ) -> tuple[list[Course], int]:
     query = _course_query_for_user(db, user)
-    count_query = select(func.count()).select_from(query.subquery())
+    if enrolled_only:
+        if user is None or user.role != UserRole.STUDENT:
+            raise PermissionError("Student identity required")
+        query = query.where(Course.id.in_(select(Enrollment.course_id).where(
+            Enrollment.student_id == user.id,
+            Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+        )))
+    if grade_level:
+        query = query.where(Course.grade_level == grade_level.value)
     if search:
-        term = f"%{search.strip()}%"
-        query = query.where(or_(Course.title.ilike(term), Course.code.ilike(term)))
-        count_query = select(func.count()).select_from(query.subquery())
+        literal = unicodedata.normalize('NFKC', search).strip().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        term = f"%{literal}%"
+        query = query.where(or_(Course.title.ilike(term, escape='\\'), Course.code.ilike(term, escape='\\'),
+                               Course.description.ilike(term, escape='\\')))
+    count_query = select(func.count()).select_from(query.subquery())
 
     total = db.scalar(count_query) or 0
     ordering = Course.title.asc() if sort == "title" else Course.created_at.desc()
     query = (
         query.options(selectinload(Course.modules).selectinload(CourseModule.lessons))
-        .order_by(ordering)
+        .order_by(ordering, Course.id.asc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
@@ -86,6 +99,7 @@ def create_course(db: Session, user: User, payload: CourseCreateRequest) -> Cour
         description=payload.description.strip() if payload.description else None,
         status=CourseStatus.DRAFT,
         price_egp=payload.price_egp,
+        grade_level=payload.grade_level.value if payload.grade_level else None,
     )
     db.add(course)
     db.commit()
@@ -110,6 +124,7 @@ def publish_course(db: Session, user: User, course_id: uuid.UUID) -> Course:
 
 
 def enroll(db: Session, user: User, course_id: uuid.UUID) -> Enrollment:
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
     course = db.scalar(
         select(Course).where(
             Course.id == course_id,

@@ -1,16 +1,25 @@
 from __future__ import annotations
 
+import logging
+import math
+import hashlib
+import json
 import os
 import secrets
 import uuid
 from datetime import datetime, timezone, timedelta
 UTC = timezone.utc
 
+logger = logging.getLogger(__name__)
+
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus
+from app.core.events import event_broker
+from app.services.content_access import require_assessment_access
+from app.services.storage_cleanup import enqueue_cleanup
+from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus, Lesson
 from app.models.platform import (
     Assignment,
     AssignmentAttempt,
@@ -41,10 +50,12 @@ from app.schemas import (
     ModuleCreateRequest,
     NotificationBroadcastRequest,
     NotificationCreateRequest,
+    NotificationResponse,
     QuestionCreateRequest,
     QuizAnswerInput,
     QuizAttemptSubmitRequest,
     QuizCreateRequest,
+    QuizPublishRequest,
 )
 
 
@@ -93,7 +104,7 @@ def add_module(
     return module
 
 
-def add_lesson(db: Session, user: User, module_id: uuid.UUID, payload: LessonCreateRequest):
+def add_lesson(db: Session, user: User, module_id: uuid.UUID | None, payload: LessonCreateRequest, course_id: uuid.UUID | None = None):
     module = db.scalar(
         select(CourseModule)
         .join(Course)
@@ -103,23 +114,30 @@ def add_lesson(db: Session, user: User, module_id: uuid.UUID, payload: LessonCre
             if user.role != UserRole.PLATFORM_ADMIN
             else CourseModule.id == module_id,
         )
-    )
-    if module is None:
+    ) if module_id else None
+    if module_id and module is None:
         raise LookupError("Module not found")
-    course = db.get(Course, module.course_id)
+    course = db.get(Course, module.course_id if module else course_id)
     if course is None:
         raise LookupError("Course not found")
     ensure_course_manager(user, course)
     from app.models.course import Lesson
 
     lesson = Lesson(
-        module_id=module.id,
+        module_id=module.id if module else None,
+        course_id=course.id,
+        publication_status=payload.publication_status,
+        publish_at=_as_utc(payload.publish_at),
+        required_material_count=payload.required_material_count,
         title=payload.title.strip(),
         kind=payload.kind,
         position=payload.position,
         content=payload.content.strip() if payload.content else None,
-        video_asset_key=payload.video_asset_key,
-        video_duration_seconds=payload.video_duration_seconds,
+        # Native videos are attached only through the protected upload
+        # endpoint; the create payload can never plant a storage key.
+        # Public embed URLs (validated http(s) only) are public by design.
+        video_asset_key=payload.external_video_url,
+        video_duration_seconds=None,
         price_egp=payload.price_egp,
     )
     db.add(lesson)
@@ -128,36 +146,34 @@ def add_lesson(db: Session, user: User, module_id: uuid.UUID, payload: LessonCre
     return lesson
 
 
-def delete_lesson(db: Session, user: User, module_id: uuid.UUID, lesson_id: uuid.UUID) -> None:
+def delete_lesson(db: Session, user: User, module_id: uuid.UUID | None, lesson_id: uuid.UUID) -> None:
     from app.models.course import Lesson
-    from app.models.transcript import Transcript, TranscriptSegment, KnowledgeChunk, TranscriptionJob
+    from app.models.transcript import Transcript, TranscriptSegment, TranscriptionJob
     from app.models.progress import LessonProgress, VideoEvent
     from app.models.extended import LessonAsset
 
     lesson = db.scalar(select(Lesson).where(Lesson.id == lesson_id, Lesson.module_id == module_id))
     if lesson is None:
         raise LookupError("Lesson not found")
-    module = db.get(CourseModule, module_id)
-    if module is None:
-        raise LookupError("Module not found")
-    course = db.get(Course, module.course_id)
+    course = db.get(Course, lesson.course_id)
     if course is None:
         raise LookupError("Course not found")
     ensure_course_manager(user, course)
 
-    # 1. Clean up associated video file if stored locally
-    if lesson.video_asset_key and lesson.video_asset_key.startswith("/static/uploads/"):
-        filename = os.path.basename(lesson.video_asset_key)
-        upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "uploads")
-        filepath = os.path.join(upload_dir, filename)
-        if os.path.exists(filepath):
-            try:
-                os.remove(filepath)
-            except Exception:
-                pass
+    # Outbox intents and relational deletion commit together. A rollback must
+    # leave the original video/material bytes intact.
+    enqueue_cleanup(db, lesson.video_asset_key)
+    from app.models.video_upload import VideoUpload
+    for upload in db.scalars(select(VideoUpload).where(VideoUpload.lesson_id == lesson.id)):
+        for key in upload.outputs:
+            enqueue_cleanup(db, key)
+        # Keep the durable record for the worker's multipart abort sweep. This
+        # also works in SQLite unit tests without database FK cascades.
+        upload.lesson_id = None
+    for asset in db.scalars(select(LessonAsset).where(LessonAsset.lesson_id == lesson.id)):
+        enqueue_cleanup(db, asset.object_key)
 
     # 2. Clean up all child relational entities
-    db.query(KnowledgeChunk).filter(KnowledgeChunk.lesson_id == lesson_id).delete()
     db.query(TranscriptSegment).filter(TranscriptSegment.lesson_id == lesson_id).delete()
     db.query(Transcript).filter(Transcript.lesson_id == lesson_id).delete()
     db.query(TranscriptionJob).filter(TranscriptionJob.lesson_id == lesson_id).delete()
@@ -187,6 +203,7 @@ def create_question(db: Session, user: User, payload: QuestionCreateRequest) -> 
     if user.role == UserRole.TEACHER and payload.course_id:
         course = course_for_user(db, user, payload.course_id)
         ensure_course_manager(user, course)
+    _validate_quiz_question(payload)
     question = Question(
         institution_id=user.institution_id,
         author_id=user.id,
@@ -204,9 +221,101 @@ def create_question(db: Session, user: User, payload: QuestionCreateRequest) -> 
     return question
 
 
+def _validate_assessment_scope(db: Session, course, module_id: uuid.UUID | None, lesson_id: uuid.UUID | None) -> tuple[uuid.UUID | None, uuid.UUID | None]:
+    """Ensure the module/lesson belong to the same course being assessed."""
+    if module_id is not None:
+        module = db.get(CourseModule, module_id)
+        if module is None or module.course_id != course.id:
+            raise ValueError("Module does not belong to this course")
+    if lesson_id is not None:
+        lesson = db.get(Lesson, lesson_id)
+        if lesson is None:
+            raise ValueError("Lesson not found")
+        if lesson.course_id != course.id:
+            raise ValueError("Lesson does not belong to this course")
+    return module_id, lesson_id
+
+
+def _apply_assessment_scope(db, course, assessment, payload):
+    from app.models.platform import QuizLessonLink, QuizModuleLink, AssignmentLessonLink, AssignmentModuleLink
+    lessons = list(dict.fromkeys(([payload.lesson_id] if payload.lesson_id else []) + payload.lesson_ids))
+    legacy_modules = [payload.module_id] if payload.module_id and not lessons else []
+    modules = list(dict.fromkeys(legacy_modules + payload.module_ids))
+    for lesson_id in lessons:
+        _validate_assessment_scope(db, course, None, lesson_id)
+    for module_id in modules:
+        _validate_assessment_scope(db, course, module_id, None)
+    lesson_link, module_link = (QuizLessonLink, QuizModuleLink) if isinstance(assessment, Quiz) else (AssignmentLessonLink, AssignmentModuleLink)
+    assessment.lesson_links = [lesson_link(lesson_id=value) for value in lessons]
+    assessment.module_links = [module_link(module_id=value) for value in modules]
+    # Legacy fields remain readable for older clients, without losing the list.
+    assessment.lesson_id = lessons[0] if lessons else None
+    assessment.module_id = modules[0] if modules else None
+
+
+def _validate_quiz_question(question, points: float | None = None) -> None:
+    from app.core.question_policy import validate_question_content
+    validate_question_content(question, points)
+
+
+def publish_quiz_atomic(db: Session, user: User, payload: QuizPublishRequest) -> Quiz:
+    """Validate the complete draft before writing; retry is serialized per author.
+
+    A stable user lock and a DB unique key cover concurrent HTTP retries. A
+    reused key with different content is rejected rather than silently accepted.
+    """
+    course = course_for_user(db, user, payload.course_id)
+    ensure_course_manager(user, course)
+    module_id, lesson_id = _validate_assessment_scope(db, course, payload.module_id, payload.lesson_id)
+    if payload.question_ids:
+        raise ValueError("Atomic publication accepts inline questions only")
+    if payload.starts_at and payload.ends_at and _as_utc(payload.starts_at) >= _as_utc(payload.ends_at):
+        raise ValueError("Quiz end must be after its start")
+    for question in payload.questions:
+        _validate_quiz_question(question)
+        if question.course_id not in (None, course.id):
+            raise ValueError("Question belongs to another course")
+    digest = hashlib.sha256(json.dumps(payload.model_dump(mode="json", exclude={"idempotency_key"}),
+                                       sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
+    existing = db.scalar(select(Quiz).where(Quiz.creator_id == user.id, Quiz.publication_key == payload.idempotency_key))
+    if existing:
+        if existing.publication_hash != digest:
+            raise ValueError("Publication key already used for a different draft")
+        return existing
+    quiz = Quiz(institution_id=course.institution_id, course_id=course.id, creator_id=user.id,
+                title=payload.title.strip(), duration_seconds=payload.duration_seconds,
+                starts_at=payload.starts_at, ends_at=payload.ends_at, module_id=module_id, lesson_id=lesson_id,
+                randomize_questions=payload.randomize_questions, attempts_allowed=payload.attempts_allowed,
+                status=QuizStatus.PUBLISHED, published_at=datetime.now(UTC),
+                publication_key=payload.idempotency_key, publication_hash=digest)
+    try:
+        _apply_assessment_scope(db, course, quiz, payload)
+        db.add(quiz)
+        db.flush()
+        for position, item in enumerate(payload.questions, 1):
+            question = Question(institution_id=course.institution_id, author_id=user.id, course_id=course.id,
+                                question_type=item.question_type.strip().lower(), prompt=item.prompt.strip(),
+                                options=item.options, correct_answer=item.correct_answer, points=item.points,
+                                learning_objective=item.learning_objective)
+            db.add(question)
+            db.flush()
+            db.add(QuizQuestion(quiz_id=quiz.id, question_id=question.id, position=position, points=item.points))
+        db.flush()
+        from app.services.quiz_snapshot import freeze_exam
+        freeze_exam(db, quiz)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    db.refresh(quiz)
+    return quiz
+
+
 def create_quiz(db: Session, user: User, payload: QuizCreateRequest) -> Quiz:
     course = course_for_user(db, user, payload.course_id)
     ensure_course_manager(user, course)
+    module_id, lesson_id = _validate_assessment_scope(db, course, payload.module_id, payload.lesson_id)
     quiz = Quiz(
         institution_id=course.institution_id,
         course_id=course.id,
@@ -217,7 +326,10 @@ def create_quiz(db: Session, user: User, payload: QuizCreateRequest) -> Quiz:
         ends_at=payload.ends_at,
         randomize_questions=payload.randomize_questions,
         attempts_allowed=payload.attempts_allowed,
+        module_id=module_id,
+        lesson_id=lesson_id,
     )
+    _apply_assessment_scope(db, course, quiz, payload)
     db.add(quiz)
     db.flush()
     if payload.question_ids:
@@ -233,6 +345,9 @@ def create_quiz(db: Session, user: User, payload: QuizCreateRequest) -> Quiz:
         if len(questions) != len(set(payload.question_ids)):
             db.rollback()
             raise ValueError("One or more questions are unavailable")
+        if user.role == UserRole.TEACHER and any(question.author_id != user.id for question in questions):
+            db.rollback()
+            raise PermissionError("One or more questions are not owned by this teacher")
         for position, question in enumerate(questions, start=1):
             db.add(
                 QuizQuestion(
@@ -249,7 +364,7 @@ def create_quiz(db: Session, user: User, payload: QuizCreateRequest) -> Quiz:
 
 def publish_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> Quiz:
     quiz = db.scalar(
-        select(Quiz).where(Quiz.id == quiz_id, Quiz.institution_id == user.institution_id)
+        select(Quiz).where(Quiz.id == quiz_id, Quiz.institution_id == user.institution_id).with_for_update()
     )
     if quiz is None:
         raise LookupError("Quiz not found")
@@ -257,6 +372,28 @@ def publish_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> Quiz:
     if course is None:
         raise LookupError("Course not found")
     ensure_course_manager(user, course)
+    if len(quiz.title.strip()) < 2:
+        raise ValueError('Quiz title is invalid')
+    _validate_assessment_scope(db, course, quiz.module_id, quiz.lesson_id)
+    for value in quiz.lesson_ids:
+        _validate_assessment_scope(db, course, None, value)
+    for value in quiz.module_ids:
+        _validate_assessment_scope(db, course, value, None)
+    if quiz.starts_at and quiz.ends_at and _as_utc(quiz.starts_at) >= _as_utc(quiz.ends_at):
+        raise ValueError('Quiz end must be after its start')
+    rows = db.execute(select(Question, QuizQuestion.points).join(
+        QuizQuestion, QuizQuestion.question_id == Question.id).where(
+        QuizQuestion.quiz_id == quiz.id).with_for_update()).all()
+    if not rows:
+        raise ValueError('A quiz must contain at least one valid question')
+    for question, points in rows:
+        if (not question.is_active or question.institution_id != quiz.institution_id
+                or question.course_id not in (None, course.id)
+                or (user.role == UserRole.TEACHER and question.author_id != user.id)):
+            raise ValueError('Quiz contains an unavailable question')
+        _validate_quiz_question(question, points)
+    from app.services.quiz_snapshot import freeze_exam
+    freeze_exam(db, quiz)
     quiz.status = QuizStatus.PUBLISHED
     quiz.published_at = datetime.now(UTC)
     db.commit()
@@ -265,6 +402,9 @@ def publish_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> Quiz:
 
 
 def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
+    # A stable student row serializes attempt numbering without locking every
+    # student's access to the same quiz. Locks last until the final commit.
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
     quiz = db.scalar(
         select(Quiz).where(
             Quiz.id == quiz_id,
@@ -272,8 +412,7 @@ def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
             Quiz.status == QuizStatus.PUBLISHED,
         )
     )
-    if quiz is None or not _enrolled(db, user, quiz.course_id):
-        raise LookupError("Quiz not found")
+    require_assessment_access(db, user, quiz, writing=True)
     now = datetime.now(UTC)
     if _as_utc(quiz.starts_at) and _as_utc(quiz.starts_at) > now:
         raise PermissionError("Quiz is not open yet")
@@ -289,8 +428,10 @@ def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
     if active:
         if _as_utc(active.expires_at) and _as_utc(active.expires_at) <= now:
             active.status = AttemptStatus.EXPIRED
-            db.commit()
+            db.flush()
         else:
+            if active.question_snapshot is None:
+                raise ValueError("Legacy attempt has no frozen question evidence; teacher review is required")
             return active
     attempt_number = (
         db.scalar(
@@ -300,9 +441,15 @@ def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
         )
         or 0
     ) + 1
-    if attempt_number > quiz.attempts_allowed:
+    if attempt_number > quiz.attempts_allowed and not quiz.allow_practice_attempts:
         raise PermissionError("Attempt limit reached")
     expires_at = now + timedelta(seconds=quiz.duration_seconds) if quiz.duration_seconds else None
+    if quiz.ends_at:
+        expires_at = min(expires_at, _as_utc(quiz.ends_at)) if expires_at else _as_utc(quiz.ends_at)
+    # Only attempt 1 is official; any subsequent attempt is self-training.
+    is_practice = attempt_number > 1
+    from app.services.quiz_snapshot import freeze_exam
+    snapshots = freeze_exam(db, quiz, origin="legacy-exam-frozen-at-new-attempt")
     attempt = QuizAttempt(
         institution_id=user.institution_id,
         quiz_id=quiz.id,
@@ -310,10 +457,9 @@ def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
         attempt_number=attempt_number,
         started_at=now,
         expires_at=expires_at,
-        total_points=db.scalar(
-            select(func.sum(QuizQuestion.points)).where(QuizQuestion.quiz_id == quiz.id)
-        )
-        or 0,
+        is_practice=is_practice,
+        total_points=sum(item["points"] for item in snapshots),
+        question_snapshot=snapshots,
     )
     db.add(attempt)
     db.commit()
@@ -321,7 +467,12 @@ def start_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> QuizAttempt:
     return attempt
 
 
-def _answers_equal(answer: object, correct: object) -> bool:
+def _answers_equal(answer: object, correct: object, *, question=None) -> bool:
+    if question is not None and question.question_type in {'mcq', 'multiple_choice'}:
+        from app.core.mcq_answers import option_index
+        chosen = option_index(answer, question.options)
+        expected = option_index(correct, question.options)
+        return chosen is not None and expected is not None and chosen == expected
     if isinstance(answer, str) and isinstance(correct, str):
         return answer.strip().casefold() == correct.strip().casefold()
     return answer == correct
@@ -335,21 +486,22 @@ def submit_quiz(
             QuizAttempt.id == attempt_id,
             QuizAttempt.student_id == user.id,
             QuizAttempt.institution_id == user.institution_id,
-        )
+        ).with_for_update()
     )
     if attempt is None:
         raise LookupError("Attempt not found")
-    if attempt.status != AttemptStatus.IN_PROGRESS:
-        return attempt
     now = datetime.now(UTC)
-    if _as_utc(attempt.expires_at) and _as_utc(attempt.expires_at) <= now:
+    if attempt.status == AttemptStatus.IN_PROGRESS and _as_utc(attempt.expires_at) and _as_utc(attempt.expires_at) <= now:
         attempt.status = AttemptStatus.EXPIRED
         db.commit()
         raise PermissionError("Attempt has expired")
-    quiz_questions = list(
-        db.scalars(select(QuizQuestion).where(QuizQuestion.quiz_id == attempt.quiz_id)).all()
-    )
-    allowed = {item.question_id: item.points for item in quiz_questions}
+    require_assessment_access(db, user, db.get(Quiz, attempt.quiz_id), writing=True)
+    if attempt.status != AttemptStatus.IN_PROGRESS:
+        return attempt
+    if attempt.question_snapshot is None:
+        raise ValueError("Legacy attempt has no frozen question evidence; teacher review is required")
+    from types import SimpleNamespace
+    allowed = {uuid.UUID(item["question_id"]): item for item in attempt.question_snapshot}
     answers_by_question: dict[uuid.UUID, QuizAnswerInput] = {}
     for answer in payload.answers:
         if answer.question_id not in allowed:
@@ -358,14 +510,13 @@ def submit_quiz(
             raise ValueError("Duplicate question answer")
         answers_by_question[answer.question_id] = answer
     score = 0.0
-    for question_id, points in allowed.items():
+    for question_id, snapshot in allowed.items():
         input_answer = answers_by_question.get(question_id)
-        question = db.get(Question, question_id)
-        if question is None:
-            continue
+        question = SimpleNamespace(**snapshot)
+        points = snapshot["points"]
         awarded = (
             points
-            if input_answer and _answers_equal(input_answer.answer, question.correct_answer)
+            if question.question_type not in {"essay", "short_answer"} and input_answer and _answers_equal(input_answer.answer, question.correct_answer, question=question)
             else 0.0
         )
         if question.question_type not in {"essay", "short_answer"}:
@@ -375,6 +526,7 @@ def submit_quiz(
                 attempt_id=attempt.id,
                 question_id=question_id,
                 answer=input_answer.answer if input_answer else None,
+                question_snapshot=snapshot,
                 awarded_points=awarded,
                 graded_at=now if question.question_type not in {"essay", "short_answer"} else None,
             )
@@ -388,18 +540,43 @@ def submit_quiz(
     return attempt
 
 
+def _validate_assignment_content(assignment) -> None:
+    # Publication must also validate legacy rows, not trust the create schema.
+    for name, maximum in (("title", 200), ("prompt", 20_000)):
+        value = getattr(assignment, name, None)
+        if not isinstance(value, str) or not 2 <= len(value.strip()) <= maximum:
+            raise ValueError(f"Assignment {name} must contain 2–{maximum} non-blank characters")
+    try:
+        maximum_score = float(assignment.max_score)
+    except (TypeError, ValueError):
+        raise ValueError("Assignment maximum score must be positive and finite") from None
+    if not math.isfinite(maximum_score) or not 0 < maximum_score <= 100_000:
+        raise ValueError("Assignment maximum score must be positive, finite and at most 100000")
+    for value in (assignment.starts_at, assignment.due_at):
+        if value is not None and not isinstance(value, datetime):
+            raise ValueError("Assignment dates must be valid timestamps")
+    if assignment.starts_at and assignment.due_at and _as_utc(assignment.starts_at) >= _as_utc(assignment.due_at):
+        raise ValueError("Assignment deadline must be after its start")
+
+
 def create_assignment(db: Session, user: User, payload: AssignmentCreateRequest) -> Assignment:
     course = course_for_user(db, user, payload.course_id)
     ensure_course_manager(user, course)
+    _validate_assignment_content(payload)
+    module_id, lesson_id = _validate_assessment_scope(db, course, payload.module_id, payload.lesson_id)
     assignment = Assignment(
         institution_id=course.institution_id,
         course_id=course.id,
         creator_id=user.id,
         title=payload.title.strip(),
         prompt=payload.prompt.strip(),
+        starts_at=payload.starts_at,
         due_at=payload.due_at,
         max_score=payload.max_score,
+        module_id=module_id,
+        lesson_id=lesson_id,
     )
+    _apply_assessment_scope(db, course, assignment, payload)
     db.add(assignment)
     db.commit()
     db.refresh(assignment)
@@ -410,7 +587,7 @@ def publish_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> Ass
     assignment = db.scalar(
         select(Assignment).where(
             Assignment.id == assignment_id, Assignment.institution_id == user.institution_id
-        )
+        ).with_for_update()
     )
     if assignment is None:
         raise LookupError("Assignment not found")
@@ -418,6 +595,16 @@ def publish_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> Ass
     if course is None:
         raise LookupError("Course not found")
     ensure_course_manager(user, course)
+    _validate_assignment_content(assignment)
+    module_id, lesson_id = _validate_assessment_scope(db, course, assignment.module_id, assignment.lesson_id)
+    for value in assignment.lesson_ids:
+        _validate_assessment_scope(db, course, None, value)
+    for value in assignment.module_ids:
+        _validate_assessment_scope(db, course, value, None)
+    # No mapped fields change until all content/scope checks have passed.
+    assignment.title = assignment.title.strip()
+    assignment.prompt = assignment.prompt.strip()
+    assignment.module_id, assignment.lesson_id = module_id, lesson_id
     assignment.status = AssignmentStatus.PUBLISHED
     db.commit()
     db.refresh(assignment)
@@ -425,6 +612,7 @@ def publish_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> Ass
 
 
 def start_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> AssignmentAttempt:
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
     assignment = db.scalar(
         select(Assignment).where(
             Assignment.id == assignment_id,
@@ -432,8 +620,7 @@ def start_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> Assig
             Assignment.status == AssignmentStatus.PUBLISHED,
         )
     )
-    if assignment is None or not _enrolled(db, user, assignment.course_id):
-        raise LookupError("Assignment not found")
+    require_assessment_access(db, user, assignment, writing=True)
     now = datetime.now(UTC)
     if _as_utc(assignment.due_at) and _as_utc(assignment.due_at) <= now:
         raise PermissionError("Assignment is closed")
@@ -447,7 +634,7 @@ def start_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> Assig
     if active:
         if _as_utc(active.expires_at) and _as_utc(active.expires_at) <= now:
             active.status = AssignmentAttemptStatus.EXPIRED
-            db.commit()
+            db.flush()
         else:
             return active
     attempt_number = (
@@ -477,6 +664,7 @@ def start_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> Assig
 def submit_assignment(
     db: Session, user: User, assignment_id: uuid.UUID, payload: AssignmentSubmissionCreateRequest
 ) -> AssignmentSubmission:
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
     assignment = db.scalar(
         select(Assignment).where(
             Assignment.id == assignment_id,
@@ -484,8 +672,7 @@ def submit_assignment(
             Assignment.status == AssignmentStatus.PUBLISHED,
         )
     )
-    if assignment is None or not _enrolled(db, user, assignment.course_id):
-        raise LookupError("Assignment not found")
+    require_assessment_access(db, user, assignment, writing=True)
     now = datetime.now(UTC)
     active_attempt = db.scalar(
         select(AssignmentAttempt).where(
@@ -545,6 +732,67 @@ def submit_assignment(
             raise
         return existing
     db.refresh(submission)
+
+    try:
+        course = db.get(Course, assignment.course_id)
+        teacher_ids = [course.teacher_id] if (course and course.teacher_id) else []
+        if not teacher_ids:
+            teacher_ids = list(
+                db.scalars(
+                    select(User.id).where(
+                        User.institution_id == user.institution_id,
+                        User.role.in_([UserRole.TEACHER, UserRole.INSTITUTION_ADMIN]),
+                        User.is_active.is_(True),
+                    )
+                ).all()
+            )
+        student_name = user.display_name or "طالب"
+        assignment_title = assignment.title
+        for tid in teacher_ids:
+            notif = Notification(
+                institution_id=user.institution_id,
+                recipient_id=tid,
+                kind="assignment",
+                title=f"تسليم واجب جديد: {assignment_title}",
+                message=f"قام الطالب {student_name} بتسليم الواجب '{assignment_title}'.",
+                action_url="#submissions",
+                delivery_status=DeliveryStatus.PENDING,
+            )
+            db.add(notif)
+        db.commit()
+
+        submission_data = {
+            "id": str(submission.id),
+            "assignment_id": str(submission.assignment_id),
+            "assignment_title": assignment_title,
+            "student_id": str(submission.student_id),
+            "student_name": student_name,
+            "version": submission.version,
+            "status": submission.status.value if hasattr(submission.status, "value") else str(submission.status),
+            "submitted_at": submission.submitted_at.isoformat() if submission.submitted_at else None,
+        }
+        event_broker.publish_event(
+            institution_id=user.institution_id,
+            event_type="submission_created",
+            data=submission_data,
+            target_user_ids=teacher_ids,
+            target_roles=["teacher", "institution_admin", "platform_admin"],
+        )
+        event_broker.publish_event(
+            institution_id=user.institution_id,
+            event_type="notification_created",
+            data={
+                "title": f"تسليم واجب جديد: {assignment_title}",
+                "message": f"قام الطالب {student_name} بتسليم الواجب '{assignment_title}'.",
+                "kind": "assignment",
+                "action_url": "#submissions",
+            },
+            target_user_ids=teacher_ids,
+            target_roles=["teacher", "institution_admin", "platform_admin"],
+        )
+    except Exception:
+        logger.exception("Failed to dispatch submission notification or realtime event")
+
     return submission
 
 
@@ -571,8 +819,51 @@ def grade_submission(
     submission.status = SubmissionStatus.APPROVED if payload.approve else SubmissionStatus.GRADED
     if payload.approve:
         submission.approved_at = now
+
+    status_text = "قبول وتصحيح" if payload.approve else "تصحيح"
+    notif = Notification(
+        institution_id=user.institution_id,
+        recipient_id=submission.student_id,
+        kind="assignment",
+        title=f"تم {status_text} الواجب: {assignment.title}",
+        message=f"حصلت على درجة {submission.final_score} من {assignment.max_score} في الواجب '{assignment.title}'." + (f" ملاحظات المعلم: {payload.teacher_feedback}" if payload.teacher_feedback else ""),
+        action_url="#submissions",
+        delivery_status=DeliveryStatus.PENDING,
+    )
+    db.add(notif)
     db.commit()
     db.refresh(submission)
+
+    try:
+        event_broker.publish_event(
+            institution_id=user.institution_id,
+            event_type="submission_graded",
+            data={
+                "submission_id": str(submission.id),
+                "assignment_id": str(assignment.id),
+                "assignment_title": assignment.title,
+                "student_id": str(submission.student_id),
+                "final_score": submission.final_score,
+                "max_score": assignment.max_score,
+                "status": submission.status.value if hasattr(submission.status, "value") else str(submission.status),
+                "teacher_feedback": submission.teacher_feedback,
+            },
+            target_user_ids=[submission.student_id],
+        )
+        event_broker.publish_event(
+            institution_id=user.institution_id,
+            event_type="notification_created",
+            data={
+                "title": f"تم {status_text} الواجب: {assignment.title}",
+                "message": f"حصلت على درجة {submission.final_score} من {assignment.max_score}.",
+                "kind": "assignment",
+                "action_url": "#submissions",
+            },
+            target_user_ids=[submission.student_id],
+        )
+    except Exception:
+        logger.exception("Failed to publish submission_graded event")
+
     return submission
 
 
@@ -612,6 +903,17 @@ def create_notification(
     db.add(notification)
     db.commit()
     db.refresh(notification)
+
+    try:
+        event_broker.publish_event(
+            institution_id=notification.institution_id,
+            event_type="notification_created",
+            data=NotificationResponse.model_validate(notification).model_dump(mode="json"),
+            target_user_ids=[notification.recipient_id],
+        )
+    except Exception:
+        logger.exception("Failed to publish notification_created event")
+
     return notification
 
 
@@ -626,15 +928,36 @@ def broadcast_notification(
         raise PermissionError("Insufficient permissions")
     query = select(User).where(
         User.institution_id == user.institution_id,
-        User.role == UserRole.STUDENT,
+        User.role.in_([UserRole.STUDENT, UserRole.TEACHER, UserRole.INSTITUTION_ADMIN]),
         User.is_active.is_(True),
         User.deleted_at.is_(None),
     )
+    if payload.course_id:
+        course = course_for_user(db, user, payload.course_id)
+        ensure_course_manager(user, course)
+    if user.role == UserRole.TEACHER:
+        # Teachers may message their own students, not every account in the
+        # institution. Include the author as a receipt for their own UI.
+        managed = select(Course.id).where(Course.teacher_id == user.id, Course.institution_id == user.institution_id)
+        if payload.course_id:
+            managed = managed.where(Course.id == payload.course_id)
+        audience = select(Enrollment.student_id).where(Enrollment.course_id.in_(managed),
+                      Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]))
+        query = query.where((User.id.in_(audience) & (User.role == UserRole.STUDENT)) | (User.id == user.id))
+    elif payload.course_id:
+        audience = select(Enrollment.student_id).where(Enrollment.course_id == payload.course_id,
+                      Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]))
+        query = query.where(User.id.in_(audience) | (User.id == user.id))
+    if payload.target_grade:
+        query = query.where((User.grade_level == payload.target_grade) | (User.id == user.id))
+    # Serialize deduplication, including concurrent retries. Scope keys to the
+    # sender so one teacher cannot collide with another teacher's notification.
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
     recipients = list(db.scalars(query).all())
     notifications: list[Notification] = []
     new_notifications: list[Notification] = []
     for recipient in recipients:
-        dedup_key = f"{payload.dedup_key}:{recipient.id}" if payload.dedup_key else None
+        dedup_key = hashlib.sha256(f"{user.id}:{payload.dedup_key}:{recipient.id}".encode()).hexdigest() if payload.dedup_key else None
         existing = None
         if dedup_key:
             existing = db.scalar(
@@ -660,10 +983,25 @@ def broadcast_notification(
         )
         notifications.append(notification)
         new_notifications.append(notification)
-    db.add_all(new_notifications)
-    db.commit()
-    for item in new_notifications:
-        db.refresh(item)
+    if new_notifications:
+        db.add_all(new_notifications)
+        db.flush()
+        db.commit()
+        try:
+            event_broker.publish_event(
+                institution_id=user.institution_id,
+                event_type="notification_created",
+                data={
+                    "kind": payload.kind,
+                    "title": payload.title.strip(),
+                    "message": payload.message.strip(),
+                    "action_url": payload.action_url,
+                    "scheduled_for": payload.scheduled_for.isoformat() if payload.scheduled_for else None,
+                },
+                target_user_ids=[n.recipient_id for n in new_notifications],
+            )
+        except Exception:
+            logger.exception("Failed to publish broadcast notification event")
     return notifications
 
 
@@ -673,9 +1011,19 @@ def create_calendar_event(
     if payload.course_id:
         course = course_for_user(db, user, payload.course_id)
         ensure_course_manager(user, course)
+    digest = hashlib.sha256(json.dumps(payload.model_dump(mode="json", exclude={"idempotency_key"}), sort_keys=True).encode()).hexdigest()
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
+    if payload.idempotency_key:
+        existing = db.scalar(select(CalendarEvent).where(CalendarEvent.creator_id == user.id, CalendarEvent.request_key == payload.idempotency_key))
+        if existing:
+            if existing.request_hash != digest:
+                raise ValueError("Calendar key already used for another event")
+            return existing
     event = CalendarEvent(
         institution_id=user.institution_id,
         creator_id=user.id,
+        request_key=payload.idempotency_key,
+        request_hash=digest,
         course_id=payload.course_id,
         title=payload.title.strip(),
         description=payload.description,
@@ -687,6 +1035,23 @@ def create_calendar_event(
     db.add(event)
     db.commit()
     db.refresh(event)
+
+    try:
+        event_broker.publish_event(
+            institution_id=event.institution_id,
+            event_type="calendar_updated",
+            data={
+                "event_id": str(event.id),
+                "action": "created",
+                "title": event.title,
+                "event_type": event.event_type,
+                "starts_at": event.starts_at.isoformat() if event.starts_at else None,
+                "ends_at": event.ends_at.isoformat() if event.ends_at else None,
+            },
+        )
+    except Exception:
+        logger.exception("Failed to publish calendar_updated event")
+
     return event
 
 
@@ -737,11 +1102,15 @@ def course_analytics(db: Session, user: User, course_id: uuid.UUID) -> dict[str,
     )
     progress_rows = list(
         db.execute(
-            select(LessonProgress.completion_percent).join(
+            select(LessonProgress.completion_percent)
+            .join(Lesson, Lesson.id == LessonProgress.lesson_id)
+            .join(
                 Enrollment,
                 (Enrollment.student_id == LessonProgress.student_id)
-                & (Enrollment.course_id == course.id),
-            )
+                & (Enrollment.course_id == Lesson.course_id),
+            ).where(Lesson.course_id == course.id,
+                    LessonProgress.institution_id == course.institution_id,
+                    Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]))
         )
         .scalars()
         .all()

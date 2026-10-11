@@ -1,0 +1,8 @@
+# Container build/security scripts must stay executable by POSIX sh after a
+# Windows clone. Do not normalize unrelated project files.
+*.sh text eol=lf
+# Executed directly by pytesseract: CRLF breaks the Linux shebang interpreter.
+apps/api/scripts/tesseract_limited.py text eol=lf
+# SHA-pinned source-context patch must reproduce after a Windows checkout.
+apps/api/scripts/native/tesseract/stable-callsite.diff text eol=lf
+apps/api/scripts/native/tesseract/backports.tsv text eol=lf

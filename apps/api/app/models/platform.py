@@ -4,10 +4,12 @@ import uuid
 from datetime import datetime
 try:
     from enum import StrEnum
-except ImportError:
+except ImportError:  # Python 3.10: enum.StrEnum arrived in 3.11
     from enum import Enum
+
     class StrEnum(str, Enum):
-        pass
+        def __str__(self) -> str:
+            return str(self.value)
 
 
 from sqlalchemy import (
@@ -21,7 +23,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
@@ -95,6 +97,26 @@ class RevokedSession(UUIDPrimaryKeyMixin, Base):
     )
 
 
+class RefreshSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Server-side record for one rotating refresh credential.
+
+    Only a SHA-256 hash of the random browser credential is stored.  A token
+    family lets us revoke every descendant if a rotated token is replayed.
+    """
+
+    __tablename__ = "refresh_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
+    family_id: Mapped[uuid.UUID] = mapped_column(index=True, nullable=False)
+    jti: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    replaced_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 class Notification(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "notifications"
     __table_args__ = (
@@ -125,6 +147,9 @@ class Notification(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class CalendarEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "calendar_events"
+    __table_args__ = (UniqueConstraint("creator_id", "request_key", name="uq_calendar_request"),)
+    request_key: Mapped[str | None] = mapped_column(String(100))
+    request_hash: Mapped[str | None] = mapped_column(String(64))
 
     institution_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=False
@@ -169,6 +194,10 @@ class Question(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class Quiz(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "quizzes"
+    __table_args__ = (UniqueConstraint("creator_id", "publication_key", name="uq_quiz_publication"),)
+
+    publication_key: Mapped[str | None] = mapped_column(String(100))
+    publication_hash: Mapped[str | None] = mapped_column(String(64))
 
     institution_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=False
@@ -188,6 +217,37 @@ class Quiz(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     randomize_questions: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     attempts_allowed: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # When true, students who consumed the official attempts may keep testing
+    # themselves: extra attempts are graded for them alone and never reach the
+    # teacher's gradebook or analytics.
+    allow_practice_attempts: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default="true"
+    )
+    # Scope: the quiz belongs to a module (unit) and optionally to one lesson.
+    # Students see it inside that lesson/unit and must have paid access to it.
+    module_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("course_modules.id", ondelete="SET NULL"), index=True
+    )
+    lesson_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("lessons.id", ondelete="SET NULL"), index=True
+    )
+
+
+    lesson_links: Mapped[list["QuizLessonLink"]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin")
+
+    @property
+    def lesson_ids(self) -> list[uuid.UUID]:
+        return list(dict.fromkeys(([self.lesson_id] if self.lesson_id else []) + [link.lesson_id for link in self.lesson_links]))
+
+    module_links: Mapped[list["QuizModuleLink"]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin")
+
+    @property
+    def module_ids(self) -> list[uuid.UUID]:
+        # Legacy module_id described the selected lesson's parent, not a whole-unit scope.
+        legacy = [self.module_id] if self.module_id and not self.lesson_id else []
+        return list(dict.fromkeys(legacy + [link.module_id for link in self.module_links]))
 
 
 class QuizQuestion(UUIDPrimaryKeyMixin, Base):
@@ -204,6 +264,8 @@ class QuizQuestion(UUIDPrimaryKeyMixin, Base):
     )
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     points: Mapped[float] = mapped_column(Float, nullable=False)
+    # NULL identifies legacy exams without verifiable publication evidence.
+    question_snapshot: Mapped[dict | None] = mapped_column(JSON)
 
 
 class QuizAttempt(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -230,7 +292,31 @@ class QuizAttempt(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     score: Mapped[float | None] = mapped_column(Float)
     total_points: Mapped[float | None] = mapped_column(Float)
+    question_snapshot: Mapped[list | None] = mapped_column(JSON)
     submission_key: Mapped[str | None] = mapped_column(String(100), unique=True)
+    results_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    results_approved_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    calculated_score: Mapped[float | None] = mapped_column(Float)
+    final_percentage: Mapped[float | None] = mapped_column(Float)
+    approval_notes: Mapped[str | None] = mapped_column(Text)
+    # Practice attempts (self-training beyond the official one) are graded for
+    # the student but never surface in teacher-facing listings or analytics.
+    is_practice: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
+
+    @property
+    def approval_status(self) -> str:
+        return "approved" if self.results_approved_at else "pending"
+
+    @property
+    def grading_status(self) -> str:
+        from sqlalchemy import select
+        from sqlalchemy.orm import object_session
+        if self.status == AttemptStatus.IN_PROGRESS:
+            return "not_submitted"
+        session = object_session(self)
+        pending = session.scalar(select(QuizAttemptAnswer.id).where(
+            QuizAttemptAnswer.attempt_id == self.id, QuizAttemptAnswer.graded_at.is_(None)).limit(1)) if session else None
+        return "pending" if pending else "complete"
 
 
 class QuizAttemptAnswer(UUIDPrimaryKeyMixin, Base):
@@ -246,7 +332,9 @@ class QuizAttemptAnswer(UUIDPrimaryKeyMixin, Base):
         ForeignKey("questions.id", ondelete="RESTRICT"), index=True, nullable=False
     )
     answer: Mapped[object | None] = mapped_column(JSON)
+    question_snapshot: Mapped[dict | None] = mapped_column(JSON)
     awarded_points: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    feedback: Mapped[str | None] = mapped_column(Text)
     graded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     graded_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
 
@@ -265,11 +353,35 @@ class Assignment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     max_score: Mapped[float] = mapped_column(Float, default=100.0, nullable=False)
     status: Mapped[AssignmentStatus] = mapped_column(
         String(20), default=AssignmentStatus.DRAFT, nullable=False
     )
+    # Scope: the assignment belongs to a module (unit) and optionally a lesson.
+    module_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("course_modules.id", ondelete="SET NULL"), index=True
+    )
+    lesson_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("lessons.id", ondelete="SET NULL"), index=True
+    )
+
+
+    lesson_links: Mapped[list["AssignmentLessonLink"]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin")
+
+    @property
+    def lesson_ids(self) -> list[uuid.UUID]:
+        return list(dict.fromkeys(([self.lesson_id] if self.lesson_id else []) + [link.lesson_id for link in self.lesson_links]))
+
+    module_links: Mapped[list["AssignmentModuleLink"]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin")
+
+    @property
+    def module_ids(self) -> list[uuid.UUID]:
+        legacy = [self.module_id] if self.module_id and not self.lesson_id else []
+        return list(dict.fromkeys(legacy + [link.module_id for link in self.module_links]))
 
 
 class AssignmentAttempt(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -362,43 +474,43 @@ class Certificate(UUIDPrimaryKeyMixin, Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class AIInvocation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    __tablename__ = "ai_invocations"
+class LessonComment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "lesson_comments"
 
-    institution_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("institutions.id", ondelete="SET NULL"), index=True
+    institution_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    actor_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    lesson_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("lessons.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    task: Mapped[str] = mapped_column(String(60), index=True, nullable=False)
-    provider: Mapped[str] = mapped_column(String(60), nullable=False)
-    model: Mapped[str] = mapped_column(String(120), nullable=False)
-    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
-    input_tokens: Mapped[int | None] = mapped_column(Integer)
-    output_tokens: Mapped[int | None] = mapped_column(Integer)
-    estimated_cost: Mapped[float | None] = mapped_column(Float)
-    latency_ms: Mapped[int | None] = mapped_column(Integer)
-    status: Mapped[str] = mapped_column(String(20), nullable=False)
-    error_code: Mapped[str | None] = mapped_column(String(80))
-    output_json: Mapped[dict | list | None] = mapped_column(JSON)
-    approved_by: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL")
-    )
-
-
-class AIRefusalLog(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    __tablename__ = "ai_refusal_logs"
-
-    institution_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("institutions.id", ondelete="CASCADE"), index=True, nullable=True
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
+    student_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    course_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("courses.id", ondelete="CASCADE"), index=True, nullable=True
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("lesson_comments.id", ondelete="CASCADE"), index=True
     )
-    question_text: Mapped[str] = mapped_column(Text, nullable=False)
-    reason: Mapped[str] = mapped_column(String(200), default="no_matching_coverage", nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
 
+
+class QuizLessonLink(Base):
+    __tablename__ = "quiz_lesson_links"
+    assessment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("quizzes.id", ondelete="CASCADE"), primary_key=True)
+    lesson_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("lessons.id", ondelete="CASCADE"), primary_key=True)
+
+
+class QuizModuleLink(Base):
+    __tablename__ = "quiz_module_links"
+    assessment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("quizzes.id", ondelete="CASCADE"), primary_key=True)
+    module_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("course_modules.id", ondelete="CASCADE"), primary_key=True)
+
+
+class AssignmentLessonLink(Base):
+    __tablename__ = "assignment_lesson_links"
+    assessment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assignments.id", ondelete="CASCADE"), primary_key=True)
+    lesson_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("lessons.id", ondelete="CASCADE"), primary_key=True)
+
+
+class AssignmentModuleLink(Base):
+    __tablename__ = "assignment_module_links"
+    assessment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assignments.id", ondelete="CASCADE"), primary_key=True)
+    module_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("course_modules.id", ondelete="CASCADE"), primary_key=True)
