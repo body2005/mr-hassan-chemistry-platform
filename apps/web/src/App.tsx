@@ -484,7 +484,7 @@ function App() {
         // to the lesson-only checkout picker instead.
         setCheckoutTarget({ productType: "lesson" });
         navigateToTab("Payments");
-        throw new Error('هذا المقرر يحتاج تفعيل المحتوى؛ اختر الدرس المطلوب من صفحة الاشتراكات.');
+        throw new Error('هذا المقرر يحتاج تفعيل المحتوى؛ اختر الدرس المطلوب من صفحة الاشتراكات.', { cause: error });
       }
       // The caller keeps a persistent error beside its enrollment control.
       // A rejected enrollment must never look like success to the catalog.

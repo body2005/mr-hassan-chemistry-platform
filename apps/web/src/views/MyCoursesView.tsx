@@ -1,5 +1,5 @@
 import { serverNow, synchronizeServerTime } from "../services/availabilityRefresh";
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { lazy, Suspense, useState, useEffect, useRef, useCallback } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -43,11 +43,14 @@ import { apiRequest, fetchApiBlob, uploadWithProgress } from "../services/apiCli
 import { useToast, ToastRegion } from "../components/ToastProvider";
 import { FormulaRenderer } from "../components/FormulaRenderer";
 import { PaymentTarget, lessonAccessService } from "../services/paymentService";
-import { VideoLessonPage } from "../components/VideoLessonPage";
+import { PageLoadingScreen } from "../components/PageLoadingScreen";
 import { FreeCourseCatalog } from "../components/FreeCourseCatalog";
 import { FloatingProgressFab } from '../components/FloatingProgressFab';
 import { assessmentBand, assessmentPercent } from '../services/assessmentOutcome';
 import { useCourseAssessments } from '../services/useCourseAssessments';
+
+const VideoLessonPage = lazy(() => import('../components/VideoLessonPage')
+  .then(module => ({ default: module.VideoLessonPage })));
 
 export interface DisplayBookItem extends EducationalBookItem {
   fileUrl?: string;
@@ -1116,16 +1119,18 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   if (activeLessonModal && currentCourse) {
     return (
-      <VideoLessonPage
-        lesson={activeLessonModal}
-        course={currentCourse}
-        currentUser={currentUser}
-        completedLessonIds={completedLessonIds}
-        onToggleCompleteLesson={toggleCompleteLesson}
-        onSelectLesson={(ls) => setActiveLessonModal(ls)}
-        onClose={() => closeOverlay("activeLessonModal", () => setActiveLessonModal(null))}
-        onDownloadMaterial={downloadLessonMaterial}
-      />
+      <Suspense fallback={<PageLoadingScreen message="جاري تحميل مشغّل الفيديو..." />}>
+        <VideoLessonPage
+          lesson={activeLessonModal}
+          course={currentCourse}
+          currentUser={currentUser}
+          completedLessonIds={completedLessonIds}
+          onToggleCompleteLesson={toggleCompleteLesson}
+          onSelectLesson={(ls) => setActiveLessonModal(ls)}
+          onClose={() => closeOverlay("activeLessonModal", () => setActiveLessonModal(null))}
+          onDownloadMaterial={downloadLessonMaterial}
+        />
+      </Suspense>
     );
   }
 

@@ -13,7 +13,7 @@ interface MockHls {
   destroy: ReturnType<typeof vi.fn>;
 }
 const mocks = vi.hoisted(() => ({ instances: [] as MockHls[] }));
-vi.mock('hls.js', () => ({ default: class {
+vi.mock('hls.js/light', () => ({ default: class {
   static isSupported = () => true;
   static Events = { MANIFEST_PARSED: 'manifest', ERROR: 'error' };
   levels = [{ height: 144 }, { height: 360 }, { height: 720 }, { height: 720 }];

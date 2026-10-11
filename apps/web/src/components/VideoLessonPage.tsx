@@ -21,7 +21,7 @@ import { useProtectedPlayback } from "./useProtectedPlayback";
 import { VideoTelemetryTracker } from "../services/videoTelemetry";
 import { lessonAccessService } from "../services/paymentService";
 import { useToast, ToastRegion } from "./ToastProvider";
-import Hls from "hls.js";
+import type Hls from "hls.js";
 import { useHlsTransport } from "./useHlsTransport";
 import { VideoLessonNavigation } from "./VideoLessonNavigation";
 import { LessonDiscussion } from "./LessonDiscussion";

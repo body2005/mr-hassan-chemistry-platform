@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, type RefObject } from 'react';
-import Hls from 'hls.js';
+// The encoder emits H.264/AAC renditions with muxed audio. The official light
+// build supports these streams and ABR without unrelated player extensions.
+import Hls from 'hls.js/light';
+import hlsWorkerUrl from 'hls.js/dist/hls.worker.js?url';
 import { playbackFailureMessage } from '../services/playbackFailure';
 
 export const AUTO_QUALITY = 'تلقائي';
@@ -61,6 +64,7 @@ export function useHlsTransport(
     }
     let disposed = false;
     const hls = new Hls({
+      workerPath: hlsWorkerUrl,
       maxBufferLength: 30,
       maxMaxBufferLength: 60,
       startLevel: -1,

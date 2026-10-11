@@ -155,7 +155,7 @@ class RealTimeService {
   }
 
   private handleIncomingEvent(eventType: string, rawData: string): void {
-    let parsed: unknown = null;
+    let parsed: unknown;
     try {
       parsed = typeof rawData === "string" ? JSON.parse(rawData) : rawData;
     } catch {
