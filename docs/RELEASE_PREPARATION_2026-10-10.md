@@ -8,6 +8,35 @@ image identities, raw vulnerability reports and browser evidence are retained
 locally under `.qa/release1010/`, excluded from Git. Earlier reports are not
 evidence for this candidate.
 
+## Publication checkpoint — 2026-10-11
+
+The user explicitly requested uploading all project changes on 11 October.
+This supersedes the preparation-only push restriction below for this upload.
+Render was last observed with automatic deployment on commit; pushing may
+therefore redeploy it. Uploading code is not a production-readiness sign-off.
+
+At the user's stop request on 10 October, the 64-case integration runner was
+stopped during the telemetry case, after 90% progress. The large-file streaming
+case had failed; the four exact size-boundary cases had passed. No final pytest
+summary or complete passing integration gate was obtained. The failure cause
+still needs investigation; do not report the interrupted suite as passing.
+All primary QA services were healthy after stopping the runner.
+
+Frontend verification completed with 265 passing tests, lint and production
+build Exit 0. Backend verification completed with 545 passing tests; its API
+source is unchanged by the later frontend and Nginx fixes. Python and npm
+dependency audits returned no findings. Fixed web/proxy images returned zero
+HIGH/CRITICAL, while API/encoder retained 63/79 HIGH findings respectively.
+These results do not clear the incomplete integration, failed mixed-load,
+native security, external storage/worker/email or Render readiness gates.
+The rebuilt final frontend still requires its remaining browser acceptance
+checks; prior restored-browser evidence is explicitly from the earlier image.
+
+Unrelated local files, QA evidence, secrets, media and backups are excluded
+from this upload. Persistent private production storage, PC encoder preflight,
+Celery ingestion connectivity, Resend sender/delivery verification and a
+successful actual Render readiness check remain external operating requirements.
+
 ## Official assessment results
 
 Migration `f7c9e1a3b5d7` adds nullable approver/time fields; it preserves old
