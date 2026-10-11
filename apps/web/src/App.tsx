@@ -1,4 +1,5 @@
 import { PageLoadingScreen } from "./components/PageLoadingScreen";
+import { readSharedLesson, clearSharedLesson } from './utils/sharedLesson';
 import { lazy, Suspense, useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Sidebar, NavTab } from "./components/Sidebar";
 import { Header } from "./components/Header";
@@ -187,6 +188,15 @@ function App() {
         }
       } catch (error) {
         if (requestId !== authSyncId.current) return;
+        if (error instanceof ApiClientError && error.code === 'REQUEST_CANCELLED') return;
+        if (error instanceof ApiClientError && error.status === 401) {
+          setCurrentUser(null);
+          setCourseScopeReady(null);
+          setAuthStatus('unauthenticated');
+          setBootstrapFailure(null);
+          setRetryAttempt(0);
+          return;
+        }
         console.error("Bootstrap sync error", error);
         setBootstrapFailure(error instanceof ApiClientError ? error : {});
         setAuthStatus("temporarily_unavailable");
@@ -280,6 +290,7 @@ function App() {
   });
 
   const [authInitialTab, setAuthInitialTab] = useState(() => readAuthTab(window.location.hash));
+  const [sharedLessonTarget, setSharedLessonTarget] = useState(readSharedLesson);
   const [menuOpen, setMenuOpen] = useState(false);
 
   // Navigate to Tab and push to Google Chrome history stack
@@ -295,6 +306,21 @@ function App() {
       window.location.hash = targetHash;
     }
   }, [currentUser]);
+
+  useEffect(() => {
+    if (sharedLessonTarget && authStatus === 'unauthenticated' && activeTab !== 'Auth') {
+      setAuthInitialTab('signin');
+      navigateToTab('Auth');
+    }
+  }, [sharedLessonTarget, authStatus, activeTab, navigateToTab]);
+
+  useEffect(() => {
+    const receiveLink = () => {
+      if (window.location.hash.toLowerCase().startsWith('#mycourses?')) setSharedLessonTarget(readSharedLesson());
+    };
+    window.addEventListener('hashchange', receiveLink);
+    return () => window.removeEventListener('hashchange', receiveLink);
+  }, []);
 
   useEffect(() => {
     if (currentUser && (activeTab === "Landing" || activeTab === "Auth")) {
@@ -492,6 +518,12 @@ function App() {
       return;
     }
     if (notif.actionTab) {
+      if (currentUser?.role === 'student' && notif.actionUrl?.startsWith('#mycourses?')) {
+        window.location.hash = notif.actionUrl;
+        setSharedLessonTarget(readSharedLesson());
+        setActiveTab('MyCourses');
+        return;
+      }
       navigateToTab(notif.actionTab as NavTab);
     } else if (notif.type === "assignment") {
       navigateToTab(currentUser?.role === "teacher" ? "Submissions" : "MySubmissions");
@@ -510,6 +542,7 @@ function App() {
       // Clear the local UI even if the session endpoint is temporarily unavailable.
     } finally {
       authSyncId.current += 1;
+      clearSharedLesson(); setSharedLessonTarget(null);
       setCurrentUser(null);
       setCourseScopeReady(null);
       setCourseHydrationIssue(false);
@@ -743,7 +776,9 @@ function App() {
           {/* Student Views */}
           {activeTab === "MyCourses" && currentUser.role === "student" && (
           <MyCoursesView
-            initialCourseId={enrollmentIntent?.id}
+            initialCourseId={sharedLessonTarget?.courseId || enrollmentIntent?.id}
+            initialLessonId={sharedLessonTarget?.lessonId}
+            onInitialLessonHandled={() => { clearSharedLesson(); setSharedLessonTarget(null); }}
             enrolledCourses={enrolledCoursesList}
             onEnrollCourse={handleEnrollCourse}
             onNavigateToCatalog={() => navigateToTab("Payments")}
@@ -787,6 +822,8 @@ function App() {
             currentUser={currentUser}
             courses={courses}
             onCoursesChanged={setCourses}
+            initialSharedLesson={sharedLessonTarget}
+            onSharedLessonHandled={() => { clearSharedLesson(); setSharedLessonTarget(null); }}
           />
           )}
 

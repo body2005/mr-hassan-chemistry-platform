@@ -82,6 +82,7 @@ from app.schemas import (
 from app.services import platform_service
 from app.services.audit_service import record_audit
 from app.services.payment_service import can_access_lesson_content
+from app.schemas import LessonPublicationRequest, ApproveQuizResultRequest
 from app.services.content_access import require_assessment_access
 from app.core.upload_limits import MAX_VIDEO_BYTES, ensure_staging_capacity
 from app.models.platform import RefreshSession, RevokedSession
@@ -307,8 +308,7 @@ def _submission_responses(
 def _lesson_course(db: Session, lesson_id: uuid.UUID) -> tuple[Lesson, Course]:
     row = db.execute(
         select(Lesson, Course)
-        .join(CourseModule, Lesson.module_id == CourseModule.id)
-        .join(Course, CourseModule.course_id == Course.id)
+        .join(Course, Lesson.course_id == Course.id)
         .where(Lesson.id == lesson_id)
     ).first()
     if not row:
@@ -748,13 +748,43 @@ def delete_lesson(module_id: uuid.UUID, lesson_id: uuid.UUID, user: Manager, db:
         raise _bad_request(exc) from exc
 
 
+@router.post("/courses/{course_id}/lessons", status_code=201)
+def create_unitless_lesson(course_id: uuid.UUID, payload: LessonCreateRequest, user: Manager, db: Db):
+    try:
+        lesson = platform_service.add_lesson(db, user, None, payload, course_id=course_id)
+        return {"id": str(lesson.id), "course_id": str(lesson.course_id), "module_id": None}
+    except (LookupError, PermissionError, ValueError) as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.delete("/lessons/{lesson_id}", status_code=204)
+def delete_unitless_lesson(lesson_id: uuid.UUID, user: Manager, db: Db):
+    try:
+        platform_service.delete_lesson(db, user, None, lesson_id)
+    except (LookupError, PermissionError, ValueError) as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.patch("/lessons/{lesson_id}/publication")
+def update_lesson_publication(lesson_id: uuid.UUID, payload: "LessonPublicationRequest", user: Manager, db: Db):
+    lesson, course = _lesson_course(db, lesson_id)
+    try:
+        platform_service.ensure_course_manager(user, course)
+    except PermissionError as exc:
+        raise HTTPException(404, "Lesson not found") from exc
+    lesson.publication_status = payload.publication_status
+    lesson.publish_at = platform_service._as_utc(payload.publish_at)
+    db.commit()
+    return {"id": str(lesson.id), "publication_status": lesson.publication_status, "publish_at": lesson.publish_at}
+
+
 @router.get("/progress/lessons/{lesson_id}", response_model=LessonProgressResponse)
 def lesson_progress(lesson_id: uuid.UUID, user: Student, db: Db) -> LessonProgressResponse:
+    _require_lesson_access(db, user, lesson_id)
     progress = db.scalar(
         select(LessonProgress)
         .join(Lesson, Lesson.id == LessonProgress.lesson_id)
-        .join(CourseModule, CourseModule.id == Lesson.module_id)
-        .join(Course, Course.id == CourseModule.course_id)
+        .join(Course, Lesson.course_id == Course.id)
         .join(Enrollment, Enrollment.course_id == Course.id)
         .where(
             LessonProgress.lesson_id == lesson_id,
@@ -789,8 +819,7 @@ def complete_lesson(lesson_id: uuid.UUID, user: Student, db: Db) -> LessonProgre
     progress = db.scalar(
         select(LessonProgress)
         .join(Lesson, Lesson.id == LessonProgress.lesson_id)
-        .join(CourseModule, CourseModule.id == Lesson.module_id)
-        .join(Course, Course.id == CourseModule.course_id)
+        .join(Course, Lesson.course_id == Course.id)
         .join(Enrollment, Enrollment.course_id == Course.id)
         .where(
             LessonProgress.lesson_id == lesson_id,
@@ -803,8 +832,7 @@ def complete_lesson(lesson_id: uuid.UUID, user: Student, db: Db) -> LessonProgre
     if progress is None:
         lesson = db.scalar(
             select(Lesson)
-            .join(CourseModule, CourseModule.id == Lesson.module_id)
-            .join(Course, Course.id == CourseModule.course_id)
+            .join(Course, Lesson.course_id == Course.id)
             .join(Enrollment, Enrollment.course_id == Course.id)
             .where(
                 Lesson.id == lesson_id,
@@ -826,8 +854,7 @@ def complete_lesson(lesson_id: uuid.UUID, user: Student, db: Db) -> LessonProgre
     progress.last_event_at = progress.completed_at
     course_id = db.scalar(
         select(Course.id)
-        .join(CourseModule, CourseModule.course_id == Course.id)
-        .join(Lesson, Lesson.module_id == CourseModule.id)
+        .join(Lesson, Lesson.course_id == Course.id)
         .where(Lesson.id == lesson_id)
     )
     if course_id:
@@ -839,15 +866,13 @@ def complete_lesson(lesson_id: uuid.UUID, user: Student, db: Db) -> LessonProgre
         )
         total_lessons = db.scalar(
             select(func.count(Lesson.id))
-            .join(CourseModule, CourseModule.id == Lesson.module_id)
-            .where(CourseModule.course_id == course_id)
+            .where(Lesson.course_id == course_id)
         ) or 0
         completed_lessons = db.scalar(
             select(func.count(LessonProgress.id))
             .join(Lesson, Lesson.id == LessonProgress.lesson_id)
-            .join(CourseModule, CourseModule.id == Lesson.module_id)
             .where(
-                CourseModule.course_id == course_id,
+                Lesson.course_id == course_id,
                 LessonProgress.student_id == user.id,
                 LessonProgress.completion_percent >= 100,
             )
@@ -1237,9 +1262,10 @@ def list_notifications(
     )
     if unread_only:
         query = query.where(Notification.read_at.is_(None))
+    from app.services.lesson_announcements import visible_lesson_notifications
     return [
         NotificationResponse.model_validate(item)
-        for item in db.scalars(query.order_by(Notification.created_at.desc()).limit(200)).all()
+        for item in visible_lesson_notifications(db, user, db.scalars(query.order_by(Notification.created_at.desc()).limit(200)).all())
     ]
 
 
@@ -1635,13 +1661,14 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
             Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
         )
     )
-    lessons = list(db.scalars(select(Lesson).join(CourseModule, Lesson.module_id == CourseModule.id)
-        .where(CourseModule.course_id == course_id)
-        .order_by(CourseModule.position, CourseModule.id, Lesson.position, Lesson.id)).all())
+    lessons = list(db.scalars(select(Lesson).where(Lesson.course_id == course_id)
+        .order_by(Lesson.position, Lesson.id)).all())
     from app.services.payment_service import accessible_course_lesson_ids
     accessible_lessons = accessible_course_lesson_ids(db, user, course, lessons, enrolled=enrolled is not None)
     lesson_ids = [lesson.id for lesson in lessons]
     lesson_titles = {lesson.id: lesson.title for lesson in lessons}
+    from app.services.lesson_release import available_lesson_ids
+    visible_lessons = available_lesson_ids(db, lessons, {course.id: course}) if user.role == UserRole.STUDENT else set(lesson_ids)
 
     quizzes = list(
         db.scalars(
@@ -1730,7 +1757,7 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
         "course_id": str(course_id),
         "lessons": [
             {"id": str(lid), "title": lesson_titles[lid], "accessible": lid in accessible_lessons}
-            for lid in lesson_ids
+            for lid in lesson_ids if lid in visible_lessons
         ],
         "quizzes": [quiz_item(q) for q in quizzes],
         "assignments": [assignment_item(a) for a in assignments],
@@ -1878,8 +1905,6 @@ def grade_quiz_answer(attempt_id: uuid.UUID, question_id: uuid.UUID, payload: Gr
         raise HTTPException(404, "Answer not found")
     if answer.question_snapshot is None:
         raise HTTPException(409, "Legacy answer has no frozen rubric; historical evidence review is required")
-    if answer.question_snapshot["question_type"] not in {"essay", "short_answer"}:
-        raise HTTPException(422, "This question is automatically graded")
     if payload.awarded_points > answer.question_snapshot["points"]:
         raise HTTPException(422, "Grade exceeds the question's points")
     answer.awarded_points = payload.awarded_points
@@ -1896,7 +1921,7 @@ def grade_quiz_answer(attempt_id: uuid.UUID, question_id: uuid.UUID, payload: Gr
 
 
 @router.post("/quiz-attempts/{attempt_id}/approve", response_model=QuizAttemptResponse)
-def approve_quiz_result(attempt_id: uuid.UUID, user: Manager, db: Db, request: Request):
+def approve_quiz_result(attempt_id: uuid.UUID, user: Manager, db: Db, request: Request, payload: "ApproveQuizResultRequest | None" = None):
     attempt = db.scalar(select(QuizAttempt).where(QuizAttempt.id == attempt_id).with_for_update())
     quiz = db.get(Quiz, attempt.quiz_id) if attempt else None
     course = db.get(Course, quiz.course_id) if quiz else None
@@ -1928,7 +1953,10 @@ def approve_quiz_result(attempt_id: uuid.UUID, user: Manager, db: Db, request: R
             any(not math.isfinite(by_question[item["question_id"]].awarded_points) or
                 not 0 <= by_question[item["question_id"]].awarded_points <= item["points"] for item in frozen)):
         raise HTTPException(409, "Attempt requires a valid frozen grading total")
-    attempt.score = sum(by_question[item["question_id"]].awarded_points for item in frozen)
+    attempt.calculated_score = sum(by_question[item["question_id"]].awarded_points for item in frozen)
+    attempt.final_percentage = payload.final_percentage if payload else None
+    attempt.approval_notes = payload.notes if payload else None
+    attempt.score = (maximum * attempt.final_percentage / 100 if attempt.final_percentage is not None else attempt.calculated_score)
     attempt.results_approved_at = datetime.now(UTC)
     attempt.results_approved_by = user.id
     record_audit(db, request, action="quiz_result_approved", resource_type="quiz_attempt", resource_id=str(attempt.id), actor=user)
@@ -2107,6 +2135,8 @@ def get_quiz_result_view(
             for att in all_attempts
         ],
         "score": float(attempt.score or 0.0),
+        "calculated_score": attempt.calculated_score,
+        "final_percentage": attempt.final_percentage,
         "approval_status": "approved" if attempt.results_approved_at else "practice",
         "results_approved_at": attempt.results_approved_at.isoformat() if attempt.results_approved_at else None,
         "grading_status": "pending" if pending_count else "complete",
@@ -2131,6 +2161,7 @@ def get_student_quiz_solution(
     user: Manager,
     db: Db,
     quiz_id: uuid.UUID | None = None,
+    attempt_id: uuid.UUID | None = None,
 ) -> dict:
     """Return the completed quiz questions and student's submitted answers for the teacher."""
     from app.services.platform_service import _as_utc
@@ -2153,6 +2184,10 @@ def get_student_quiz_solution(
         attempt_query = attempt_query.where(Course.teacher_id == user.id)
     if quiz_id is not None:
         attempt_query = attempt_query.where(QuizAttempt.quiz_id == quiz_id)
+    attempt_query = attempt_query.where(QuizAttempt.is_practice.is_(False))
+    attempt_choices = db.execute(attempt_query.add_columns(Quiz.title).order_by(QuizAttempt.submitted_at.desc(), QuizAttempt.id.desc()).limit(100)).all()
+    if attempt_id is not None:
+        attempt_query = attempt_query.where(QuizAttempt.id == attempt_id)
     attempt = db.scalar(attempt_query.order_by(QuizAttempt.submitted_at.desc()))
     if attempt is None:
         raise HTTPException(status_code=404, detail="No completed quiz attempt found for this student")
@@ -2251,6 +2286,8 @@ def get_student_quiz_solution(
     return {
         "student_id": str(student_id),
         "student_name": target_student.display_name,
+        "available_attempts": [{"id": str(item.id), "title": title, "attempt_number": item.attempt_number,
+            "submitted_at": item.submitted_at.isoformat() if item.submitted_at else None} for item, title in attempt_choices],
         "approval_status": "approved" if attempt.results_approved_at else "pending",
         "results_approved_at": attempt.results_approved_at.isoformat() if attempt.results_approved_at else None,
         "history_state": "frozen" if attempt.question_snapshot is not None else "legacy-unverified",
@@ -2265,6 +2302,8 @@ def get_student_quiz_solution(
             "duration_seconds": duration_seconds,
         },
         "score": float(attempt.score or 0.0),
+        "calculated_score": attempt.calculated_score,
+        "final_percentage": attempt.final_percentage,
         "total_points": float(attempt.total_points) if attempt.total_points is not None else None,
         "summary": {
             "correct": correct_count,
@@ -2616,17 +2655,29 @@ def add_lesson_comment(
     db.commit()
     db.refresh(comment)
     is_teacher = user.role == UserRole.TEACHER
-    return {
-        "id": str(comment.id),
-        "author": user.display_name or ("المعلم" if is_teacher else "طالب"),
-        "is_teacher": is_teacher,
-        "role": user.role.value,
-        "is_mine": True,
-        "parent_id": str(comment.parent_id) if comment.parent_id else None,
-        "body": comment.body,
-        "created_at": comment.created_at.isoformat() if comment.created_at else None,
-        "replies": [],
+    saved_response = {
+        'id': str(comment.id), 'author': user.display_name or ('المعلم' if is_teacher else 'طالب'),
+        'is_teacher': is_teacher, 'role': user.role.value, 'is_mine': True,
+        'parent_id': str(comment.parent_id) if comment.parent_id else None, 'body': comment.body,
+        'created_at': comment.created_at.isoformat() if comment.created_at else None, 'replies': [],
     }
+    from app.core.events import event_broker
+    # Event is a hint only; all content is re-read through authorized GET.
+    try:
+        recipients = {course.teacher_id, user.id}
+        enrolled_users = db.scalars(select(User).join(Enrollment, Enrollment.student_id == User.id).where(
+            Enrollment.course_id == course.id, Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+            User.role == UserRole.STUDENT, User.institution_id == course.institution_id,
+            User.is_active.is_(True), User.deleted_at.is_(None))).all()
+        recipients.update(student.id for student in enrolled_users if can_access_lesson_content(db, student, lesson.id))
+        event_broker.publish_event(course.institution_id, 'lesson_comment_created',
+            {'lesson_id': str(lesson.id), 'comment_id': str(comment.id)}, target_user_ids=recipients)
+    except Exception:
+        # The comment is already committed. A failed hint must not make a client
+        # retry the POST and create a duplicate. Reconnection reloads the thread.
+        logger.warning('Comment saved; realtime notification temporarily unavailable')
+        db.rollback()
+    return saved_response
 
 
 @router.get("/bootstrap", response_model=BootstrapResponse, include_in_schema=False)
@@ -2694,12 +2745,14 @@ def get_bootstrap_data(
                 Notification.institution_id == user.institution_id,
             )
             student_notifs = db.scalars(q.order_by(Notification.created_at.desc()).limit(50)).all()
-            for n in student_notifs:
+            from app.services.lesson_announcements import visible_lesson_notifications
+            for n in visible_lesson_notifications(db, user, student_notifs):
                 notif_list.append(NotificationResponse.model_validate(n))
                 if n.read_at is None:
                     unread_count += 1
-    except Exception:
-        logger.exception("Error loading bootstrap notifications")
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(503, "Bootstrap data is temporarily unavailable", headers={"Retry-After": "3"}) from exc
 
     # 3. Essential courses
     courses_res: list[CourseResponse] = []
@@ -2708,8 +2761,9 @@ def get_bootstrap_data(
         from app.services import course_service
         raw_courses, _ = course_service.list_courses(db, user, page=1, page_size=100, search=None, sort="created_at")
         courses_res = _safe_course_responses(db, user, raw_courses)
-    except Exception:
-        logger.exception("Error loading bootstrap courses")
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(503, "Bootstrap data is temporarily unavailable", headers={"Retry-After": "3"}) from exc
 
     # 4. Enrolled course IDs and Entitlements for students
     enrolled_ids: list[str] = []
@@ -2748,8 +2802,9 @@ def get_bootstrap_data(
                 }
                 for r in rows
             ]
-        except Exception:
-            logger.exception("Error loading bootstrap student data")
+        except Exception as exc:
+            db.rollback()
+            raise HTTPException(503, "Bootstrap data is temporarily unavailable", headers={"Retry-After": "3"}) from exc
 
     return BootstrapResponse(
         authenticated=True,

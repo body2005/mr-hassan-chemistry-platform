@@ -43,8 +43,7 @@ def resolve_lesson_uuid(db: Session, course_id: uuid.UUID, lesson_id: str | None
         raise HTTPException(status_code=400, detail="Invalid lesson ID") from exc
     lesson = db.scalar(
         select(Lesson)
-        .join(CourseModule, Lesson.module_id == CourseModule.id)
-        .where(Lesson.id == lesson_uuid, CourseModule.course_id == course_id)
+        .where(Lesson.id == lesson_uuid, Lesson.course_id == course_id)
     )
     if not lesson:
         raise HTTPException(status_code=404, detail="Lesson not found in this course")

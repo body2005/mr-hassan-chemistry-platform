@@ -2042,3 +2042,13 @@ svg {
   color: #ffffff !important;
   stroke: #ffffff !important;
 }
+/* Player keyboard focus remains visible without changing other controls. */
+.lesson-video-player:focus-visible {
+  outline: 3px solid #10b981;
+  outline-offset: 4px;
+}
+.destructive-action:hover { filter: brightness(1.15); }
+.destructive-action:focus-visible {
+  outline: 3px solid #b91c1c;
+  outline-offset: 3px;
+}

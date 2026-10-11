@@ -70,6 +70,8 @@ class RealTimeService {
         "payment_created",
         "payment_reviewed",
         "calendar_updated",
+        "lesson_comment_created",
+        "lesson_published",
       ];
 
       for (const eventName of registeredEvents) {
@@ -159,6 +161,16 @@ class RealTimeService {
 
     // Invalidate caches and dispatch custom browser events
     switch (eventType) {
+      case 'lesson_comment_created':
+        invalidateApiCache('/lessons');
+        break;
+      case 'lesson_published':
+        invalidateApiCache('/courses');
+        invalidateApiCache('/bootstrap');
+        window.dispatchEvent(new CustomEvent('lms_courses_updated'));
+          invalidateApiCache('/notifications');
+          window.dispatchEvent(new CustomEvent('lms_notifications_updated'));
+        break;
       case "notification_created":
         invalidateApiCache("/notifications");
         window.dispatchEvent(new CustomEvent("lms_notifications_updated", { detail: parsed }));

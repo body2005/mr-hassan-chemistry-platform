@@ -348,6 +348,13 @@ async function refreshSession(): Promise<RefreshResult> {
 
 async function executeRequest<T>(path: string, init: ApiRequestInit = {}, retriedAfterRefresh = false): Promise<T> {
   const requestEpoch = authScopeEpoch;
+  // A pending renewal owns cookie rotation. Wait before sending another
+  // private probe with the expired cookie; the original request retries once.
+  if (refreshInFlight && !isAuthPath(path)) {
+    const result = await refreshInFlight;
+    if (requestEpoch !== authScopeEpoch) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
+    checkRefreshFailure(result);
+  }
   const timeoutMs = init.timeoutMs ?? 30_000;
   const requestInit = { ...init };
   delete requestInit.timeoutMs;

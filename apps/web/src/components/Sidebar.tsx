@@ -166,7 +166,7 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
 
         {/* Navigation Items */}
         <nav style={{ overflowY: "auto", flex: 1, marginTop: "12px" }}>
-          {(isStudent ? studentNavItems : teacherNavItems).map(({ id, label, sub, icon: Icon }) => (
+          {(isStudent ? studentNavItems : teacherNavItems).map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               type="button"
@@ -183,7 +183,6 @@ export const Sidebar: React.FC<SidebarProps> = memo(({
               <Icon size={18} className="nav-icon" />
               <div style={{ textAlign: "inherit", lineHeight: "1.2" }}>
                 <span style={{ display: "block", fontSize: "13px", fontWeight: 700 }}>{label}</span>
-                <small style={{ display: "block", fontSize: "10px", opacity: 0.8 }}>{sub}</small>
               </div>
             </button>
           ))}

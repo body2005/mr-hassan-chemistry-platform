@@ -73,8 +73,8 @@ def profile_summary(user: CurrentUser, db: Db):
                          .where(Enrollment.course_id.in_(managed), Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
                                 User.is_active.is_(True), User.deleted_at.is_(None))) or 0
     # Count lessons with a stored ready video, not pending upload jobs.
-    videos = db.scalar(select(func.count(Lesson.id)).join(CourseModule, CourseModule.id == Lesson.module_id)
-                       .where(CourseModule.course_id.in_(managed), Lesson.kind == "video", Lesson.video_asset_key.is_not(None))) or 0
+    videos = db.scalar(select(func.count(Lesson.id))
+                       .where(Lesson.course_id.in_(managed), Lesson.kind == "video", Lesson.video_asset_key.is_not(None))) or 0
     return {"enrolled_students_count": students, "uploaded_videos_count": videos}
 
 

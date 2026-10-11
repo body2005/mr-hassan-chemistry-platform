@@ -161,7 +161,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               style={{
                 marginTop: "16px",
                 padding: "14px",
-                background: "#fef2f2",
+                background: "#9C1B28",
                 border: "1px solid #fecaca",
                 borderRadius: "10px",
                 display: "flex",
@@ -172,10 +172,10 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               }}
             >
               <div>
-                <strong style={{ display: "block", fontSize: "12.5px", color: "#991b1b" }}>
+                <strong style={{ display: "block", fontSize: "12.5px", color: "#FFFFFF" }}>
                   تفريغ كافة الدروس للبدء من الصفر
                 </strong>
-                <small style={{ color: "#b91c1c", fontSize: "11px" }}>
+                <small style={{ color: "#FFFFFF", fontSize: "11px" }}>
                   حذف كافة الفيديوهات والمذكرات المرفوعة من جميع الفصول والمراحل.
                 </small>
               </div>
@@ -199,7 +199,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   }
                 }}
                 style={{
-                  background: "var(--danger-action-bg)",
+                  background: "#762828",
                   color: "#ffffff",
                   border: "none",
                   padding: "6px 12px",

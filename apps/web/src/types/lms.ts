@@ -89,6 +89,10 @@ export interface VideoLesson {
   title: string;
   description: string;
   durationMinutes: number;
+  durationSeconds?: number;
+  publicationStatus?: 'draft' | 'published';
+  publishAt?: string | null;
+  requiredMaterialCount?: number;
   durationFormatted: string;
   videoUrl: string;
   /** Native videos are resolved only after the viewer obtains a scoped token. */

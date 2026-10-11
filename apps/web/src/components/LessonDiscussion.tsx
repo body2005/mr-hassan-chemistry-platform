@@ -3,6 +3,7 @@ import { CornerDownLeft } from 'lucide-react';
 import type { CurrentUser } from '../types/lms';
 import { apiRequest } from '../services/apiClient';
 import { useToast } from './ToastProvider';
+import { realtimeService } from '../services/realtimeService';
 import './LessonDiscussion.css';
 
 interface ServerComment {
@@ -46,7 +47,6 @@ export function LessonDiscussion({ lessonId, currentUser }: {
   const [draft, setDraft] = useState('');
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const [replyTarget, setReplyTarget] = useState<string | null>(null);
-  const [newestFirst, setNewestFirst] = useState(true);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
@@ -55,21 +55,23 @@ export function LessonDiscussion({ lessonId, currentUser }: {
   const scopeRef = useRef<object | null>(null);
   const writeRef = useRef<object | null>(null);
   const userId = currentUser?.id;
+  const loadSequence = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (quiet = false) => {
     const scope = scopeRef.current;
     if (!scope) return;
-    setLoading(true);
+    const sequence = ++loadSequence.current;
+    if (!quiet) setLoading(true);
     setLoadError(false);
     try {
-      const result = await apiRequest<{ comments: ServerComment[] }>(`/lessons/${lessonId}/comments`);
-      if (scopeRef.current !== scope) return;
+      const result = await apiRequest<{ comments: ServerComment[] }>(`/lessons/${lessonId}/comments`, { skipCache: true });
+      if (scopeRef.current !== scope || sequence !== loadSequence.current) return;
       if (!Array.isArray(result.comments)) throw new Error('Invalid discussion response');
       setComments(result.comments.map(validateComment));
     } catch {
-      if (scopeRef.current === scope) setLoadError(true);
+      if (scopeRef.current === scope && sequence === loadSequence.current) setLoadError(true);
     } finally {
-      if (scopeRef.current === scope) setLoading(false);
+      if (scopeRef.current === scope && sequence === loadSequence.current) setLoading(false);
     }
   }, [lessonId]);
 
@@ -86,6 +88,24 @@ export function LessonDiscussion({ lessonId, currentUser }: {
     setSavingReply(null);
     void load();
     return () => { if (scopeRef.current === scope) scopeRef.current = null; };
+  }, [lessonId, userId, load]);
+
+  useEffect(() => {
+    if (!userId) return;
+    let timer: number | undefined;
+    const schedule = () => {
+      if (timer !== undefined) return;
+      timer = window.setTimeout(() => { timer = undefined; void load(true); }, 300);
+    };
+    const offComment = realtimeService.on<{ lesson_id: string }>('lesson_comment_created', data => {
+      if (data.lesson_id === lessonId) schedule();
+    });
+    const offStatus = realtimeService.on<{ status: string }>('status', data => {
+      if (data.status === 'connected') schedule();
+    });
+    const clearScope = () => { offComment(); offStatus(); window.clearTimeout(timer); scopeRef.current = null; };
+    window.addEventListener('lms_auth_scope_updated', clearScope);
+    return () => { offComment(); offStatus(); window.clearTimeout(timer); window.removeEventListener('lms_auth_scope_updated', clearScope); };
   }, [lessonId, userId, load]);
 
   async function submitComment(event: FormEvent) {
@@ -144,14 +164,11 @@ export function LessonDiscussion({ lessonId, currentUser }: {
   }
 
   const busy = loading || saving || savingReply !== null;
-  const ordered = newestFirst ? comments : [...comments].reverse();
+  const ordered = [...comments].sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || b.id.localeCompare(a.id));
   const count = comments.reduce((sum, item) => sum + 1 + (item.replies?.length ?? 0), 0);
   return <section className="lesson-discussion" aria-label="التعليقات والمناقشات">
     <header className="discussion-header">
       <h3>التعليقات والمناقشات{!loading && !loadError ? ` (${count})` : ''}</h3>
-      <button type="button" disabled={busy || loadError} onClick={() => setNewestFirst(value => !value)}>
-        {newestFirst ? 'الأحدث أولاً' : 'الأقدم أولاً'}
-      </button>
     </header>
     {loading && <p role="status">جارٍ تحميل المناقشة...</p>}
     {loadError && <div role="alert" className="discussion-error">

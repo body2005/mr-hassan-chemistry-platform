@@ -81,7 +81,7 @@ export function AssessmentScopePicker({ courses, courseId, lessonIds, moduleIds,
   return <fieldset className="assessment-scope-picker">
     <legend>المحتوى المرتبط بالتقييم</legend>
     <p>اختَر أكثر من وحدة أو درس. يلزم إتاحة المحتوى المحدد للطالب قبل الحل.</p>
-    <ScopeSelect label="الوحدات" placeholder="اختَر الوحدات" emptyText="لا توجد وحدات بها دروس لهذا الصف."
+    <ScopeSelect label="الوحدات (اختياري)" placeholder="بدون وحدات — اختَر دروسًا مباشرة" emptyText="لا توجد وحدات بها دروس لهذا الصف."
       options={units} values={moduleIds} onToggle={option => onChange(option.courseId, lessonIds, toggle(moduleIds, option.id))}
       onClear={() => onChange(courseId || '', lessonIds, [])} />
     <ScopeSelect label="الدروس" placeholder="اختَر الدروس" emptyText="أضف درسًا لهذا الصف أولًا."

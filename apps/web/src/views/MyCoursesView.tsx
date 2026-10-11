@@ -133,6 +133,8 @@ export interface CourseQuiz {
 
 interface MyCoursesViewProps {
   initialCourseId?: string;
+  initialLessonId?: string;
+  onInitialLessonHandled?: () => void;
   enrolledCourses: Course[];
   onEnrollCourse?: (courseId: string) => Promise<void>;
   onNavigateToCatalog: () => void;
@@ -155,6 +157,8 @@ interface MyCoursesViewProps {
 
 export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   initialCourseId,
+  initialLessonId,
+  onInitialLessonHandled,
   enrolledCourses,
   onEnrollCourse,
   onNavigateToCatalog,
@@ -298,6 +302,29 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   // Interactive Modals State
   const [activeLessonModal, setActiveLessonModal] = useState<VideoLesson | null>(null);
+
+  useEffect(() => {
+    if (!initialLessonId || !initialCourseId || !currentUser) return;
+    const sharedCourse = validEnrolledCourses.find(item => item.id === initialCourseId);
+    if (!sharedCourse) return; // A shared link never enrolls a user or grants access.
+    let cancelled = false;
+    const sharedLesson = sharedCourse.lessons.find(item => item.id === initialLessonId);
+    if (!sharedLesson) {
+      toast({ message: 'الدرس غير متاح الآن أو لم يحن موعد نشره.', tone: 'warning' });
+    } else {
+      setSelectedCourseId(sharedCourse.id);
+      void courseService.getCourseAssessments(sharedCourse.id, { skipCache: true }).then(data => {
+        if (cancelled) return;
+        if (data.lessons.some(item => item.id === sharedLesson.id && item.accessible)) setActiveLessonModal(sharedLesson);
+        else toast({ message: 'هذا الدرس يحتاج اشتراكًا أو إتاحة من المدرس.', tone: 'info' });
+        onInitialLessonHandled?.();
+      }).catch(() => {
+        if (!cancelled) { toast({ message: 'تعذر التحقق من إتاحة الدرس. أعد فتح الرابط للمحاولة مجددًا.', tone: 'danger' }); onInitialLessonHandled?.(); }
+      });
+      return () => { cancelled = true; };
+    }
+    onInitialLessonHandled?.();
+  }, [initialCourseId, initialLessonId, currentUser?.id, enrolledCourses, onInitialLessonHandled, toast]);
 
   // Interactive Transcript & AI Grounded Q&A State
 
@@ -1040,6 +1067,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   if (validEnrolledCourses.length === 0) {
     return (
       <div className="page-container">
+        {initialLessonId && <p role="status">رابط الدرس محفوظ. اشترك في مقرره أولًا لفتح المحتوى المسموح لحسابك.</p>}
         {freeCatalog}
         <div style={{ textAlign: "center", padding: "80px 20px", background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "16px" }}>
           <BookOpen size={48} style={{ color: "var(--text-light)", margin: "0 auto 16px" }} />
@@ -1128,6 +1156,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   return (
     <div className="page-container">
       <ToastRegion label="رسائل المقرر" />
+      {initialLessonId && !validEnrolledCourses.some(item => item.id === initialCourseId) && <p role="status">لفتح الدرس المشارَك، اشترك في مقرره أولًا من المقررات المتاحة. المشاركة لا تمنح اشتراكًا.</p>}
       <button className="btn-secondary" onClick={() => setCatalogOpen(prev => !prev)}>{catalogOpen ? 'إغلاق المقررات المتاحة' : 'استعراض المقررات المجانية'}</button>
       {catalogOpen && freeCatalog}
       {/* Top Urgent Counter */}

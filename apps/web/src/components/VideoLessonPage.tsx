@@ -109,8 +109,10 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     useProtectedPlayback(lesson, currentUser?.id, videoElementRef, hlsRef);
   const [qualityOptions, setQualityOptions] = useState<string[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [waitingForVideo, setWaitingForVideo] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
+  const [duration, setDuration] = useState(lesson.durationSeconds || 0);
+  useEffect(() => { setDuration(lesson.durationSeconds || 0); setWaitingForVideo(false); }, [lesson.id, lesson.durationSeconds]);
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -246,11 +248,12 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
 
 
   // Video element handlers
-  const handlePlayPause = () => {
+  const handlePlayPause = async () => {
     if (!videoElementRef.current) return;
     if (videoElementRef.current.paused) {
-      videoElementRef.current.play().catch(() => undefined);
-      setIsPlaying(true);
+      setWaitingForVideo(true);
+      try { await videoElementRef.current.play(); }
+      catch { setWaitingForVideo(false); setIsPlaying(false); }
     } else {
       videoElementRef.current.pause();
       setIsPlaying(false);
@@ -475,21 +478,26 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   // Format seconds to mm:ss
   const formatTime = (secs: number) => {
     if (isNaN(secs) || secs < 0) return "00:00";
-    const m = Math.floor(secs / 60);
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor(secs / 60) % 60;
     const s = Math.floor(secs % 60);
-    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    return `${h ? `${h}:` : ''}${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   };
 
   // Share Lesson Action
-  const handleShare = () => {
-    const url = window.location.href;
-    if (navigator.clipboard) {
-      navigator.clipboard
-        .writeText(url)
-        .then(() => toast("تم نسخ رابط الدرس بنجاح إلى الحافظة", "success"))
-        .catch(() => toast("تم نسخ رابط الدرس للمشاركة", "success"));
-    } else {
-      toast("تم نسخ رابط الدرس للمشاركة", "success");
+  const handleShare = async () => {
+    const url = new URL(window.location.pathname, window.location.origin);
+    url.hash = `mycourses?course=${encodeURIComponent(course.id)}&lesson=${encodeURIComponent(lesson.id)}`;
+    if (navigator.share) {
+      try { await navigator.share({ title: lesson.title, url: url.href }); return; }
+      catch (error) { if (error instanceof DOMException && error.name === 'AbortError') return; }
+    }
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(url.href);
+      toast("تم نسخ رابط الدرس بنجاح إلى الحافظة", "success");
+    } catch {
+      toast("تعذر نسخ رابط الدرس. اسمح بالوصول للحافظة ثم أعد المحاولة.", "danger");
     }
   };
 
@@ -646,9 +654,11 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                       const value = videoElementRef.current?.duration;
                       if (value && Number.isFinite(value)) setDuration(value);
                     }}
-                    onError={() => void renewProtectedPlayback()}
+                    onError={() => { setWaitingForVideo(false); void renewProtectedPlayback(); }}
                     onPlay={() => setIsPlaying(true)}
-                    onPause={() => setIsPlaying(false)}
+                    onWaiting={() => setWaitingForVideo(true)}
+                    onPlaying={() => setWaitingForVideo(false)}
+                    onPause={() => { setIsPlaying(false); setWaitingForVideo(false); }}
                     onClick={handlePlayPause}
                     playsInline
                     preload="metadata"
@@ -673,7 +683,8 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                   )}
 
                   {/* Center Glass Play Button (Shows when paused) */}
-                  {!isPlaying && (
+                  {waitingForVideo && <div role="status" style={{ position: 'absolute', top: '45%', left: '50%', transform: 'translateX(-50%)', color: '#fff', background: 'rgba(0,0,0,.75)', padding: '10px 18px', borderRadius: 20, zIndex: 26 }}>جارٍ تحميل الفيديو…</div>}
+                  {!isPlaying && !waitingForVideo && (
                     <div
                       onClick={handlePlayPause}
                       style={{

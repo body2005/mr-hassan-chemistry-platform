@@ -342,18 +342,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               </div>
             </div>
 
-            <div style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "12px", padding: "18px", marginBottom: "20px" }}>
-              <strong style={{ display: "block", fontSize: "14px", color: "var(--text-main)", marginBottom: "4px" }}>
-                {lang === "ar" ? "حالة الاعتماد الأكاديمي والتوثيق:" : "Academic Accreditation Status:"}
-              </strong>
-              <p style={{ margin: 0, fontSize: "13px", color: "var(--text-muted)" }}>
-                {lang === "ar"
-                  ? "لا توجد حالة توثيق معتمدة متاحة لهذا الحساب."
-                  : "No verified accreditation status is available for this account."}
-              </p>
-            </div>
-
-            {/* Notification message */}
+{/* Notification message */}
             {studentActionMsg && (
               <div
                 style={{
@@ -599,8 +588,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               style={{
                 marginTop: "20px",
                 padding: "18px",
-                background: "#fef2f2",
-                border: "1.5px solid #fecaca",
+                background: "#9C1B28",
+                border: "1.5px solid #B91C1C",
                 borderRadius: "12px",
                 display: "flex",
                 justifyContent: "space-between",
@@ -610,10 +599,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               }}
             >
               <div>
-                <strong style={{ display: "block", fontSize: "14px", color: "#991b1b" }}>
+                <strong style={{ display: "block", fontSize: "14px", color: "#FFFFFF" }}>
                   {lang === "ar" ? "تفريغ وحذف كافة الدروس للبدء من الصفر" : "Reset All Lessons From Scratch"}
                 </strong>
-                <p style={{ margin: "2px 0 0", color: "#b91c1c", fontSize: "12px" }}>
+                <p style={{ margin: "2px 0 0", color: "#FFFFFF", fontSize: "12px" }}>
                   {lang === "ar"
                     ? "حذف وتفريغ كافة الدروس والفيديوهات المرفوعة لجميع الصفوف الدراسية لإعادة تجهيز المحتوى."
                     : "Permanently clear and empty all uploaded lessons and videos across all academic years."}
@@ -644,7 +633,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 }}
                 className="btn-delete"
                 style={{
-                  background: "var(--danger-action-bg)",
+                  background: "#762828",
                   color: "#ffffff",
                   border: "none",
                   padding: "10px 18px",

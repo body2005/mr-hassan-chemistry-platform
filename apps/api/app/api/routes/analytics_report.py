@@ -71,8 +71,7 @@ async def get_analytics_summary(
     lessons_count = db.execute(
         select(func.count(Lesson.id))
         .select_from(Lesson)
-        .join(CourseModule, Lesson.module_id == CourseModule.id)
-        .join(Course, CourseModule.course_id == Course.id)
+        .join(Course, Lesson.course_id == Course.id)
         .where(Course.id.in_(courses))
     ).scalar_one() or 0
     quizzes_count = db.scalar(select(func.count(Quiz.id)).where(Quiz.institution_id == user.institution_id, Quiz.course_id.in_(courses))) or 0
@@ -91,8 +90,7 @@ async def get_analytics_summary(
     assignment_eligible_count = db.scalar(select(func.count()).select_from(Enrollment).join(
         Assignment, Assignment.course_id == Enrollment.course_id).where(*enrollment_filter, *assignment_filter)) or 0
     lesson_eligible_count = db.scalar(select(func.count()).select_from(Enrollment).join(
-        CourseModule, CourseModule.course_id == Enrollment.course_id).join(
-        Lesson, Lesson.module_id == CourseModule.id).where(*enrollment_filter)) or 0
+        Lesson, Lesson.course_id == Enrollment.course_id).where(*enrollment_filter)) or 0
     pending = select(QuizAttemptAnswer.id).where(QuizAttemptAnswer.attempt_id == QuizAttempt.id,
         QuizAttemptAnswer.graded_at.is_(None)).exists()
     rows = db.execute(
@@ -133,8 +131,8 @@ async def get_analytics_summary(
                                   if assignment_eligible_count else None)
 
     progresses = db.execute(select(LessonProgress).join(Lesson, LessonProgress.lesson_id == Lesson.id)
-        .join(CourseModule, Lesson.module_id == CourseModule.id).join(Enrollment,
-            (Enrollment.course_id == CourseModule.course_id) &
+        .join(Enrollment,
+            (Enrollment.course_id == Lesson.course_id) &
             (Enrollment.student_id == LessonProgress.student_id))
         .where(*enrollment_filter, LessonProgress.institution_id == user.institution_id)).scalars().all()
     completed_pairs = {(row.student_id, row.lesson_id) for row in progresses

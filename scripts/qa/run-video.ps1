@@ -86,7 +86,7 @@ if ($Stage -eq 'Recovery') {
 }
 if ($Stage -in @('Build','All')) {
     Invoke-Step 'video compose validation' $Docker ($compose + @('config','-q'))
-    Invoke-Step 'API/migration/Celery/web/staging-permissions build' $Docker ($compose + @('build','api','migration','worker','web','upload-permissions'))
+    Invoke-Step 'API/migration/Celery/web/storage-init/staging-permissions build' $Docker ($compose + @('build','api','migration','s3-init','worker','web','upload-permissions'))
     # Explicit sequencing avoids extending the old API in a parallel build.
     Invoke-Step 'video worker / QA build' $Docker ($compose + @('build','video-worker','qa-tests'))
     # Compose can keep an older manifest identity when BuildKit changes only

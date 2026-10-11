@@ -16,6 +16,8 @@ def student_attempt_response(attempt):
     visible = result_is_visible(attempt)
     return response.model_copy(update={
         "score": response.score if visible else None,
+        "calculated_score": response.calculated_score if visible else None,
+        "final_percentage": response.final_percentage if visible else None,
         "grading_status": response.grading_status if visible else "pending",
         "approval_status": "approved" if attempt.results_approved_at else
                            "practice" if visible else "pending",

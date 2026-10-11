@@ -35,6 +35,9 @@ interface QuizSolutionQuestion {
 }
 
 interface QuizSolutionData {
+  final_percentage?: number | null;
+  calculated_score?: number | null;
+  available_attempts?: Array<{ id: string; title: string; attempt_number: number; submitted_at: string | null }>;
   approval_status?: 'pending' | 'approved';
   student_id: string;
   student_name: string;
@@ -84,17 +87,23 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
   const [loadingSolution, setLoadingSolution] = useState<boolean>(true);
   const [gradeError, setGradeError] = useState<string | null>(null);
   const [savingGrade, setSavingGrade] = useState(false);
+  const [scoreOverride, setScoreOverride] = useState<string | null>(null);
+  const [attemptSelection, setAttemptSelection] = useState<{ studentId: string; id: string } | null>(null);
+  const requestedAttemptId = attemptSelection?.studentId === student?.id ? attemptSelection?.id : undefined;
   const [answerGrades, setAnswerGrades] = useState<Record<string, { points: number; feedback: string }>>({});
 
   useEffect(() => {
     if (!student) return;
+    let cancelled = false;
     setNotes("");
+    setScoreOverride(null);
     setGradeError(null);
     setAnswerGrades({});
     setLoadingSolution(true);
 
-    apiRequest<QuizSolutionData>(`/students/${student.id}/quiz-solution`, { skipCache: true })
+    apiRequest<QuizSolutionData>(`/students/${student.id}/quiz-solution${requestedAttemptId ? `?attempt_id=${requestedAttemptId}` : ''}`, { skipCache: true })
       .then((data) => {
+        if (cancelled) return;
         if (data && Array.isArray(data.questions) && (data.questions.length > 0 || data.history_state === 'legacy-unverified')) {
           setSolutionData(data);
         } else {
@@ -102,26 +111,30 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
         }
       })
       .catch(() => {
+        if (cancelled) return;
         setSolutionData(null);
         setGradeError("تعذر تحميل إجابات الطالب؛ لم يتم عرض إجابات بديلة أو اعتماد درجة.");
       })
       .finally(() => {
-        setLoadingSolution(false);
+        if (!cancelled) setLoadingSolution(false);
       });
-  }, [student]);
+    return () => { cancelled = true; };
+  }, [student?.id, requestedAttemptId]);
 
   if (!student) return null;
   const awarded = solutionData?.history_state === 'legacy-unverified' ? solutionData.score : solutionData?.questions.reduce((sum, question) => {
     const proposed = answerGrades[question.id]?.points;
     return sum + (Number.isFinite(proposed) ? proposed : question.awarded);
   }, 0) ?? 0;
-  const score = assessmentPercent(awarded, solutionData?.total_points);
+  const calculatedPercent = assessmentPercent(awarded, solutionData?.total_points);
+  const score = scoreOverride !== null ? (scoreOverride === '' ? null : Number(scoreOverride)) : (solutionData?.final_percentage ?? calculatedPercent);
 
   async function handleSave() {
     if (!student || !solutionData?.attempt || savingGrade || solutionData.history_state === 'legacy-unverified' || solutionData.approval_status === 'approved') return;
     setSavingGrade(true);
     setGradeError(null);
     try {
+      if (scoreOverride !== null && (scoreOverride === '' || !Number.isFinite(Number(scoreOverride)) || Number(scoreOverride) < 0 || Number(scoreOverride) > 100)) throw new Error('النسبة النهائية يجب أن تكون بين صفر و100.');
       for (const [questionId, grade] of Object.entries(answerGrades)) {
         const question = solutionData.questions.find((q) => q.id === questionId);
         if (!question || !Number.isFinite(grade.points) || grade.points < 0 || grade.points > question.points) {
@@ -131,7 +144,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
           method: "POST", body: JSON.stringify({ awarded_points: grade.points, feedback: grade.feedback || notes }),
         });
       }
-      const updated = await apiRequest<QuizSolutionData>(`/students/${student.id}/quiz-solution?quiz_id=${solutionData.quiz?.id}`, { skipCache: true });
+      const updated = await apiRequest<QuizSolutionData>(`/students/${student.id}/quiz-solution?attempt_id=${solutionData.attempt.id}`, { skipCache: true });
       setSolutionData(updated);
       setAnswerGrades({});
       if (updated.grading_status === "pending") {
@@ -141,8 +154,9 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
       const percent = assessmentPercent(updated.score, updated.total_points);
       if (percent == null)
         throw new Error('لا يمكن اعتماد النتيجة دون مجموع درجات صحيح وموثق.');
-      await apiRequest(`/quiz-attempts/${updated.attempt!.id}/approve`, { method: 'POST' });
-      onApproveGrade(student.id, percent, notes);
+      if (updated.attempt?.id !== solutionData.attempt.id) throw new Error('تغيرت محاولة الاختبار؛ أعد فتح التصحيح.');
+      await apiRequest(`/quiz-attempts/${solutionData.attempt.id}/approve`, { method: 'POST', body: JSON.stringify({ final_percentage: scoreOverride === null ? null : Number(scoreOverride), notes }) });
+      onApproveGrade(student.id, scoreOverride === null ? percent : Number(scoreOverride), notes);
       onClose();
     } catch (error) {
       setGradeError(error instanceof Error ? error.message : "تعذر حفظ التصحيح؛ أعد المحاولة.");
@@ -265,6 +279,14 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
 
         {/* Modal Scrollable Body */}
         <div style={{ overflowY: "auto", flex: 1, padding: "14px 2px", display: "flex", flexDirection: "column", gap: "18px" }}>
+          {solutionData?.attempt && <label>محاولة الاختبار الجاري تصحيحها
+            <select disabled={savingGrade || loadingSolution} value={solutionData.attempt.id} onChange={event => {
+              setAttemptSelection({ studentId: student.id, id: event.target.value });
+            }}>
+              {(solutionData.available_attempts || [{ id: solutionData.attempt.id, title: solutionData.quiz?.title || 'اختبار', attempt_number: solutionData.attempt.attempt_number, submitted_at: solutionData.attempt.submitted_at }]).map(attempt =>
+                <option key={attempt.id} value={attempt.id}>{attempt.title} — محاولة {attempt.attempt_number}{attempt.submitted_at ? ` — ${new Date(attempt.submitted_at).toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' })}` : ''}</option>)}
+            </select>
+          </label>}
           {/* Student Info Bar */}
           <div
             style={{
@@ -573,7 +595,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
                               <strong style={{ color: "#059669", display: "block", fontSize: "11px", marginBottom: "2px" }}>الإجابة النموذجية:</strong>
                               <span style={{ color: "#0f172a", fontWeight: 700 }}>{q.correct_answer}</span>
                             </div>
-                            {(q.question_type === "essay" || q.question_type === "short_answer") && (
+                            {(
                               <div>
                                 <label>درجة السؤال (من {q.points})
                                   <input aria-label={`درجة السؤال ${idx + 1}`} type="number" min={0} max={q.points} step="0.5"
@@ -677,16 +699,19 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
 
             {/* Score Input Box */}
             <div style={{ marginBottom: "14px" }}>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 800, marginBottom: "6px", color: "var(--text-main)" }}>
-                الدرجة المحسوبة من درجات الأسئلة (من 100):
+              <label htmlFor="attempt-final-percentage" style={{ display: "block", fontSize: "12px", fontWeight: 800, marginBottom: "6px", color: "var(--text-main)" }}>
+                الدرجة النهائية المعتمدة لهذه المحاولة (من 100):
               </label>
               <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                 <input
+                  id="attempt-final-percentage"
                   type="number"
                   min={0}
                   max={100}
                   value={score ?? ''}
-                  readOnly
+                  step="any"
+                  disabled={savingGrade || loadingSolution || !solutionData || solutionData.approval_status === 'approved'}
+                  onChange={event => setScoreOverride(event.target.value)}
                   style={{
                     width: "120px",
                     padding: "10px 14px",
@@ -707,7 +732,8 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
                     <button
                       key={preset}
                       type="button"
-                      disabled
+                      disabled={savingGrade || !solutionData || solutionData.approval_status === 'approved'}
+                      onClick={() => setScoreOverride(String(preset))}
                       style={{
                         padding: "6px 10px",
                         borderRadius: "6px",
@@ -726,6 +752,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
               </div>
             </div>
 
+            <button type="button" disabled={savingGrade || solutionData?.approval_status === 'approved'} onClick={() => setScoreOverride(null)}>العودة إلى الدرجة المحسوبة ({calculatedPercent ?? '—'}%)</button>
             {/* Notes input */}
             <div>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "6px", color: "var(--text-muted)" }}>

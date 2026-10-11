@@ -12,7 +12,7 @@ export function PasswordChangeWizard({ email, lang, onClose, onChanged }: {
   const [current, setCurrent] = useState('');
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
-  const [resetEmail, setResetEmail] = useState(email);
+  const [resetEmail, setResetEmail] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const dialog = useRef<HTMLDivElement>(null);
@@ -80,7 +80,7 @@ export function PasswordChangeWizard({ email, lang, onClose, onChanged }: {
           <label>{ar ? 'كلمة المرور الجديدة' : 'New password'}<input type="password" autoComplete="new-password" minLength={10} value={password} onChange={e => setPassword(e.target.value)} required disabled={busy} /></label>
           <label>{ar ? 'تأكيد كلمة المرور الجديدة' : 'Confirm new password'}<input type="password" autoComplete="new-password" minLength={10} value={confirmation} onChange={e => setConfirmation(e.target.value)} required disabled={busy} /></label>
         </>}
-        {step === 'reset' && <label>{ar ? 'البريد الإلكتروني' : 'Email address'}<input type="email" autoComplete="email" value={resetEmail} onChange={e => setResetEmail(e.target.value)} required disabled={busy} /></label>}
+        {step === 'reset' && <label>{ar ? 'البريد الإلكتروني' : 'Email address'}<input type="email" autoComplete="email" placeholder={email || 'student@example.com'} value={resetEmail} onChange={e => setResetEmail(e.target.value)} required disabled={busy} /></label>}
         <div className="password-wizard-actions">
           <button className="security-primary-button" type="submit" disabled={busy}>{busy ? (ar ? 'جارٍ التنفيذ…' : 'Working…') : step === 'current' ? (ar ? 'متابعة' : 'Continue') : step === 'reset' ? (ar ? 'إرسال رابط الاسترجاع' : 'Send reset link') : (ar ? 'حفظ كلمة المرور الجديدة' : 'Save new password')}</button>
           {step !== 'current' && <button className="security-text-button" type="button" disabled={busy} onClick={() => move('current')}>{ar ? 'رجوع' : 'Back'}</button>}

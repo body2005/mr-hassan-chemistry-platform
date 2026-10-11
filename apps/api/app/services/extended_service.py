@@ -86,8 +86,7 @@ def create_lesson_asset(
     lesson = db.get(Lesson, lesson_id)
     if lesson is None:
         raise LookupError("Lesson not found")
-    module = db.get(CourseModule, lesson.module_id)
-    course = db.get(Course, module.course_id) if module else None
+    course = db.get(Course, lesson.course_id)
     if course is None or course.institution_id != user.institution_id:
         raise LookupError("Lesson not found")
     _ensure_manager(user)
@@ -116,8 +115,7 @@ def list_lesson_assets(db: Session, user: User, lesson_id: uuid.UUID) -> list[Le
     lesson = db.get(Lesson, lesson_id)
     if lesson is None:
         raise LookupError("Lesson not found")
-    module = db.get(CourseModule, lesson.module_id)
-    course = db.get(Course, module.course_id) if module else None
+    course = db.get(Course, lesson.course_id)
     if course is None or course.institution_id != user.institution_id:
         raise LookupError("Lesson not found")
     from app.services.payment_service import can_access_lesson_content

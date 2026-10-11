@@ -11,7 +11,7 @@ export type ToastPush = (toast: string | Omit<Toast, "id">, tone?: ToastTone) =>
 const ToastContext = createContext<ToastPush | null>(null);
 
 export function noticeDuration(message: string): number {
-  return Math.min(14000, Math.max(4500, 2500 + message.length * 65));
+  return message.length > 120 || message.includes('\n') ? 10_000 : 5_000;
 }
 
 /** Compatibility anchor for forms; all feedback uses one viewport host. */
@@ -25,12 +25,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const counter = useRef(0);
   const [announcement, setAnnouncement] = useState("");
   const errorRevision = useRef(0);
-  const [paused, setPaused] = useState(false);
+  const expiryTimers = useRef(new Map<number, number>());
   const [modalHosts, setModalHosts] = useState<HTMLElement[]>([]);
   const registerModal = useCallback((host: HTMLElement, open: boolean) => {
     setModalHosts(current => open ? [...current.filter(node => node !== host), host] : current.filter(node => node !== host));
   }, []);
   const dismiss = useCallback((id: number) => {
+    window.clearTimeout(expiryTimers.current.get(id));
+    expiryTimers.current.delete(id);
     itemsRef.current = itemsRef.current.filter(item => item.id !== id);
     setItems(itemsRef.current);
     if (!itemsRef.current.length) setAnnouncement("");
@@ -42,10 +44,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     if (item.tone === 'danger' || item.tone === 'warning') errorRevision.current++;
     if (!item.message.trim() || itemsRef.current.some(old => old.message === item.message && old.tone === (item.tone ?? "success"))) return;
     const next = { ...item, tone: item.tone ?? "success", id: ++counter.current };
+    if (itemsRef.current.length >= 4) dismiss(itemsRef.current[0].id);
     itemsRef.current = [...itemsRef.current, next];
+    expiryTimers.current.set(next.id, window.setTimeout(() => dismiss(next.id), noticeDuration(next.message)));
     setItems(itemsRef.current);
     setAnnouncement(item.message);
-  }, []);
+  }, [dismiss]);
 
   useEffect(() => {
     const receive = (event: Event) => {
@@ -67,7 +71,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       itemsRef.current = [];
       setItems([]);
       setAnnouncement("");
-      setPaused(false);
+      expiryTimers.current.forEach(timer => window.clearTimeout(timer));
+      expiryTimers.current.clear();
     };
     window.addEventListener('lms_auth_scope_updated', clearAccountFeedback);
     const unsubscribe = subscribeToRequestErrors(message => {
@@ -86,18 +91,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     return () => {
       unsubscribe();
       timers.forEach(timer => window.clearTimeout(timer));
+      expiryTimers.current.forEach(timer => window.clearTimeout(timer));
+      expiryTimers.current.clear();
       window.removeEventListener('lms_auth_scope_updated', clearAccountFeedback);
     };
   }, [push]);
 
-  // Persistent warnings/errors; only one transient notice at a time.
-  const transient = items.find(item => item.tone === "info" || item.tone === "success");
-  useEffect(() => {
-    if (!transient || paused) return;
-    const timer = window.setTimeout(() => dismiss(transient.id), noticeDuration(transient.message));
-    return () => window.clearTimeout(timer);
-  }, [transient, paused, dismiss]);
-  const visible = items.filter(item => item.tone === "danger" || item.tone === "warning" || item.id === transient?.id);
+  const visible = items;
 
   return (
     <ToastContext.Provider value={push}>
@@ -112,7 +112,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   );
 
   function notices() {
-    return <div className="toast-stack" onPointerEnter={() => setPaused(true)} onPointerLeave={() => setPaused(false)}>
+    return <div className="toast-stack">
         {visible.map((item) => (
           <div key={item.id} className={`toast-item toast-${item.tone ?? "success"}`}>
             {item.tone !== "danger" && <span className="toast-icon" aria-hidden="true">

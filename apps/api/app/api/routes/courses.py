@@ -49,6 +49,16 @@ def _video_playback_fields(lesson, *, allow_external: bool = False) -> tuple[boo
 
 def _safe_course_responses(db: Session, user: User | None, courses: list) -> list[CourseResponse]:
     responses = [CourseResponse.model_validate(course) for course in courses]
+    from app.models.course import Lesson
+    from app.schemas import ModuleResponse, LessonResponse
+    from app.services.lesson_release import available_lesson_ids
+    unitless = list(db.scalars(select(Lesson).where(Lesson.course_id.in_([c.id for c in courses]), Lesson.module_id.is_(None)).order_by(Lesson.position, Lesson.id))) if courses else []
+    for response in responses:
+        unassigned = [LessonResponse.model_validate(lesson) for lesson in unitless if lesson.course_id == response.id]
+        if unassigned:
+            # Display-only grouping; no CourseModule or fake default unit is
+            # created. is_unassigned excludes it from unit selection fields.
+            response.modules.append(ModuleResponse(id=response.id, title="بدون وحدة", position=10001, is_unassigned=True, lessons=unassigned))
     # Pair each serialized lesson with its ORM source so playback fields can be
     # derived from the private key without ever serializing the key itself.
     orm_lessons_by_id = {
@@ -57,6 +67,12 @@ def _safe_course_responses(db: Session, user: User | None, courses: list) -> lis
         for module in getattr(course, "modules", [])
         for lesson in getattr(module, "lessons", [])
     }
+    orm_lessons_by_id.update({lesson.id: lesson for lesson in unitless})
+    if user is None or user.role == UserRole.STUDENT:
+        ready = available_lesson_ids(db, list(orm_lessons_by_id.values()), {c.id: c for c in courses})
+        for response in responses:
+            for module in response.modules:
+                module.lessons = [lesson for lesson in module.lessons if lesson.id in ready]
 
     for course in responses:
         for module in course.modules:

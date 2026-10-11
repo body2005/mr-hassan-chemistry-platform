@@ -296,6 +296,9 @@ class QuizAttempt(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     submission_key: Mapped[str | None] = mapped_column(String(100), unique=True)
     results_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     results_approved_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    calculated_score: Mapped[float | None] = mapped_column(Float)
+    final_percentage: Mapped[float | None] = mapped_column(Float)
+    approval_notes: Mapped[str | None] = mapped_column(Text)
     # Practice attempts (self-training beyond the official one) are graded for
     # the student but never surface in teacher-facing listings or analytics.
     is_practice: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")

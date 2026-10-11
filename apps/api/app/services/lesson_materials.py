@@ -49,10 +49,7 @@ def _lesson_course(db: Session, lesson_id: uuid.UUID) -> tuple[Lesson, Course]:
     lesson = db.get(Lesson, lesson_id)
     if not lesson:
         raise HTTPException(status_code=404, detail="Lesson not found")
-    module = db.get(CourseModule, lesson.module_id)
-    if not module:
-        raise HTTPException(status_code=404, detail="Lesson module not found")
-    course = db.get(Course, module.course_id)
+    course = db.get(Course, lesson.course_id)
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
     return lesson, course

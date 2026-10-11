@@ -104,7 +104,7 @@ def add_module(
     return module
 
 
-def add_lesson(db: Session, user: User, module_id: uuid.UUID, payload: LessonCreateRequest):
+def add_lesson(db: Session, user: User, module_id: uuid.UUID | None, payload: LessonCreateRequest, course_id: uuid.UUID | None = None):
     module = db.scalar(
         select(CourseModule)
         .join(Course)
@@ -114,17 +114,21 @@ def add_lesson(db: Session, user: User, module_id: uuid.UUID, payload: LessonCre
             if user.role != UserRole.PLATFORM_ADMIN
             else CourseModule.id == module_id,
         )
-    )
-    if module is None:
+    ) if module_id else None
+    if module_id and module is None:
         raise LookupError("Module not found")
-    course = db.get(Course, module.course_id)
+    course = db.get(Course, module.course_id if module else course_id)
     if course is None:
         raise LookupError("Course not found")
     ensure_course_manager(user, course)
     from app.models.course import Lesson
 
     lesson = Lesson(
-        module_id=module.id,
+        module_id=module.id if module else None,
+        course_id=course.id,
+        publication_status=payload.publication_status,
+        publish_at=_as_utc(payload.publish_at),
+        required_material_count=payload.required_material_count,
         title=payload.title.strip(),
         kind=payload.kind,
         position=payload.position,
@@ -133,7 +137,7 @@ def add_lesson(db: Session, user: User, module_id: uuid.UUID, payload: LessonCre
         # endpoint; the create payload can never plant a storage key.
         # Public embed URLs (validated http(s) only) are public by design.
         video_asset_key=payload.external_video_url,
-        video_duration_seconds=payload.video_duration_seconds,
+        video_duration_seconds=None,
         price_egp=payload.price_egp,
     )
     db.add(lesson)
@@ -142,7 +146,7 @@ def add_lesson(db: Session, user: User, module_id: uuid.UUID, payload: LessonCre
     return lesson
 
 
-def delete_lesson(db: Session, user: User, module_id: uuid.UUID, lesson_id: uuid.UUID) -> None:
+def delete_lesson(db: Session, user: User, module_id: uuid.UUID | None, lesson_id: uuid.UUID) -> None:
     from app.models.course import Lesson
     from app.models.transcript import Transcript, TranscriptSegment, TranscriptionJob
     from app.models.progress import LessonProgress, VideoEvent
@@ -151,10 +155,7 @@ def delete_lesson(db: Session, user: User, module_id: uuid.UUID, lesson_id: uuid
     lesson = db.scalar(select(Lesson).where(Lesson.id == lesson_id, Lesson.module_id == module_id))
     if lesson is None:
         raise LookupError("Lesson not found")
-    module = db.get(CourseModule, module_id)
-    if module is None:
-        raise LookupError("Module not found")
-    course = db.get(Course, module.course_id)
+    course = db.get(Course, lesson.course_id)
     if course is None:
         raise LookupError("Course not found")
     ensure_course_manager(user, course)
@@ -230,8 +231,7 @@ def _validate_assessment_scope(db: Session, course, module_id: uuid.UUID | None,
         lesson = db.get(Lesson, lesson_id)
         if lesson is None:
             raise ValueError("Lesson not found")
-        module = db.get(CourseModule, lesson.module_id)
-        if module is None or module.course_id != course.id:
+        if lesson.course_id != course.id:
             raise ValueError("Lesson does not belong to this course")
     return module_id, lesson_id
 
@@ -1104,11 +1104,11 @@ def course_analytics(db: Session, user: User, course_id: uuid.UUID) -> dict[str,
         db.execute(
             select(LessonProgress.completion_percent)
             .join(Lesson, Lesson.id == LessonProgress.lesson_id)
-            .join(CourseModule, CourseModule.id == Lesson.module_id).join(
+            .join(
                 Enrollment,
                 (Enrollment.student_id == LessonProgress.student_id)
-                & (Enrollment.course_id == CourseModule.course_id),
-            ).where(CourseModule.course_id == course.id,
+                & (Enrollment.course_id == Lesson.course_id),
+            ).where(Lesson.course_id == course.id,
                     LessonProgress.institution_id == course.institution_id,
                     Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]))
         )

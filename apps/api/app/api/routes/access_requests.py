@@ -47,8 +47,7 @@ Reviewer = Annotated[
 def _lesson_and_course(db: Session, lesson_id: uuid.UUID) -> tuple[Lesson, Course]:
     row = db.execute(
         select(Lesson, Course)
-        .join(CourseModule, Lesson.module_id == CourseModule.id)
-        .join(Course, CourseModule.course_id == Course.id)
+        .join(Course, Lesson.course_id == Course.id)
         .where(Lesson.id == lesson_id)
     ).first()
     if not row:

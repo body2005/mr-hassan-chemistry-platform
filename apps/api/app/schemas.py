@@ -213,6 +213,16 @@ class ModuleCreateRequest(BaseModel):
 
 
 class LessonCreateRequest(BaseModel):
+    publication_status: Literal['draft', 'published'] = 'published'
+    publish_at: datetime | None = None
+    required_material_count: int = Field(default=0, ge=0, le=100)
+
+    @field_validator('publish_at')
+    @classmethod
+    def publication_timezone(cls, value):
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError('Publication time must include a timezone')
+        return value
     title: str = Field(min_length=2, max_length=200)
     kind: LessonKind
     position: int = Field(ge=1, le=10_000)
@@ -257,6 +267,11 @@ class LessonResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    course_id: uuid.UUID
+    module_id: uuid.UUID | None = None
+    publication_status: str = 'published'
+    publish_at: datetime | None = None
+    required_material_count: int = 0
     title: str
     kind: LessonKind
     position: int
@@ -281,6 +296,7 @@ class ModuleResponse(BaseModel):
     id: uuid.UUID
     title: str
     position: int
+    is_unassigned: bool = False
     lessons: list[LessonResponse] = []
 
 
@@ -562,12 +578,31 @@ class QuizAttemptResponse(BaseModel):
     submitted_at: datetime | None
     status: AttemptStatus
     score: float | None
+    calculated_score: float | None = None
+    final_percentage: float | None = None
     total_points: float | None
     is_practice: bool = False
     grading_status: str
     approval_status: str = "pending"
     results_approved_at: datetime | None = None
     results_approved_by: uuid.UUID | None = None
+
+
+class ApproveQuizResultRequest(BaseModel):
+    final_percentage: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
+    notes: str | None = Field(default=None, max_length=20000)
+
+
+class LessonPublicationRequest(BaseModel):
+    publication_status: Literal['draft', 'published']
+    publish_at: datetime | None = None
+
+    @field_validator('publish_at')
+    @classmethod
+    def publication_timezone(cls, value):
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError('Publication time must include a timezone')
+        return value
 
 
 class AssignmentAttemptResponse(BaseModel):

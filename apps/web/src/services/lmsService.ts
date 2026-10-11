@@ -89,11 +89,15 @@ type ApiCourse = {
   updated_at: string;
   price_egp: number;
   modules: Array<{
+    is_unassigned?: boolean;
     id: string;
     title: string;
     position: number;
     lessons: Array<{
       id: string;
+      publication_status?: 'draft' | 'published';
+      publish_at?: string | null;
+      required_material_count?: number;
       title: string;
       kind: "video" | "article" | "live";
       position: number;
@@ -247,7 +251,7 @@ function mapApiCourse(course: ApiCourse): Course {
           );
           return {
             id: lesson.id,
-            moduleId: module.id,
+            moduleId: module.is_unassigned ? undefined : module.id,
             unitTitle: module.title,
             isRevision,
             courseId: course.id,
@@ -255,6 +259,10 @@ function mapApiCourse(course: ApiCourse): Course {
             title: lesson.title,
             description: (lesson.content || "").replace("<!--is_revision:true-->", "").trim(),
             durationMinutes: Math.ceil((lesson.video_duration_seconds || 0) / 60),
+            durationSeconds: lesson.video_duration_seconds || undefined,
+            publicationStatus: lesson.publication_status,
+            publishAt: lesson.publish_at,
+            requiredMaterialCount: lesson.required_material_count,
             durationFormatted: lesson.video_duration_seconds
               ? `${Math.ceil(lesson.video_duration_seconds / 60)} دقيقة`
               : "",
@@ -484,6 +492,7 @@ export interface BootstrapData {
 
 export const bootstrapService = {
   async getBootstrap(): Promise<BootstrapData> {
+    const generation = getApiAuthGeneration();
     // On reload, bootstrap determines cookie identity. No JS-readable token
     // is needed; only a proven invalid in-memory session skips the probe.
     if (isSessionKnownInvalid()) {
@@ -511,6 +520,8 @@ export const bootstrapService = {
         entitlements: StudentEntitlement[];
         settings: Record<string, unknown>;
       }>("/bootstrap", { cacheTtlMs: 15_000 });
+
+      if (generation !== getApiAuthGeneration()) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
 
       if (!res.authenticated || !res.user) {
         markBrowserSessionActive(false);
@@ -1268,7 +1279,11 @@ export const courseService = {
     return res;
   },
 
-  async addLesson(moduleId: string, payload: {
+  async addLesson(moduleId: string | undefined, payload: {
+    course_id?: string;
+    publication_status?: 'draft' | 'published';
+    publish_at?: string | null;
+    required_material_count?: number;
     title: string;
     kind: "video" | "article" | "live";
     position: number;
@@ -1277,7 +1292,7 @@ export const courseService = {
     video_duration_seconds?: number;
     price_egp?: number;
   }): Promise<{ id: string }> {
-    const res = await apiRequest<{ id: string }>(`/modules/${moduleId}/lessons`, {
+    const res = await apiRequest<{ id: string }>(moduleId ? `/modules/${moduleId}/lessons` : `/courses/${payload.course_id}/lessons`, {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -1304,8 +1319,12 @@ export const courseService = {
     );
   },
 
-  async deleteLesson(moduleId: string, lessonId: string): Promise<void> {
-    await apiRequest<void>(`/modules/${moduleId}/lessons/${lessonId}`, { method: "DELETE" });
+  async updateLessonPublication(lessonId: string, publication_status: 'draft' | 'published', publish_at: string | null): Promise<void> {
+    await apiRequest(`/lessons/${lessonId}/publication`, { method: 'PATCH', body: JSON.stringify({ publication_status, publish_at }) });
+    invalidateApiCache('/courses');
+  },
+  async deleteLesson(moduleId: string | undefined, lessonId: string): Promise<void> {
+    await apiRequest<void>(moduleId ? `/modules/${moduleId}/lessons/${lessonId}` : `/lessons/${lessonId}`, { method: "DELETE" });
     invalidateApiCache("/courses");
   },
 };

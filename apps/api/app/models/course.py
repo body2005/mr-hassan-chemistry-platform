@@ -109,9 +109,15 @@ class Lesson(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "lessons"
     __table_args__ = (UniqueConstraint("module_id", "position", name="uq_lessons_module_position"),)
 
-    module_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("course_modules.id", ondelete="CASCADE"), index=True, nullable=False
+    module_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("course_modules.id", ondelete="CASCADE"), index=True, nullable=True
     )
+    course_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("courses.id", ondelete="CASCADE"), index=True, nullable=False)
+    publication_status: Mapped[str] = mapped_column(String(20), default="published", server_default="published", nullable=False)
+    publish_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    release_announced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    release_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    required_material_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     kind: Mapped[LessonKind] = mapped_column(
         Enum(LessonKind, name="lesson_kind", native_enum=False, values_callable=enum_values),
@@ -131,6 +137,19 @@ class Lesson(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     price_egp: Mapped[float] = mapped_column(Numeric(10, 2), default=0, nullable=False)
 
     module = relationship("CourseModule", back_populates="lessons")
+
+
+# Keep older authorized import scripts that construct module-bound lessons
+# compatible; the database still requires a real course FK for every lesson.
+from sqlalchemy import event, select
+
+@event.listens_for(Lesson, "before_insert")
+def _derive_lesson_course(mapper, connection, target):
+    if target.module_id:
+        course_id = connection.scalar(select(CourseModule.course_id).where(CourseModule.id == target.module_id))
+        if target.course_id is not None and target.course_id != course_id:
+            raise ValueError("Lesson unit and course do not match")
+        target.course_id = course_id
 
 
 class Enrollment(UUIDPrimaryKeyMixin, TimestampMixin, Base):

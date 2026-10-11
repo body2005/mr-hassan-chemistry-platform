@@ -68,8 +68,7 @@ def has_lesson_entitlement(db: Session, student: User, lesson_id: uuid.UUID) -> 
 def _lesson_and_course(db: Session, lesson_id: uuid.UUID) -> tuple[Lesson | None, Course | None]:
     row = db.execute(
         select(Lesson, Course)
-        .join(CourseModule, Lesson.module_id == CourseModule.id)
-        .join(Course, CourseModule.course_id == Course.id)
+        .join(Course, Lesson.course_id == Course.id)
         .where(Lesson.id == lesson_id)
     ).first()
     return (row[0], row[1]) if row else (None, None)
@@ -107,6 +106,9 @@ def can_access_lesson_content(db: Session, user: User, lesson_id: uuid.UUID) -> 
         return False
     if user.role in {UserRole.TEACHER, UserRole.INSTITUTION_ADMIN}:
         return user.role == UserRole.INSTITUTION_ADMIN or course.teacher_id == user.id
+    from app.services.lesson_release import lesson_is_available
+    if not lesson_is_available(db, lesson, course):
+        return False
     enrollment = db.scalar(
         select(Enrollment.id).where(
             Enrollment.course_id == course.id,
@@ -134,6 +136,9 @@ def accessible_course_lesson_ids(db: Session, user: User, course: Course,
         return {lesson.id for lesson in lessons}
     if user.role != UserRole.STUDENT or not enrolled:
         return set()
+    from app.services.lesson_release import available_lesson_ids
+    ready = available_lesson_ids(db, lessons, {course.id: course})
+    lessons = [lesson for lesson in lessons if lesson.id in ready]
     entitlements = db.scalars(select(StudentEntitlement).where(
         StudentEntitlement.institution_id == user.institution_id,
         StudentEntitlement.student_id == user.id,

@@ -1899,12 +1899,13 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                         <button
                           type="button"
                           onClick={() => handleCancelSchedule(wizardState.selectedDate)}
+                            className="destructive-action"
                           style={{
                             padding: "8px 14px",
                             borderRadius: "8px",
-                            border: "1px solid #fca5a5",
-                            background: "#fee2e2",
-                            color: "#b91c1c",
+                            border: "1px solid #B91C1C",
+                            background: "#762828",
+                            color: "#FFFFFF",
                             fontSize: "12px",
                             fontWeight: 800,
                             cursor: "pointer",

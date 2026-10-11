@@ -48,8 +48,7 @@ def ingest_video_events(
 
         lesson_access = db.scalar(
             select(Lesson.id)
-            .join(CourseModule, Lesson.module_id == CourseModule.id)
-            .join(Course, CourseModule.course_id == Course.id)
+            .join(Course, Lesson.course_id == Course.id)
             .join(Enrollment, Enrollment.course_id == Course.id)
             .where(
                 Lesson.id == event.lesson_id,

@@ -171,4 +171,4 @@ jobs:
       # The PR checkout has only source. This does NOT certify previously
       # deleted credentials in Git history; that requires a separate audit.
       - name: Scan the current checkout, never upload discovered credentials
-        run: docker run --rm -v "$PWD:/repo:ro" zricethezav/gitleaks:v8.24.3@sha256:5d0147dc25c78f8cc2b9861ff8f5c9b4a41419ed60a9ce2217de5a215270b42b detect --source /repo --no-git --redact --exit-code=1
+        run: docker run --rm -v "$PWD:/repo:ro" zricethezav/gitleaks:v8.24.3@sha256:5d0147dc25c78f8cc2b9861ff8f5c9b4a41419ed60a9ce2217de5a215270b42b detect --source /repo --no-git --redact --verbose --exit-code=1
