@@ -204,6 +204,16 @@ def open_material_stream(db: Session, user: User, lesson_id: uuid.UUID, asset_id
 
     if not asset.object_key:
         raise HTTPException(status_code=404, detail="Material file missing")
+    # Legacy LessonAsset rows may reference a clear video/original. Materials
+    # are downloadable; they must not bypass the session-bound video routes,
+    # even when paid DRM is disabled. This also covers preview requests.
+    raw_key = asset.object_key.split('/', 3)[-1] if asset.object_key.startswith('s3://') else asset.object_key.lstrip('/')
+    extension = os.path.splitext(asset.filename or raw_key)[1].lower()
+    if (asset.asset_kind == 'video' or (asset.mime_type or '').lower().startswith('video/')
+            or raw_key.startswith(('video-assets/', 'video-originals/', 'video-quarantine/', 'lesson_videos/'))
+            or asset.object_key == lesson.video_asset_key
+            or extension in {'.mp4', '.m4v', '.mov', '.webm', '.mkv', '.avi', '.mpeg', '.mpg', '.3gp', '.m3u8', '.m4s', '.ts'}):
+        raise HTTPException(403, 'Video must be viewed through the authorized player')
     from app.core.storage import get_storage_provider
 
     storage = get_storage_provider()

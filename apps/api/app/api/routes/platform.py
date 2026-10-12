@@ -579,6 +579,8 @@ def stream_lesson_video(lesson_id: uuid.UUID, request: Request, user: CurrentUse
         raise HTTPException(status_code=403, detail="Student playback requires a video stream token")
     enforce_rate_limit(request, bucket="lesson-video-preview", category="read")
     lesson, _ = _require_lesson_access(db, user, lesson_id)
+    if (lesson.video_asset_key or '').endswith('.m3u8'):
+        raise HTTPException(409, 'Adaptive video requires HLS playback')
     db.close()
     if lesson.video_asset_key and not lesson.video_asset_key.startswith("/api/"):
         media_type = mimetypes.guess_type(lesson.video_asset_key)[0] or "video/mp4"
@@ -628,6 +630,8 @@ def create_lesson_video_token(lesson_id: uuid.UUID, request: Request, response: 
     session_id = str(session_payload.get("jti") or "")
     if not session_id:
         raise HTTPException(status_code=401, detail="A live session is required for video playback")
+    from app.services.video_playback import current_hls_generation
+    adaptive = current_hls_generation(db, lesson)
     # Authorize first, then check the private object before consuming a playback
     # session. Missing ephemeral files must not start a token renewal loop.
     if lesson.video_asset_key and not lesson.video_asset_key.startswith("/api/"):
@@ -656,10 +660,7 @@ def create_lesson_video_token(lesson_id: uuid.UUID, request: Request, response: 
         nonce=session_id,
         family_id=family_id,
     )
-    from app.models.video_upload import VideoUpload
-    adaptive = db.scalar(select(VideoUpload).where(VideoUpload.lesson_id == lesson.id,
-        VideoUpload.status == "ready").order_by(VideoUpload.created_at.desc()).limit(1))
-    hls = bool(adaptive and lesson.video_asset_key and lesson.video_asset_key.endswith(f"/{adaptive.manifest_key}"))
+    hls = adaptive is not None
     stream_url = (f"/api/v1/lessons/{lesson.id}/hls/{adaptive.id}/master.m3u8?token={token}" if hls
                   else f"/api/v1/lessons/{lesson.id}/stream?token={token}")
     return {
@@ -727,7 +728,7 @@ def stream_lesson_authenticated_range(lesson_id: uuid.UUID, request: Request, db
     # Authentication is complete; do not hold a DB connection while a student
     # watches a long video or the browser buffers parallel byte ranges.
     db.close()
-    if lesson.video_asset_key and lesson.video_asset_key.endswith("/master.m3u8"):
+    if (lesson.video_asset_key or '').endswith('.m3u8'):
         raise HTTPException(409, "Adaptive video requires HLS playback")
     if lesson.video_asset_key and not lesson.video_asset_key.startswith("/api/"):
         media_type = mimetypes.guess_type(lesson.video_asset_key)[0] or "video/mp4"
