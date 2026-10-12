@@ -1,5 +1,4 @@
 import React, { useState } from "react";
-import { ResponsiveTable } from "../components/ResponsiveTable";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -702,8 +701,8 @@ export const SubmissionsView: React.FC = () => {
       </div>
 
       {/* Submissions & Student Progress Table (Requirement: Image 1 + Grading Action) */}
-      <div className="table-responsive" style={{ background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "16px", overflowX: "auto", overflowY: "auto", maxHeight: "560px", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
-        <ResponsiveTable className="lms-table" style={{ minWidth: "1050px" }}>
+      <div className="table-responsive student-followup-scroll" role="region" aria-label="جدول متابعة الطلاب — اسحب أفقيًا لعرض باقي المعلومات" tabIndex={0} style={{ background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "16px", overflowX: "auto", overflowY: "auto", maxHeight: "560px", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+        <table className="lms-table student-followup-table" style={{ minWidth: "1050px" }}>
           <thead>
             <tr>
               <th style={{ textAlign: "right", color: "var(--text-main)" }}>اسم الطالب</th>
@@ -842,7 +841,6 @@ export const SubmissionsView: React.FC = () => {
                         {formatGrade(student.totalOverallGrade)}
                       </strong>
                       {!!student.pendingAssessmentsCount && <small style={{ display: "block", color: "var(--text-muted)" }}>إجمالي مؤقت · {student.pendingAssessmentsCount} بانتظار التصحيح</small>}
-                      {!!student.unattemptedAssessmentsCount && <small style={{ display: "block", color: "var(--text-muted)" }}>{student.unattemptedAssessmentsCount} لم تُحل</small>}
                     </td>
                     <td style={{ textAlign: "center" }}>
                       {student.totalOverallGrade === null ? <span style={{ color: "var(--text-muted)" }}>—</span> : isBelowMin ? (
@@ -924,7 +922,7 @@ export const SubmissionsView: React.FC = () => {
               })
             )}
           </tbody>
-        </ResponsiveTable>
+        </table>
       </div>
 
       {/* Assignment Grading Modal */}

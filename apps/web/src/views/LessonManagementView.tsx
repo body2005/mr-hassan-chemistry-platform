@@ -396,6 +396,9 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       return;
     }
 
+    try { cairoToUtc(publishDateTime); }
+    catch { notify('حدد تاريخ ووقت بداية إتاحة الدرس بتوقيت مصر.', 'danger'); return; }
+
     const hasVideo = Boolean(selectedVideo);
     if (!hasVideo && attachedFiles.length === 0) {
       notify("يجب اختيار ملف فيديو أو مذكرة للدرس لإتمام عملية الرفع.", 'danger');
@@ -426,7 +429,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
 
     setIsUploading(true);
     try {
-      const publishAt = publishDateTime ? cairoToUtc(publishDateTime) : null;
+      const publishAt = cairoToUtc(publishDateTime);
       const endsAt = availableUntil ? cairoToUtc(availableUntil) : null;
       if (publishAt && endsAt && endsAt <= publishAt) throw new Error('موعد انتهاء الإتاحة يجب أن يكون بعد موعد البداية.');
       if (selectedModuleId === 'new' && !newModuleTitle.trim()) throw new Error('اكتب اسم الوحدة الجديدة أو اختَر بدون وحدة.');
@@ -597,7 +600,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
           if (savingPublication) return;
           setSavingPublication(true);
           try {
-            const due = editPublishTime ? cairoToUtc(editPublishTime) : null;
+            const due = cairoToUtc(editPublishTime);
             const end = editAvailableUntil ? cairoToUtc(editAvailableUntil) : null;
             if (due && end && end <= due) throw new Error('موعد انتهاء الإتاحة يجب أن يكون بعد موعد البداية.');
             await courseService.updateLessonPublication(editingPublication.id, 'published', due,
@@ -612,7 +615,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
           <LessonScheduleFields start={editPublishTime} end={editAvailableUntil} announce={editAnnounceStudents}
             onStart={setEditPublishTime} onEnd={setEditAvailableUntil}
             onAnnounce={setEditAnnounceStudents} />
-          <p>تغيير الموعد أو إلغاء الجدولة يحافظ على الفيديو والمرفقات.</p>
+          <p>تغيير موعد البداية أو إلغاء موعد النهاية يحافظ على الفيديو والمرفقات.</p>
           <button type="submit" className="btn-primary" disabled={savingPublication}>{savingPublication ? 'جارٍ الحفظ…' : 'حفظ النشر'}</button>
           <button type="button" className="btn-secondary" disabled={savingPublication} onClick={() => setEditingPublication(null)}>إلغاء</button>
         </form>

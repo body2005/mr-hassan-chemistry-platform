@@ -27,7 +27,7 @@ async function fixture(page: Page, role: 'teacher' | 'student') {
     else if (path === '/auth/profile-summary') body = {};
     else if (path === '/payments/config') body = { methods: [], currency: 'EGP' };
     else if (path === '/users') body = [{ ...user, id: 'student', role: 'student', display_name: 'طالب بعنوان طويل',
-      total_overall_grade: 50, quiz_success_rate: 100, homework_success_rate: 0, custom_field_values: {} }];
+      total_overall_grade: 50, quiz_success_rate: 100, homework_success_rate: 0, unattempted_assessments_count: 1, custom_field_values: {} }];
     else if (path === '/settings/public') body = {};
     else if (path === '/lessons/lesson/video-token') body = { stream_url: '/api/v1/missing-video' };
     if (path === '/realtime/stream') return route.fulfill({ status: 200, contentType: 'text/event-stream', body: ': layout fixture\n\n' });
@@ -41,7 +41,8 @@ async function fits(page: Page) {
     .filter(node => {
       const style = getComputedStyle(node), box = node.getBoundingClientRect();
       if (!box.width || !box.height || style.position === 'absolute' || style.position === 'fixed'
-          || style.visibility === 'hidden' || style.display === 'none' || node.closest('thead')) return false;
+          || style.visibility === 'hidden' || style.display === 'none' || node.closest('thead')
+          || node.closest('.student-followup-table')) return false;
       return box.left < -2 || box.right > innerWidth + 2;
     }).map(node => `${node.tagName}.${node.className}`).slice(0, 10));
   expect(overflow).toEqual([]);
@@ -69,6 +70,20 @@ for (const role of ['teacher', 'student'] as const) {
         });
         await page.waitForTimeout(150);
         await fits(page);
+        if (tab === 'submissions') {
+          await expect(page.getByText('1 لم تُحل', { exact: true })).toHaveCount(0);
+          expect(await page.locator('.student-followup-table tbody tr').first().evaluate(row =>
+            getComputedStyle(row).display)).toBe('table-row');
+        }
+        if (width < 768) {
+          await expect(page.locator('.topbar-home')).toBeHidden();
+          if (tab === 'notifications') {
+            const columns = await page.locator('.calendar-days').evaluate(grid =>
+              getComputedStyle(grid).gridTemplateColumns.split(' ').length);
+            expect(columns).toBeLessThan(7);
+            await expect(page.locator('.calendar-cell-weekday').first()).toBeVisible();
+          }
+        }
         expect(pageErrors).toEqual([]);
         if (width === 360 && ['lessonmanagement', 'submissions', 'payments'].includes(tab)) {
           await page.screenshot({ path: test.info().outputPath(`${tab}-360.png`), fullPage: true });

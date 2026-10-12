@@ -37,6 +37,12 @@ button, a, input, select, textarea { touch-action: manipulation; }
 .lesson-schedule-notice { border: 1px solid #10b981; border-radius: 9px; background: rgb(16 185 129 / 10%); }
 .lesson-schedule-notice input { width: 22px; height: 22px; flex-shrink: 0; accent-color: #059669; }
 .lesson-schedule-notice small { display: block; margin-top: 6px; color: var(--text-muted); }
+.student-followup-scroll { max-inline-size: 100%; overscroll-behavior-inline: contain; }
+.calendar-weekdays, .calendar-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.calendar-weekdays { margin-bottom: 8px; text-align: center; }
+.calendar-cell { min-width: 0; }
+.calendar-cell-weekday { display: none; }
+.calendar-cell:focus-visible { outline: 3px solid var(--text-main); outline-offset: 2px; }
 
 @media (max-width: 767px) {
   .page-container { padding: 16px 12px calc(80px + env(safe-area-inset-bottom)) !important; }
@@ -44,11 +50,20 @@ button, a, input, select, textarea { touch-action: manipulation; }
   .icon-btn { min-width: 44px; width: 44px !important; height: 44px !important; flex-shrink: 0; }
   .topbar { padding-inline: 8px !important; gap: 6px; }
   .topbar-identity { flex: 1; gap: 6px !important; }
-  .topbar-home { min-width: 0; }
+  .topbar-home { display: none !important; }
   .topbar-brand-title { max-width: 100% !important; font-size: clamp(11px, 3vw, 14px) !important; }
   .topbar-brand-text { flex: 1; overflow: hidden; }
   .topbar-brand-subtitle { display: none; }
   .brand-mark { display: none !important; }
+  .calendar-weekdays, .calendar-empty-cell { display: none; }
+  .calendar-month-navigation { width: 100%; min-width: 0; }
+  .calendar-month-navigation > button { flex-shrink: 0; }
+  .calendar-month-picker { flex: 1; min-width: 0; }
+  .calendar-month-picker > button { min-width: 0 !important; width: 100%; padding-inline: 6px !important; }
+  .calendar-days { grid-template-columns: repeat(auto-fit, minmax(min(100%, 78px), 1fr)); gap: 8px; }
+  .calendar-days .calendar-cell { min-height: 76px !important; padding: 8px 4px !important; }
+  .calendar-days .calendar-cell-day { font-size: 16px !important; white-space: nowrap; }
+  .calendar-cell-weekday { display: block; font-size: 11px; font-weight: 600; white-space: nowrap; }
   .notif-dropdown { position: fixed !important; top: 66px; inset-inline: 8px; width: auto !important; max-height: calc(100dvh - 82px); overflow-y: auto; }
   .modal-overlay { padding: 8px !important; }
   .modal-content { width: 100% !important; max-width: 100% !important; max-height: calc(100dvh - 16px) !important; padding: 16px !important; overflow-y: auto; }

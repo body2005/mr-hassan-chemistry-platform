@@ -535,6 +535,8 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       cells.push(
         <div
           key={`empty-${i}`}
+          className="calendar-empty-cell"
+          aria-hidden="true"
           style={{
             minHeight: "48px",
             background: "var(--bg-surface)",
@@ -649,9 +651,12 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       }
 
       cells.push(
-        <div
+        <button
           key={dateStr}
+          type="button"
           className="calendar-cell"
+          aria-label={`${dayName} ${dayNum} ${getMonthYearTitle(calendarCurrentDate)}${eventTypeLabel ? ` — ${eventTypeLabel}` : ''}${cellTime ? ` — ${cellTime}` : ''}`}
+          aria-pressed={isSelected}
           onClick={() => {
             setSelectedDayDate(dateStr);
             if (isTeacher) {
@@ -671,6 +676,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
             gap: "2px",
             cursor: "pointer",
             transition: "all 0.15s ease",
+            fontFamily: 'inherit',
             boxShadow: isSelected
               ? "0 4px 12px rgba(0, 0, 0, 0.18)"
               : hasQuiz
@@ -684,6 +690,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
               : "none",
           }}
         >
+          <span className="calendar-cell-weekday">{dayName}</span>
           {cellTime && (
             <span
               style={{
@@ -711,6 +718,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
           </span>
           {eventTypeLabel && (
             <span
+              className="calendar-cell-badge"
               style={{
                 fontSize: "9.5px",
                 fontWeight: 800,
@@ -726,7 +734,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
               {eventTypeLabel}
             </span>
           )}
-        </div>
+        </button>
       );
     }
 
@@ -1235,6 +1243,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
               FULL MONTH INTERACTIVE CALENDAR GRID (التقويم الشهري الكامل)
              ========================================================================= */}
           <div
+            className="month-calendar"
             style={{
               background: "var(--bg-surface-secondary)",
               border: "1px solid var(--border-color)",
@@ -1246,7 +1255,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
             {/* Month Navigation Header (Month Name between the two arrows) */}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px", flexWrap: "wrap", gap: "8px" }}>
               {/* Previous / Month Name / Next Group */}
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <div className="calendar-month-navigation" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <button
                   onClick={() => setCalendarCurrentDate((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))}
                   style={{
@@ -1268,7 +1277,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                 </button>
 
                 {/* Clickable Month & Year Indicator with Popover */}
-                <div style={{ position: "relative" }}>
+                <div className="calendar-month-picker" style={{ position: "relative" }}>
                   <button
                     type="button"
                     onClick={() => setIsMonthPickerOpen((v) => !v)}
@@ -1522,7 +1531,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
             </div>
 
             {/* Weekdays Grid Header */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "4px", marginBottom: "8px", textAlign: "center" }}>
+            <div className="calendar-weekdays">
               {WEEK_DAYS.map((d) => (
                 <div key={d} style={{ fontSize: "12.5px", fontWeight: 800, color: "var(--text-muted)", padding: "4px 0" }}>
                   {d}
@@ -1531,7 +1540,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
             </div>
 
             {/* Month Days Grid */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "4px" }}>
+            <div className="calendar-days">
               {renderMonthCalendarCells()}
             </div>
           </div>

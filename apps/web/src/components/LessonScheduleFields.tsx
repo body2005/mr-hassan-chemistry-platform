@@ -10,7 +10,7 @@ interface Props {
 export function LessonScheduleFields(props: Props) {
   return <fieldset className="lesson-schedule-fields">
     <legend>مواعيد إتاحة الدرس</legend>
-    <p>بتوقيت مصر. اترك البداية فارغة للإتاحة بعد اكتمال الرفع، والنهاية فارغة للإتاحة المستمرة.</p>
+    <p>بتوقيت مصر. تاريخ ووقت البداية مطلوبان، والإتاحة بعد جاهزية الفيديو والمرفقات. النهاية اختيارية؛ اتركها فارغة للإتاحة المستمرة.</p>
     {(['start', 'end'] as const).map(kind => {
       const value = props[kind];
       const [date = '', time = ''] = value.split('T');
@@ -18,13 +18,13 @@ export function LessonScheduleFields(props: Props) {
       const label = kind === 'start' ? 'بداية' : 'انتهاء';
       return <div className="lesson-schedule-boundary" key={kind}>
         <strong>{kind === 'start' ? 'موعد النشر وبدء الإتاحة' : 'موعد انتهاء الإتاحة وإغلاق الدرس'}</strong>
-        <label>تاريخ {label} الإتاحة
-          <input type="date" value={date} required={Boolean(time)} onChange={e => change(e.target.value || time ? `${e.target.value}T${time}` : '')} />
+        <label>تاريخ {label} الإتاحة {kind === 'start' ? '(مطلوب)' : '(اختياري)'}
+          <input type="date" value={date} required={kind === 'start' || Boolean(time)} onChange={e => change(e.target.value || time ? `${e.target.value}T${time}` : '')} />
         </label>
-        <label>وقت {label} الإتاحة
-          <input type="time" value={time} required={Boolean(date)} onChange={e => change(date || e.target.value ? `${date}T${e.target.value}` : '')} />
+        <label>وقت {label} الإتاحة {kind === 'start' ? '(مطلوب)' : '(اختياري)'}
+          <input type="time" value={time} required={kind === 'start' || Boolean(date)} onChange={e => change(date || e.target.value ? `${date}T${e.target.value}` : '')} />
         </label>
-        {value && <button type="button" className="btn-secondary" onClick={() => change('')}>إلغاء موعد {label} الإتاحة</button>}
+        {kind === 'end' && value && <button type="button" className="btn-secondary" onClick={() => change('')}>إلغاء موعد {label} الإتاحة</button>}
       </div>;
     })}
     <label className="lesson-schedule-notice">
