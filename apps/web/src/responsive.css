@@ -23,7 +23,7 @@ button, a, input, select, textarea { touch-action: manipulation; }
 }
 .lesson-schedule-fields {
   min-width: 0; margin: 16px 0; padding: 16px; border: 1px solid var(--border-color);
-  border-radius: 12px; background: var(--bg-muted, #f1f5f9); color: var(--text-main);
+  border-radius: 12px; background: var(--bg-surface-secondary); color: var(--text-main);
 }
 .lesson-schedule-fields legend { font-weight: 800; padding-inline: 6px; }
 .lesson-schedule-fields p { color: var(--text-muted); font-size: 13px; line-height: 1.8; margin: 0 0 12px; }
