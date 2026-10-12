@@ -133,11 +133,11 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   const [selectedModuleId, setSelectedModuleId] = useState<string>("");
   const [publishDateTime, setPublishDateTime] = useState('');
   const [availableUntil, setAvailableUntil] = useState('');
-  const [announceStudents, setAnnounceStudents] = useState(true);
+  const [announceStudents, setAnnounceStudents] = useState(false);
   const [editingPublication, setEditingPublication] = useState<VideoLesson | null>(null);
   const [editPublishTime, setEditPublishTime] = useState('');
   const [editAvailableUntil, setEditAvailableUntil] = useState('');
-  const [editAnnounceStudents, setEditAnnounceStudents] = useState(true);
+  const [editAnnounceStudents, setEditAnnounceStudents] = useState(false);
   const [savingPublication, setSavingPublication] = useState(false);
   const [newModuleTitle, setNewModuleTitle] = useState("");
   const [isRevision, setIsRevision] = useState(false);
@@ -544,7 +544,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     setNewModuleTitle("");
     setPublishDateTime('');
     setAvailableUntil('');
-    setAnnounceStudents(true);
+    setAnnounceStudents(false);
     setUploadSuccess(true);
     setTimeout(() => setUploadSuccess(false), 5000);
   }
@@ -1451,7 +1451,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                             <button type="button" className="btn-secondary" onClick={() => {
                               setEditingPublication(lesson);
                               setEditAvailableUntil(lesson.availableUntil ? cairoLocalValue(lesson.availableUntil) : '');
-                              setEditAnnounceStudents(lesson.announceToStudents !== false);
+                              setEditAnnounceStudents(false);
                               setEditPublishTime(lesson.publishAt ? cairoLocalValue(lesson.publishAt) : '');
                             }}>إعدادات النشر{lesson.publicationStatus === 'draft' ? ' — مسودة' : lesson.publishAt ? ' — مجدول' : ''}</button>
                             <button

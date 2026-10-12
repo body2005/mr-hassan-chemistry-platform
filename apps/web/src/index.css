@@ -253,6 +253,21 @@
 }
 
 /* Custom Sleek Scrollbar */
+/* Keep legacy mint action buttons on the same brand surface in both themes.
+   Card and badge tints keep their separate semantic colors. */
+:root button:is(
+  [style*="background: #ecfdf5"],
+  [style*="background: rgb(236, 253, 245)"],
+  [style*="background: rgb(209, 250, 229)"],
+  [style*="background-color: rgb(236, 253, 245)"],
+  [style*="background: var(--bg-accent"],
+  [style*="background-color: var(--bg-accent"]
+) {
+  background: rgb(15 57 43) !important;
+  border-color: rgb(15 57 43) !important;
+  color: #ffffff !important;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
