@@ -9,15 +9,11 @@ import {
   FileUp,
   GraduationCap,
   HandCoins,
-  Infinity as InfinityIcon,
   Landmark,
   LockKeyhole,
-  RefreshCw,
   ShieldCheck,
   Smartphone,
   UserRound,
-  XCircle,
-  Zap,
 } from "lucide-react";
 import { Course, CurrentUser } from "../types/lms";
 import {
@@ -38,22 +34,6 @@ interface PaymentViewProps {
   initialTarget?: PaymentTarget | null;
   onEntitlementsChanged?: () => void;
 }
-
-const statusLabels: Record<PaymentOrder["status"], string> = {
-  pending: "بانتظار رفع الإيصال",
-  under_review: "قيد المراجعة",
-  paid: "تم التفعيل",
-  rejected: "مرفوض",
-  cancelled: "ملغي",
-};
-
-const statusIcons = {
-  pending: Clock3,
-  under_review: RefreshCw,
-  paid: CheckCircle2,
-  rejected: XCircle,
-  cancelled: XCircle,
-};
 
 const methodIcons: Record<PaymentMethod, typeof Landmark> = {
   instapay: Smartphone,
@@ -114,20 +94,17 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
   );
   const [method, setMethod] = useState<PaymentMethod | "">("");
   const [reference, setReference] = useState("");
-  const [note, setNote] = useState("");
+  const [payerName, setPayerName] = useState("");
   const [receipt, setReceipt] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [loadingPayments, setLoadingPayments] = useState(false);
   const [paymentReadError, setPaymentReadError] = useState<string | null>(null);
-  const [hasLoadedPayments, setHasLoadedPayments] = useState(false);
   const paymentReadGeneration = useRef(0);
   const cancelPaymentReads = useCallback(() => { paymentReadGeneration.current++; }, []);
 
   const load = useCallback(async (fresh = false) => {
     const generation = ++paymentReadGeneration.current;
-    setLoadingPayments(true);
     try {
       const [nextConfig, nextOrders, nextEntitlements] = await Promise.all([
         paymentService.getConfig(),
@@ -138,7 +115,6 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
       setConfig(nextConfig);
       setOrders(nextOrders);
       setEntitlements(nextEntitlements);
-      setHasLoadedPayments(true);
       setPaymentReadError(null);
       const firstMethod = nextConfig.methods.find((item) => item.enabled)?.id || "";
       setMethod((current) => current || firstMethod);
@@ -147,14 +123,12 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
         setPaymentReadError(error instanceof Error ? error.message : "تعذر تحديث حالة الدفع. أعد المحاولة يدويًا.");
       }
       throw error;
-    } finally {
-      if (generation === paymentReadGeneration.current) setLoadingPayments(false);
     }
   }, []);
 
   useEffect(() => {
     setOrders([]); setEntitlements([]); setConfig(null);
-    setHasLoadedPayments(false); setPaymentReadError(null);
+    setPaymentReadError(null);
     // An older in-flight read may finish after a review. Reopening this view
     // must use authoritative state, not resurrect its previous TTL entry.
     void load(true).catch(() => undefined);
@@ -241,6 +215,10 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
       toast({ message: "لديك إيصال دفع قيد المراجعة بالفعل لهذا الدرس، يرجى انتظار اعتماد المعلم.", tone: "warning" });
       return;
     }
+    if (!reference.trim() || !payerName.trim()) {
+      toast({ message: "أدخل اسم المحول ورقم المحول", tone: "warning" });
+      return;
+    }
     if (!receipt) {
       toast({ message: "ارفع صورة أو ملف إيصال التحويل", tone: "warning" });
       return;
@@ -252,16 +230,16 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
         product_type: productType,
         product_id: productId,
         payment_method: method,
-        payer_reference: reference || undefined,
-        student_note: note || undefined,
+        payer_reference: reference.trim(),
+        payer_name: payerName.trim(),
       });
       await paymentService.uploadReceipt(order.id, receipt, reference, setProgress);
       await load();
       onEntitlementsChanged?.();
       setReceipt(null);
       setReference("");
-      setNote("");
-      toast({ message: "تم إرسال الإيصال للمراجعة. ستظهر حالة التفعيل هنا.", tone: "success" });
+      setPayerName("");
+      toast({ message: "تم إرسال الإيصال للمراجعة. تابع حالة الطلب من ملفك الشخصي.", tone: "success" });
     } catch (error) {
       toast({ message: error instanceof Error ? error.message : "تعذر إرسال طلب الدفع", tone: "danger" });
     } finally {
@@ -271,6 +249,10 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
 
   return (
     <div className="page-container checkout-page" style={{ padding: "24px 20px 60px", maxWidth: "1200px", margin: "0 auto" }}>
+      {paymentReadError && <div role="alert" style={{ ...card, padding: 16, marginBottom: 16 }}>
+        <p style={{ margin: "0 0 8px" }}>تعذر تحديث بيانات الدفع: {paymentReadError}</p>
+        <button type="button" onClick={() => void load(true).catch(() => undefined)} className="btn-primary">إعادة تحميل بيانات الدفع</button>
+      </div>}
       {/* ── Breadcrumb ── */}
       <nav style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text-muted)", marginBottom: "18px", flexWrap: "wrap" }}>
         <span>الرئيسية</span>
@@ -281,39 +263,100 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
       </nav>
 
       <div className="checkout-layout" style={{ display: "grid", gridTemplateColumns: "minmax(0, 7fr) minmax(0, 5fr)", gap: "24px", alignItems: "start" }}>
-        {/* ═══════════ RIGHT COLUMN: student data + payment ═══════════ */}
+        {/* ═══════════ RIGHT COLUMN: lesson details + payment ═══════════ */}
         <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-          {/* Student data */}
-          <section style={{ ...card, padding: "24px" }}>
-            <div style={sectionHead}>
-              <div style={iconTile}><BadgeCheck size={21} /></div>
-              <div>
-                <h2 style={{ margin: 0, fontSize: "15px", fontWeight: 900, color: "var(--text-main)" }}>بيانات الطالب الأكاديمية</h2>
-                <p style={{ margin: "3px 0 0", fontSize: "11.5px", color: "var(--text-muted)" }}>سيتم ربط المذكرات وبنك الأسئلة والتقييمات بهذه البيانات</p>
-              </div>
+          {/* Course summary */}
+          <section style={{ ...card, padding: "22px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", padding: "4px 10px", borderRadius: "8px", background: "#0f392b", color: "#ffffff", fontSize: "10.5px", fontWeight: 800 }}>
+                <GraduationCap size={12} /> تفاصيل الطلب
+              </span>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "4px 10px", borderRadius: "8px", background: "var(--bg-accent)", color: "#059669", border: "1px solid var(--border-accent)", fontSize: "10.5px", fontWeight: 800 }}>
+                {student?.academicYearLabel || "المرحلة الثانوية"}
+              </span>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
-              <div style={{ gridColumn: "1 / -1" }}>
-                <label style={labelStyle}>اسم الطالب <span style={{ color: "#e11d48" }}>*</span></label>
-                <div style={{ position: "relative" }}>
-                  <input style={{ ...inputStyle, paddingInlineStart: "40px" }} value={student?.name || ""} readOnly />
-                  <UserRound size={17} style={{ position: "absolute", insetInlineEnd: "13px", top: "13px", color: "var(--text-muted)" }} />
+
+            {/* Lesson picker */}
+            <label style={{ ...labelStyle, marginBottom: "12px", display: "block" }}>
+              الدرس المطلوب تفعيله
+              <select value={productId} onChange={(event) => setProductId(event.target.value)} style={{ ...inputStyle, marginTop: "5px" }}>
+                <option value="">اختر درسًا</option>
+                {lessons
+                  .filter((lesson) => Number(lesson.price || 0) > 0)
+                  .map((lesson) => {
+                    const purchased = isLessonPurchased(lesson.id);
+                    const underRev = isLessonUnderReview(lesson.id);
+                    let label = `${lesson.courseTitle} / ${lesson.title} — ${Number(lesson.price || 0).toLocaleString("ar-EG")} ج.م`;
+                    if (purchased) {
+                      label += " (تم الشراء مسبقاً - مفعل)";
+                    } else if (underRev) {
+                      label += " (طلبك قيد المراجعة)";
+                    }
+                    return (
+                      <option key={lesson.id} value={lesson.id} disabled={purchased || underRev}>
+                        {label}
+                      </option>
+                    );
+                  })}
+              </select>
+            </label>
+
+            {selectedLesson ? (
+              <div style={{ borderRadius: "14px", overflow: "hidden", border: "1px solid var(--border-color)", background: "#021f18", color: "#ffffff", padding: "16px", marginBottom: "16px" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "11px", fontFamily: "monospace", color: "#6ee7b7", paddingBottom: "10px", borderBottom: "1px solid rgba(110, 231, 183, 0.25)", marginBottom: "12px" }}>
+                  <span style={{ fontSize: "13.5px", fontWeight: 900, color: "#6ee7b7" }}>{selectedLesson.courseTitle || "مقرر الكيمياء"}</span>
+                  <span style={{ padding: "2px 8px", borderRadius: "6px", background: "rgba(6, 78, 59, 0.9)", color: "#a7f3d0", fontSize: "10.5px", fontWeight: 800, fontFamily: "inherit" }}>{student?.academicYearLabel || "منهج 2025"}</span>
+                </div>
+                <div style={{ paddingTop: "4px" }}>
+                  <div style={{ fontSize: "11px", color: "#6ee7b7", fontWeight: 700, marginBottom: "4px" }}>درس مدفوع — تفعيل فردي</div>
+                  <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 900, color: "#ffffff", lineHeight: 1.5 }}>{selectedLesson.title}</h3>
+                  <div style={{ fontSize: "11px", color: "#d1fae5", fontWeight: 600, marginTop: "4px" }}>
+                    {selectedLesson.durationFormatted || "درس فيديو + مذكرات + كويزات"}
+                  </div>
+                </div>
+                <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px solid rgba(110, 231, 183, 0.25)", display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "11px", color: "#d1fae5" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+                    <div style={{ width: "24px", height: "24px", borderRadius: "50%", background: "#047857", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "10px", fontWeight: 900 }}>ح</div>
+                    <span style={{ fontWeight: 800, color: "#ffffff" }}>مستر حسن شعبان</span>
+                  </div>
+                  <span style={{ fontSize: "10.5px", background: "rgba(2, 44, 34, 0.9)", padding: "2px 8px", borderRadius: "6px", color: "#6ee7b7", fontWeight: 700 }}>محاضرة مسجلة</span>
                 </div>
               </div>
-              <div>
-                <label style={labelStyle}>البريد الإلكتروني</label>
-                <input style={{ ...inputStyle, direction: "ltr", textAlign: "right" }} value={student?.email || ""} readOnly dir="ltr" />
+            ) : (
+              <div style={{ borderRadius: "14px", border: "2px dashed var(--border-color)", padding: "26px 16px", textAlign: "center", marginBottom: "16px", color: "var(--text-muted)" }}>
+                <GraduationCap size={30} style={{ margin: "0 auto 8px", color: "#059669" }} />
+                <p style={{ margin: 0, fontSize: "12.5px", fontWeight: 700 }}>اختر الدرس من القائمة أعلاه لظهور تفاصيل الطلب</p>
               </div>
-              <div>
-                <label style={labelStyle}>رقم الواتساب للتفعيل</label>
-                <input style={{ ...inputStyle, direction: "ltr", textAlign: "right" }} value={student?.studentPhone || ""} readOnly dir="ltr" placeholder="—" />
+            )}
+
+            {selectedLesson && isLessonPurchased(selectedLesson.id) && (
+              <div style={{ marginBottom: "16px", padding: "12px 14px", borderRadius: "10px", background: "#dcfce7", border: "1px solid #86efac", color: "#166534", fontSize: "12.5px", fontWeight: 800, display: "flex", alignItems: "center", gap: "8px" }}>
+                <CheckCircle2 size={16} />
+                <span>هذا الدرس تم شراؤه وتفعيله بالفعل في حسابك، ولا يمكن شراؤه مرة أخرى.</span>
               </div>
-            </div>
-            <div style={{ marginTop: "16px", padding: "12px 14px", borderRadius: "12px", background: "var(--bg-accent)", border: "1px solid var(--border-accent)", display: "flex", alignItems: "flex-start", gap: "10px", fontSize: "11.5px", color: "var(--text-main)" }}>
-              <ShieldCheck size={16} style={{ color: "#059669", flexShrink: 0, marginTop: "1px" }} />
-              <p style={{ margin: 0, lineHeight: 1.7 }}>
-                بمجرد تأكيد المعلم للدفع يتم فوراً فتح درس الكيمياء وكويزاته التفاعلية ومذكراته بصيغة PDF داخل حسابك.
-              </p>
+            )}
+
+            {selectedLesson && isLessonUnderReview(selectedLesson.id) && (
+              <div style={{ marginBottom: "16px", padding: "12px 14px", borderRadius: "10px", background: "#fef3c7", border: "1px solid #fde68a", color: "#92400e", fontSize: "12.5px", fontWeight: 800, display: "flex", alignItems: "center", gap: "8px" }}>
+                <Clock3 size={16} />
+                <span>لديك إيصال دفع قيد مراجعة المعلم بالفعل لهذا الدرس. سيتم تفعيله فور الاعتماد.</span>
+              </div>
+            )}
+
+            {/* Financial breakdown */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px", padding: "16px", borderRadius: "14px", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", fontSize: "12px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", color: "var(--text-muted)" }}>
+                <span>سعر الدرس</span>
+                <span>{amount ? `${amount.toLocaleString("ar-EG")} ج.م` : "—"}</span>
+              </div>
+              <div style={{ height: "1px", background: "var(--border-color)", margin: "2px 0" }} />
+              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+                <span style={{ fontSize: "13px", fontWeight: 900, color: "var(--text-main)" }}>الإجمالي المطلوب</span>
+                <div style={{ display: "flex", alignItems: "baseline", gap: "4px" }}>
+                  <span style={{ fontSize: "24px", fontWeight: 900, color: "#059669" }}>{amount.toLocaleString("ar-EG")}</span>
+                  <span style={{ fontSize: "11px", fontWeight: 800, color: "#059669" }}>ج.م</span>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -327,9 +370,7 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
                   <p style={{ margin: "3px 0 0", fontSize: "11.5px", color: "var(--text-muted)" }}>حوّل المبلغ ثم ارفع إيصال التحويل للمراجعة والتفعيل</p>
                 </div>
               </div>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", padding: "4px 10px", borderRadius: "999px", background: "var(--bg-accent)", color: "#059669", border: "1px solid var(--border-accent)", fontSize: "10.5px", fontWeight: 800 }}>
-                <LockKeyhole size={12} /> بوابة مشفرة
-              </span>
+
             </div>
 
             {/* Method cards grid */}
@@ -401,12 +442,12 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
             {/* Reference + note */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px", marginTop: "16px" }}>
               <label style={labelStyle}>
-                مرجع التحويل (اختياري)
-                <input style={inputStyle} value={reference} onChange={(e) => setReference(e.target.value)} maxLength={160} placeholder="رقم العملية أو رقم الهاتف" />
+                رقم المحول *
+                <input style={inputStyle} type="tel" inputMode="tel" required value={reference} onChange={(e) => setReference(e.target.value)} maxLength={160} placeholder="الرقم الذي تم التحويل منه" />
               </label>
               <label style={labelStyle}>
-                ملاحظة للمعلم (اختياري)
-                <input style={inputStyle} value={note} onChange={(e) => setNote(e.target.value)} maxLength={4000} placeholder="أي تفاصيل تساعد في المراجعة" />
+                اسم المحول *
+                <input style={inputStyle} autoComplete="name" required value={payerName} onChange={(e) => setPayerName(e.target.value)} maxLength={200} placeholder="اسم صاحب التحويل" />
               </label>
             </div>
 
@@ -443,7 +484,7 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
                   busy ||
                   amount <= 0 ||
                   !method ||
-                  !receipt ||
+                  !receipt || !reference.trim() || !payerName.trim() ||
                   isLessonPurchased(productId) ||
                   isLessonUnderReview(productId)
                 }
@@ -467,7 +508,7 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
                   cursor:
                     busy ||
                     amount <= 0 ||
-                    !receipt ||
+                    !receipt || !reference.trim() || !payerName.trim() ||
                     isLessonPurchased(productId) ||
                     isLessonUnderReview(productId)
                       ? "not-allowed"
@@ -475,7 +516,7 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
                   opacity:
                     busy ||
                     amount <= 0 ||
-                    !receipt ||
+                    !receipt || !reference.trim() || !payerName.trim() ||
                     isLessonPurchased(productId) ||
                     isLessonUnderReview(productId)
                       ? 0.6
@@ -497,121 +538,45 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
               </button>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "6px", marginTop: "10px", color: "var(--text-muted)", fontSize: "11px" }}>
                 <ShieldCheck size={14} style={{ color: "#059669" }} />
-                <span>بياناتك محمية — لا يتم عرض أو تخزين أي بيانات بنكية داخل المنصة</span>
+                <span>تُستخدم بيانات التحويل لمراجعة طلبك فقط.</span>
               </div>
             </div>
           </section>
         </div>
 
-        {/* ═══════════ LEFT COLUMN: order summary + guarantee + previous orders ═══════════ */}
+        {/* ═══════════ LEFT COLUMN: student data + review information ═══════════ */}
         <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-          {/* Course summary */}
-          <section style={{ ...card, padding: "22px" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", padding: "4px 10px", borderRadius: "8px", background: "#0f392b", color: "#ffffff", fontSize: "10.5px", fontWeight: 800 }}>
-                <GraduationCap size={12} /> تفاصيل الطلب
-              </span>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "4px 10px", borderRadius: "8px", background: "var(--bg-accent)", color: "#059669", border: "1px solid var(--border-accent)", fontSize: "10.5px", fontWeight: 800 }}>
-                {student?.academicYearLabel || "المرحلة الثانوية"}
-              </span>
+          {/* Student data */}
+          <section style={{ ...card, padding: "24px" }}>
+            <div style={sectionHead}>
+              <div style={iconTile}><BadgeCheck size={21} /></div>
+              <div>
+                <h2 style={{ margin: 0, fontSize: "15px", fontWeight: 900, color: "var(--text-main)" }}>بيانات الطالب الأكاديمية</h2>
+                <p style={{ margin: "3px 0 0", fontSize: "11.5px", color: "var(--text-muted)" }}>سيتم ربط المذكرات وبنك الأسئلة والتقييمات بهذه البيانات</p>
+              </div>
             </div>
-
-            {selectedLesson ? (
-              <div style={{ borderRadius: "14px", overflow: "hidden", border: "1px solid var(--border-color)", background: "#021f18", color: "#ffffff", padding: "16px", marginBottom: "16px" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "11px", fontFamily: "monospace", color: "#6ee7b7", paddingBottom: "10px", borderBottom: "1px solid rgba(110, 231, 183, 0.25)", marginBottom: "12px" }}>
-                  <span style={{ fontSize: "13.5px", fontWeight: 900, color: "#6ee7b7" }}>{selectedLesson.courseTitle || "مقرر الكيمياء"}</span>
-                  <span style={{ padding: "2px 8px", borderRadius: "6px", background: "rgba(6, 78, 59, 0.9)", color: "#a7f3d0", fontSize: "10.5px", fontWeight: 800, fontFamily: "inherit" }}>{student?.academicYearLabel || "منهج 2025"}</span>
-                </div>
-                <div style={{ paddingTop: "4px" }}>
-                  <div style={{ fontSize: "11px", color: "#6ee7b7", fontWeight: 700, marginBottom: "4px" }}>درس مدفوع — تفعيل فردي</div>
-                  <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 900, color: "#ffffff", lineHeight: 1.5 }}>{selectedLesson.title}</h3>
-                  <div style={{ fontSize: "11px", color: "#d1fae5", fontWeight: 600, marginTop: "4px" }}>
-                    {selectedLesson.durationFormatted || "درس فيديو + مذكرات + كويزات"}
-                  </div>
-                </div>
-                <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px solid rgba(110, 231, 183, 0.25)", display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "11px", color: "#d1fae5" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
-                    <div style={{ width: "24px", height: "24px", borderRadius: "50%", background: "#047857", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "10px", fontWeight: 900 }}>ح</div>
-                    <span style={{ fontWeight: 800, color: "#ffffff" }}>مستر حسن شعبان</span>
-                  </div>
-                  <span style={{ fontSize: "10.5px", background: "rgba(2, 44, 34, 0.9)", padding: "2px 8px", borderRadius: "6px", color: "#6ee7b7", fontWeight: 700 }}>محاضرة مسجلة</span>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
+              <div style={{ gridColumn: "1 / -1" }}>
+                <label style={labelStyle}>اسم الطالب <span style={{ color: "#e11d48" }}>*</span></label>
+                <div style={{ position: "relative" }}>
+                  <input style={{ ...inputStyle, paddingInlineStart: "40px" }} value={student?.name || ""} readOnly />
+                  <UserRound size={17} style={{ position: "absolute", insetInlineEnd: "13px", top: "13px", color: "var(--text-muted)" }} />
                 </div>
               </div>
-            ) : (
-              <div style={{ borderRadius: "14px", border: "2px dashed var(--border-color)", padding: "26px 16px", textAlign: "center", marginBottom: "16px", color: "var(--text-muted)" }}>
-                <GraduationCap size={30} style={{ margin: "0 auto 8px", color: "#059669" }} />
-                <p style={{ margin: 0, fontSize: "12.5px", fontWeight: 700 }}>اختر الدرس من القائمة أعلاه لظهور تفاصيل الطلب</p>
+              <div>
+                <label style={labelStyle}>البريد الإلكتروني</label>
+                <input style={{ ...inputStyle, direction: "ltr", textAlign: "right" }} value={student?.email || ""} readOnly dir="ltr" />
               </div>
-            )}
-
-            {/* Lesson picker */}
-            <label style={{ ...labelStyle, marginBottom: "12px", display: "block" }}>
-              الدرس المطلوب تفعيله
-              <select value={productId} onChange={(event) => setProductId(event.target.value)} style={{ ...inputStyle, marginTop: "5px" }}>
-                <option value="">اختر درسًا</option>
-                {lessons
-                  .filter((lesson) => Number(lesson.price || 0) > 0)
-                  .map((lesson) => {
-                    const purchased = isLessonPurchased(lesson.id);
-                    const underRev = isLessonUnderReview(lesson.id);
-                    let label = `${lesson.courseTitle} / ${lesson.title} — ${Number(lesson.price || 0).toLocaleString("ar-EG")} ج.م`;
-                    if (purchased) {
-                      label += " (تم الشراء مسبقاً - مفعل)";
-                    } else if (underRev) {
-                      label += " (طلبك قيد المراجعة)";
-                    }
-                    return (
-                      <option key={lesson.id} value={lesson.id} disabled={purchased || underRev}>
-                        {label}
-                      </option>
-                    );
-                  })}
-              </select>
-            </label>
-
-            {selectedLesson && isLessonPurchased(selectedLesson.id) && (
-              <div style={{ marginBottom: "16px", padding: "12px 14px", borderRadius: "10px", background: "#dcfce7", border: "1px solid #86efac", color: "#166534", fontSize: "12.5px", fontWeight: 800, display: "flex", alignItems: "center", gap: "8px" }}>
-                <CheckCircle2 size={16} />
-                <span>هذا الدرس تم شراؤه وتفعيله بالفعل في حسابك، ولا يمكن شراؤه مرة أخرى.</span>
+              <div>
+                <label style={labelStyle}>رقم الواتساب للتفعيل</label>
+                <input style={{ ...inputStyle, direction: "ltr", textAlign: "right" }} value={student?.studentPhone || ""} readOnly dir="ltr" placeholder="—" />
               </div>
-            )}
-
-            {selectedLesson && isLessonUnderReview(selectedLesson.id) && (
-              <div style={{ marginBottom: "16px", padding: "12px 14px", borderRadius: "10px", background: "#fef3c7", border: "1px solid #fde68a", color: "#92400e", fontSize: "12.5px", fontWeight: 800, display: "flex", alignItems: "center", gap: "8px" }}>
-                <Clock3 size={16} />
-                <span>لديك إيصال دفع قيد مراجعة المعلم بالفعل لهذا الدرس. سيتم تفعيله فور الاعتماد.</span>
-              </div>
-            )}
-
-            {/* What student gets */}
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "18px", paddingBottom: "18px", borderBottom: "1px solid var(--border-color)", fontSize: "11.5px", color: "var(--text-main)" }}>
-              {[
-                "شرح كامل لدرس الكيمياء بالفيديو عالي الجودة",
-                "تحميل فوري لمذكرات الشرح والواجب بصيغة PDF",
-                "كويزات تفاعلية تُصحح فورياً مع محاولات تدريب",
-                "واجبات تُسلَّم وتُراجع من المعلم مباشرة",
-              ].map((item) => (
-                <div key={item} style={{ display: "flex", alignItems: "flex-start", gap: "9px" }}>
-                  <CheckCircle2 size={16} style={{ color: "#059669", flexShrink: 0, marginTop: "1px" }} />
-                  <span style={{ lineHeight: 1.6 }}>{item}</span>
-                </div>
-              ))}
             </div>
-
-            {/* Financial breakdown */}
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px", padding: "16px", borderRadius: "14px", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", fontSize: "12px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", color: "var(--text-muted)" }}>
-                <span>سعر الدرس</span>
-                <span>{amount ? `${amount.toLocaleString("ar-EG")} ج.م` : "—"}</span>
-              </div>
-              <div style={{ height: "1px", background: "var(--border-color)", margin: "2px 0" }} />
-              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-                <span style={{ fontSize: "13px", fontWeight: 900, color: "var(--text-main)" }}>الإجمالي المطلوب</span>
-                <div style={{ display: "flex", alignItems: "baseline", gap: "4px" }}>
-                  <span style={{ fontSize: "24px", fontWeight: 900, color: "#059669" }}>{amount.toLocaleString("ar-EG")}</span>
-                  <span style={{ fontSize: "11px", fontWeight: 800, color: "#059669" }}>ج.م</span>
-                </div>
-              </div>
+            <div style={{ marginTop: "16px", padding: "12px 14px", borderRadius: "12px", background: "var(--bg-accent)", border: "1px solid var(--border-accent)", display: "flex", alignItems: "flex-start", gap: "10px", fontSize: "11.5px", color: "var(--text-main)" }}>
+              <ShieldCheck size={16} style={{ color: "#059669", flexShrink: 0, marginTop: "1px" }} />
+              <p style={{ margin: 0, lineHeight: 1.7 }}>
+                بمجرد تأكيد المعلم للدفع يتم فوراً فتح درس الكيمياء وكويزاته التفاعلية ومذكراته بصيغة PDF داخل حسابك.
+              </p>
             </div>
           </section>
 
@@ -628,90 +593,11 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
             </div>
           </div>
 
-          {/* Order history (moved to left column as requested) */}
-          <section style={{ ...card, padding: "20px" }}>
-            <div style={{ ...sectionHead, justifyContent: "space-between" }}>
-              <div>
-                <h2 style={{ margin: 0, fontSize: "14.5px", fontWeight: 900, color: "var(--text-main)" }}>طلباتك السابقة</h2>
-                <p style={{ margin: "3px 0 0", fontSize: "11px", color: "var(--text-muted)" }}>تابع حالة مراجعة الإيصالات من هنا.</p>
-              </div>
-              <button type="button" disabled={loadingPayments} onClick={() => void load(true).catch(() => undefined)} aria-label="تحديث" title="تحديث حالة الطلبات" style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "10px", padding: "8px", cursor: "pointer", color: "var(--text-main)", display: "flex" }}>
-                <RefreshCw size={15} />
-              </button>
-            </div>
-            {paymentReadError && (
-              <p role="alert" style={{ color: "var(--text-main)", border: "1px solid var(--border-color)", borderRadius: "10px", padding: "12px", fontSize: "12px", lineHeight: 1.7 }}>
-                تعذر تحديث حالة الدفع: {paymentReadError}. {hasLoadedPayments ? "المعروض آخر حالة تم تحميلها؛ قد تكون تغيّرت." : "لم تُحمّل الطلبات بعد."} اضغط زر التحديث لإعادة المحاولة.
-              </p>
-            )}
-            {loadingPayments && <p role="status" style={{ color: "var(--text-muted)", fontSize: "12px" }}>جارٍ تحديث حالة الدفع…</p>}
-            {orders.length === 0 && hasLoadedPayments && !paymentReadError ? (
-              <div style={{ textAlign: "center", padding: "24px 10px", color: "var(--text-muted)" }}>
-                <CreditCard size={28} style={{ margin: "0 auto 8px", color: "#059669" }} />
-                <p style={{ margin: 0, fontSize: "12px", fontWeight: 700 }}>لا توجد طلبات دفع حتى الآن.</p>
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "10px", maxHeight: "380px", overflowY: "auto" }}>
-                {orders.map((order) => {
-                  const StatusIcon = statusIcons[order.status];
-                  return (
-                    <article key={order.id} style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "12px", padding: "14px" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px", flexWrap: "wrap" }}>
-                        <div>
-                          <strong style={{ fontSize: "12.5px", color: "var(--text-main)" }}>{order.product_name}</strong>
-                          <small style={{ display: "block", fontSize: "10.5px", color: "var(--text-muted)", marginTop: "2px" }}>{new Date(order.created_at).toLocaleString("ar-EG")}</small>
-                        </div>
-                        <span style={{
-                          display: "inline-flex", alignItems: "center", gap: "4px",
-                          padding: "3px 9px", borderRadius: "999px", fontSize: "10.5px", fontWeight: 800,
-                          background: order.status === "paid" ? "var(--bg-accent)" : order.status === "rejected" ? "#fee2e2" : "var(--bg-surface)",
-                          color: order.status === "paid" ? "#059669" : order.status === "rejected" ? "#b91c1c" : "var(--text-muted)",
-                          border: "1px solid var(--border-color)",
-                        }}>
-                          <StatusIcon size={12} />{statusLabels[order.status]}
-                        </span>
-                      </div>
-                      <div style={{ display: "flex", gap: "12px", marginTop: "8px", fontSize: "11.5px", color: "var(--text-muted)", fontWeight: 700 }}>
-                        <span>{order.amount_egp.toLocaleString("ar-EG")} ج.م</span>
-                        <span>{config?.methods.find((item) => item.id === order.payment_method)?.label || order.payment_method}</span>
-                      </div>
-                      {order.review_note && <p style={{ margin: "8px 0 0", fontSize: "11px", color: "var(--text-muted)", background: "var(--bg-surface)", borderRadius: "8px", padding: "6px 8px" }}>ملاحظة المراجعة: {order.review_note}</p>}
-                    </article>
-                  );
-                })}
-              </div>
-            )}
-          </section>
+
         </div>
       </div>
 
-      {/* Trust badges - Centered */}
-      <div
-        style={{
-          ...card,
-          padding: "16px 24px",
-          marginTop: "24px",
-          display: "flex",
-          flexWrap: "wrap",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: "36px",
-          fontSize: "12.5px",
-          fontWeight: 700,
-          color: "var(--text-main)",
-          textAlign: "center",
-        }}
-      >
-        <span style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
-          <Zap size={18} style={{ color: "#059669" }} /> تفعيل فوري بعد تأكيد المعلم
-        </span>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
-          <ShieldCheck size={18} style={{ color: "#059669" }} /> مراجعة بشرية لكل إيصال
-        </span>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
-          <InfinityIcon size={18} style={{ color: "#059669" }} /> وصول مستمر طوال فترة المقرر
-        </span>
-      </div>
+
     </div>
   );
 }

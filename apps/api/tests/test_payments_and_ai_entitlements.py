@@ -106,7 +106,8 @@ def test_paid_course_requires_approved_order(db, monkeypatch) -> None:
             "product_type": "course",
             "product_id": str(course.id),
             "payment_method": "instapay",
-            "payer_reference": "TX-123",
+            "payer_name": "Test sender",
+            "payer_reference": "01012345678",
         },
         headers=_csrf_headers(student_client),
     )
@@ -118,7 +119,8 @@ def test_paid_course_requires_approved_order(db, monkeypatch) -> None:
             "product_type": "lesson",
             "product_id": str(lesson.id),
             "payment_method": "instapay",
-            "payer_reference": "TX-123",
+            "payer_name": "Test sender",
+            "payer_reference": "01012345678",
         },
         headers=_csrf_headers(student_client),
     )
@@ -167,6 +169,8 @@ def test_student_cannot_review_payment_order(db, monkeypatch) -> None:
             "product_type": "lesson",
             "product_id": str(lesson.id),
             "payment_method": "instapay",
+            "payer_name": "Test sender",
+            "payer_reference": "01012345678",
         },
         headers=_csrf_headers(client),
     ).json()
@@ -213,6 +217,8 @@ def test_teacher_cannot_approve_another_teachers_course_order(db, monkeypatch) -
             "product_type": "lesson",
             "product_id": str(lesson.id),
             "payment_method": "instapay",
+            "payer_name": "Test sender",
+            "payer_reference": "01012345678",
         },
         headers=_csrf_headers(student_client),
     ).json()["id"]
@@ -225,3 +231,23 @@ def test_teacher_cannot_approve_another_teachers_course_order(db, monkeypatch) -
         headers=_csrf_headers(reviewer_client),
     ).status_code == 404
     assert db.get(PaymentOrder, uuid.UUID(order_id)).status == PaymentStatus.PENDING
+
+
+def test_sender_details_are_required_trimmed_and_updated_on_pending_retry(db, monkeypatch):
+    _, _, student, _, lesson = _seed_catalog(db, "sender-details")
+    monkeypatch.setattr(get_settings(), "payment_instapay_account", "teacher@instapay")
+    client = TestClient(app)
+    _login(client, student, "sender-details", "student-password")
+    base = {"product_type": "lesson", "product_id": str(lesson.id), "payment_method": "instapay"}
+    headers = _csrf_headers(client)
+    for missing in ({}, {"payer_name": "Sender"}, {"payer_reference": "01012345678"}, {"payer_name": "  ", "payer_reference": "01012345678"}, {"payer_name": "Sender", "payer_reference": "  "}):
+        assert client.post("/api/v1/payments/orders", json={**base, **missing}, headers=headers).status_code == 422
+    first = client.post("/api/v1/payments/orders", json={**base, "payer_name": " Sender One ", "payer_reference": " 01012345678 "}, headers=headers)
+    assert first.status_code == 201
+    assert first.json()["payer_name"] == "Sender One"
+    assert first.json()["payer_reference"] == "01012345678"
+    retry = client.post("/api/v1/payments/orders", json={**base, "payer_name": "Sender Two", "payer_reference": "01112345678"}, headers=headers)
+    assert retry.status_code == 201
+    assert retry.json()["id"] == first.json()["id"]
+    assert retry.json()["payer_name"] == "Sender Two"
+    assert client.get("/api/v1/payments/me/orders").json()[0]["payer_reference"] == "01112345678"

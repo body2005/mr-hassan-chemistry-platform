@@ -16,6 +16,7 @@ import { CurrentUser, StudentProfile, StudentRecord, TeacherProfile } from "../t
 import { Language, translations } from "../utils/i18n";
 import { invalidateApiCache } from "../services/apiClient";
 import { userService } from "../services/lmsService";
+import { PaymentOrderHistory } from "../components/PaymentOrderHistory";
 import { PasswordChangeWizard } from "../components/PasswordChangeWizard";
 import { useConfirm } from "../components/ConfirmWizard";
 import { StudentDetailModal } from "../components/StudentDetailModal";
@@ -327,6 +328,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 </strong>
               </div>
             </div>
+
+            <PaymentOrderHistory key={user.id} />
 
             {/* Video Watch Progress Logs */}
             <div style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "14px", padding: "20px" }}>

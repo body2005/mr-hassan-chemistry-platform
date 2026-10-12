@@ -273,4 +273,5 @@ def summary(upload: VideoUpload, parts: list[dict] | None = None) -> dict:
     return {"id": str(upload.id), "lesson_id": str(upload.lesson_id), "status": upload.status,
         "part_bytes": PART_BYTES, "size_bytes": upload.size_bytes, "fingerprint": upload.fingerprint,
         "uploaded_parts": [{"number": p["PartNumber"], "size_bytes": p["Size"]} for p in (parts or [])],
-        "error_code": upload.error_code, "duration_seconds": upload.duration_seconds}
+        "error_code": upload.error_code, "duration_seconds": upload.duration_seconds,
+        "processing_percent": upload.processing_percent, "processing_stage": upload.processing_stage}

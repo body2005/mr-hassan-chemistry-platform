@@ -30,3 +30,15 @@ it('shows the failure reason and never declares a missing video ready', () => {
   expect(lessonVideoState(lesson, [{ ...task, status: 'error', error: 'انقطع الاتصال' }], 'teacher')).toMatchObject({ phase: 'error', label: 'انقطع الاتصال' });
   expect(lessonVideoState({ ...lesson, hasUploadedVideo: false, videoUrl: '' }, [], 'teacher').phase).toBe('missing');
 });
+
+it('authoritative completion of the same job clears stale local processing or errors', () => {
+  const ready = { ...lesson, videoUpload: { id: 'job', status: 'ready', createdAt: new Date(1000).toISOString() } };
+  for (const status of ['processing', 'error'] as const) {
+    expect(lessonVideoState(ready, [{ ...task, videoUploadId: 'job', status }], 'teacher').phase).toBe('ready');
+  }
+  expect(lessonVideoState(ready, [{ ...task, videoUploadId: 'replacement', status: 'processing' }], 'teacher').phase).toBe('processing');
+});
+it('shows real server progress and the current quality after reload', () => {
+  const result = lessonVideoState({ ...lesson, videoUpload: { id: 'job', status: 'processing', createdAt: new Date(3000).toISOString(), processing_percent: 40, processing_stage: 'encoding:360p:3:6' } }, [], 'teacher');
+  expect(result.percent).toBe(40); expect(result.label).toContain('360p'); expect(result.label).toContain('3 من 6');
+});

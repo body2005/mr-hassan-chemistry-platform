@@ -24,6 +24,8 @@ class VideoUpload(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(24), default="creating", nullable=False, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(64))
+    processing_percent: Mapped[int | None] = mapped_column(Integer)
+    processing_stage: Mapped[str | None] = mapped_column(String(80))
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     # Exact generated-object allowlist, not a client-supplied path/prefix.
     outputs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)

@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { ToastProvider } from '../components/ToastProvider';
-import { PaymentView } from './PaymentView';
+import { PaymentOrderHistory } from '../components/PaymentOrderHistory';
 import { PaymentManagementView } from './PaymentManagementView';
 import { apiUrl, clearApiCache, markBrowserSessionActive, setApiAuthScope, setCachedData } from '../services/apiClient';
 import { realtimeService } from '../services/realtimeService';
@@ -62,7 +62,7 @@ afterEach(async () => {
   await act(async () => root.unmount()); host.remove(); clearApiCache(); vi.unstubAllGlobals();
 });
 async function render() {
-  await act(async () => root.render(<ToastProvider><PaymentView courses={[]} currentUser={student} /></ToastProvider>));
+  await act(async () => root.render(<ToastProvider><PaymentOrderHistory key={student.id} /></ToastProvider>));
 }
 async function refresh() {
   await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="تحديث"]')!.click());

@@ -19,13 +19,13 @@ class InvalidVideo(ValueError):
     pass
 
 
-def _run(argv: list[str], timeout: int, capture=False, workspace: Path | None = None):
+def _run(argv: list[str], timeout: int, capture=False, workspace: Path | None = None, progress=None):
     # Linux only, launched in a memory/CPU/pids-limited container. Output has
     # fixed size via RLIMIT_FSIZE; JSON probe selects only bounded stream fields.
     def limits():
         import resource
         resource.setrlimit(resource.RLIMIT_AS, (2 * 1024**3, 2 * 1024**3))
-        resource.setrlimit(resource.RLIMIT_CPU, (3600, 3600))
+        resource.setrlimit(resource.RLIMIT_CPU, (max(3600, timeout * 2), max(3600, timeout * 2)))
         resource.setrlimit(resource.RLIMIT_FSIZE, (256 * 1024**2, 256 * 1024**2))
     try:
         if workspace is not None:
@@ -40,6 +40,8 @@ def _run(argv: list[str], timeout: int, capture=False, workspace: Path | None = 
                         used = sum(path.stat().st_size for path in workspace.rglob("*") if path.is_file())
                         if used > 24 * 1024**3 or shutil.disk_usage(workspace).free < 1024**3:
                             raise InvalidVideo("VIDEO_OUTPUT_LIMIT_EXCEEDED")
+                        if progress is not None:
+                            progress()
                         time.sleep(1)
                     if process.returncode != 0:
                         raise InvalidVideo("VIDEO_DECODE_FAILED")
@@ -80,20 +82,41 @@ def renditions(height: int) -> list[tuple[int, int]]:
     return selected or [(height - height % 2, 500_000)]  # Never invent/upscale 4K.
 
 
-def encode(source: Path, output: Path) -> tuple[dict, list[str]]:
+def encode(source: Path, output: Path, progress=None) -> tuple[dict, list[str]]:
     info = probe(source)
     master = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-INDEPENDENT-SEGMENTS"]
-    for height, bitrate in renditions(info["height"]):
+    ladder = renditions(info["height"])
+    for index, (height, bitrate) in enumerate(ladder):
         directory = output / f"{height}p"
         directory.mkdir(parents=True)
         args = ["ffmpeg", "-v", "error", "-nostdin", "-y", "-xerror", "-err_detect", "explode", "-protocol_whitelist", "file", "-format_whitelist", "mov,matroska,webm",
             "-i", str(source), "-t", "14401", "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn", "-map_metadata", "-1",
-            "-vf", f"scale=-2:{height},setsar=1", "-c:v", "libx264", "-threads", "2", "-preset", "fast",
+            "-vf", f"scale=-2:{height},setsar=1", "-c:v", "libx264", "-threads", "2", "-preset", "veryfast",
             "-pix_fmt", "yuv420p", "-r", "30", "-b:v", str(bitrate), "-maxrate", str(bitrate), "-bufsize", str(bitrate * 2),
             "-g", "180", "-keyint_min", "180", "-sc_threshold", "0", "-force_key_frames", "expr:gte(t,n_forced*6)",
             "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-f", "hls", "-hls_time", "6", "-hls_playlist_type", "vod",
             "-hls_flags", "independent_segments", "-hls_segment_filename", str(directory / "segment_%06d.ts"), str(directory / "index.m3u8")]
-        _run(args, 3600, workspace=output)
+        progress_file = directory / "encoding.progress"
+        args[1:1] = ["-progress", str(progress_file), "-stats_period", "2"]
+        def report():
+            fraction = 0.0
+            if info["duration"] and progress_file.exists():
+                for line in progress_file.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("out_time_us="):
+                        try:
+                            fraction = min(1.0, max(0.0, int(line.split("=", 1)[1]) / 1_000_000 / info["duration"]))
+                        except ValueError:
+                            pass
+            if progress:
+                progress(5 + int(80 * (index + fraction) / len(ladder)), f"encoding:{height}p:{index + 1}:{len(ladder)}")
+        report()
+        # Slow PCs may need longer than one hour for a full lesson rendition.
+        # Keep a finite per-rendition budget and all disk/memory constraints.
+        deadline = min(8 * 3600, max(3600, int((info["duration"] or 14400) * 3)))
+        _run(args, deadline, workspace=output, progress=report)
+        progress_file.unlink(missing_ok=True)
+        if progress:
+            progress(5 + int(80 * (index + 1) / len(ladder)), f"encoding:{height}p:{index + 1}:{len(ladder)}")
         # WebM produced by MediaRecorder can legitimately omit Duration.
         # Validate the duration actually decoded, rather than rejecting it or
         # trusting a client hint. Do not silently truncate an overlong source.

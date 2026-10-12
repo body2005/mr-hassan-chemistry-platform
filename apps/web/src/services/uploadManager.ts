@@ -13,7 +13,7 @@ import { courseService } from "./lmsService";
 import { ApiClientError, apiRequest, uploadWithProgress, getApiAuthScope, getApiAuthGeneration,
   invalidateApiCache, isSessionKnownInvalid } from "./apiClient";
 import { validateLessonUpload } from "./uploadLimits";
-import { putVideoPart, videoFingerprint, waitForVideo, type VideoUploadSession } from "./directVideoUpload";
+import { putVideoPart, videoFingerprint, waitForVideo, videoProcessingLabel, type VideoUploadSession } from "./directVideoUpload";
 
 export type UploadType = "lesson_video" | "lesson_material";
 export type UploadStatus = "queued" | "uploading" | "processing" | "completed" | "error" | "cancelled";
@@ -393,7 +393,8 @@ export class UploadManager {
           task.statusDetail = 'تم حفظ الفيديو؛ جارٍ تجهيز جودات البث.';
           this.notify(); this.persistTasks();
           await waitForVideo(uploaded.video_upload_id, active, session => {
-            task.statusDetail = session.status === 'ready' ? 'الفيديو جاهز للمشاهدة.' : 'جارٍ تجهيز جودات الفيديو.';
+            task.statusDetail = videoProcessingLabel(session);
+            task.progress = session.processing_percent ?? 0;
             this.notify();
           });
         }
@@ -495,15 +496,15 @@ export class UploadManager {
       session = await apiRequest<VideoUploadSession>(`/video-uploads/${session.id}/complete`, { method: "POST" });
     }
     task.status = "processing";
-    task.progress = 100;
+    task.progress = session.processing_percent ?? 0;
     task.uploadPercent = 100;
-    task.statusDetail = "تم حفظ الفيديو؛ جارٍ التحقق وتجهيز جودات البث.";
+    task.statusDetail = videoProcessingLabel(session);
     this.notify();
     this.persistTasks();
     await waitForVideo(session.id, active, current => {
       if (!active()) return;
-      task.statusDetail = current.status === "ready" ? "الفيديو جاهز للمشاهدة."
-        : current.status === 'queued' ? 'اكتمل نقل الملف؛ في انتظار معالج الفيديو.' : 'اكتمل نقل الملف؛ جارٍ تجهيز جودات الفيديو.';
+      task.statusDetail = videoProcessingLabel(current);
+      task.progress = current.processing_percent ?? 0;
       this.notify();
     });
   }

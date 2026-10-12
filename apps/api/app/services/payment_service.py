@@ -193,6 +193,7 @@ def create_order(
     payment_method: PaymentMethod,
     payer_reference: str | None,
     student_note: str | None,
+    payer_name: str | None = None,
 ) -> PaymentOrder:
     db.execute(select(User.id).where(User.id == student.id).with_for_update())
     product_name, amount = resolve_product(db, student, product_type, product_id)
@@ -228,6 +229,12 @@ def create_order(
     if existing:
         if existing.status == PaymentStatus.UNDER_REVIEW:
             raise HTTPException(status_code=409, detail="لديك طلب دفع قيد المراجعة بالفعل لهذا الدرس، يرجى انتظار اعتماد المعلم.")
+        existing.payment_method = payment_method
+        existing.payer_reference = (payer_reference or "").strip()[:160] or None
+        existing.payer_name = (payer_name or "").strip()[:200] or None
+        existing.student_note = (student_note or "").strip()[:4000] or None
+        db.commit()
+        db.refresh(existing)
         return existing
     order = PaymentOrder(
         institution_id=student.institution_id,
@@ -238,6 +245,7 @@ def create_order(
         amount_egp=amount,
         payment_method=payment_method,
         payer_reference=(payer_reference or "").strip()[:160] or None,
+        payer_name=(payer_name or "").strip()[:200] or None,
         student_note=(student_note or "").strip()[:4000] or None,
         status=PaymentStatus.PENDING,
     )

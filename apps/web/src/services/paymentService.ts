@@ -28,6 +28,7 @@ export interface PaymentOrder {
   payment_method: PaymentMethod;
   status: PaymentStatus;
   payer_reference?: string | null;
+  payer_name?: string | null;
   has_receipt: boolean;
   student_note?: string | null;
   review_note?: string | null;
@@ -67,7 +68,8 @@ export const paymentService = {
     product_type: PaymentProductType;
     product_id?: string;
     payment_method: PaymentMethod;
-    payer_reference?: string;
+    payer_reference: string;
+    payer_name: string;
     student_note?: string;
   }) => apiRequest<PaymentOrder>("/payments/orders", { method: "POST", body: JSON.stringify(payload) }),
   uploadReceipt: (

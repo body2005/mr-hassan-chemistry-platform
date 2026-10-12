@@ -414,9 +414,14 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
                   </span>
                 </div>
 
+                {order.payer_name && <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ color: "var(--text-muted)" }}>اسم المحول:</span>
+                  <strong style={{ overflowWrap: "anywhere" }}>{order.payer_name}</strong>
+                </div>}
+
                 {order.payer_reference && (
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
-                    <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>رقم الحساب / كود العملية المحول منه:</span>
+                    <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>رقم المحول:</span>
                     <code
                       style={{
                         padding: "3px 10px",

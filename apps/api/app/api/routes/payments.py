@@ -13,7 +13,7 @@ from PIL import Image
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -50,7 +50,14 @@ class PaymentOrderCreate(BaseModel):
     product_type: PaymentProductType
     product_id: uuid.UUID | None = None
     payment_method: PaymentMethod
-    payer_reference: str | None = Field(default=None, max_length=160)
+    payer_reference: str = Field(min_length=1, max_length=160)
+    payer_name: str = Field(min_length=1, max_length=200)
+
+    @field_validator("payer_reference", "payer_name", mode="before")
+    @classmethod
+    def strip_sender_details(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
     student_note: str | None = Field(default=None, max_length=4000)
 
 
@@ -74,6 +81,7 @@ def _order_response(order: PaymentOrder) -> dict[str, Any]:
         "payment_method": order.payment_method.value,
         "status": order.status.value,
         "payer_reference": order.payer_reference,
+        "payer_name": order.payer_name,
         "has_receipt": bool(order.receipt_path),
         "student_note": order.student_note,
         "review_note": order.review_note,
@@ -146,6 +154,7 @@ def create_payment_order(payload: PaymentOrderCreate, user: Student, db: Db) -> 
         payload.payment_method,
         payload.payer_reference,
         payload.student_note,
+        payer_name=payload.payer_name,
     )
     return _order_response(order)
 

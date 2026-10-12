@@ -211,7 +211,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
             <span>
               {activeTasks.length > 0
                 ? primaryActive?.status === "processing"
-                  ? `جاري المعالجة (${primaryActive?.progress ?? 100}%)`
+                  ? (primaryActive?.progress ? `تجهيز الفيديو (${primaryActive.progress}٪)` : "اكتمل نقل الملف؛ تجهيز الفيديو")
                   : `جاري الرفع (${primaryActive?.progress ?? 0}%)`
                 : "الرفع"}
             </span>

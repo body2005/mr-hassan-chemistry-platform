@@ -283,6 +283,8 @@ class LessonMaterialSummary(BaseModel):
 
 
 class VideoProcessingSummary(BaseModel):
+    processing_percent: int | None = None
+    processing_stage: str | None = None
     id: uuid.UUID
     status: str
     created_at: datetime

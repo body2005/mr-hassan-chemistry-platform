@@ -118,7 +118,7 @@ it('shows complete byte transfer separately from processing, then completes when
   const { UploadManager } = await import('./uploadManager'); const manager = new UploadManager();
   await manager.reconcileVideos();
   await vi.waitFor(() => expect(statusReads).toBe(3));
-  expect(manager.getTasks()[0]).toMatchObject({ status: 'processing', progress: 100, uploadPercent: 100 });
+  expect(manager.getTasks()[0]).toMatchObject({ status: 'processing', progress: 0, uploadPercent: 100 });
   finish(response('ready'));
   await vi.waitFor(() => expect(manager.getTasks()[0].status).toBe('completed'));
 });

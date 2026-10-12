@@ -84,6 +84,7 @@ class PaymentOrder(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         index=True,
         nullable=False,
     )
+    payer_name: Mapped[str | None] = mapped_column(String(200))
     payer_reference: Mapped[str | None] = mapped_column(String(160))
     receipt_path: Mapped[str | None] = mapped_column(String(512))
     student_note: Mapped[str | None] = mapped_column(Text)

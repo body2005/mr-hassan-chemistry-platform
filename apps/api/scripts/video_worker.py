@@ -4,6 +4,7 @@ Session advisory locks serialize each job across workers without holding a
 database transaction open during encoding. Unique attempt prefixes avoid mixing
 partial generations. A crash releases the lock, allowing another worker to retry.
 """
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import hashlib
 import mimetypes
@@ -66,6 +67,7 @@ def process(identity):
                     db.commit()
                     return
                 job.status, job.attempts = "processing", job.attempts + 1
+                job.processing_percent, job.processing_stage = 0, "downloading"
                 # Clean previous interrupted attempt through the durable outbox.
                 for name in job.outputs:
                     enqueue_cleanup(db, name)
@@ -85,6 +87,14 @@ def process(identity):
                         if shutil.disk_usage(root).free < job.size_bytes + 26 * 1024**3:
                             raise RuntimeError("VIDEO_WORKSPACE_FULL")
                         source = root / "source"
+                        last_progress = [0.0]
+                        def report(percent, stage):
+                            now = time.monotonic()
+                            if stage == job.processing_stage and now - last_progress[0] < 10:
+                                return
+                            job.processing_percent, job.processing_stage = percent, stage
+                            db.commit()
+                            last_progress[0] = now
                         total = 0
                         digest = hashlib.sha256()
                         with source.open("wb") as stream:
@@ -94,18 +104,24 @@ def process(identity):
                                     raise InvalidVideo("VIDEO_SIZE_MISMATCH")
                                 stream.write(chunk)
                                 digest.update(chunk)
+                                report(min(4, int(5 * total / job.size_bytes)), "downloading")
                         if total != job.size_bytes:
                             raise InvalidVideo("VIDEO_SIZE_MISMATCH")
-                        info, files = encode(source, root / "hls")
+                        info, files = encode(source, root / "hls", progress=report)
                         prefix = f"video-assets/{identity}/{uuid.uuid4().hex}"
                         # Save cleanup intents BEFORE each object write so a crash
                         # between remote write and DB acknowledgement isn't an orphan.
                         job.outputs = [f"{prefix}/{name}" for name in files]
                         db.commit()
-                        for name in files:
+                        def save_output(name):
                             path = root / "hls" / name
                             media = "application/vnd.apple.mpegurl" if name.endswith(".m3u8") else "video/mp2t"
                             storage.save_file(str(path), f"{prefix}/{name}", media)
+                        report(85, "uploading")
+                        # Bounded network concurrency; only this thread touches DB.
+                        with ThreadPoolExecutor(max_workers=4) as uploads:
+                            for completed, _ in enumerate(uploads.map(save_output, files), 1):
+                                report(85 + int(14 * completed / len(files)), "uploading")
                         original = f"video-originals/{identity}/{prefix.rsplit('/', 1)[-1]}/source.{job.filename.rsplit('.', 1)[-1].lower()}"
                         # Record a generation-unique original before remote copy.
                         # Previous-attempt cleanup must not delete a new attempt.
@@ -129,6 +145,7 @@ def process(identity):
                         lesson.video_asset_key = f"s3://{storage.bucket_name}/{job.manifest_key}"
                         job.duration_seconds = lesson.video_duration_seconds = int(info["duration"])
                         job.status, job.error_code = "ready", None
+                        job.processing_percent, job.processing_stage = 100, "ready"
                         enqueue_cleanup(db, quarantine)
                         db.commit()
                         logger.info("video_id=%s state=ready renditions=%s", job.id, len([n for n in files if n.endswith('index.m3u8')]))

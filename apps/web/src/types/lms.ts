@@ -102,7 +102,7 @@ export interface VideoLesson {
   /** Public availability metadata only, independent of playback permission. */
   hasUploadedVideo?: boolean;
   /** Manager-only processing state; contains no private storage information. */
-  videoUpload?: { id: string; status: string; createdAt: string };
+  videoUpload?: { id: string; status: string; createdAt: string; processing_percent?: number | null; processing_stage?: string | null };
   thumbnailUrl?: string;
   price?: number; // Per-lesson price decided by teacher (0 = free)
   materials: UploadedMaterial[];

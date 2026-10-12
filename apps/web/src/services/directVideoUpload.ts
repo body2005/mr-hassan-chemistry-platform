@@ -8,6 +8,8 @@ export interface VideoUploadSession {
   fingerprint: string;
   uploaded_parts: { number: number; size_bytes: number }[];
   error_code?: string;
+  processing_percent?: number | null;
+  processing_stage?: string | null;
 }
 
 /** Small bounded file identity for re-selection, NOT a full-file checksum. */
@@ -40,15 +42,29 @@ export function putVideoPart(url: string, part: Blob, progress: (bytes: number) 
 }
 
 export async function waitForVideo(id: string, active: () => boolean, update: (session: VideoUploadSession) => void): Promise<void> {
-  const deadline = Date.now() + 2 * 3600_000;
+  const deadline = Date.now() + 48 * 3600_000;
   while (active() && Date.now() < deadline) {
     const session = await apiRequest<VideoUploadSession>(`/video-uploads/${id}`, { cacheTtlMs: 0 });
     update(session);
     if (session.status === "ready") return;
-    if (["failed", "cancelled", "expired", "superseded"].includes(session.status)) throw new Error(`تعذر تجهيز الفيديو: ${session.error_code || session.status}`);
+    if (["failed", "cancelled", "expired", "superseded", "aborted", "rejected"].includes(session.status)) throw new Error(`تعذر تجهيز الفيديو: ${session.error_code || session.status}`);
     // Deliberately NO retry on 401, 429 or 503; the caller offers an explicit
     // resume button. Polling is bounded, even if a worker never recovers.
     await new Promise(resolve => window.setTimeout(resolve, 5000));
   }
   throw new Error("توقفت متابعة المعالجة؛ يمكنك التحقق مجددًا دون إعادة رفع الملف.");
+}
+
+export function videoProcessingLabel(session: { status: string; processing_percent?: number | null; processing_stage?: string | null }): string {
+  if (session.status === 'ready') return 'الفيديو جاهز للمشاهدة';
+  if (session.status === 'queued') return 'اكتمل رفع الملف؛ في انتظار معالج الفيديو على جهاز المدرس';
+  const stage = session.processing_stage;
+  const percent = session.processing_percent == null ? '' : ` ${session.processing_percent}٪`;
+  if (stage === 'uploading') return `جارٍ حفظ الجودات النهائية${percent}`;
+  if (stage === 'downloading') return 'اكتمل الرفع؛ جارٍ نقل نسخة إلى معالج الفيديو';
+  if (stage?.startsWith('encoding:')) {
+    const [, quality, current, total] = stage.split(':');
+    return `اكتمل الرفع؛ تجهيز جودة ${quality} (${current} من ${total})${percent}`;
+  }
+  return 'اكتمل الرفع؛ جارٍ تجهيز جودات الفيديو على جهاز المدرس';
 }

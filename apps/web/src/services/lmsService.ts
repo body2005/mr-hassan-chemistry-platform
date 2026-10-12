@@ -109,7 +109,7 @@ type ApiCourse = {
       /** The private storage key is never serialized by the API. */
       has_video?: boolean;
       has_uploaded_video?: boolean;
-      video_upload?: { id: string; status: string; created_at: string } | null;
+      video_upload?: { id: string; status: string; created_at: string; processing_percent?: number | null; processing_stage?: string | null } | null;
       video_url?: string | null;
       video_duration_seconds: number | null;
       price_egp?: number;
@@ -279,6 +279,7 @@ function mapApiCourse(course: ApiCourse): Course {
             hasUploadedVideo: Boolean(lesson.has_uploaded_video),
             videoUpload: lesson.video_upload ? {
               id: lesson.video_upload.id, status: lesson.video_upload.status, createdAt: lesson.video_upload.created_at,
+              processing_percent: lesson.video_upload.processing_percent, processing_stage: lesson.video_upload.processing_stage,
             } : undefined,
             // A student's catalog can redact playback fields for a locked
             // video. Ask the admission endpoint for the actual access result

@@ -63,7 +63,7 @@ def test_completion_uses_actual_parts_and_is_idempotent(db, world):
     service.complete(db, upload)
     assert upload.status == "queued"
     assert client.complete_multipart_upload.call_count == 1
-    assert lesson.video_asset_key is None  # Quarantine is never playable.
+    assert lesson.video_asset_key == f"/api/v1/lessons/{lesson.id}/stream"  # Previous published video stays available; quarantine never replaces it.
 
 
 def test_crash_after_storage_complete_recovers(db, world):
@@ -277,6 +277,7 @@ def test_hls_authentication_checks_every_manifest_and_segment(db, world, monkeyp
     monkeypatch.setattr(provider, "get_size", lambda key: len(manifest))
     monkeypatch.setattr(provider, "open_stream", lambda key, **kwargs: iter([manifest]))
     monkeypatch.setattr("app.core.storage.get_storage_provider", lambda: provider)
+    monkeypatch.setattr("app.api.routes.platform.get_storage_provider", lambda: provider)
     browser = TestClient(app)
     _login(browser, student, inst.slug)
     issued = browser.post(f"/api/v1/lessons/{lesson.id}/video-token", headers=_csrf(browser))
@@ -313,9 +314,11 @@ def test_course_returns_only_latest_processing_summary_to_managers(db, world):
     db.commit()
     managed = _safe_course_responses(db, teacher, [course])[0].modules[0].lessons[0]
     assert managed.video_upload.status == "processing"
-    assert set(managed.video_upload.model_dump()) == {"id", "status", "created_at"}
+    assert set(managed.video_upload.model_dump()) == {"id", "status", "created_at", "processing_percent", "processing_stage"}
     assert "secret/" not in managed.model_dump_json()
     assert "secret-worker-error" not in managed.model_dump_json()
     for viewer in (student, None):
-        public = _safe_course_responses(db, viewer, [course])[0].modules[0].lessons[0]
-        assert public.video_upload is None
+        public_course = _safe_course_responses(db, viewer, [course])[0]
+        public_lessons = [item for module in public_course.modules for item in module.lessons]
+        assert all(item.video_upload is None for item in public_lessons)
+        assert lesson.id not in {item.id for item in public_lessons}  # Processing is never published to students.

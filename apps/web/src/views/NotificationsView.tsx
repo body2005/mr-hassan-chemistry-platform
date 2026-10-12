@@ -289,7 +289,6 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   });
 
   const [activeFilter, setActiveFilter] = useState<"all" | "assignment" | "quiz" | "system" | "payment">("all");
-  const [expandedNotifications, setExpandedNotifications] = useState<Set<string>>(() => new Set());
   const [selectedInvoiceOrderId, setSelectedInvoiceOrderId] = useState<string | null>(null);
   const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState(false);
   const [selectedAccessRequestId, setSelectedAccessRequestId] = useState<string | null>(null);
@@ -973,7 +972,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                     }}
                   >
                     {/* Item Top Row */}
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
+                    <div className="notification-item-top" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
                       <div style={{ display: "flex", alignItems: "flex-start", gap: "12px", flex: 1, minWidth: 0 }}>
                         {/* Icon badge */}
                         <div
@@ -1019,34 +1018,13 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                           <strong style={{ display: "block", fontSize: "13.5px", color: "var(--text-main, #0f172a)", marginBottom: "3px" }}>
                             {n.title}
                           </strong>
-                          {(() => {
-                            // If message is empty or auto-generated boilerplate with dates/times, show title only
-                            const msg = n.message?.trim() || "";
-                            const isAutoBoilerplate =
-                              msg.startsWith("تم تثبيت موعد") ||
-                              msg.startsWith("تم إلغاء موعد") ||
-                              msg.startsWith("تنبيه لطلاب") ||
-                              msg.startsWith("تم نشر اختبار") ||
-                              msg.startsWith("تم نشر واجب منزلي");
-                            if (!msg || isAutoBoilerplate) return null;
-                            return (
-                              <>
-                              <p className={`notification-message ${expandedNotifications.has(n.id) ? '' : 'notification-message-preview'}`} style={{ margin: 0, fontSize: "12px", color: "var(--text-muted, #64748b)", lineHeight: "1.5" }}>
-                                {msg}
-                              </p>
-                              {msg.length > 150 && <button type="button" className="security-text-button" aria-expanded={expandedNotifications.has(n.id)} onClick={() => setExpandedNotifications(previous => {
-                                const next = new Set(previous);
-                                if (next.has(n.id)) next.delete(n.id); else next.add(n.id);
-                                return next;
-                              })}>{expandedNotifications.has(n.id) ? 'عرض أقل' : 'عرض الرسالة كاملة'}</button>}
-                              </>
-                            );
-                          })()}
+                          {n.message?.trim() && <p className="notification-message" style={{ margin: 0, fontSize: "13px", color: "var(--text-muted)", lineHeight: 1.7 }}>{n.message}</p>}
+
                         </div>
                       </div>
 
                       {/* Timestamps: Time on line 1, Day name above Date (and NO raw ISO badge) */}
-                      <div style={{ textAlign: "left", flexShrink: 0, lineHeight: 1.35 }}>
+                      <div className="notification-time" style={{ textAlign: "left", flexShrink: 0, lineHeight: 1.35 }}>
                         {(() => {
                           const formatted = formatDateTimeSimple(n.createdAt);
                           return (

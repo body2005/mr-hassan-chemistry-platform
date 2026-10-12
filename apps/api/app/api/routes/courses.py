@@ -117,13 +117,14 @@ def _safe_course_responses(db: Session, user: User | None, courses: list) -> lis
         latest_uploads = {}
         if all_lesson_ids:
             uploads = db.execute(
-                select(VideoUpload.lesson_id, VideoUpload.id, VideoUpload.status, VideoUpload.created_at)
+                select(VideoUpload.lesson_id, VideoUpload.id, VideoUpload.status, VideoUpload.created_at, VideoUpload.processing_percent, VideoUpload.processing_stage)
                 .where(VideoUpload.lesson_id.in_(all_lesson_ids))
                 .order_by(VideoUpload.created_at.desc(), VideoUpload.id.desc())
             ).all()
             for upload in uploads:
                 latest_uploads.setdefault(upload.lesson_id, VideoProcessingSummary(
                     id=upload.id, status=upload.status, created_at=upload.created_at,
+                    processing_percent=upload.processing_percent, processing_stage=upload.processing_stage,
                 ))
         for course in responses:
             for module in course.modules:

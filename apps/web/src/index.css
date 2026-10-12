@@ -1091,7 +1091,15 @@ img, video, canvas, svg {
 .notification-card { min-width: 0; overflow-wrap: anywhere; }
 .notification-copy { min-width: 0; flex: 1; }
 .notification-message { white-space: pre-wrap; overflow-wrap: anywhere; }
-.notification-message-preview { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.notification-copy strong { overflow-wrap: anywhere; }
+@media (max-width: 767px) {
+  .notification-item-top { flex-direction: column; }
+  .notification-time { align-self: flex-end; }
+  .notification-time > div { display: flex; flex-wrap: wrap; gap: 6px; }
+}
+.checkout-page input, .checkout-page select { min-width: 0; }
+.checkout-page select { text-overflow: ellipsis; }
+
 
 .responsive-2col {
   display: grid;
