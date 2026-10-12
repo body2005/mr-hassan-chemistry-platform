@@ -1,4 +1,4 @@
-"""Durable publication notices: ready and due, with no extra SSE connection."""
+"""One durable lesson notice per student, sent immediately or when ready and due."""
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -7,11 +7,12 @@ from urllib.parse import urlsplit, parse_qs
 from sqlalchemy import or_, select
 from app.core.database import SessionLocal
 from app.core.events import event_broker
-from app.models.course import Course, Enrollment, EnrollmentStatus, Lesson
+from app.models.course import Course, CourseStatus, Enrollment, EnrollmentStatus, Lesson
 from app.models.platform import Assignment, Quiz, CalendarEvent, DeliveryStatus, Notification
 from app.models.user import User, UserRole
 from app.services.lesson_release import available_lesson_ids
-from app.services.payment_service import accessible_course_lesson_ids
+from app.services.payment_service import accessible_course_lesson_ids, has_course_entitlement, has_lesson_entitlement
+from app.services.content_access import as_utc
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ def sync_lesson_calendar(db, lesson, course):
     key = f'lesson-release:{lesson.id}'
     event = db.scalar(select(CalendarEvent).where(CalendarEvent.creator_id == course.teacher_id,
                                                 CalendarEvent.request_key == key))
-    enabled = lesson.announce_to_students and lesson.publication_status == 'published'
+    enabled = lesson.publication_status == 'published'
     if not enabled and not event:
         return
     if not event:
@@ -33,6 +34,59 @@ def sync_lesson_calendar(db, lesson, course):
     event.starts_at = lesson.publish_at or lesson.created_at or datetime.now(timezone.utc)
     event.ends_at = lesson.available_until
     event.is_published = bool(enabled)
+
+
+def _announcement_access(db, user, lesson, course, *, enrolled):
+    """Planning notices can precede release, but never bypass enrollment or payment."""
+    return bool(enrolled and user.role == UserRole.STUDENT and user.is_active and not user.deleted_at
+        and course.institution_id == user.institution_id and course.status == CourseStatus.PUBLISHED
+        and lesson.publication_status == 'published'
+        and (not lesson.available_until or as_utc(lesson.available_until) > datetime.now(timezone.utc))
+        and ((float(course.price_egp or 0) == 0 and float(lesson.price_egp or 0) == 0)
+             or has_course_entitlement(db, user, course.id) or has_lesson_entitlement(db, user, lesson.id)))
+
+
+def _enrolled_students(db, course):
+    return list(db.scalars(select(User).join(Enrollment, Enrollment.student_id == User.id).where(
+        Enrollment.course_id == course.id, Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+        User.role == UserRole.STUDENT, User.institution_id == course.institution_id,
+        User.is_active.is_(True), User.deleted_at.is_(None))))
+
+
+def _notified_students(db, lesson, course):
+    return set(db.scalars(select(Notification.recipient_id).where(
+        Notification.institution_id == course.institution_id,
+        Notification.dedup_key == f'lesson-published:{lesson.id}')))
+
+
+def announce_lesson_immediately(db, lesson, course):
+    # The legacy wire field now selects timing: True = now, False = at release.
+    # Share the lesson row lock with the release worker to serialize dedup checks.
+    if not lesson.announce_to_students:
+        return set()
+    db.execute(select(Lesson.id).where(Lesson.id == lesson.id).with_for_update())
+    notified = _notified_students(db, lesson, course)
+    now = datetime.now(timezone.utc)
+    recipients = set()
+    for student in _enrolled_students(db, course):
+        if student.id in notified or not _announcement_access(db, student, lesson, course, enrolled=True):
+            continue
+        db.add(Notification(institution_id=course.institution_id, recipient_id=student.id,
+            kind='lesson_announcement', title='تمت إضافة درس جديد',
+            message=f'{lesson.title} — يُفتح الدرس عند موعد الإتاحة وبعد اكتمال الرفع.',
+            action_url=f'#mycourses?course={course.id}&announcement={lesson.id}',
+            dedup_key=f'lesson-published:{lesson.id}', scheduled_for=now,
+            delivered_at=now, delivery_status=DeliveryStatus.DELIVERED))
+        recipients.add(student.id)
+    return recipients
+
+
+def publish_lesson_notice_hint(course, recipients):
+    if recipients:
+        try:
+            event_broker.publish_event(course.institution_id, 'notification_created', {}, target_user_ids=recipients)
+        except Exception:
+            logger.warning('Lesson notification hint deferred; database notice retained')
 
 
 def visible_lesson_notifications(db, user, notifications):
@@ -58,9 +112,14 @@ def visible_lesson_notifications(db, user, notifications):
         visible.update((kind, row.id) for row in filter_student_assessments(db, user, rows))
     notifications = [item for item in notifications if item.id not in assessment_links or assessment_links[item.id] in visible]
     links = {}
+    planning = set()
     for item in notifications:
         query = parse_qs(urlsplit(item.action_url or '').fragment.partition('?')[2])
         raw = query.get('lesson', [None])[0]
+        if item.kind == 'lesson_announcement':
+            raw = query.get('announcement', [None])[0]
+            planning.add(item.id)
+            links[item.id] = None  # Malformed planning notices fail closed.
         if raw:
             try:
                 links[item.id] = uuid.UUID(raw)
@@ -73,10 +132,14 @@ def visible_lesson_notifications(db, user, notifications):
     enrolled = set(db.scalars(select(Enrollment.course_id).where(Enrollment.student_id == user.id,
         Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]))))
     accessible = set()
+    announced = set()
     for course in courses:
         accessible.update(accessible_course_lesson_ids(db, user, course,
             [lesson for lesson in lessons if lesson.course_id == course.id], enrolled=course.id in enrolled))
-    return [item for item in notifications if item.id not in links or links[item.id] in accessible]
+        announced.update(lesson.id for lesson in lessons if lesson.course_id == course.id
+            and _announcement_access(db, user, lesson, course, enrolled=course.id in enrolled))
+    return [item for item in notifications if item.id not in links
+            or links[item.id] in (announced if item.id in planning else accessible)]
 
 
 def announce_available_lessons(batch_size=25):
@@ -95,16 +158,14 @@ def announce_available_lessons(batch_size=25):
             if lesson.id not in ready:
                 continue
             course = courses[lesson.course_id]
-            students = list(db.scalars(select(User).join(Enrollment, Enrollment.student_id == User.id).where(
-                Enrollment.course_id == course.id, Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
-                User.role == UserRole.STUDENT, User.institution_id == course.institution_id,
-                User.is_active.is_(True), User.deleted_at.is_(None))))
+            students = _enrolled_students(db, course)
+            notified = _notified_students(db, lesson, course)
             recipients = {course.teacher_id}
             for student in students:
                 if lesson.id not in accessible_course_lesson_ids(db, student, course, [lesson], enrolled=True):
                     continue
                 recipients.add(student.id)
-                if not lesson.announce_to_students:
+                if student.id in notified:
                     continue
                 db.add(Notification(institution_id=course.institution_id, recipient_id=student.id,
                     kind='lesson', title='درس جديد متاح', message=lesson.title,

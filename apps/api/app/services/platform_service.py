@@ -145,9 +145,11 @@ def add_lesson(db: Session, user: User, module_id: uuid.UUID | None, payload: Le
     )
     db.add(lesson)
     db.flush()
-    from app.services.lesson_announcements import sync_lesson_calendar
+    from app.services.lesson_announcements import sync_lesson_calendar, announce_lesson_immediately, publish_lesson_notice_hint
     sync_lesson_calendar(db, lesson, course)
+    recipients = announce_lesson_immediately(db, lesson, course)
     db.commit()
+    publish_lesson_notice_hint(course, recipients)
     db.refresh(lesson)
     return lesson
 

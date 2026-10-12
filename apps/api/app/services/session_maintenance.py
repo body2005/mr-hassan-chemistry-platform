@@ -142,10 +142,10 @@ async def maintenance_loop():
             from app.services.schedule_delivery import deliver_due_notifications, announce_assessment_boundaries
             await asyncio.to_thread(deliver_due_notifications)
             await asyncio.to_thread(announce_assessment_boundaries)
+            from app.services.lesson_announcements import announce_available_lessons
+            await asyncio.to_thread(announce_available_lessons)
             if ticks % 4 == 0:
                 await asyncio.to_thread(cleanup_expired_sessions)
-                from app.services.lesson_announcements import announce_available_lessons
-                await asyncio.to_thread(announce_available_lessons)
         except Exception:
             logger.warning("Session maintenance temporarily unavailable")
         ticks += 1

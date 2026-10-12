@@ -801,9 +801,11 @@ def update_lesson_publication(lesson_id: uuid.UUID, payload: "LessonPublicationR
         lesson.announce_to_students = payload.announce_to_students
     if lesson.publish_at and lesson.available_until and platform_service._as_utc(lesson.available_until) <= lesson.publish_at:
         raise HTTPException(422, "Lesson closing time must be after publication time")
-    from app.services.lesson_announcements import sync_lesson_calendar
+    from app.services.lesson_announcements import sync_lesson_calendar, announce_lesson_immediately, publish_lesson_notice_hint
     sync_lesson_calendar(db, lesson, course)
+    recipients = announce_lesson_immediately(db, lesson, course)
     db.commit()
+    publish_lesson_notice_hint(course, recipients)
     assessment_changed(db, lesson)
     return {"id": str(lesson.id), "publication_status": lesson.publication_status, "publish_at": lesson.publish_at,
             "available_until": lesson.available_until, "announce_to_students": lesson.announce_to_students}

@@ -116,6 +116,7 @@ class Lesson(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     publication_status: Mapped[str] = mapped_column(String(20), default="published", server_default="published", nullable=False)
     publish_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     available_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # Legacy API name retained: True sends now; False waits for ready, due release.
     announce_to_students: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     release_announced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     release_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -37,6 +37,9 @@ def test_lesson_start_end_and_calendar_update_are_consistent(db):
     assert as_utc(event.ends_at) == lesson.available_until
     lesson.announce_to_students = False
     sync_lesson_calendar(db, lesson, course); db.flush()
+    assert event.is_published  # Timing preference never disables the calendar.
+    lesson.publication_status = 'draft'
+    sync_lesson_calendar(db, lesson, course); db.flush()
     assert not event.is_published
     assert len(list(db.scalars(select(CalendarEvent)))) == 1
 

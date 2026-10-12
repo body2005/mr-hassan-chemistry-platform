@@ -131,12 +131,10 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   const [isUploading, setIsUploading] = useState(false);
   const [courseModules, setCourseModules] = useState<Array<{ id: string; title: string; courseId: string }>>([]);
   const [selectedModuleId, setSelectedModuleId] = useState<string>("");
-  const [publishMode, setPublishMode] = useState<'ready' | 'scheduled' | 'draft'>('ready');
   const [publishDateTime, setPublishDateTime] = useState('');
   const [availableUntil, setAvailableUntil] = useState('');
   const [announceStudents, setAnnounceStudents] = useState(true);
   const [editingPublication, setEditingPublication] = useState<VideoLesson | null>(null);
-  const [editPublishMode, setEditPublishMode] = useState<'ready' | 'scheduled' | 'draft'>('ready');
   const [editPublishTime, setEditPublishTime] = useState('');
   const [editAvailableUntil, setEditAvailableUntil] = useState('');
   const [editAnnounceStudents, setEditAnnounceStudents] = useState(true);
@@ -474,7 +472,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
 
       const addedLesson = await courseService.addLesson(module?.id, {
         course_id: course.id,
-        publication_status: publishMode === 'draft' ? 'draft' : 'published',
+        publication_status: 'published',
         publish_at: publishAt,
         available_until: endsAt,
         announce_to_students: announceStudents,
@@ -544,7 +542,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     setPublishDateTime('');
     setAvailableUntil('');
     setAnnounceStudents(true);
-    setPublishMode('ready');
     setUploadSuccess(true);
     setTimeout(() => setUploadSuccess(false), 5000);
   }
@@ -603,7 +600,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
             const due = editPublishTime ? cairoToUtc(editPublishTime) : null;
             const end = editAvailableUntil ? cairoToUtc(editAvailableUntil) : null;
             if (due && end && end <= due) throw new Error('موعد انتهاء الإتاحة يجب أن يكون بعد موعد البداية.');
-            await courseService.updateLessonPublication(editingPublication.id, editPublishMode === 'draft' ? 'draft' : 'published', due,
+            await courseService.updateLessonPublication(editingPublication.id, 'published', due,
               { available_until: end, announce_to_students: editAnnounceStudents });
             const refreshed = await courseService.getCourses({ skipCache: true });
             setCourses(refreshed); onCoursesChanged(refreshed); setEditingPublication(null);
@@ -613,8 +610,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         }}>
           <h2 id="lesson-publication-heading">نشر الدرس: {editingPublication.title}</h2>
           <LessonScheduleFields start={editPublishTime} end={editAvailableUntil} announce={editAnnounceStudents}
-            draft={editPublishMode === 'draft'} onStart={setEditPublishTime} onEnd={setEditAvailableUntil}
-            onAnnounce={setEditAnnounceStudents} onDraft={value => setEditPublishMode(value ? 'draft' : 'ready')} />
+            onStart={setEditPublishTime} onEnd={setEditAvailableUntil}
+            onAnnounce={setEditAnnounceStudents} />
           <p>تغيير الموعد أو إلغاء الجدولة يحافظ على الفيديو والمرفقات.</p>
           <button type="submit" className="btn-primary" disabled={savingPublication}>{savingPublication ? 'جارٍ الحفظ…' : 'حفظ النشر'}</button>
           <button type="button" className="btn-secondary" disabled={savingPublication} onClick={() => setEditingPublication(null)}>إلغاء</button>
@@ -1033,8 +1030,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
             </div>
 
             <LessonScheduleFields start={publishDateTime} end={availableUntil} announce={announceStudents}
-              draft={publishMode === 'draft'} onStart={setPublishDateTime} onEnd={setAvailableUntil}
-              onAnnounce={setAnnounceStudents} onDraft={value => setPublishMode(value ? 'draft' : 'ready')} />
+              onStart={setPublishDateTime} onEnd={setAvailableUntil}
+              onAnnounce={setAnnounceStudents} />
 
             <button
               type="submit"
@@ -1450,7 +1447,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                           <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
                             <button type="button" className="btn-secondary" onClick={() => {
                               setEditingPublication(lesson);
-                              setEditPublishMode(lesson.publicationStatus === 'draft' ? 'draft' : lesson.publishAt ? 'scheduled' : 'ready');
                               setEditAvailableUntil(lesson.availableUntil ? cairoLocalValue(lesson.availableUntil) : '');
                               setEditAnnounceStudents(lesson.announceToStudents !== false);
                               setEditPublishTime(lesson.publishAt ? cairoLocalValue(lesson.publishAt) : '');

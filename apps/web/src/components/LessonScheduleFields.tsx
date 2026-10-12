@@ -2,11 +2,9 @@ interface Props {
   start: string;
   end: string;
   announce: boolean;
-  draft: boolean;
   onStart: (value: string) => void;
   onEnd: (value: string) => void;
   onAnnounce: (value: boolean) => void;
-  onDraft: (value: boolean) => void;
 }
 
 export function LessonScheduleFields(props: Props) {
@@ -31,8 +29,7 @@ export function LessonScheduleFields(props: Props) {
     })}
     <label className="lesson-schedule-notice">
       <input type="checkbox" checked={props.announce} onChange={e => props.onAnnounce(e.target.checked)} />
-      <span><strong>إظهار في تقويم وجدول الطلاب وإرسال إشعار</strong><small>يصل التنبيه عند إتاحة الدرس فعليًا واكتمال الرفع.</small></span>
+      <span><strong>إرسال إشعار للطلاب الآن</strong><small>عند إيقافه، يُرسل الإشعار عند موعد الإتاحة وبعد جاهزية الفيديو. يظهر الموعد في التقويم في الحالتين.</small></span>
     </label>
-    <label className="lesson-schedule-draft"><input type="checkbox" checked={props.draft} onChange={e => props.onDraft(e.target.checked)} />حفظ كمسودة دون إتاحته للطلاب</label>
   </fieldset>;
 }
