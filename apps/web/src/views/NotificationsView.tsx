@@ -301,7 +301,6 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   const [broadcastMessage, setBroadcastMessage] = useState("");
   const [broadcastType, setBroadcastType] = useState<"system" | "assignment" | "quiz" | "warning">("system");
   const [broadcastDueDate, setBroadcastDueDate] = useState("");
-  const [broadcastActionTab, setBroadcastActionTab] = useState<string>("MyCourses");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const requestRef = useRef({signature: '', id: '', notificationId: ''});
@@ -313,7 +312,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
     if (saving) return;
     setSaving(true);
     setSaveError(null);
-    const signature = JSON.stringify([broadcastTitle, broadcastMessage, broadcastTargetGrade, broadcastType, broadcastDueDate, broadcastActionTab]);
+    const signature = JSON.stringify([broadcastTitle, broadcastMessage, broadcastTargetGrade, broadcastType, broadcastDueDate]);
     if (broadcastRef.current.signature !== signature) broadcastRef.current = {signature, id: `notif_${crypto.randomUUID()}`};
 
     const newNotif: NotificationItem = {
@@ -325,7 +324,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       scheduledFor: broadcastDueDate.trim() || undefined,
       createdAt: "الآن",
       read: false,
-      actionTab: broadcastActionTab,
+      actionTab: "Notifications",
     };
 
     try {
@@ -1070,7 +1069,9 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                         onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
                       >
                         <span>
-                          {n.type === "payment"
+                          {n.actionTab === "Notifications"
+                            ? "عرض الإشعارات"
+                            : n.type === "payment"
                             ? "معاينة الفاتورة وإيصال الدفع"
                             : n.type === "assignment"
                             ? isTeacher ? "مراجعة تسليمات الواجب" : "حل وتسليم الواجب"
@@ -1783,8 +1784,8 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                           alignItems: "center",
                           gap: "10px",
                           padding: "10px 12px",
-                          background: wizardState.isScheduledNotif ? "#fef3c7" : "var(--bg-surface-secondary)",
-                          border: wizardState.isScheduledNotif ? "1.5px solid #f59e0b" : "1px solid var(--border-color)",
+                          background: wizardState.isScheduledNotif ? "var(--urgency-bg)" : "var(--bg-surface-secondary)",
+                          border: wizardState.isScheduledNotif ? "1.5px solid var(--urgency-border)" : "1px solid var(--border-color)",
                           borderRadius: "8px",
                           cursor: "pointer",
                         }}
@@ -1810,7 +1811,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                       </label>
 
                       {wizardState.isScheduledNotif && (
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "8px", marginTop: "8px", padding: "10px 12px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "8px" }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "8px", marginTop: "8px", padding: "10px 12px", background: "var(--urgency-bg)", border: "1px solid var(--urgency-border)", borderRadius: "8px" }}>
                           <div>
                             <small style={{ display: "block", color: "var(--text-muted)", fontSize: "10.5px", marginBottom: "3px", fontWeight: 700 }}>تاريخ ظهور الإشعار:</small>
                             <input
@@ -2286,7 +2287,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                 />
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+              <div>
                 <div>
                   <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
                     موعد إرسال الإشعار بتوقيت القاهرة (اختياري):
@@ -2308,29 +2309,6 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                   />
                 </div>
 
-                <div>
-                  <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
-                    زر الانتقال المباشر:
-                  </label>
-                  <select
-                    value={broadcastActionTab}
-                    onChange={(e) => setBroadcastActionTab(e.target.value)}
-                    style={{
-                      width: "100%",
-                      padding: "8px 12px",
-                      borderRadius: "8px",
-                      border: "1px solid var(--border-color-strong, #cbd5e1)",
-                      background: "var(--bg-surface)",
-                      color: "var(--text-main)",
-                      fontSize: "12px",
-                    }}
-                  >
-                    <option value="MyCourses">مقرراتي ودروسي</option>
-                    <option value="MySubmissions">واجباتي وتسليماتي</option>
-                    <option value="Notifications">مركز الإشعارات</option>
-                    <option value="Payments">الدفع والاشتراكات</option>
-                  </select>
-                </div>
               </div>
 
               <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "12px" }}>
