@@ -177,8 +177,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   const [publishStartTime, setPublishStartTime] = useState<string>(() => initialDraft?.publishStartTime || "");
   const [closeDeadlineDate, setCloseDeadlineDate] = useState<string>(() => initialDraft?.closeDeadlineDate || "");
   const [closeDeadlineTime, setCloseDeadlineTime] = useState<string>(() => initialDraft?.closeDeadlineTime || "");
-  const [showOnStudentCalendar, setShowOnStudentCalendar] = useState<boolean>(() => initialDraft?.showOnStudentCalendar ?? true);
-  const [sendScheduledNotification, setSendScheduledNotification] = useState<boolean>(() => initialDraft?.sendScheduledNotification ?? true);
+  const [showOnStudentCalendar, setShowOnStudentCalendar] = useState<boolean>(() => initialDraft?.showOnStudentCalendar ?? false);
+  const [sendScheduledNotification, setSendScheduledNotification] = useState<boolean>(() => initialDraft?.sendScheduledNotification ?? false);
 
 
   function normalizeQuestionType(t?: string): "multiple_choice" | "true_false" | "essay" | "fill_in_blank" | "unknown" {
@@ -410,6 +410,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       setPublishStartTime("");
       setCloseDeadlineDate("");
       setCloseDeadlineTime("");
+      setShowOnStudentCalendar(false);
+      setSendScheduledNotification(false);
       setQuestions([]);
       setExtractedFileName(null);
       setExtractedFileFingerprint(null);
@@ -920,6 +922,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     if (quizRecord.closeDeadlineTime) setCloseDeadlineTime(quizRecord.closeDeadlineTime);
     if (quizRecord.quizDurationMinutes) setQuizDurationMinutes(quizRecord.quizDurationMinutes);
     setShowOnStudentCalendar(quizRecord.showOnStudentCalendar);
+    setSendScheduledNotification(false);
     setApproved(false);
     setActiveSubTab("create");
     toast({
