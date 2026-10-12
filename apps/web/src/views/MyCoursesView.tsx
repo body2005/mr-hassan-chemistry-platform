@@ -1,4 +1,6 @@
 import { serverNow, synchronizeServerTime } from "../services/availabilityRefresh";
+import { useLessonNavigation } from '../services/useLessonNavigation';
+import { materialFailureMessage } from '../services/playbackFailure';
 import React, { lazy, Suspense, useState, useEffect, useRef, useCallback } from "react";
 import {
   ArrowLeft,
@@ -301,6 +303,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   // Interactive Modals State
   const [activeLessonModal, setActiveLessonModal] = useState<VideoLesson | null>(null);
+  const closeLesson = useLessonNavigation(activeLessonModal, setActiveLessonModal);
 
   useEffect(() => {
     if (!initialLessonId || !initialCourseId || !currentUser) return;
@@ -341,8 +344,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       link.remove();
       URL.revokeObjectURL(objectUrl);
       toast(`تم تنزيل ملف: ${filename}`, "success");
-    } catch {
-      toast("تعذر تنزيل المذكرة. تحقق من صلاحية الوصول ثم أعد المحاولة.", "danger");
+    } catch (error) {
+      toast(materialFailureMessage(error), "danger");
     }
   }
 
@@ -479,7 +482,6 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   const hasServerQuiz = Boolean(serverQuiz);
   const hasQuizResultPage = Boolean(quizResultPage);
   const hasServerAssignment = Boolean(serverAssignment);
-  const hasActiveLessonModal = Boolean(activeLessonModal);
   const hasActiveBookModal = Boolean(activeBookModal);
   const hasActiveQuizHistoryModal = Boolean(activeQuizHistoryModal);
   const hasActiveQuizModal = Boolean(activeQuizModal);
@@ -520,14 +522,6 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     }
   }, [hasServerAssignment]);
 
-  useEffect(() => {
-    if (hasActiveLessonModal) {
-      if (!overlayHistoryStack.current.includes("activeLessonModal")) {
-        overlayHistoryStack.current.push("activeLessonModal");
-        window.history.pushState({ lmsOverlay: "activeLessonModal" }, "");
-      }
-    }
-  }, [hasActiveLessonModal]);
 
   useEffect(() => {
     if (hasActiveBookModal) {
@@ -586,8 +580,6 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         setServerAssignment(null);
         setServerAssignmentError(null);
         setAssignmentFile(null);
-      } else if (top === "activeLessonModal") {
-        setActiveLessonModal(null);
       } else if (top === "activeBookModal") {
         setActiveBookModal(null);
       } else if (top === "activeQuizHistoryModal") {
@@ -1127,7 +1119,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           completedLessonIds={completedLessonIds}
           onToggleCompleteLesson={toggleCompleteLesson}
           onSelectLesson={(ls) => setActiveLessonModal(ls)}
-          onClose={() => closeOverlay("activeLessonModal", () => setActiveLessonModal(null))}
+          onClose={closeLesson}
           onDownloadMaterial={downloadLessonMaterial}
         />
       </Suspense>

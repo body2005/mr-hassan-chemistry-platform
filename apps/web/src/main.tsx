@@ -5,6 +5,7 @@ import { ConfirmWizardProvider } from "./components/ConfirmWizard";
 import { ToastProvider } from "./components/ToastProvider";
 import { I18nProvider } from "./utils/i18nContext";
 import "./index.css";
+import "./responsive.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

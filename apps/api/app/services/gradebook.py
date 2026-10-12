@@ -1,7 +1,7 @@
-"""Published, eligible assessment points; independent of content release time.
+"""Equal assessment weights within each category; equal category weights.
 
 Manager-only summaries. A missing/unmarked result contributes no earned points
-without writing a zero grade. Each assessment contributes its maximum once.
+without writing a zero grade. Question counts never determine an item's weight.
 """
 import math
 from collections import defaultdict
@@ -23,11 +23,12 @@ def group_grade_summary(summaries):
     earned = sum(row["earned_points"] for row in summaries)
     possible = sum(row["possible_points"] for row in summaries)
     def category_rate(kind):
-        maximum = sum(row[kind + "_possible"] for row in summaries)
-        return round(sum(row[kind + "_earned"] for row in summaries) / maximum * 100, 2) if maximum else None
+        values = [row[kind + "_success_rate"] for row in summaries if row[kind + "_success_rate"] is not None]
+        return round(sum(values) / len(values), 2) if values else None
+    overall = [row["total_overall_grade"] for row in summaries if row["total_overall_grade"] is not None]
     return {"quiz_success_rate": category_rate("quiz"), "homework_success_rate": category_rate("homework"),
             "earned_points": earned, "possible_points": possible,
-            "total_overall_grade": round(earned / possible * 100, 2) if possible else None,
+            "total_overall_grade": round(sum(overall) / len(overall), 2) if overall else None,
             "pending_assessments_count": sum(row["pending_assessments_count"] for row in summaries)}
 
 
@@ -89,7 +90,8 @@ def published_grade_summaries(db, actor, student_ids, *, course_ids=None):
     for lesson in lessons.values():
         modules[(lesson.course_id, lesson.module_id)].add(lesson.id)
     totals = {student_id: dict(quiz_earned=0.0, quiz_possible=0.0, homework_earned=0.0,
-        homework_possible=0.0, published_assessments_count=0, pending_quiz_attempts=0,
+        homework_possible=0.0, quiz_percentage_sum=0.0, homework_percentage_sum=0.0,
+        published_assessments_count=0, pending_quiz_attempts=0,
         pending_homework_count=0, quiz_attempts_count=0, unattempted_assessments_count=0,
         invalid_assessments_count=0, quiz_assessments_count=0, homework_assessments_count=0, homework_submissions_count=0) for student_id in student_ids}
     for assessment in [*quizzes, *assignments]:
@@ -153,16 +155,20 @@ def published_grade_summaries(db, actor, student_ids, *, course_ids=None):
                     score = override.score / override.max_score * maximum
             if score is not None and math.isfinite(score) and 0 <= score <= maximum:
                 data[kind + "_earned"] += score
+                data[kind + "_percentage_sum"] += score / maximum * 100
     result = {}
     for student_id, data in totals.items():
         possible = data["quiz_possible"] + data["homework_possible"]
         earned = data["quiz_earned"] + data["homework_earned"]
         def percentage(kind):
-            return round(data[kind + "_earned"] / data[kind + "_possible"] * 100, 2) if data[kind + "_possible"] else None
+            count = data[kind + "_assessments_count"]
+            return data[kind + "_percentage_sum"] / count if count else None
+        categories = [value for value in (percentage("quiz"), percentage("homework")) if value is not None]
         result[student_id] = {**data, "earned_points": earned, "possible_points": possible,
-            "total_overall_grade": round(earned / possible * 100, 2) if possible else None,
-            "quiz_success_rate": percentage("quiz"), "average_quiz_score": percentage("quiz"),
-            "homework_success_rate": percentage("homework"),
+            "total_overall_grade": round(sum(categories) / len(categories), 2) if categories else None,
+            "quiz_success_rate": round(percentage("quiz"), 2) if percentage("quiz") is not None else None,
+            "average_quiz_score": round(percentage("quiz"), 2) if percentage("quiz") is not None else None,
+            "homework_success_rate": round(percentage("homework"), 2) if percentage("homework") is not None else None,
             "pending_assessments_count": data["pending_quiz_attempts"] + data["pending_homework_count"],
             "has_completed_exam": bool(data["quiz_attempts_count"])}
     return result

@@ -99,6 +99,8 @@ type ApiCourse = {
       id: string;
       publication_status?: 'draft' | 'published';
       publish_at?: string | null;
+      available_until?: string | null;
+      announce_to_students?: boolean;
       required_material_count?: number;
       title: string;
       kind: "video" | "article" | "live";
@@ -264,6 +266,8 @@ function mapApiCourse(course: ApiCourse): Course {
             durationSeconds: lesson.video_duration_seconds || undefined,
             publicationStatus: lesson.publication_status,
             publishAt: lesson.publish_at,
+            availableUntil: lesson.available_until,
+            announceToStudents: lesson.announce_to_students,
             requiredMaterialCount: lesson.required_material_count,
             durationFormatted: lesson.video_duration_seconds
               ? `${Math.ceil(lesson.video_duration_seconds / 60)} دقيقة`
@@ -495,8 +499,21 @@ export interface BootstrapData {
   settings: Record<string, unknown>;
 }
 
+let bootstrapInFlight: { generation: number; promise: Promise<BootstrapData> } | null = null;
+
 export const bootstrapService = {
-  async getBootstrap(): Promise<BootstrapData> {
+  getBootstrap(): Promise<BootstrapData> {
+    const generation = getApiAuthGeneration();
+    if (bootstrapInFlight?.generation === generation) return bootstrapInFlight.promise;
+    const promise = fetchBootstrap().finally(() => {
+      if (bootstrapInFlight?.promise === promise) bootstrapInFlight = null;
+    });
+    bootstrapInFlight = { generation, promise };
+    return promise;
+  },
+};
+
+async function fetchBootstrap(): Promise<BootstrapData> {
     const generation = getApiAuthGeneration();
     // On reload, bootstrap determines cookie identity. No JS-readable token
     // is needed; only a proven invalid in-memory session skips the probe.
@@ -524,7 +541,7 @@ export const bootstrapService = {
         enrolled_course_ids: string[];
         entitlements: StudentEntitlement[];
         settings: Record<string, unknown>;
-      }>("/bootstrap", { cacheTtlMs: 15_000 });
+      }>("/bootstrap", { cacheTtlMs: 15_000, timeoutMs: 90_000 });
 
       if (generation !== getApiAuthGeneration()) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
 
@@ -598,11 +615,12 @@ export const bootstrapService = {
       // Preserve the existing in-memory snapshot in App, but surface the
       // outage. Treating a cached identity as a successful bootstrap hides
       // unavailable services and empties live entitlements/courses.
-      console.warn("Bootstrap request failed; awaiting retry", err);
+      if (!(err instanceof ApiClientError && (err.code === 'REQUEST_CANCELLED' || err.status === 401))) {
+        console.warn("Bootstrap request failed; awaiting retry", err);
+      }
       throw err;
     }
-  },
-};
+}
 
 // ============================================================================
 // 1. AUTH & USER SERVICE (Server session is the ONLY source of identity)
@@ -1310,6 +1328,8 @@ export const courseService = {
     course_id?: string;
     publication_status?: 'draft' | 'published';
     publish_at?: string | null;
+    available_until?: string | null;
+    announce_to_students?: boolean;
     required_material_count?: number;
     title: string;
     kind: "video" | "article" | "live";
@@ -1346,8 +1366,10 @@ export const courseService = {
     );
   },
 
-  async updateLessonPublication(lessonId: string, publication_status: 'draft' | 'published', publish_at: string | null): Promise<void> {
-    await apiRequest(`/lessons/${lessonId}/publication`, { method: 'PATCH', body: JSON.stringify({ publication_status, publish_at: assessmentTimestamp(publish_at, "نشر الدرس") }) });
+  async updateLessonPublication(lessonId: string, publication_status: 'draft' | 'published', publish_at: string | null,
+    options?: { available_until: string | null; announce_to_students: boolean }): Promise<void> {
+    await apiRequest(`/lessons/${lessonId}/publication`, { method: 'PATCH', body: JSON.stringify({ publication_status,
+      publish_at: assessmentTimestamp(publish_at, "نشر الدرس"), ...options }) });
     invalidateApiCache('/courses');
   },
   async deleteLesson(moduleId: string | undefined, lessonId: string): Promise<void> {

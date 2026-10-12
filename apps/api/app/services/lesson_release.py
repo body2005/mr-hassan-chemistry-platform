@@ -24,6 +24,9 @@ def available_lesson_ids(db, lessons, courses):
         due = lesson.publish_at
         if due and (due.replace(tzinfo=timezone.utc) if due.tzinfo is None else due) > now:
             continue
+        end = lesson.available_until
+        if end and (end.replace(tzinfo=timezone.utc) if end.tzinfo is None else end) <= now:
+            continue
         job = latest.get(lesson.id)
         if job and job.status != "ready":
             continue

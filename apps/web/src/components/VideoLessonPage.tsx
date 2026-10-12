@@ -1184,6 +1184,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
             >
               {/* Header: Title on Right, Share Button on Left */}
               <div
+                className="lesson-title-row"
                 style={{
                   display: "flex",
                   justifyContent: "space-between",

@@ -129,6 +129,8 @@ def add_lesson(db: Session, user: User, module_id: uuid.UUID | None, payload: Le
         course_id=course.id,
         publication_status=payload.publication_status,
         publish_at=_as_utc(payload.publish_at),
+        available_until=_as_utc(payload.available_until),
+        announce_to_students=payload.announce_to_students,
         required_material_count=payload.required_material_count,
         title=payload.title.strip(),
         kind=payload.kind,
@@ -142,6 +144,9 @@ def add_lesson(db: Session, user: User, module_id: uuid.UUID | None, payload: Le
         price_egp=payload.price_egp,
     )
     db.add(lesson)
+    db.flush()
+    from app.services.lesson_announcements import sync_lesson_calendar
+    sync_lesson_calendar(db, lesson, course)
     db.commit()
     db.refresh(lesson)
     return lesson
@@ -183,6 +188,8 @@ def delete_lesson(db: Session, user: User, module_id: uuid.UUID | None, lesson_i
     db.query(VideoEvent).filter(VideoEvent.lesson_id == lesson_id).delete()
 
     # 3. Delete the lesson record
+    db.query(CalendarEvent).filter(CalendarEvent.creator_id == course.teacher_id,
+        CalendarEvent.request_key == f"lesson-release:{lesson.id}").delete()
     db.delete(lesson)
     db.commit()
 

@@ -1037,9 +1037,9 @@ input::placeholder, textarea::placeholder {
 /* =========================================================================
    RESPONSIVE DESIGN SYSTEM & BREAKPOINT ARCHITECTURE
    Breakpoints:
-   - Mobile:  max-width: 640px
-   - Tablet:  min-width: 641px and max-width: 1024px
-   - Desktop: min-width: 1025px
+   - Mobile:  max-width: 767px
+   - Tablet:  min-width: 768px and max-width: 1023px
+   - Desktop: min-width: 1024px
    ========================================================================= */
 
 /* Universal Responsive Utilities */
@@ -1096,8 +1096,8 @@ img, video, canvas, svg {
   gap: 20px;
 }
 
-/* Mobile Breakpoint: <= 640px */
-@media (max-width: 640px) {
+/* Mobile Breakpoint: <= 767px */
+@media (max-width: 767px) {
   .page-container {
     padding: 14px 10px 85px 10px !important;
   }
@@ -1239,8 +1239,8 @@ img, video, canvas, svg {
   }
 }
 
-/* Tablet Breakpoint: 641px to 1024px */
-@media (min-width: 641px) and (max-width: 1024px) {
+/* Tablet Breakpoint: 768px to 1023px */
+@media (min-width: 768px) and (max-width: 1023px) {
   .page-container {
     padding: 20px 16px !important;
   }

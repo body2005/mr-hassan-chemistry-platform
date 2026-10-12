@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { ResponsiveTable } from "../components/ResponsiveTable";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -523,8 +524,8 @@ export const SubmissionsView: React.FC = () => {
               color: "var(--text-muted)",
             }}
           >
-            <span>{groupPendingCount ? `إجمالي مؤقت · ${groupPendingCount} بانتظار التصحيح` : "نقاط التقييمات المنشورة للطلاب"}</span>
-            <span style={{ fontVariantNumeric: "tabular-nums" }}>كل التقييمات المنشورة</span>
+            <span>{groupPendingCount ? `إجمالي مؤقت · ${groupPendingCount} بانتظار التصحيح` : "متوسط نسب الطلاب"}</span>
+            <span>الاختبارات والواجبات بوزن متساوٍ</span>
           </div>
         </div>
 
@@ -702,7 +703,7 @@ export const SubmissionsView: React.FC = () => {
 
       {/* Submissions & Student Progress Table (Requirement: Image 1 + Grading Action) */}
       <div className="table-responsive" style={{ background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "16px", overflowX: "auto", overflowY: "auto", maxHeight: "560px", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
-        <table className="lms-table" style={{ minWidth: "1050px" }}>
+        <ResponsiveTable className="lms-table" style={{ minWidth: "1050px" }}>
           <thead>
             <tr>
               <th style={{ textAlign: "right", color: "var(--text-main)" }}>اسم الطالب</th>
@@ -923,7 +924,7 @@ export const SubmissionsView: React.FC = () => {
               })
             )}
           </tbody>
-        </table>
+        </ResponsiveTable>
       </div>
 
       {/* Assignment Grading Modal */}

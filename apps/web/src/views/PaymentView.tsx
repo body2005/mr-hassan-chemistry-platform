@@ -270,7 +270,7 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
   }
 
   return (
-    <div style={{ padding: "24px 20px 60px", maxWidth: "1200px", margin: "0 auto" }}>
+    <div className="page-container checkout-page" style={{ padding: "24px 20px 60px", maxWidth: "1200px", margin: "0 auto" }}>
       {/* ── Breadcrumb ── */}
       <nav style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text-muted)", marginBottom: "18px", flexWrap: "wrap" }}>
         <span>الرئيسية</span>
@@ -280,7 +280,7 @@ export function PaymentView({ courses, currentUser, initialTarget, onEntitlement
         <span style={{ color: "var(--text-main)", fontWeight: 800 }}>تأكيد الاشتراك والسداد</span>
       </nav>
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 7fr) minmax(0, 5fr)", gap: "24px", alignItems: "start" }}>
+      <div className="checkout-layout" style={{ display: "grid", gridTemplateColumns: "minmax(0, 7fr) minmax(0, 5fr)", gap: "24px", alignItems: "start" }}>
         {/* ═══════════ RIGHT COLUMN: student data + payment ═══════════ */}
         <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
           {/* Student data */}

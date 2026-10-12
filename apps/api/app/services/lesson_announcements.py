@@ -8,12 +8,31 @@ from sqlalchemy import or_, select
 from app.core.database import SessionLocal
 from app.core.events import event_broker
 from app.models.course import Course, Enrollment, EnrollmentStatus, Lesson
-from app.models.platform import Assignment, Quiz, DeliveryStatus, Notification
+from app.models.platform import Assignment, Quiz, CalendarEvent, DeliveryStatus, Notification
 from app.models.user import User, UserRole
 from app.services.lesson_release import available_lesson_ids
 from app.services.payment_service import accessible_course_lesson_ids
 
 logger = logging.getLogger(__name__)
+
+
+def sync_lesson_calendar(db, lesson, course):
+    """One course-scoped planning entry, updated without duplicate notices."""
+    key = f'lesson-release:{lesson.id}'
+    event = db.scalar(select(CalendarEvent).where(CalendarEvent.creator_id == course.teacher_id,
+                                                CalendarEvent.request_key == key))
+    enabled = lesson.announce_to_students and lesson.publication_status == 'published'
+    if not enabled and not event:
+        return
+    if not event:
+        event = CalendarEvent(institution_id=course.institution_id, creator_id=course.teacher_id,
+                              course_id=course.id, request_key=key, event_type='lesson')
+        db.add(event)
+    event.title = lesson.title
+    event.description = 'موعد إتاحة الدرس'
+    event.starts_at = lesson.publish_at or lesson.created_at or datetime.now(timezone.utc)
+    event.ends_at = lesson.available_until
+    event.is_published = bool(enabled)
 
 
 def visible_lesson_notifications(db, user, notifications):
@@ -85,6 +104,8 @@ def announce_available_lessons(batch_size=25):
                 if lesson.id not in accessible_course_lesson_ids(db, student, course, [lesson], enrolled=True):
                     continue
                 recipients.add(student.id)
+                if not lesson.announce_to_students:
+                    continue
                 db.add(Notification(institution_id=course.institution_id, recipient_id=student.id,
                     kind='lesson', title='درس جديد متاح', message=lesson.title,
                     action_url=f'#mycourses?course={course.id}&lesson={lesson.id}',

@@ -92,6 +92,8 @@ export interface VideoLesson {
   durationSeconds?: number;
   publicationStatus?: 'draft' | 'published';
   publishAt?: string | null;
+  availableUntil?: string | null;
+  announceToStudents?: boolean;
   requiredMaterialCount?: number;
   durationFormatted: string;
   videoUrl: string;

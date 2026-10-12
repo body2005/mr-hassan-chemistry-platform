@@ -435,11 +435,11 @@ def _stream_stored_media(request: Request, storage_key: str, filename: str, medi
     storage = get_storage_provider()
     try:
         size = storage.get_size(storage_key)
-    except (FileNotFoundError, OSError, ValueError) as exc:
+    except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Video not found") from exc
     except Exception as exc:
         # Storage providers intentionally avoid exposing upstream bucket errors.
-        raise HTTPException(status_code=404, detail="Video not found") from exc
+        raise HTTPException(status_code=503, detail="Video storage is temporarily unavailable") from exc
 
     return _stream_media(request, size, lambda start, length: storage.open_stream(
         storage_key, start=start, length=length), media_type)
@@ -628,6 +628,17 @@ def create_lesson_video_token(lesson_id: uuid.UUID, request: Request, response: 
     session_id = str(session_payload.get("jti") or "")
     if not session_id:
         raise HTTPException(status_code=401, detail="A live session is required for video playback")
+    # Authorize first, then check the private object before consuming a playback
+    # session. Missing ephemeral files must not start a token renewal loop.
+    if lesson.video_asset_key and not lesson.video_asset_key.startswith("/api/"):
+        try:
+            get_storage_provider().get_size(lesson.video_asset_key)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "Video not found") from exc
+        except Exception as exc:
+            raise HTTPException(503, "Video storage is temporarily unavailable") from exc
+    else:
+        _lesson_video_path(lesson.id)
     family_id: uuid.UUID | None = None
     raw_family = session_payload.get("family_id")
     if raw_family:
@@ -784,9 +795,18 @@ def update_lesson_publication(lesson_id: uuid.UUID, payload: "LessonPublicationR
         raise HTTPException(404, "Lesson not found") from exc
     lesson.publication_status = payload.publication_status
     lesson.publish_at = platform_service._as_utc(payload.publish_at)
+    if 'available_until' in payload.model_fields_set:
+        lesson.available_until = platform_service._as_utc(payload.available_until)
+    if 'announce_to_students' in payload.model_fields_set:
+        lesson.announce_to_students = payload.announce_to_students
+    if lesson.publish_at and lesson.available_until and platform_service._as_utc(lesson.available_until) <= lesson.publish_at:
+        raise HTTPException(422, "Lesson closing time must be after publication time")
+    from app.services.lesson_announcements import sync_lesson_calendar
+    sync_lesson_calendar(db, lesson, course)
     db.commit()
     assessment_changed(db, lesson)
-    return {"id": str(lesson.id), "publication_status": lesson.publication_status, "publish_at": lesson.publish_at}
+    return {"id": str(lesson.id), "publication_status": lesson.publication_status, "publish_at": lesson.publish_at,
+            "available_until": lesson.available_until, "announce_to_students": lesson.announce_to_students}
 
 
 @router.get("/progress/lessons/{lesson_id}", response_model=LessonProgressResponse)
@@ -1837,7 +1857,8 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
     now = datetime.now(UTC)
     boundaries = [platform_service._as_utc(value) for item in [*quizzes, *assignments] for value in
         (item.starts_at, item.ends_at if isinstance(item, Quiz) else item.due_at) if value]
-    boundaries.extend(platform_service._as_utc(lesson.publish_at) for lesson in lessons if lesson.publish_at)
+    boundaries.extend(platform_service._as_utc(value) for lesson in lessons for value in
+                      (lesson.publish_at, lesson.available_until) if value)
     upcoming = [value for value in boundaries if value > now]
     return {
         "server_time": now.isoformat(),

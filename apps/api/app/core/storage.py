@@ -309,7 +309,13 @@ class S3StorageProvider(BaseStorageProvider):
     def get_size(self, storage_key: str) -> int:
         client = self._get_client()
         key = storage_key.replace(f"s3://{self.bucket_name}/", "")
-        response = client.head_object(Bucket=self.bucket_name, Key=key)
+        from botocore.exceptions import ClientError
+        try:
+            response = client.head_object(Bucket=self.bucket_name, Key=key)
+        except ClientError as exc:
+            if str(exc.response.get("Error", {}).get("Code")) in {"404", "NoSuchKey", "NotFound"}:
+                raise FileNotFoundError("Stored object is missing") from exc
+            raise
         return response.get("ContentLength", 0)
 
     def exists(self, storage_key: str) -> bool:

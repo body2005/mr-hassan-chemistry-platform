@@ -62,7 +62,7 @@ export const Header: React.FC<HeaderProps> = ({
 
   return (
     <header className="topbar">
-      <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+      <div className="topbar-identity" style={{ display: "flex", alignItems: "center", gap: "14px", minWidth: 0 }}>
         {/* Unified Mobile Hamburger / Close button */}
         <button
           className="icon-btn"
@@ -75,6 +75,7 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Brand Logo & Name directly next to the sidebar button */}
         <div
+          className="topbar-home"
           onClick={onNavigateHome}
           role="button"
           tabIndex={0}

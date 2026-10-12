@@ -115,6 +115,8 @@ class Lesson(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     course_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("courses.id", ondelete="CASCADE"), index=True, nullable=False)
     publication_status: Mapped[str] = mapped_column(String(20), default="published", server_default="published", nullable=False)
     publish_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    available_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    announce_to_students: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     release_announced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     release_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     required_material_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)

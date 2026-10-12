@@ -68,6 +68,8 @@ def _setup_world(db: Session, tmp_path, monkeypatch) -> tuple[Institution, User,
     db.add(lesson)
     db.commit()
     db.refresh(lesson)
+    lesson.video_asset_key = f'/api/v1/lessons/{lesson.id}/stream'
+    db.commit()
 
     # Provide a real local video object so authorized streams can be served.
     monkeypatch.setenv("VIDEO_UPLOAD_DIR", str(tmp_path))

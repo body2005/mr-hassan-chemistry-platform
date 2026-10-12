@@ -26,6 +26,9 @@ import { useConfirm } from "../components/ConfirmWizard";
 import { useTranslation } from "../utils/i18nContext";
 import { useToast } from '../components/ToastProvider';
 import { cairoLocalValue, cairoToUtc } from '../utils/cairoTime';
+import { useLessonNavigation } from '../services/useLessonNavigation';
+import { LessonScheduleFields } from '../components/LessonScheduleFields';
+import { materialFailureMessage } from '../services/playbackFailure';
 
 /** Tracks the app-wide light/dark theme by watching the `data-theme`
  * attribute on <html>, so inline styles can pick theme-aware colors. */
@@ -108,6 +111,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     : "SECONDARY_3";
   const [isDeleteMode, setIsDeleteMode] = useState(false);
   const [activeLessonModal, setActiveLessonModal] = useState<VideoLesson | null>(null);
+  const closeLesson = useLessonNavigation(activeLessonModal, setActiveLessonModal);
 
 
 
@@ -129,9 +133,13 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   const [selectedModuleId, setSelectedModuleId] = useState<string>("");
   const [publishMode, setPublishMode] = useState<'ready' | 'scheduled' | 'draft'>('ready');
   const [publishDateTime, setPublishDateTime] = useState('');
+  const [availableUntil, setAvailableUntil] = useState('');
+  const [announceStudents, setAnnounceStudents] = useState(true);
   const [editingPublication, setEditingPublication] = useState<VideoLesson | null>(null);
   const [editPublishMode, setEditPublishMode] = useState<'ready' | 'scheduled' | 'draft'>('ready');
   const [editPublishTime, setEditPublishTime] = useState('');
+  const [editAvailableUntil, setEditAvailableUntil] = useState('');
+  const [editAnnounceStudents, setEditAnnounceStudents] = useState(true);
   const [savingPublication, setSavingPublication] = useState(false);
   const [newModuleTitle, setNewModuleTitle] = useState("");
   const [isRevision, setIsRevision] = useState(false);
@@ -343,8 +351,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       link.remove();
       URL.revokeObjectURL(objectUrl);
       notify(`تم تنزيل المذكرة: ${filename}`);
-    } catch {
-      notify("تعذر تنزيل المذكرة. تحقق من الاتصال والصلاحيات ثم أعد المحاولة.", 'danger');
+    } catch (error) {
+      notify(materialFailureMessage(error), 'danger');
     }
   }
 
@@ -420,7 +428,9 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
 
     setIsUploading(true);
     try {
-      const publishAt = publishMode === 'scheduled' ? cairoToUtc(publishDateTime) : null;
+      const publishAt = publishDateTime ? cairoToUtc(publishDateTime) : null;
+      const endsAt = availableUntil ? cairoToUtc(availableUntil) : null;
+      if (publishAt && endsAt && endsAt <= publishAt) throw new Error('موعد انتهاء الإتاحة يجب أن يكون بعد موعد البداية.');
       if (selectedModuleId === 'new' && !newModuleTitle.trim()) throw new Error('اكتب اسم الوحدة الجديدة أو اختَر بدون وحدة.');
       // A reload can show the form before the parent's course fetch finishes.
       // Never interpret that transient empty/stale prop as "create a course".
@@ -466,6 +476,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         course_id: course.id,
         publication_status: publishMode === 'draft' ? 'draft' : 'published',
         publish_at: publishAt,
+        available_until: endsAt,
+        announce_to_students: announceStudents,
         required_material_count: attachedFiles.length,
         title: savedTitle,
         kind: selectedVideoFile ? "video" : "article",
@@ -529,6 +541,10 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     setLessonPrice(0);
     setIsRevision(false);
     setNewModuleTitle("");
+    setPublishDateTime('');
+    setAvailableUntil('');
+    setAnnounceStudents(true);
+    setPublishMode('ready');
     setUploadSuccess(true);
     setTimeout(() => setUploadSuccess(false), 5000);
   }
@@ -570,7 +586,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         completedLessonIds={[]}
         onToggleCompleteLesson={() => {}}
         onSelectLesson={(ls) => setActiveLessonModal(ls)}
-        onClose={() => setActiveLessonModal(null)}
+        onClose={closeLesson}
         onDownloadMaterial={downloadLessonMaterial}
       />
     );
@@ -584,8 +600,11 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
           if (savingPublication) return;
           setSavingPublication(true);
           try {
-            const due = editPublishMode === 'scheduled' ? cairoToUtc(editPublishTime) : null;
-            await courseService.updateLessonPublication(editingPublication.id, editPublishMode === 'draft' ? 'draft' : 'published', due);
+            const due = editPublishTime ? cairoToUtc(editPublishTime) : null;
+            const end = editAvailableUntil ? cairoToUtc(editAvailableUntil) : null;
+            if (due && end && end <= due) throw new Error('موعد انتهاء الإتاحة يجب أن يكون بعد موعد البداية.');
+            await courseService.updateLessonPublication(editingPublication.id, editPublishMode === 'draft' ? 'draft' : 'published', due,
+              { available_until: end, announce_to_students: editAnnounceStudents });
             const refreshed = await courseService.getCourses({ skipCache: true });
             setCourses(refreshed); onCoursesChanged(refreshed); setEditingPublication(null);
             notify('تم حفظ إعدادات نشر الدرس.', 'success');
@@ -593,11 +612,9 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
           finally { setSavingPublication(false); }
         }}>
           <h2 id="lesson-publication-heading">نشر الدرس: {editingPublication.title}</h2>
-          <label>حالة النشر<select value={editPublishMode} onChange={event => setEditPublishMode(event.target.value as typeof editPublishMode)}>
-            <option value="ready">نشر بعد اكتمال الجاهزية — إلغاء الجدولة</option>
-            <option value="scheduled">جدولة النشر</option><option value="draft">إرجاع إلى مسودة</option>
-          </select></label>
-          {editPublishMode === 'scheduled' && <label>التاريخ والوقت بتوقيت مصر (Africa/Cairo)<input type="datetime-local" required value={editPublishTime} onChange={event => setEditPublishTime(event.target.value)} /></label>}
+          <LessonScheduleFields start={editPublishTime} end={editAvailableUntil} announce={editAnnounceStudents}
+            draft={editPublishMode === 'draft'} onStart={setEditPublishTime} onEnd={setEditAvailableUntil}
+            onAnnounce={setEditAnnounceStudents} onDraft={value => setEditPublishMode(value ? 'draft' : 'ready')} />
           <p>تغيير الموعد أو إلغاء الجدولة يحافظ على الفيديو والمرفقات.</p>
           <button type="submit" className="btn-primary" disabled={savingPublication}>{savingPublication ? 'جارٍ الحفظ…' : 'حفظ النشر'}</button>
           <button type="button" className="btn-secondary" disabled={savingPublication} onClick={() => setEditingPublication(null)}>إلغاء</button>
@@ -737,20 +754,9 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
           )}
 
           <form onSubmit={handleUploadLesson} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-            <fieldset style={{ border: '1px solid var(--border-color)', borderRadius: 16, padding: 12 }}>
-              <legend>إتاحة الدرس للطلاب</legend>
-              <label>طريقة النشر
-                <select value={publishMode} onChange={event => setPublishMode(event.target.value as typeof publishMode)}>
-                  <option value="ready">نشر بعد اكتمال الجاهزية</option>
-                  <option value="scheduled">جدولة النشر في تاريخ ووقت محددين</option>
-                  <option value="draft">حفظ كمسودة</option>
-                </select>
-              </label>
-              {publishMode === 'scheduled' && <label>تاريخ ووقت النشر — توقيت مصر (Africa/Cairo)
-                <input type="datetime-local" required value={publishDateTime} onChange={event => setPublishDateTime(event.target.value)} />
-              </label>}
-              <p>لن يظهر الدرس للطالب إلا بعد جاهزية الفيديو والمرفقات المطلوبة ووصول موعد النشر.</p>
-            </fieldset>
+            <LessonScheduleFields start={publishDateTime} end={availableUntil} announce={announceStudents}
+              draft={publishMode === 'draft'} onStart={setPublishDateTime} onEnd={setAvailableUntil}
+              onAnnounce={setAnnounceStudents} onDraft={value => setPublishMode(value ? 'draft' : 'ready')} />
             {/* Unit / Module Selection */}
             <div>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
@@ -1444,6 +1450,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                             <button type="button" className="btn-secondary" onClick={() => {
                               setEditingPublication(lesson);
                               setEditPublishMode(lesson.publicationStatus === 'draft' ? 'draft' : lesson.publishAt ? 'scheduled' : 'ready');
+                              setEditAvailableUntil(lesson.availableUntil ? cairoLocalValue(lesson.availableUntil) : '');
+                              setEditAnnounceStudents(lesson.announceToStudents !== false);
                               setEditPublishTime(lesson.publishAt ? cairoLocalValue(lesson.publishAt) : '');
                             }}>إعدادات النشر{lesson.publicationStatus === 'draft' ? ' — مسودة' : lesson.publishAt ? ' — مجدول' : ''}</button>
                             <button

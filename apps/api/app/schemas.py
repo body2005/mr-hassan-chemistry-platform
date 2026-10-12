@@ -9,7 +9,7 @@ except ImportError:
     class StrEnum(str, Enum):
         pass
 
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
@@ -233,14 +233,21 @@ class ModuleCreateRequest(BaseModel):
 class LessonCreateRequest(BaseModel):
     publication_status: Literal['draft', 'published'] = 'published'
     publish_at: datetime | None = None
+    available_until: datetime | None = None
+    announce_to_students: bool = True
     required_material_count: int = Field(default=0, ge=0, le=100)
 
-    @field_validator('publish_at')
+    @field_validator('publish_at', 'available_until')
     @classmethod
     def publication_timezone(cls, value):
         if value is not None and (value.tzinfo is None or value.utcoffset() is None):
             raise ValueError('Publication time must include a timezone')
         return value
+    @model_validator(mode='after')
+    def publication_window(self):
+        if self.publish_at and self.available_until and self.available_until <= self.publish_at:
+            raise ValueError('Lesson closing time must be after publication time')
+        return self
     title: str = Field(min_length=2, max_length=200)
     kind: LessonKind
     position: int = Field(ge=1, le=10_000)
@@ -289,6 +296,8 @@ class LessonResponse(BaseModel):
     module_id: uuid.UUID | None = None
     publication_status: str = 'published'
     publish_at: datetime | None = None
+    available_until: datetime | None = None
+    announce_to_students: bool = True
     required_material_count: int = 0
     title: str
     kind: LessonKind
@@ -651,13 +660,20 @@ class AssessmentPublicationRequest(BaseModel):
 class LessonPublicationRequest(BaseModel):
     publication_status: Literal['draft', 'published']
     publish_at: datetime | None = None
+    available_until: datetime | None = None
+    announce_to_students: bool = True
 
-    @field_validator('publish_at')
+    @field_validator('publish_at', 'available_until')
     @classmethod
     def publication_timezone(cls, value):
         if value is not None and (value.tzinfo is None or value.utcoffset() is None):
             raise ValueError('Publication time must include a timezone')
         return value
+    @model_validator(mode='after')
+    def publication_window(self):
+        if self.publish_at and self.available_until and self.available_until <= self.publish_at:
+            raise ValueError('Lesson closing time must be after publication time')
+        return self
 
 
 class AssignmentAttemptResponse(BaseModel):

@@ -285,7 +285,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
               setAttemptSelection({ studentId: student.id, id: event.target.value });
             }}>
               {(solutionData.available_attempts || [{ id: solutionData.attempt.id, title: solutionData.quiz?.title || 'اختبار', attempt_number: solutionData.attempt.attempt_number, submitted_at: solutionData.attempt.submitted_at }]).map(attempt =>
-                <option key={attempt.id} value={attempt.id}>{attempt.title} — محاولة {attempt.attempt_number}{attempt.submitted_at ? ` — ${new Date(attempt.submitted_at).toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' })}` : ''}</option>)}
+                <option key={attempt.id} value={attempt.id}>{attempt.title}{attempt.submitted_at ? ` — ${new Date(attempt.submitted_at).toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' })}` : ''}</option>)}
             </select>
           </label>}
           {/* Student Info Bar */}

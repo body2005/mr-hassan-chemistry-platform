@@ -19,7 +19,7 @@ def world(db):
     course.price_egp = 0
     modules = [CourseModule(course_id=course.id, title=f'Unit {i}', position=i) for i in [1, 2]]
     db.add_all(modules); db.flush()
-    lessons = [Lesson(module_id=m.id, title=f'Lesson {i}', kind='video', price_egp=0, position=1) for i, m in enumerate(modules)]
+    lessons = [Lesson(module_id=m.id, title=f'Lesson {i}', kind='video', video_asset_key=f'private/lesson-{i}.mp4', price_egp=0, position=1) for i, m in enumerate(modules)]
     db.add_all(lessons)
     db.add(Enrollment(course_id=course.id, student_id=student.id)); db.commit()
     return inst, teacher, student, course, modules, lessons
@@ -43,7 +43,8 @@ def test_multiple_scope_roundtrip_and_paid_lesson_is_not_bypassed(db):
     assert listing['accessible'] is True
     lessons[1].price_egp = 50; db.commit()
     assert learner.get(f'/api/v1/quizzes/{quiz.id}/solve').status_code == 403
-    assert learner.get(f'/api/v1/courses/{course.id}/assessments').json()['quizzes'][0]['accessible'] is False
+    # Current catalog policy hides inaccessible assessments entirely.
+    assert learner.get(f'/api/v1/courses/{course.id}/assessments').json()['quizzes'] == []
 
 
 def test_another_courses_scope_rejected_before_any_quiz_is_written(db):

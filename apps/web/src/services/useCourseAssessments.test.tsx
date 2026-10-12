@@ -17,7 +17,7 @@ beforeEach(() => {
   mocks.read.mockReset();
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
-afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 const refs = (id: string): CourseAssessmentRef[] => [{ id, title: id, kind: 'quiz', accessible: true }];
 
 it('loads only the selected course immediately, not every enrollment', async () => {
@@ -49,10 +49,13 @@ it('preserves a failed read as an error and retries only on manual action', asyn
   expect(mocks.read.mock.calls[1][1].skipCache).toBe(true);
 });
 it('refreshes only this course after a real course/access update and cleans up listeners', async () => {
+  vi.useFakeTimers();
   mocks.read.mockResolvedValue(refs('initial'));
   await act(async () => root.render(<Probe />));
   mocks.read.mockResolvedValue(refs('new-access'));
   await act(async () => window.dispatchEvent(new Event('lms_lesson_unlocked')));
+  expect(mocks.read).toHaveBeenCalledTimes(1);
+  await act(async () => vi.advanceTimersByTimeAsync(300));
   expect(host.textContent).toBe('new-access');
   expect(mocks.read.mock.calls.every(call => call[0] === 'selected')).toBe(true);
   await act(async () => root.render(null));

@@ -7,7 +7,7 @@ os.environ["APP_ENV"] = "test"
 os.environ["SECRET_KEY"] = "test-secret-key-that-is-long-enough"
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 os.environ["FRONTEND_ORIGINS"] = "http://localhost:5173"
-os.environ["INGESTION_BACKEND"] = "local"
+os.environ["INGESTION_BACKEND"] = "disabled"
 os.environ["ALLOW_LOCAL_INGESTION"] = "false"
 os.environ["STORAGE_BACKEND"] = "local"
 

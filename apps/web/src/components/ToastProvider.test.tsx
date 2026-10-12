@@ -22,9 +22,9 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
-it('keeps deduplicated warnings in one global host until explicitly dismissed', async () => {
+it('keeps deduplicated warnings in one global host and allows dismissal before expiry', async () => {
   await render(); await click('تحذير'); await click('تحذير');
-  await act(async () => vi.advanceTimersByTime(60000));
+  await act(async () => vi.advanceTimersByTime(4000));
   expect(document.body.querySelectorAll('.toast-item')).toHaveLength(1);
   expect(host.querySelector('.toast-stack')).toBeNull();
   expect(document.body.querySelector('.toast-stack .toast-warning')).not.toBeNull();
@@ -33,17 +33,18 @@ it('keeps deduplicated warnings in one global host until explicitly dismissed', 
   await act(async () => document.body.querySelector<HTMLButtonElement>('[aria-label="إغلاق الرسالة"]')!.click());
   expect(document.body.querySelector('.toast-item')).toBeNull();
 });
-it('gives notices reading time and queues them without covering the action', async () => {
-  await render(); await click('نجاح'); await click('معلومة');
+it('expires each notice independently after the documented five seconds', async () => {
+  await render(); await click('نجاح');
+  await act(async () => vi.advanceTimersByTime(1000));
+  await click('معلومة');
+  expect(document.body.querySelectorAll('.toast-item')).toHaveLength(2);
+  await act(async () => vi.advanceTimersByTime(4000));
   expect(document.body.querySelectorAll('.toast-item')).toHaveLength(1);
-  await act(async () => vi.advanceTimersByTime(2000));
-  expect(document.body.querySelector('.toast-item')!.textContent).toContain('تم الحفظ');
-  await act(async () => vi.advanceTimersByTime(2500));
   expect(document.body.querySelector('.toast-item')!.textContent).toContain('تم تحديث البيانات');
-  await act(async () => vi.advanceTimersByTime(4500));
+  await act(async () => vi.advanceTimersByTime(1000));
   expect(document.body.querySelector('.toast-item')).toBeNull();
-  expect(noticeDuration('ق'.repeat(200))).toBe(14000);
-  expect(noticeDuration('تم')).toBe(4500);
+  expect(noticeDuration('ق'.repeat(200))).toBe(10000);
+  expect(noticeDuration('تم')).toBe(5000);
 });
 it('keeps errors visible across page and action-region changes', async () => {
   await render(); await click('تحذير'); await render(false);

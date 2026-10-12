@@ -20,7 +20,7 @@ export function useProtectedPlayback(lesson: VideoLesson, userId: string | undef
   const retryAllowedAt = useRef(0);
   const recordDenial = (error: unknown) => {
     const failure = error as { status?: number; retryAfterMs?: number } | null;
-    if (failure && [401, 403, 429].includes(failure.status || 0)) automaticDenied.current = true;
+    if (failure && [401, 403, 404, 429].includes(failure.status || 0)) automaticDenied.current = true;
     if (failure?.status === 429) retryAllowedAt.current = Date.now() + Math.max(1000, failure.retryAfterMs ?? 30000);
   };
   const pendingPlaybackResumeRef = useRef<{ time: number; playing: boolean } | null>(null);
