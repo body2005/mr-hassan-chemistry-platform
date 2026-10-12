@@ -754,9 +754,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
           )}
 
           <form onSubmit={handleUploadLesson} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-            <LessonScheduleFields start={publishDateTime} end={availableUntil} announce={announceStudents}
-              draft={publishMode === 'draft'} onStart={setPublishDateTime} onEnd={setAvailableUntil}
-              onAnnounce={setAnnounceStudents} onDraft={value => setPublishMode(value ? 'draft' : 'ready')} />
             {/* Unit / Module Selection */}
             <div>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
@@ -1034,6 +1031,10 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                 </div>
               )}
             </div>
+
+            <LessonScheduleFields start={publishDateTime} end={availableUntil} announce={announceStudents}
+              draft={publishMode === 'draft'} onStart={setPublishDateTime} onEnd={setAvailableUntil}
+              onAnnounce={setAnnounceStudents} onDraft={value => setPublishMode(value ? 'draft' : 'ready')} />
 
             <button
               type="submit"
