@@ -142,6 +142,14 @@ Final grade ledger per (student, course item); history retained on change.
 
 - `GET /notifications` (own), `POST /notifications/{id}/read`
 - `POST /notifications` / `POST /notifications/broadcast` (teacher+/admin)
+- Both creation paths use the same server-side audience policy: teachers may
+  target themselves and active, non-deleted students with ACTIVE/COMPLETED
+  enrollment in a course they own. Unrelated students and other staff are
+  excluded. Course/grade broadcast filters only narrow this audience.
+- Institution/platform admins may target active, non-deleted students, teachers
+  and institution admins in their own institution; platform-admin status does
+  not grant cross-institution notification delivery. A course filter also
+  requires course-management permission and the same institution.
 - Notification scheduling is server-side; browser rendering is not proof of
   actual scheduled delivery. See the live QA ledger for tested boundaries.
 

@@ -946,16 +946,56 @@ def grade_submission(
     return submission
 
 
+def _notification_audience_query(
+    db: Session, user: User, *, course_id: uuid.UUID | None = None,
+    target_grade: str | None = None,
+):
+    """Shared direct/broadcast audience; administrators remain tenant-scoped."""
+    if user.role not in {
+        UserRole.TEACHER, UserRole.INSTITUTION_ADMIN, UserRole.PLATFORM_ADMIN,
+    }:
+        raise PermissionError("Insufficient permissions")
+    query = select(User).where(
+        User.institution_id == user.institution_id,
+        User.role.in_([UserRole.STUDENT, UserRole.TEACHER, UserRole.INSTITUTION_ADMIN]),
+        User.is_active.is_(True),
+        User.deleted_at.is_(None),
+    )
+    if course_id:
+        course = course_for_user(db, user, course_id)
+        if course.institution_id != user.institution_id:
+            raise PermissionError("Course outside notification audience")
+        ensure_course_manager(user, course)
+    if user.role == UserRole.TEACHER:
+        managed = select(Course.id).where(
+            Course.teacher_id == user.id, Course.institution_id == user.institution_id,
+        )
+        if course_id:
+            managed = managed.where(Course.id == course_id)
+        audience = select(Enrollment.student_id).where(
+            Enrollment.course_id.in_(managed),
+            Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+        )
+        query = query.where(
+            (User.id.in_(audience) & (User.role == UserRole.STUDENT)) | (User.id == user.id)
+        )
+    elif course_id:
+        audience = select(Enrollment.student_id).where(
+            Enrollment.course_id == course_id,
+            Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+        )
+        query = query.where(User.id.in_(audience) | (User.id == user.id))
+    if target_grade:
+        query = query.where((User.grade_level == target_grade) | (User.id == user.id))
+    return query
+
+
 def create_notification(
     db: Session, user: User, payload: NotificationCreateRequest
 ) -> Notification:
-    recipient = db.scalar(
-        select(User).where(
-            User.id == payload.recipient_id,
-            User.institution_id == user.institution_id,
-            User.is_active.is_(True),
-        )
-    )
+    recipient = db.scalar(_notification_audience_query(db, user).where(
+        User.id == payload.recipient_id,
+    ))
     if recipient is None:
         raise LookupError("Recipient not found")
     if payload.dedup_key:
@@ -1001,36 +1041,9 @@ def create_notification(
 def broadcast_notification(
     db: Session, user: User, payload: NotificationBroadcastRequest
 ) -> list[Notification]:
-    if user.role not in {
-        UserRole.TEACHER,
-        UserRole.INSTITUTION_ADMIN,
-        UserRole.PLATFORM_ADMIN,
-    }:
-        raise PermissionError("Insufficient permissions")
-    query = select(User).where(
-        User.institution_id == user.institution_id,
-        User.role.in_([UserRole.STUDENT, UserRole.TEACHER, UserRole.INSTITUTION_ADMIN]),
-        User.is_active.is_(True),
-        User.deleted_at.is_(None),
+    query = _notification_audience_query(
+        db, user, course_id=payload.course_id, target_grade=payload.target_grade,
     )
-    if payload.course_id:
-        course = course_for_user(db, user, payload.course_id)
-        ensure_course_manager(user, course)
-    if user.role == UserRole.TEACHER:
-        # Teachers may message their own students, not every account in the
-        # institution. Include the author as a receipt for their own UI.
-        managed = select(Course.id).where(Course.teacher_id == user.id, Course.institution_id == user.institution_id)
-        if payload.course_id:
-            managed = managed.where(Course.id == payload.course_id)
-        audience = select(Enrollment.student_id).where(Enrollment.course_id.in_(managed),
-                      Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]))
-        query = query.where((User.id.in_(audience) & (User.role == UserRole.STUDENT)) | (User.id == user.id))
-    elif payload.course_id:
-        audience = select(Enrollment.student_id).where(Enrollment.course_id == payload.course_id,
-                      Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]))
-        query = query.where(User.id.in_(audience) | (User.id == user.id))
-    if payload.target_grade:
-        query = query.where((User.grade_level == payload.target_grade) | (User.id == user.id))
     # Serialize deduplication, including concurrent retries. Scope keys to the
     # sender so one teacher cannot collide with another teacher's notification.
     db.execute(select(User.id).where(User.id == user.id).with_for_update())

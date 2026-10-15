@@ -72,6 +72,21 @@ gain cross-tenant report scope. Reports reject students and scope every
 aggregate/top quiz. Independent regression evidence is in dated QA ledgers;
 this document does not claim every route has been penetration-tested.
 
+Deployment bootstrap creates missing identities only. Existing email, username
+and role must all match; collisions fail without promoting or renaming an
+account. Ordinary reruns preserve profile/password and administrative disable
+or deletion decisions. Even an explicitly requested development password reset
+does not reactivate a disabled/deleted account; deployment environments reject
+password-reset seed flags altogether. Reconciliation requires a separate
+authorized administrative action.
+
+Direct and broadcast notification creation share one audience query. Teachers
+can reach themselves and active, non-deleted students enrolled ACTIVE/COMPLETED
+in their own courses. Institution and platform administrators retain the same
+institution boundary and recipient roles (student, teacher, institution admin);
+no cross-tenant bypass is granted. A notification kind supplied by a manager
+is display metadata, not proof of payment, enrollment or a privileged action.
+
 Learning-objective codes are unique per institution/course and per institution
 global NULL scope using partial unique indexes. Legacy code evidence resolves
 to the quiz-course override before a global fallback. Conflicting historical

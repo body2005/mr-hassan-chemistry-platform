@@ -231,11 +231,19 @@ class Settings(BaseSettings):
 
     @property
     def sqlalchemy_database_url(self) -> str:
-        """Use psycopg v3 for provider URLs that omit a SQLAlchemy driver."""
+        """Only synchronous, installed database drivers are supported.
+
+        Never include the URL in validation errors: it contains credentials.
+        """
         if self.database_url.startswith("postgres://"):
             return self.database_url.replace("postgres://", "postgresql+psycopg://", 1)
         if self.database_url.startswith("postgresql://"):
             return self.database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+        driver = self.database_url.partition(":")[0]
+        if driver not in {"postgresql+psycopg", "sqlite", "sqlite+pysqlite"}:
+            raise ValueError(
+                "Unsupported DATABASE_URL driver; use postgresql+psycopg or sqlite"
+            )
         return self.database_url
 
 

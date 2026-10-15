@@ -58,38 +58,16 @@ def _seed_account(
             f"{label} seed identity is ambiguous: email and username belong to different accounts"
         )
 
-    # A deployment may rename an authorized account's email. Reconcile the
-    # account by its institution-scoped username only when the requested email
-    # is not already owned by someone else.
     existing = existing_by_email or existing_by_username
 
     if existing:
-        changed = False
-        if existing.email != email:
-            existing.email = email
-            changed = True
-        if existing.role != role:
-            existing.role = role
-            changed = True
+        # Bootstrap is creation, never an identity/role reconciliation tool.
+        # A public registration may have claimed either configured identifier.
+        if existing.email != email or existing.username != username or existing.role != role:
+            raise RuntimeError(f"{label} seed identity conflicts with an existing account")
         if not existing.is_active or existing.deleted_at is not None:
-            existing.is_active = True
-            existing.deleted_at = None
-            changed = True
-        if existing.username != username:
-            existing.username = username
-            changed = True
-        if existing.display_name != display_name:
-            existing.display_name = display_name
-            changed = True
-        # Demo students need complete student data so a login can be rendered
-        # by the student dashboard. Do not overwrite existing profile choices.
-        if grade_level and existing.grade_level is None:
-            existing.grade_level = grade_level
-            existing.governorate = "CAIRO"
-            existing.school_name = "Demo Secondary School"
-            existing.gender = Gender.MALE
-            existing.religion = Religion.MUSLIM
-            changed = True
+            print(f"{label} seed skipped: existing account disabled or deleted")
+            return
         # Passwords only change when an operator explicitly opts in. Seed runs
         # are otherwise idempotent and must never invalidate a live login.
         if reset_password:
@@ -98,12 +76,10 @@ def _seed_account(
             existing.password_changed_at = datetime.now(timezone.utc)
             from app.services.auth_service import invalidate_password_reset_tokens
             invalidate_password_reset_tokens(db, existing.id)
-            changed = True
-        if changed:
             db.commit()
-            print(f"{label} updated from deployment configuration: {email}")
+            print(f"{label} password reset explicitly requested")
         else:
-            print(f"{label} already exists: {email}")
+            print(f"{label} already exists; account unchanged")
         return
 
     account = User(
