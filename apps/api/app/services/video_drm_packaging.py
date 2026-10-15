@@ -44,7 +44,7 @@ def package(clear: Path, output: Path, info: dict, progress=None) -> tuple[list[
         audio.mkdir()
         descriptors.append(f'in={scratch}/{variants[0].parent.name}.mp4,stream=audio,init_segment={audio}/init.mp4,segment_template={audio}/$Number$.m4s,playlist_name=audio/index.m3u8,hls_group_id=audio,hls_name=Audio,drm_label=CONTENT')
     # Raw key is in a worker-private flag file, never argv, storage or logs.
-    fd, flags_name = tempfile.mkstemp(prefix='video-drm-', suffix='.flags', dir='/tmp')
+    fd, flags_name = tempfile.mkstemp(prefix='video-drm-', suffix='.flags', dir=scratch)
     flags = Path(flags_name)
     kid = uuid.UUID(metadata['key_id'])
     iv = base64.b64decode(metadata['iv']).hex()
@@ -56,7 +56,10 @@ def package(clear: Path, output: Path, info: dict, progress=None) -> tuple[list[
         def report():
             if progress:
                 progress(min(84, 75 + int(9 * len(list(output.rglob('*.m4s'))) / expected)), 'packaging:drm')
-        _run([str(packager), *descriptors, f'--flagfile={flags}', '--segment_duration=6',
+        # Shaka defaults to a clear lead. Every published segment must be
+        # encrypted, including the first one; validation still checks outputs.
+        _run([str(packager), *descriptors, f'--flagfile={flags}', '--clear_lead=0',
+            '--segment_duration=6',
             '--fragment_duration=6', '--hls_playlist_type=VOD', f'--hls_key_uri=skd://{kid}:{iv}',
             f'--hls_master_playlist_output={output}/master.m3u8'], 3600,
             workspace=output.parent, progress=report)

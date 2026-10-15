@@ -5,12 +5,19 @@ from sqlalchemy import select
 from app.models.video_upload import VideoUpload
 
 
-def current_hls_generation(db, lesson) -> VideoUpload | None:
+def hls_manifest_key(lesson) -> str | None:
+    """Compare the same private object for local keys and S3-qualified keys."""
     key = lesson.video_asset_key or ''
     if not key.endswith('.m3u8'):
+        return None
+    return key.split('/', 3)[-1] if key.startswith('s3://') else key
+
+
+def current_hls_generation(db, lesson) -> VideoUpload | None:
+    manifest = hls_manifest_key(lesson)
+    if manifest is None:
         # Genuine legacy progressive lessons remain playable until migrated.
         return None
-    manifest = key.split('/', 3)[-1] if key.startswith('s3://') else key
     asset = db.scalar(select(VideoUpload).where(
         VideoUpload.lesson_id == lesson.id,
         VideoUpload.status == 'ready',

@@ -4,16 +4,17 @@ from sqlalchemy import select, func
 from app.models.course import CourseStatus, LessonKind
 from app.models.extended import LessonAsset
 from app.models.video_upload import VideoUpload
+from app.services.video_playback import hls_manifest_key
 
 def available_lesson_ids(db, lessons, courses):
     if not lessons:
         return set()
     ids = [lesson.id for lesson in lessons]
     latest, attached_ready = {}, {}
-    attached_keys = {lesson.id: lesson.video_asset_key or '' for lesson in lessons}
+    attached_keys = {lesson.id: hls_manifest_key(lesson) for lesson in lessons}
     for row in db.scalars(select(VideoUpload).where(VideoUpload.lesson_id.in_(ids)).order_by(VideoUpload.created_at.desc(), VideoUpload.id.desc())):
         latest.setdefault(row.lesson_id, row)
-        if row.status == 'ready' and row.manifest_key and attached_keys[row.lesson_id].endswith('/' + row.manifest_key):
+        if row.status == 'ready' and row.manifest_key and attached_keys[row.lesson_id] == row.manifest_key:
             attached_ready.setdefault(row.lesson_id, row)
     materials = dict(db.execute(select(LessonAsset.lesson_id, func.count(LessonAsset.id)).where(
         LessonAsset.lesson_id.in_(ids), LessonAsset.object_key.is_not(None),

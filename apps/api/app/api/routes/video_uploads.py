@@ -240,7 +240,8 @@ def hls(lesson_id: uuid.UUID, upload_id: uuid.UUID, name: str, request: Request,
     upload = db.get(VideoUpload, upload_id)
     if upload is None or upload.lesson_id != lesson_id or upload.status != "ready" or not upload.manifest_key:
         raise HTTPException(404, "Video generation not found")
-    if not lesson.video_asset_key or not lesson.video_asset_key.endswith(f"/{upload.manifest_key}"):
+    from app.services.video_playback import hls_manifest_key
+    if hls_manifest_key(lesson) != upload.manifest_key:
         raise HTTPException(404, "Video generation is no longer current")
     if lesson.video_drm_protected and (not upload.drm or upload.drm.get('scheme') != 'cbcs'
             or not name.endswith(('.m3u8', '.mp4', '.m4s'))):

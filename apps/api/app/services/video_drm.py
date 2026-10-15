@@ -70,7 +70,9 @@ def new_content_key() -> tuple[bytes, dict]:
 def current_asset(db, lesson) -> VideoUpload | None:
     from app.services.video_playback import current_hls_generation
     asset = current_hls_generation(db, lesson)
-    if not asset or not asset.manifest_key or not lesson.video_asset_key or not lesson.video_asset_key.endswith('/' + asset.manifest_key):
+    # current_hls_generation already compares the exact canonical manifest.
+    # A second suffix check incorrectly rejected unqualified local keys.
+    if not asset:
         if lesson.video_drm_protected:
             raise HTTPException(503, 'Protected video generation is not available')
         return None
