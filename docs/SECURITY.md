@@ -123,14 +123,24 @@ Legacy jti slots expire normally; upgrading never resets a live device budget.
 Local storage operations use one canonical containment resolver; absolute
 legacy keys work only inside the root. Traversal and symlink/junction escape
 are rejected. This provider flaw is not proof of an exploitable remote file
-read/delete endpoint. Object storage is private and persists separately from
-app containers; only authorized streaming/purpose-bound links expose content.
+read/delete endpoint. The storage contract requires a private, durable bucket;
+source/tests do not prove the deployed bucket or CDN policy. The checked-in
+AWS public-access-block template has not been applied to a live service.
+Student playback exposes authorized API streams, not original object URLs.
 
 Headers: nosniff, SAMEORIGIN, strict-origin-when-cross-origin, restrictive
 Permissions-Policy; HTTPS deployments add HSTS and API CSP. Browser rendering
-escapes formula fallbacks and uses KaTeX trust=false. Video signed sessions,
-entitlements and watermarking do not equal Widevine/PlayReady or prevent screen
-recording. External DRM/CDN configuration is not proven by local tests.
+escapes formula fallbacks and uses KaTeX trust=false. Video signed sessions
+and entitlements do not prevent a permitted viewer copying clear HLS or legacy
+progressive bytes. CBCS/Widevine/FairPlay packaging, EME transport and Axinom
+license admission are prepared in source; provider/device activation and
+complete old-catalog migration remain external gates. No raw content keys
+are returned to JavaScript. No screen-recording prevention is claimed.
+
+Teacher tracking columns/cells are scoped by both institution and owner,
+with a composite scope foreign key and student enrollment checks. Snapshot
+reads hide withdrawn students' values while retaining their records. Browser
+state is a draft/cache only; API success is required to show a saved state.
 
 ## Monitoring, images, CI and evidence
 

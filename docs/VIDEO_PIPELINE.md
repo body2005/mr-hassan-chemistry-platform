@@ -28,7 +28,7 @@
    ضمانًا ضد كل ثغرة native؛ صورة المعالج تحتاج مسحًا مستقلًا.
    مخرجات المعالجة المحلية محدودة إلى 24 GiB، مع مراقبة المساحة أثناء
    الترميز؛ هذه ليست قدرة غير محدودة على معالجة محاضرات 4K الطويلة.
-7. HLS H.264/AAC، مقاطع ست ثوانٍ، وسلم 360/480/720/1080/2160 عندما يسمح
+7. HLS H.264/AAC، مقاطع ست ثوانٍ، وسلم 360/480/720/1080 عندما يسمح
    المصدر؛ لا upscaling. اختيار الجودة أصبح فعليًا وتلقائيًا في hls.js، بدل
    قائمة تجميلية لا تغير المصدر. WebM بلا Duration يُقاس من الناتج المفكوك.
 8. الملف الأصلي يبقى خاصًا في `video-originals/` ببصمة SHA-256 كاملة محسوبة
@@ -54,11 +54,15 @@ PlayReady/FairPlay). لا حساب أو موارد أو مفاتيح أو مشت
   asset/generation. CDN يجب أن يتحقق من الصلاحية حتى مع cache hit. الكوكي
   الموقعة وحدها لا توفر revocation الفوري الذي يوفره API الحالي؛ يجب تحديد
   سياسة edge authorization صريحة قبل التحويل إليه.
-- Axinom packaging/CPIX + license service URLs وentitlement signing secret
-  خارج Git. ترميز HLS الحالي **ليس CENC/DRM**؛ لا يكفي إضافة license URL
-  لمشغل يعرض مقاطع غير مشفرة. Windows Widevine/PlayReady يحتاج DASH/EME؛
-  FairPlay على Safari يحتاج HLS مشفرًا وشهادة مزود. يلزم encoder/packager
-  وتكامل player مرخّص واختبار الأجهزة الحقيقي قبل التفعيل.
+- الكود الحالي يجهّز CBCS/CMAF بواسطة Shaka Packager مع Widevine وFairPlay،
+  وصوت مشفّر و`clear_lead=0`، ووسيط تراخيص Axinom يتحقق من الجلسة والاستحقاق
+  قبل الاتصال وبعده. مفاتيح المحتوى تُغلّف على السيرفر؛ ليست في JavaScript.
+  hls.js يستخدم EME؛ هذا تجهيز مصدر **غير مفعّل أو مثبت على أجهزة حقيقية**.
+  الفيديوهات القديمة غير المشفرة تظل قابلة للحفظ بواسطة المشاهد المصرح له.
+  يلزم communication key ID/secret وشهادة FairPlay ونسخة Shaka مراجعة، ثم
+  اختبار تراخيص وأجهزة وإعادة تجهيز كل المواد القديمة قبل فرض DRM.
+  المسار الحالي لا يضيف PlayReady، والمتصفحات ذات native HLS فقط تحتاج
+  تحقق توافق أو تكاملًا إضافيًا. لا يكفي تغيير license URL أو إخفاء زر تنزيل.
 - callback/webhook خارجي، إن استُخدم، يحتاج توقيعًا يتحقق من raw body،
   timestamp/replay window، event-id idempotency وasset ownership. لم يُفتح
   endpoint يقبل `ready` من متصفح أو webhook غير موثوق. المعالج المحلي يكتب
@@ -70,6 +74,11 @@ PlayReady/FairPlay). لا حساب أو موارد أو مفاتيح أو مشت
 [Axinom DRM](https://docs.axinom.com/services/drm/)،
 [player integration](https://docs.axinom.com/services/drm/quickstart/drm-only/integrate-player)،
 [FFmpeg HLS](https://www.ffmpeg.org/ffmpeg-formats.html).
+
+تفصيل الإصلاح المحلي وحدود التحقق والتكلفة: [ECC_FIXES_2026-10-15.md](ECC_FIXES_2026-10-15.md).
+قالب `infra/s3-public-access-block.json.example` يحدد أعلام AWS الأربعة؛
+لم يُطبّق على مخزن حي ولا يثبت أن مخزن الإنتاج خاص. راجع سياسة المخزن
+وCDN ورفض القراءة المجهولة ضمن بوابة التشغيل المنفصلة.
 
 ## دورة حياة التخزين
 

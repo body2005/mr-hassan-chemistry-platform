@@ -153,6 +153,22 @@ Final grade ledger per (student, course item); history retained on change.
 - Notification scheduling is server-side; browser rendering is not proof of
   actual scheduled delivery. See the live QA ledger for tested boundaries.
 
+## Teacher-private tracking — `/teacher-tracking`
+
+- `GET /teacher-tracking` returns the caller's column definitions and values
+  for students currently enrolled ACTIVE/COMPLETED in their owned courses.
+- `POST /teacher-tracking/columns` creates a definition; maximum 50 per owner.
+  `DELETE /teacher-tracking/columns/{id}` deletes only that owner's column/cells.
+- `PUT /teacher-tracking/columns/{id}/students/{id}` saves a typed cell value.
+  Text is limited to 2,000 characters; numbers must be finite and bounded;
+  percentages are 0–100; booleans are strict. Zero/false remain real values.
+- Teacher/institution/platform-admin roles are admitted, but every record is
+  private to the caller plus institution; admin role does not read another
+  teacher's tracking. Writes require the normal cookie CSRF checks.
+- Additive migration `g7b9c1d3e5f7` follows `f6a8b0c2d4e6`. Application rollback
+  retains these tables and the schema head. Automatic downgrade explicitly
+  refuses destructive removal of saved records. No live migration was run.
+
 ## Calendar — `/calendar`
 
 List/create/update/cancel events. Stored UTC, recurrence via `rrule` string,
