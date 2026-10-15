@@ -27,8 +27,12 @@ class VideoUpload(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     processing_percent: Mapped[int | None] = mapped_column(Integer)
     processing_stage: Mapped[str | None] = mapped_column(String(80))
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    retry_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     # Exact generated-object allowlist, not a client-supplied path/prefix.
     outputs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     manifest_key: Mapped[str | None] = mapped_column(String(512))
     duration_seconds: Mapped[int | None] = mapped_column(Integer)
     sha256: Mapped[str | None] = mapped_column(String(64))
+    # Wrapped content key only, never the raw encryption key. Not serialized
+    # by upload summaries or the catalogue API.
+    drm: Mapped[dict | None] = mapped_column(JSON)

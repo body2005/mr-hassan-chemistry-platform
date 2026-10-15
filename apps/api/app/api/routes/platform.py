@@ -35,6 +35,7 @@ from app.models.platform import (
     CalendarEvent,
     Certificate,
     Notification,
+    DeliveryStatus,
     Question,
     Quiz,
     QuizAttemptAnswer,
@@ -60,6 +61,7 @@ from app.schemas import (
     CourseResponse,
     GradeSubmissionRequest,
     GradeQuizAnswerRequest,
+    ReopenQuizResultRequest,
     LessonCreateRequest,
     LessonCommentCreateRequest,
     LessonProgressResponse,
@@ -277,7 +279,7 @@ def _bad_request(exc: Exception) -> HTTPException:
 
 
 def _submission_responses(
-    db: Session, submissions: list[AssignmentSubmission]
+    db: Session, submissions: list[AssignmentSubmission], viewer: User
 ) -> list[AssignmentSubmissionResponse]:
     if not submissions:
         return []
@@ -301,8 +303,7 @@ def _submission_responses(
         assignment = assignments.get(submission.assignment_id)
         course = courses.get(assignment.course_id) if assignment else None
         student = students.get(submission.student_id)
-        responses.append(
-            AssignmentSubmissionResponse.model_validate(submission).model_copy(
+        response = AssignmentSubmissionResponse.model_validate(submission).model_copy(
                 update={
                     "assignment_title": assignment.title if assignment else None,
                     "assignment_prompt": assignment.prompt if assignment else None,
@@ -311,7 +312,14 @@ def _submission_responses(
                     "student_name": student.display_name if student else None,
                 }
             )
-        )
+        if viewer.role == UserRole.STUDENT and not (
+                submission.approved_at and submission.status == SubmissionStatus.APPROVED):
+            response = response.model_copy(update={
+                'final_score': None, 'ai_score': None, 'teacher_feedback': None,
+                'ai_feedback': None, 'graded_at': None, 'approved_at': None,
+                'status': SubmissionStatus.SUBMITTED,
+            })
+        responses.append(response)
     return responses
 
 
@@ -467,6 +475,8 @@ async def upload_lesson_video(
 ) -> dict:
     enforce_rate_limit(request, bucket="upload", limit=5, window_seconds=60)
     lesson, course = _lesson_course(db, lesson_id)
+    if lesson.video_drm_protected or get_settings().video_drm_packaging_enabled:
+        raise HTTPException(409, 'Encrypted videos require the resumable video upload workflow')
     if user.role != UserRole.PLATFORM_ADMIN and course.institution_id != user.institution_id:
         raise HTTPException(status_code=404, detail="Lesson not found")
     try:
@@ -579,6 +589,8 @@ def stream_lesson_video(lesson_id: uuid.UUID, request: Request, user: CurrentUse
         raise HTTPException(status_code=403, detail="Student playback requires a video stream token")
     enforce_rate_limit(request, bucket="lesson-video-preview", category="read")
     lesson, _ = _require_lesson_access(db, user, lesson_id)
+    if lesson.video_drm_protected or get_settings().video_drm_required:
+        raise HTTPException(403, 'Protected video requires encrypted playback')
     if (lesson.video_asset_key or '').endswith('.m3u8'):
         raise HTTPException(409, 'Adaptive video requires HLS playback')
     db.close()
@@ -617,7 +629,7 @@ def create_lesson_video_token(lesson_id: uuid.UUID, request: Request, response: 
     response.headers["Cache-Control"] = "private, no-store"
     response.headers["Referrer-Policy"] = "no-referrer"
     lesson, _ = _require_lesson_access(db, user, lesson_id)
-    if get_settings().video_drm_required:
+    if get_settings().video_drm_required and not lesson.video_drm_protected:
         raise HTTPException(503, "Licensed DRM playback is not configured")
     if lesson.video_asset_key and lesson.video_asset_key.startswith(("http://", "https://")):
         raise HTTPException(status_code=404, detail="Protected video not available")
@@ -630,8 +642,8 @@ def create_lesson_video_token(lesson_id: uuid.UUID, request: Request, response: 
     session_id = str(session_payload.get("jti") or "")
     if not session_id:
         raise HTTPException(status_code=401, detail="A live session is required for video playback")
-    from app.services.video_playback import current_hls_generation
-    adaptive = current_hls_generation(db, lesson)
+    from app.services.video_drm import current_asset, playback_descriptor
+    adaptive = current_asset(db, lesson)
     # Authorize first, then check the private object before consuming a playback
     # session. Missing ephemeral files must not start a token renewal loop.
     if lesson.video_asset_key and not lesson.video_asset_key.startswith("/api/"):
@@ -668,6 +680,7 @@ def create_lesson_video_token(lesson_id: uuid.UUID, request: Request, response: 
         "stream_url": stream_url,
         "format": "hls" if hls else "progressive",
         "expires_in": VIDEO_TOKEN_TTL_SECONDS,
+        "drm": playback_descriptor(lesson, adaptive, token) if hls else None,
     }
 
 
@@ -679,11 +692,7 @@ def _authorize_video_stream(
 ) -> Lesson:
     from app.core.security import decode_video_token
 
-    if get_settings().video_drm_required:
-        # Fail closed for previously issued progressive URLs too. Enabling
-        # the DRM requirement must not leave an unencrypted fallback open.
-        raise HTTPException(503, "DRM playback provider is not configured")
-    enforce_rate_limit(request, bucket="lesson-video-stream", category="read")
+    enforce_rate_limit(request, bucket="lesson-video-stream", category="video_stream")
     payload = decode_video_token(token) if token else None
     if not payload or payload.get("lesson_id") != str(lesson_id):
         raise HTTPException(status_code=403, detail="Invalid or expired video stream token")
@@ -717,6 +726,8 @@ def _authorize_video_stream(
         raise HTTPException(status_code=403, detail="Video session is no longer active")
 
     lesson, _ = _require_lesson_access(db, user, lesson_id)
+    if get_settings().video_drm_required and not lesson.video_drm_protected:
+        raise HTTPException(503, 'DRM catalogue migration is not complete')
     if lesson.video_asset_key and lesson.video_asset_key.startswith(("http://", "https://")):
         raise HTTPException(status_code=404, detail="Protected video not available")
     return lesson
@@ -725,6 +736,8 @@ def _authorize_video_stream(
 @router.get("/lessons/{lesson_id}/stream")
 def stream_lesson_authenticated_range(lesson_id: uuid.UUID, request: Request, db: Db, token: str | None = None) -> Response:
     lesson = _authorize_video_stream(lesson_id, request, db, token)
+    if lesson.video_drm_protected:
+        raise HTTPException(403, 'Protected video requires encrypted playback')
     # Authentication is complete; do not hold a DB connection while a student
     # watches a long video or the browser buffers parallel byte ranges.
     db.close()
@@ -1022,7 +1035,7 @@ def list_quizzes(
     ]
 
 
-def _update_assessment_publication(db, user, model, assessment_id, payload):
+def _update_assessment_publication(db, user, model, assessment_id, payload, request):
     assessment = db.scalar(select(model).where(model.id == assessment_id,
         model.institution_id == user.institution_id).with_for_update())
     if assessment is None:
@@ -1034,6 +1047,11 @@ def _update_assessment_publication(db, user, model, assessment_id, payload):
         platform_service.ensure_course_manager(user, course)
     except PermissionError as exc:
         raise HTTPException(404, "Assessment not found") from exc
+    end = assessment.ends_at if model is Quiz else assessment.due_at
+    record_audit(db, request, action='assessment_publication_changed', resource_type=model.__tablename__,
+        actor=user, resource_id=str(assessment.id),
+        before={'status': assessment.status, 'starts_at': assessment.starts_at.isoformat() if assessment.starts_at else None,
+                'ends_at': end.isoformat() if end else None}, after=payload.model_dump(mode='json'))
     assessment.starts_at = platform_service._as_utc(payload.starts_at)
     if model is Quiz:
         assessment.ends_at = platform_service._as_utc(payload.ends_at)
@@ -1069,13 +1087,13 @@ def _update_assessment_publication(db, user, model, assessment_id, payload):
 
 
 @router.patch("/quizzes/{quiz_id}/publication", response_model=QuizResponse)
-def update_quiz_publication(quiz_id: uuid.UUID, payload: AssessmentPublicationRequest, user: Manager, db: Db):
-    return _update_assessment_publication(db, user, Quiz, quiz_id, payload)
+def update_quiz_publication(quiz_id: uuid.UUID, payload: AssessmentPublicationRequest, user: Manager, db: Db, request: Request):
+    return _update_assessment_publication(db, user, Quiz, quiz_id, payload, request)
 
 
 @router.patch("/assignments/{assignment_id}/publication", response_model=AssignmentResponse)
-def update_assignment_publication(assignment_id: uuid.UUID, payload: AssessmentPublicationRequest, user: Manager, db: Db):
-    return _update_assessment_publication(db, user, Assignment, assignment_id, payload)
+def update_assignment_publication(assignment_id: uuid.UUID, payload: AssessmentPublicationRequest, user: Manager, db: Db, request: Request):
+    return _update_assessment_publication(db, user, Assignment, assignment_id, payload, request)
 
 
 @router.post("/quizzes/{quiz_id}/attempts", response_model=QuizAttemptResponse)
@@ -1193,7 +1211,7 @@ def submit_assignment(
         submission = platform_service.submit_assignment(db, user, assignment_id, payload)
     except (LookupError, PermissionError, ValueError) as exc:
         raise _bad_request(exc) from exc
-    return _submission_responses(db, [submission])[0]
+    return _submission_responses(db, [submission], user)[0]
 
 
 @router.get(
@@ -1227,7 +1245,7 @@ def list_submissions(
             AssignmentSubmission.assignment_id == assignment_id
         )
     return _submission_responses(
-        db, list(db.scalars(query.order_by(AssignmentSubmission.version.desc())).all())
+        db, list(db.scalars(query.order_by(AssignmentSubmission.version.desc())).all()), user
     )
 
 
@@ -1250,7 +1268,7 @@ def my_submissions(user: Student, db: Db) -> list[AssignmentSubmissionResponse]:
                 continue
             raise
         accessible.append(item)
-    return _submission_responses(db, accessible)
+    return _submission_responses(db, accessible, user)
 
 
 @router.get("/submissions", response_model=list[AssignmentSubmissionResponse])
@@ -1263,7 +1281,7 @@ def all_submissions(user: Manager, db: Db) -> list[AssignmentSubmissionResponse]
             Course, Course.id == Assignment.course_id
         ).where(Course.teacher_id == user.id)
     items = db.scalars(query.order_by(AssignmentSubmission.submitted_at.desc()).limit(500)).all()
-    return _submission_responses(db, list(items))
+    return _submission_responses(db, list(items), user)
 
 
 @router.get("/submissions/{submission_id}/file")
@@ -1343,7 +1361,7 @@ def grade_submission(
         after={"score": submission.final_score, "approved": payload.approve},
     )
     db.commit()
-    return _submission_responses(db, [submission])[0]
+    return _submission_responses(db, [submission], user)[0]
 
 
 @router.get("/notifications", response_model=list[NotificationResponse])
@@ -1479,12 +1497,7 @@ def cancel_calendar(event_id: uuid.UUID, user: Manager, db: Db) -> CalendarEvent
         event_broker.publish_event(
             institution_id=event.institution_id,
             event_type="calendar_updated",
-            data={
-                "event_id": str(event.id),
-                "action": "cancelled",
-                "title": event.title,
-                "event_type": event.event_type,
-            },
+            data={},
         )
     except Exception:
         pass
@@ -1524,14 +1537,7 @@ def update_calendar(
         event_broker.publish_event(
             institution_id=event.institution_id,
             event_type="calendar_updated",
-            data={
-                "event_id": str(event.id),
-                "action": "updated",
-                "title": event.title,
-                "event_type": event.event_type,
-                "starts_at": event.starts_at.isoformat() if event.starts_at else None,
-                "ends_at": event.ends_at.isoformat() if event.ends_at else None,
-            },
+            data={},
         )
     except Exception:
         pass
@@ -1737,14 +1743,17 @@ def delete_lesson_material(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.get("/courses/{course_id}/assessments/", include_in_schema=False)
 @router.get("/courses/{course_id}/assessments")
-def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
+def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db, response: Response) -> dict:
     """Student-facing per-lesson/unit assessments with access gating.
 
-    Returns published quizzes/assignments for this course grouped by
-    lesson_id/module_id. Every item carries `accessible`: whether this student
-    may open/attempt it (enrollment + payment/entitlement on the lesson).
+    Require a purchase before querying assessment metadata. Only return
+    authorized lesson/assessment scopes; `accessible` describes the current
+    action window, never substitutes for authorization.
     """
+    response.headers['Cache-Control'] = 'private, no-store'
+    response.headers['Vary'] = 'Cookie, Authorization'
     lesson_ids: list[uuid.UUID] = []
     lesson_titles: dict[uuid.UUID, str] = {}
     accessible_lessons: set[uuid.UUID] = set()
@@ -1755,21 +1764,18 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
     if user.role == UserRole.TEACHER and course.teacher_id != user.id:
         raise HTTPException(status_code=404, detail="Course not found")
 
-    enrolled = db.scalar(
-        select(Enrollment.id).where(
-            Enrollment.course_id == course_id,
-            Enrollment.student_id == user.id,
-            Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
-        )
-    )
+    from app.services.course_purchase_access import require_purchased_course_access
+    purchased_lesson_ids = require_purchased_course_access(db, user, course)
+    enrolled = user.role == UserRole.STUDENT
     lessons = list(db.scalars(select(Lesson).where(Lesson.course_id == course_id)
         .order_by(Lesson.position, Lesson.id)).all())
     from app.services.payment_service import accessible_course_lesson_ids
-    accessible_lessons = accessible_course_lesson_ids(db, user, course, lessons, enrolled=enrolled is not None)
+    accessible_lessons = accessible_course_lesson_ids(db, user, course, lessons, enrolled=enrolled)
+    if purchased_lesson_ids is not None:
+        accessible_lessons &= purchased_lesson_ids
     lesson_ids = [lesson.id for lesson in lessons]
     lesson_titles = {lesson.id: lesson.title for lesson in lessons}
-    from app.services.lesson_release import available_lesson_ids
-    visible_lessons = available_lesson_ids(db, lessons, {course.id: course}) if user.role == UserRole.STUDENT else set(lesson_ids)
+    visible_lessons = accessible_lessons if user.role == UserRole.STUDENT else set(lesson_ids)
 
     quizzes = list(
         db.scalars(
@@ -1811,11 +1817,15 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
         .where(Assignment.course_id == course_id, Assignment.institution_id == user.institution_id,
                AssignmentSubmission.institution_id == user.institution_id,
                AssignmentSubmission.student_id == user.id).distinct())) if user.role == UserRole.STUDENT else set()
-    course_access = user.role != UserRole.STUDENT or enrolled is not None
+    course_access = user.role != UserRole.STUDENT or enrolled
 
     def scope_accessible(assessment):
         required = set(assessment.lesson_ids)
         required.update(lesson.id for lesson in lessons if lesson.module_id in assessment.module_ids)
+        if purchased_lesson_ids is not None and not required:
+            # An unscoped assessment belongs to the full course, not one
+            # purchased lesson. Do not turn any purchase into blanket access.
+            return False
         return course_access and required.issubset(accessible_lessons)
 
     def quiz_item(q: Quiz) -> dict:
@@ -1835,7 +1845,7 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
             "attempts_allowed": q.attempts_allowed,
             "attempts_used": attempt_counts.get(q.id, 0),
             "completed": q.id in completed_quizzes,
-            # Unscoped quizzes fall back to: any enrolled student can try.
+            # Partial lesson purchases do not disclose unscoped course quizzes.
             "accessible": scope_accessible(q) and (user.role != UserRole.STUDENT or assessment_open(q)),
         }
 
@@ -1858,9 +1868,14 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
         }
 
     now = datetime.now(UTC)
-    boundaries = [platform_service._as_utc(value) for item in [*quizzes, *assignments] for value in
+    # A hidden assessment/locked lesson must not disclose its schedule through
+    # the otherwise innocuous refresh deadline. Authorized future assessments
+    # can still wake the student's page at their opening boundary.
+    boundaries = [platform_service._as_utc(value) for item in [*quizzes, *assignments]
+        if user.role != UserRole.STUDENT or scope_accessible(item) for value in
         (item.starts_at, item.ends_at if isinstance(item, Quiz) else item.due_at) if value]
-    boundaries.extend(platform_service._as_utc(value) for lesson in lessons for value in
+    boundaries.extend(platform_service._as_utc(value) for lesson in lessons
+                      if lesson.id in visible_lessons for value in
                       (lesson.publish_at, lesson.available_until) if value)
     upcoming = [value for value in boundaries if value > now]
     return {
@@ -1871,8 +1886,8 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db) -> 
             {"id": str(lid), "title": lesson_titles[lid], "accessible": lid in accessible_lessons}
             for lid in lesson_ids if lid in visible_lessons
         ],
-        "quizzes": [quiz_item(q) for q in filter_student_assessments(db, user, quizzes)],
-        "assignments": [assignment_item(a) for a in filter_student_assessments(db, user, assignments)],
+        "quizzes": [quiz_item(q) for q in filter_student_assessments(db, user, quizzes) if scope_accessible(q)],
+        "assignments": [assignment_item(a) for a in filter_student_assessments(db, user, assignments) if scope_accessible(a)],
     }
 
 
@@ -1994,6 +2009,39 @@ def get_quiz_solve_view(quiz_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
     }
 
 
+@router.post('/quiz-attempts/{attempt_id}/reopen-results', response_model=QuizAttemptResponse)
+def reopen_quiz_result(attempt_id: uuid.UUID, payload: ReopenQuizResultRequest,
+                       user: Manager, db: Db, request: Request):
+    attempt = db.scalar(select(QuizAttempt).where(QuizAttempt.id == attempt_id).with_for_update())
+    quiz = db.get(Quiz, attempt.quiz_id) if attempt else None
+    course = db.get(Course, quiz.course_id) if quiz else None
+    if course is None or (user.role != UserRole.PLATFORM_ADMIN and course.institution_id != user.institution_id):
+        raise HTTPException(404, 'Attempt not found')
+    try:
+        platform_service.ensure_course_manager(user, course)
+    except PermissionError as exc:
+        raise HTTPException(404, 'Attempt not found') from exc
+    if attempt.is_practice or attempt.status != AttemptStatus.SUBMITTED or not attempt.question_snapshot:
+        raise HTTPException(409, 'Only a frozen official result can be reopened')
+    if len(payload.reason.strip()) < 3:
+        raise HTTPException(422, 'A correction reason is required')
+    if attempt.results_approved_at is None:
+        return attempt  # Idempotent retry; never adds another assessment weight.
+    record_audit(db, request, action='quiz_result_reopened', resource_type='quiz_attempt', actor=user,
+        resource_id=str(attempt.id), before={'score': attempt.score,
+            'final_percentage': attempt.final_percentage, 'approval_notes': attempt.approval_notes,
+            'approved_at': attempt.results_approved_at.isoformat()}, after={'reason': payload.reason.strip()})
+    attempt.results_approved_at = None
+    attempt.results_approved_by = None
+    attempt.final_percentage = None
+    attempt.approval_notes = None
+    attempt.score = attempt.calculated_score
+    db.commit()
+    db.refresh(attempt)
+    assessment_changed(db, quiz, student_id=attempt.student_id)
+    return attempt
+
+
 @router.post("/quiz-attempts/{attempt_id}/answers/{question_id}/grade", response_model=QuizAttemptResponse)
 def grade_quiz_answer(attempt_id: uuid.UUID, question_id: uuid.UUID, payload: GradeQuizAnswerRequest,
                       user: Manager, db: Db, request: Request):
@@ -2020,6 +2068,9 @@ def grade_quiz_answer(attempt_id: uuid.UUID, question_id: uuid.UUID, payload: Gr
         raise HTTPException(409, "Legacy answer has no frozen rubric; historical evidence review is required")
     if payload.awarded_points > answer.question_snapshot["points"]:
         raise HTTPException(422, "Grade exceeds the question's points")
+    record_audit(db, request, action='quiz_answer_revision', resource_type='quiz_attempt', actor=user,
+        resource_id=str(attempt.id), before={'question_id': str(question_id), 'points': answer.awarded_points,
+            'feedback': answer.feedback}, after={'points': payload.awarded_points, 'feedback': payload.feedback})
     answer.awarded_points = payload.awarded_points
     answer.feedback = payload.feedback
     answer.graded_at = datetime.now(UTC)
@@ -2729,13 +2780,14 @@ def _comment_tree(db: Session, lesson_id: uuid.UUID, user: CurrentUser) -> list[
             "created_at": c.created_at.isoformat() if c.created_at else None,
         }
 
-    tops = [to_dict(c) for c in rows if c.parent_id is None]
-    replies = [to_dict(c) for c in rows if c.parent_id is not None]
-    by_parent: dict[str, list[dict]] = {}
-    for r in replies:
-        by_parent.setdefault(r["parent_id"] or "", []).append(r)
-    for t in tops:
-        t["replies"] = by_parent.get(t["id"], [])
+    nodes = {str(c.id): {**to_dict(c), 'replies': []} for c in rows}
+    tops = []
+    for c in rows:
+        node = nodes[str(c.id)]
+        if c.parent_id and str(c.parent_id) in nodes:
+            nodes[str(c.parent_id)]['replies'].append(node)
+        else:
+            tops.append(node)
     tops.reverse()  # newest first, replies stay chronological
     return tops
 
@@ -2743,7 +2795,24 @@ def _comment_tree(db: Session, lesson_id: uuid.UUID, user: CurrentUser) -> list[
 @router.get("/lessons/{lesson_id}/comments")
 def list_lesson_comments(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
     _require_lesson_access(db, user, lesson_id, same_institution=True)
-    return {"comments": _comment_tree(db, lesson_id, user)}
+    unread = db.scalar(select(func.count(Notification.id)).where(
+        Notification.recipient_id == user.id, Notification.institution_id == user.institution_id,
+        Notification.kind.in_(['lesson_comment', 'lesson_reply']), Notification.read_at.is_(None),
+        Notification.action_url.like(f'%lesson={lesson_id}&discussion=1'),
+        Notification.delivered_at.is_not(None))) or 0
+    return {"comments": _comment_tree(db, lesson_id, user), "unread_count": unread}
+
+
+@router.post("/lessons/{lesson_id}/comments/read")
+def read_lesson_discussion(lesson_id: uuid.UUID, user: CurrentUser, db: Db) -> dict:
+    _require_lesson_access(db, user, lesson_id, same_institution=True)
+    for notice in db.scalars(select(Notification).where(
+        Notification.recipient_id == user.id, Notification.institution_id == user.institution_id,
+        Notification.kind.in_(['lesson_comment', 'lesson_reply']), Notification.read_at.is_(None),
+        Notification.action_url.like(f'%lesson={lesson_id}&discussion=1'))):
+        notice.read_at = datetime.now(UTC)
+    db.commit()
+    return {'ok': True}
 
 
 @router.post("/lessons/{lesson_id}/comments", status_code=201)
@@ -2759,8 +2828,14 @@ def add_lesson_comment(
     parent: LessonComment | None = None
     if payload.parent_id is not None:
         parent = db.get(LessonComment, payload.parent_id)
-        if parent is None or parent.lesson_id != lesson.id or parent.parent_id is not None:
+        if parent is None or parent.lesson_id != lesson.id:
             raise HTTPException(status_code=422, detail="Parent comment not found")
+        ancestor, depth = parent, 1
+        while ancestor.parent_id:
+            depth += 1
+            ancestor = db.get(LessonComment, ancestor.parent_id)
+            if ancestor is None or ancestor.lesson_id != lesson.id or depth >= 8:
+                raise HTTPException(422, 'Reply nesting limit reached')
     comment = LessonComment(
         institution_id=course.institution_id,
         lesson_id=lesson.id,
@@ -2769,6 +2844,23 @@ def add_lesson_comment(
         body=payload.body,
     )
     db.add(comment)
+    db.flush()
+    notice_recipients = {course.teacher_id}
+    if parent:
+        notice_recipients.add(parent.student_id)
+    notice_recipients.discard(user.id)
+    now = datetime.now(UTC)
+    for recipient_id in notice_recipients:
+        recipient = db.get(User, recipient_id)
+        if not recipient or not recipient.is_active or recipient.deleted_at or recipient.institution_id != course.institution_id:
+            continue
+        target = 'mycourses' if recipient.role == UserRole.STUDENT else 'lessonmanagement'
+        db.add(Notification(institution_id=course.institution_id, recipient_id=recipient_id,
+            kind='lesson_reply' if parent else 'lesson_comment', title='رد جديد على التعليق' if parent else 'تعليق جديد على الدرس',
+            message=f'{user.display_name or "مستخدم"}: {comment.body}',
+            action_url=f'#{target}?course={course.id}&lesson={lesson.id}&discussion=1',
+            dedup_key=f'lesson-comment:{comment.id}:{recipient_id}', scheduled_for=now,
+            delivered_at=now, delivery_status=DeliveryStatus.DELIVERED))
     db.commit()
     db.refresh(comment)
     is_teacher = user.role == UserRole.TEACHER
@@ -2779,6 +2871,11 @@ def add_lesson_comment(
         'created_at': comment.created_at.isoformat() if comment.created_at else None, 'replies': [],
     }
     from app.core.events import event_broker
+    if notice_recipients:
+        try:
+            event_broker.publish_event(course.institution_id, 'notification_created', {'lesson_id': str(lesson.id)}, target_user_ids=notice_recipients)
+        except Exception:
+            logger.warning('Discussion notification saved; realtime hint deferred')
     # Event is a hint only; all content is re-read through authorized GET.
     try:
         recipients = {course.teacher_id, user.id}

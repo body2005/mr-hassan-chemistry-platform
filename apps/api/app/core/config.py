@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     app_name: str = "Learning Website"
     app_env: str = "development"
     api_v1_prefix: str = "/api/v1"
-    secret_key: str = Field(default="development-only-change-me", min_length=16)
+    secret_key: str = Field(default="development-only-change-me", min_length=16, repr=False, exclude=True)
     # Public SPA/HttpOnly session contract: reject unsupported renaming.
     session_cookie_name: Literal['matgar_session'] = "matgar_session"
     csrf_cookie_name: Literal['matgar_csrf'] = "matgar_csrf"
@@ -40,27 +40,31 @@ class Settings(BaseSettings):
     email_enabled: bool = False
     email_provider: Literal['smtp', 'resend'] = 'smtp'
     email_from_email: str | None = None
+    # Canonical SPA origin for reset links, independent of CORS alias ordering.
+    public_frontend_url: str | None = None
     resend_api_key: SecretStr | None = None
     smtp_host: str | None = None
     smtp_port: int = Field(default=465, ge=1, le=65535)
     smtp_user: str | None = None
-    smtp_password: str | None = None
+    smtp_password: str | None = Field(default=None, repr=False, exclude=True)
     smtp_from_email: str | None = None
     smtp_tls_verify: bool = True
     default_institution_slug: str = "demo"
-    database_url: str = "sqlite:///./learning_website.db"
+    database_url: str = Field(default="sqlite:///./learning_website.db", repr=False, exclude=True)
     db_pool_size: int = Field(default=15, ge=1, le=50)
     db_max_overflow: int = Field(default=25, ge=0, le=100)
     db_pool_timeout_seconds: int = Field(default=30, ge=5, le=120)
     db_pool_recycle_seconds: int = Field(default=1800, ge=60, le=7200)
-    redis_url: str = "redis://localhost:6379/0"
+    redis_url: str = Field(default="redis://localhost:6379/0", repr=False, exclude=True)
     s3_endpoint_url: str = "http://localhost:9000"
     s3_access_key: str = Field(
         default="learning",
+        repr=False, exclude=True,
         validation_alias=AliasChoices("s3_access_key", "S3_ACCESS_KEY_ID", "S3_ACCESS_KEY"),
     )
     s3_secret_key: str = Field(
         default="learning-development",
+        repr=False, exclude=True,
         validation_alias=AliasChoices("s3_secret_key", "S3_SECRET_ACCESS_KEY", "S3_SECRET_KEY"),
     )
     s3_bucket: str = Field(
@@ -94,6 +98,7 @@ class Settings(BaseSettings):
     trusted_proxies: str = "127.0.0.1,::1"
     rate_limit_login: int = Field(default=15, ge=1, le=1000)
     rate_limit_read: int = Field(default=600, ge=1, le=10000)
+    rate_limit_video_stream: int = Field(default=600, ge=1, le=10000)
     rate_limit_upload: int = Field(default=60, ge=1, le=1000)
     rate_limit_quiz_extraction: int = Field(default=30, ge=1, le=1000)
     rate_limit_pdf_render: int = Field(default=240, ge=1, le=10000)
@@ -105,12 +110,32 @@ class Settings(BaseSettings):
     video_direct_upload_enabled: bool = False
     # Enable only after a separate FFmpeg video worker is running.
     video_processing_enabled: bool = False
+    video_worker_stale_seconds: int = Field(default=60, ge=30, le=300)
+    video_job_stalled_seconds: int = Field(default=300, ge=60, le=3600)
     video_upload_public_endpoint: str | None = None
     video_drm_required: bool = False
+    # Staged opt-in. Never enable globally until provider/device validation and
+    # migration of the existing catalogue have completed.
+    video_drm_packaging_enabled: bool = False
+    video_drm_provider: Literal['disabled', 'axinom'] = 'disabled'
+    video_drm_communication_key_id: str | None = None
+    video_drm_communication_key: SecretStr | None = None
+    # Old wrapping keys remain available during provider key rotation.
+    video_drm_keyring: SecretStr | None = None  # JSON {communication-key-id: base64-key}
+    video_drm_fairplay_certificate_path: str | None = None
+    video_drm_fairplay_certificate_base64: str | None = None  # Public DER certificate; never the FPS private key.
+    video_drm_packager_path: str = '/usr/local/bin/packager'
 
     @model_validator(mode="after")
     def validate_video_upload_endpoint(self) -> "Settings":
         from urllib.parse import urlsplit
+        if self.public_frontend_url:
+            public = urlsplit(self.public_frontend_url)
+            if (public.scheme not in ({'https'} if self.deployment_environment else {'http', 'https'})
+                    or not public.netloc or public.path not in {'', '/'} or public.query
+                    or public.fragment or public.username or public.password
+                    or self.public_frontend_url.rstrip('/') not in [origin.rstrip('/') for origin in self.cors_origins]):
+                raise ValueError('PUBLIC_FRONTEND_URL must be an allowed frontend origin without path or credentials')
         if self.video_direct_upload_enabled:
             endpoint = urlsplit(self.video_upload_public_endpoint or "")
             if endpoint.scheme != "https" or not endpoint.netloc or endpoint.path not in {"", "/"} or endpoint.query or endpoint.fragment or endpoint.username:

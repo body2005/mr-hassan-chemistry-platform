@@ -70,6 +70,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [profileError, setProfileError] = useState<string | null>(null);
   useEffect(() => {
     let active = true;
+    setSummary(null);
+    setProfileError(null);
     userService.getProfileSummary().then(result => {if (active) setSummary(result);})
       .catch(() => {if (active) setProfileError('تعذر تحميل إحصاءات الحساب؛ أعد المحاولة.');});
     return () => {active = false;};
@@ -330,6 +332,18 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             </div>
 
             <PaymentOrderHistory key={user.id} />
+
+            <div style={{ background: 'var(--bg-surface-secondary)', border: '1px solid var(--border-color)', borderRadius: 14, padding: 20, marginBottom: 20 }}>
+              <h3 style={{ margin: '0 0 8px', color: 'var(--text-main)' }}>الدرجة الكلية المعتمدة</h3>
+              <strong style={{ color: 'var(--text-main)', fontSize: 22 }}>
+                {summary?.grade_summary?.total_overall_grade == null ? '—' : `${summary.grade_summary.total_overall_grade}%`}
+              </strong>
+              {summary?.grade_summary && <p style={{ color: 'var(--text-muted)', marginBottom: 0 }}>
+                {summary.grade_summary.earned_points} من {summary.grade_summary.possible_points} نقطة
+                {' · '}{summary.grade_summary.pending_assessments_count} بانتظار الاعتماد
+                {' · '}{summary.grade_summary.unattempted_assessments_count} لم تُسلّم
+              </p>}
+            </div>
 
             {/* Video Watch Progress Logs */}
             <div style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "14px", padding: "20px" }}>

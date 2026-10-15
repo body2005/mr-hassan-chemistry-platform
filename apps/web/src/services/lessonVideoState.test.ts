@@ -8,15 +8,15 @@ const task = { id: 'task', lessonId: 'lesson', ownerScope: 'teacher', type: 'les
   uploadPercent: 42, status: 'uploading' } as UploadTask;
 
 it('hides playback during a replacement upload and processing, then restores it on completion', () => {
-  expect(lessonVideoState(lesson, [task], 'teacher')).toMatchObject({ phase: 'uploading', percent: 42 });
+  expect(lessonVideoState(lesson, [task], 'teacher')).toMatchObject({ phase: 'uploading', percent: 16, label: 'جاري رفع الفيديو…' });
   expect(lessonVideoState(lesson, [{ ...task, status: 'processing', uploadPercent: 100 }], 'teacher').phase).toBe('processing');
   expect(lessonVideoState(lesson, [{ ...task, status: 'completed' }], 'teacher').phase).toBe('ready');
 });
 
-it('restores server processing on reload without inventing a processing percentage', () => {
+it('restores the completed-transfer milestone while waiting for server progress', () => {
   const result = lessonVideoState({ ...lesson, videoUpload: { id: 'job', status: 'processing', createdAt: new Date(3000).toISOString() } }, [], 'teacher');
   expect(result.phase).toBe('processing');
-  expect(result.percent).toBeUndefined();
+  expect(result.percent).toBe(40);
 });
 
 it('ignores other accounts and lessons, and local failures older than a later server upload', () => {
@@ -38,7 +38,14 @@ it('authoritative completion of the same job clears stale local processing or er
   }
   expect(lessonVideoState(ready, [{ ...task, videoUploadId: 'replacement', status: 'processing' }], 'teacher').phase).toBe('processing');
 });
-it('shows real server progress and the current quality after reload', () => {
+it('maps real server work into the same overall bar without technical quality labels', () => {
   const result = lessonVideoState({ ...lesson, videoUpload: { id: 'job', status: 'processing', createdAt: new Date(3000).toISOString(), processing_percent: 40, processing_stage: 'encoding:360p:3:6' } }, [], 'teacher');
-  expect(result.percent).toBe(40); expect(result.label).toContain('360p'); expect(result.label).toContain('3 من 6');
+  expect(result.percent).toBe(63); expect(result.label).toBe('جاري رفع الفيديو…');
+});
+
+it('keeps the highest observed overall percentage when a worker retries and never exposes 100 before ready', () => {
+  const processing = { ...lesson, videoUpload: { id: 'job', status: 'processing', createdAt: new Date(1000).toISOString(), processing_percent: 10 } };
+  const local = { ...task, videoUploadId: 'job', status: 'processing' as const, progress: 86 };
+  expect(lessonVideoState(processing, [local], 'teacher').percent).toBe(86);
+  expect(lessonVideoState({ ...processing, videoUpload: { ...processing.videoUpload, processing_percent: 100 } }, [], 'teacher').percent).toBe(99);
 });

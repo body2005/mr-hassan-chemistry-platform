@@ -1,0 +1,11 @@
+# Operator-only tooling, separate from the public API/encoder runtime.
+# Supply the reviewed API release image by immutable digest at build time.
+ARG BACKUP_API_IMAGE
+FROM ${BACKUP_API_IMAGE}
+USER 0:0
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /backups && chown 10001:10001 /backups
+COPY . .
+USER 10001:10001
+ENTRYPOINT ["python", "-m", "scripts.private_backup"]

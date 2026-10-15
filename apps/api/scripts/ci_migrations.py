@@ -51,7 +51,8 @@ def assert_legacy_preserved(engine, saved):
         for name, row_id, before in saved:
             table = Table(name, metadata, autoload_with=engine, extend_existing=True)
             after = dict(db.execute(select(table).where(table.c.id == row_id)).mappings().one())
-            for added in ("question_snapshot", "results_approved_at", "results_approved_by"):
+            for added in ("question_snapshot", "results_approved_at", "results_approved_by",
+                          "calculated_score", "final_percentage", "approval_notes"):
                 if added in after and added not in before:
                     assert after.pop(added) is None, "Migration invented legacy evidence or result approval"
             assert after == before, f"Migration modified synthetic historical row in {name}"
@@ -62,7 +63,7 @@ def main():
     heads = ScriptDirectory.from_config(config).get_heads()
     assert len(heads) == 1, f"Expected one migration head, found {len(heads)}"
     engine = create_engine(os.environ["DATABASE_URL"])
-    for start in (None, "e8a0c2d4f6b8", "f3e5a7c9b1d3", "f6b8d0e2a4c6"):
+    for start in (None, "e8a0c2d4f6b8", "f3e5a7c9b1d3", "f6b8d0e2a4c6", "a1c3e5f7b9d2"):
         schema = "qa_ci_migration_" + uuid.uuid4().hex
         with engine.begin() as db:
             db.execute(text(f"CREATE SCHEMA {schema}"))

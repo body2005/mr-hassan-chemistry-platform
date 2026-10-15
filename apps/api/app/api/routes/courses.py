@@ -3,18 +3,19 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import CurrentUser, OptionalUser, require_roles
 from app.core.database import get_db
 from app.models.user import GradeLevel, User, UserRole
-from app.models.course import Enrollment, EnrollmentStatus
+from app.models.course import Course, Enrollment, EnrollmentStatus, MaterializationStatus
 from app.models.payment import EntitlementType, StudentEntitlement
 from app.schemas import (
     CourseCreateRequest,
     CourseResponse,
+    PublicCourseResponse,
     EnrollmentResponse,
     PageInfo,
     PageResponse,
@@ -47,7 +48,12 @@ def _video_playback_fields(lesson, *, allow_external: bool = False) -> tuple[boo
     return True, f"/api/v1/lessons/{lesson.id}/video-token"
 
 
-def _safe_course_responses(db: Session, user: User | None, courses: list) -> list[CourseResponse]:
+def _safe_course_responses(db: Session, user: User | None, courses: list, *,
+                           purchased_lesson_ids: set[uuid.UUID] | None = None) -> list[CourseResponse | PublicCourseResponse]:
+    if user is None:
+        # Public catalogue requests use one strict field allowlist.
+        # Do not build LessonResponse first and rely on redacting its secrets.
+        return [PublicCourseResponse.model_validate(course) for course in courses]
     responses = [CourseResponse.model_validate(course) for course in courses]
     from app.models.course import Lesson
     from app.schemas import ModuleResponse, LessonResponse
@@ -74,12 +80,33 @@ def _safe_course_responses(db: Session, user: User | None, courses: list) -> lis
             for module in response.modules:
                 module.lessons = [lesson for lesson in module.lessons if lesson.id in ready]
 
+    if purchased_lesson_ids is not None:
+        # Course detail is a purchased-content view, not the sales catalogue.
+        # Remove whole unrelated modules as well as their lesson metadata.
+        for response in responses:
+            for module in response.modules:
+                module.lessons = [lesson for lesson in module.lessons if lesson.id in purchased_lesson_ids]
+            response.modules = [module for module in response.modules if module.lessons]
+
+    discussion_unread = {}
+    if user:
+        from urllib.parse import parse_qs
+        from app.models.platform import Notification
+        notices = db.execute(select(Notification.action_url, func.count(Notification.id)).where(
+            Notification.recipient_id == user.id, Notification.institution_id == user.institution_id,
+            Notification.kind.in_(['lesson_comment', 'lesson_reply']), Notification.read_at.is_(None),
+            Notification.delivered_at.is_not(None)).group_by(Notification.action_url)).all()
+        for action, count in notices:
+            params = parse_qs((action or '').partition('?')[2])
+            for identity in params.get('lesson', []):
+                discussion_unread[identity] = discussion_unread.get(identity, 0) + count
     for course in responses:
         for module in course.modules:
             for lesson in module.lessons:
                 source = orm_lessons_by_id.get(lesson.id)
                 key = source.video_asset_key if source else None
                 lesson.has_uploaded_video = bool(key and not key.startswith(("http://", "https://")))
+                lesson.discussion_unread_count = discussion_unread.get(str(lesson.id), 0)
     
     # Collect all lesson IDs across returned courses
     all_lesson_ids = [lesson.id for course in responses for module in course.modules for lesson in module.lessons]
@@ -169,6 +196,9 @@ def _safe_course_responses(db: Session, user: User | None, courses: list) -> lis
         has_course_entitlement = course.id in course_entitlements
         for module in course.modules:
             for lesson in module.lessons:
+                # Processing diagnostics belong to the manager, even when the
+                # student has purchased the playable content.
+                lesson.materialization_error = None
                 has_lesson_access = is_enrolled and (
                     has_course_entitlement
                     or lesson.id in lesson_entitlements
@@ -184,13 +214,23 @@ def _safe_course_responses(db: Session, user: User | None, courses: list) -> lis
                     lesson.has_video = False
                     lesson.video_url = None
                     lesson.materials = []
+                    lesson.has_uploaded_video = False
+                    lesson.video_upload = None
+                    lesson.video_duration_seconds = None
+                    lesson.publish_at = None
+                    lesson.available_until = None
+                    lesson.announce_to_students = False
+                    lesson.required_material_count = 0
+                    lesson.discussion_unread_count = 0
+                    lesson.materialization_status = MaterializationStatus.NOT_INDEXED
     return responses
 
 
-@router.get("", response_model=PageResponse[CourseResponse])
+@router.get("", response_model=PageResponse[CourseResponse | PublicCourseResponse])
 def list_courses(
     user: OptionalUser,
     db: Db,
+    response: Response,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     search: str | None = Query(default=None, max_length=100),
@@ -198,7 +238,9 @@ def list_courses(
     grade_level: GradeLevel | None = None,
     public_only: bool = False,
     enrolled_only: bool = False,
-) -> PageResponse[CourseResponse]:
+) -> PageResponse[CourseResponse | PublicCourseResponse]:
+    response.headers['Cache-Control'] = 'private, no-store'
+    response.headers['Vary'] = 'Cookie, Authorization'
     if enrolled_only:
         if public_only:
             raise HTTPException(400, "Public and enrolled catalog filters cannot be combined")
@@ -230,12 +272,18 @@ def create_course(payload: CourseCreateRequest, user: CourseManager, db: Db) -> 
     return _safe_course_responses(db, user, [course])[0]
 
 
+@router.get("/{course_id}/", response_model=CourseResponse, include_in_schema=False)
 @router.get("/{course_id}", response_model=CourseResponse)
-def get_course(course_id: uuid.UUID, user: OptionalUser, db: Db) -> CourseResponse:
+def get_course(course_id: uuid.UUID, user: CurrentUser, db: Db, response: Response) -> CourseResponse:
+    response.headers['Cache-Control'] = 'private, no-store'
+    response.headers['Vary'] = 'Cookie, Authorization'
+    course = db.get(Course, course_id)
+    from app.services.course_purchase_access import require_purchased_course_access
+    purchased_lesson_ids = require_purchased_course_access(db, user, course)
     course = course_service.get_course(db, user, course_id)
     if course is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found")
-    return _safe_course_responses(db, user, [course])[0]
+        raise HTTPException(404, 'Course not found')
+    return _safe_course_responses(db, user, [course], purchased_lesson_ids=purchased_lesson_ids)[0]
 
 
 @router.post("/{course_id}/publish", response_model=CourseResponse)

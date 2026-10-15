@@ -151,7 +151,8 @@ def test_course_isolation_between_institutions(db) -> None:
     assert register(client_a, "a@example.com", "academy-a").status_code == 201
     assert register(client_b, "b@example.com", "academy-b").status_code == 201
 
-    assert client_a.get(f"/api/v1/courses/{course.id}").status_code == 200
+    # Same-tenant discovery does not grant purchased course-detail access.
+    assert client_a.get(f"/api/v1/courses/{course.id}").status_code == 403
     assert client_b.get(f"/api/v1/courses/{course.id}").status_code == 404
 
 
@@ -166,6 +167,7 @@ def test_video_telemetry_is_batched_deduplicated_and_enrollment_scoped(db) -> No
         kind=LessonKind.VIDEO,
         position=1,
         video_duration_seconds=100,
+        video_asset_key="videos/synthetic-telemetry.mp4",
     )
     db.add(lesson)
     db.commit()

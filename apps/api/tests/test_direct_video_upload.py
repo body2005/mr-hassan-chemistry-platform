@@ -164,9 +164,9 @@ def test_part_signatures_are_upload_only_exact_size_and_short_lived(world, monke
 
 
 def test_ladder_does_not_upscale():
-    assert [height for height, _ in renditions(720)] == [144, 240, 360, 480, 720]
-    assert [height for height, _ in renditions(240)] == [144, 240]
-    assert [height for height, _ in renditions(2160)] == [144, 240, 360, 480, 720, 1080]
+    assert [height for height, _ in renditions(720)] == [360, 480, 720]
+    assert [height for height, _ in renditions(240)] == [240]
+    assert [height for height, _ in renditions(2160)] == [360, 480, 720, 1080]
     assert [height for height, _ in renditions(120)] == [120]
 
 
@@ -291,7 +291,7 @@ def test_hls_authentication_checks_every_manifest_and_segment(db, world, monkeyp
     assert "no-store" in response.headers["cache-control"]
     monkeypatch.setattr(get_settings(), "video_drm_required", True)
     assert browser.get(url).status_code == 503
-    assert browser.get(f"/api/v1/lessons/{lesson.id}/stream?token=old").status_code == 503
+    assert browser.get(f"/api/v1/lessons/{lesson.id}/stream?token=old").status_code == 403
     monkeypatch.setattr(get_settings(), "video_drm_required", False)
     assert TestClient(app).get(url).status_code == 403
     browser.post("/api/v1/auth/logout", headers=_csrf(browser))
@@ -319,6 +319,10 @@ def test_course_returns_only_latest_processing_summary_to_managers(db, world):
     assert "secret-worker-error" not in managed.model_dump_json()
     for viewer in (student, None):
         public_course = _safe_course_responses(db, viewer, [course])[0]
+        if viewer is None:
+            assert 'modules' not in public_course.model_dump()
+            assert 'secret' not in public_course.model_dump_json()
+            continue
         public_lessons = [item for module in public_course.modules for item in module.lessons]
         assert all(item.video_upload is None for item in public_lessons)
         assert lesson.id not in {item.id for item in public_lessons}  # Processing is never published to students.

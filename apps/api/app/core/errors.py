@@ -62,8 +62,9 @@ def _clear_auth_cookies(response: JSONResponse) -> None:
     from app.core.config import get_settings
 
     settings = get_settings()
-    samesite = "none" if settings.cookie_cross_site else "lax"
-    secure = True if settings.cookie_cross_site else settings.secure_cookies
+    # Same browser contract as auth._cookie_options: same-origin /api proxy.
+    samesite = 'lax'
+    secure = settings.secure_cookies
     response.delete_cookie(settings.session_cookie_name, path="/", samesite=samesite, secure=secure)
     response.delete_cookie(settings.csrf_cookie_name, path="/", samesite=samesite, secure=secure)
     response.delete_cookie(settings.refresh_cookie_name, path="/api/v1/auth", samesite=samesite, secure=secure)

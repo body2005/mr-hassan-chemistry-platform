@@ -6,6 +6,8 @@ from fastapi import HTTPException
 
 MAX_VIDEO_BYTES = 5 * 1024**3  # 5 GiB = 5,368,709,120 bytes
 MAX_MATERIAL_BYTES = 1024**3  # 1 GiB = 1,073,741,824 bytes
+MAX_SUBMISSION_BYTES = 50 * 1024**2
+MAX_EXTRACT_BYTES = 50 * 1024**2
 MULTIPART_HEADROOM = 1024**2
 
 
@@ -31,11 +33,11 @@ class UploadBudgetMiddleware:
             elif path.endswith("/materials") and "/lessons/" in path:
                 limit = MAX_MATERIAL_BYTES
             elif path.endswith("/submissions/file") and "/assignments/" in path:
-                limit = MAX_MATERIAL_BYTES
+                limit = MAX_SUBMISSION_BYTES
             elif path.endswith("/receipt") and "/payments/orders/" in path:
                 limit = get_settings().payment_receipt_max_mb * 1024**2
             elif path.rstrip("/").endswith("/quiz/extract-from-file"):
-                limit = get_settings().max_request_size_mb * 1024**2
+                limit = MAX_EXTRACT_BYTES
         if limit is not None:
             headers = dict(scope.get("headers", []))
             try:

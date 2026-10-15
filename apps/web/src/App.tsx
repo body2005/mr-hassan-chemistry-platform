@@ -316,7 +316,7 @@ function App() {
 
   useEffect(() => {
     const receiveLink = () => {
-      if (window.location.hash.toLowerCase().startsWith('#mycourses?')) setSharedLessonTarget(readSharedLesson());
+      if (/^#(?:mycourses|lessonmanagement)\?/i.test(window.location.hash)) setSharedLessonTarget(readSharedLesson());
     };
     window.addEventListener('hashchange', receiveLink);
     return () => window.removeEventListener('hashchange', receiveLink);
@@ -479,9 +479,9 @@ function App() {
       const assessments = await courseService.getCourseAssessmentRefs(courseId);
       setCourses(existing => [...existing.filter(c => c.id !== courseId), { ...course, assessments }]);
     } catch (error) {
-      if (error instanceof ApiClientError && error.status === 402) {
-        // Whole-course checkout is no longer offered to students.  Send them
-        // to the lesson-only checkout picker instead.
+      if (error instanceof ApiClientError && [402, 403].includes(error.status)) {
+        // Enrollment alone cannot read purchased course details/assessments.
+        // Send students without an active purchase to lesson-only checkout.
         setCheckoutTarget({ productType: "lesson" });
         navigateToTab("Payments");
         throw new Error('هذا المقرر يحتاج تفعيل المحتوى؛ اختر الدرس المطلوب من صفحة الاشتراكات.', { cause: error });
@@ -518,10 +518,10 @@ function App() {
       return;
     }
     if (notif.actionTab) {
-      if (currentUser?.role === 'student' && notif.actionUrl?.startsWith('#mycourses?')) {
+      if (notif.actionUrl && /^#(?:mycourses|lessonmanagement)\?/i.test(notif.actionUrl)) {
         window.location.hash = notif.actionUrl;
         setSharedLessonTarget(readSharedLesson());
-        setActiveTab('MyCourses');
+        setActiveTab(currentUser?.role === 'student' ? 'MyCourses' : 'LessonManagement');
         return;
       }
       navigateToTab(notif.actionTab as NavTab);
@@ -807,6 +807,8 @@ function App() {
         {/* Shared Notifications View */}
           {activeTab === "Notifications" && (
           <NotificationsView
+            key={currentUser.id}
+            onSelectNotification={handleSelectNotification}
             notifications={notifications}
             onMarkNotificationRead={handleMarkNotificationRead}
             onNavigateToTab={(tab) => navigateToTab(tab)}
@@ -851,7 +853,7 @@ function App() {
         {/* Full-Page Profile Route */}
           {activeTab === "Profile" && currentUser && (
             courseScopeReady === currentUser.id
-              ? <ProfileView user={currentUser} onLogout={handleLogout} lang={lang} />
+              ? <ProfileView key={currentUser.id} user={currentUser} onLogout={handleLogout} lang={lang} />
               : <div className="page-container" role="status">{lang === 'ar' ? 'جارٍ التحقق من الحساب قبل إتاحة تعديل بياناته…' : 'Verifying your account before enabling profile changes…'}</div>
           )}
           </>}

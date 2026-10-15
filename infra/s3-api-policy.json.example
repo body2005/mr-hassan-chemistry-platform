@@ -12,7 +12,7 @@
       "Effect": "Allow",
       "Action": "s3:ListBucket",
       "Resource": "arn:aws:s3:::REPLACE_WITH_DEDICATED_BUCKET",
-      "Condition": {"StringLike": {"s3:prefix": ["lesson_videos/*", "lesson_materials/*", "payment_receipts/*", "assignment_submissions/*", "video-staging/*", "video-assets/*", "video-originals/*", ".probes/*"]}}
+      "Condition": {"StringLike": {"s3:prefix": ["lesson_videos/*", "lesson_materials/*", "payment_receipts/*", "assignment_submissions/*", "video-staging/*", "video-assets/*", "video-originals/*", "legacy-import/*", ".probes/*"]}}
     },
     {
       "Sid": "PrivateApplicationObjects",
@@ -26,6 +26,7 @@
         "arn:aws:s3:::REPLACE_WITH_DEDICATED_BUCKET/video-staging/*",
         "arn:aws:s3:::REPLACE_WITH_DEDICATED_BUCKET/video-assets/*",
         "arn:aws:s3:::REPLACE_WITH_DEDICATED_BUCKET/video-originals/*",
+        "arn:aws:s3:::REPLACE_WITH_DEDICATED_BUCKET/legacy-import/*",
         "arn:aws:s3:::REPLACE_WITH_DEDICATED_BUCKET/.probes/*"
       ]
     }

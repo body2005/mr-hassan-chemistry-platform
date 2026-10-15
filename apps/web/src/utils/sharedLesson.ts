@@ -7,7 +7,7 @@ export function readSharedLesson(): SharedLesson | null {
     const courseId = params.get('course');
     const lessonId = params.get('lesson');
     const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (page.toLowerCase() === 'mycourses' && courseId && lessonId && uuid.test(courseId) && uuid.test(lessonId)) {
+    if (['mycourses', 'lessonmanagement'].includes(page.toLowerCase()) && courseId && lessonId && uuid.test(courseId) && uuid.test(lessonId)) {
       const target = { courseId, lessonId };
       sessionStorage.setItem(key, JSON.stringify(target));
       return target;

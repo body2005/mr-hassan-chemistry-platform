@@ -160,13 +160,39 @@ def delete_lesson(db: Session, user: User, module_id: uuid.UUID | None, lesson_i
     from app.models.progress import LessonProgress, VideoEvent
     from app.models.extended import LessonAsset
 
-    lesson = db.scalar(select(Lesson).where(Lesson.id == lesson_id, Lesson.module_id == module_id))
+    lesson = db.scalar(select(Lesson).where(Lesson.id == lesson_id, Lesson.module_id == module_id).with_for_update())
     if lesson is None:
         raise LookupError("Lesson not found")
     course = db.get(Course, lesson.course_id)
     if course is None:
         raise LookupError("Course not found")
     ensure_course_manager(user, course)
+
+    # Do not turn scoped assessments into unscoped assessments through SET
+    # NULL/cascades, or erase paid/progress history. Withdrawal is the reversible
+    # publication action; permanent deletion is only for unused content.
+    from fastapi import HTTPException
+    from app.models.payment import PaymentOrder, PaymentProductType, StudentEntitlement, EntitlementType
+    from app.models.platform import QuizLessonLink, AssignmentLessonLink, LessonComment
+    references = [
+        select(Quiz.id).where(Quiz.lesson_id == lesson.id),
+        select(Assignment.id).where(Assignment.lesson_id == lesson.id),
+        select(QuizLessonLink.lesson_id).where(QuizLessonLink.lesson_id == lesson.id),
+        select(AssignmentLessonLink.lesson_id).where(AssignmentLessonLink.lesson_id == lesson.id),
+        select(PaymentOrder.id).where(PaymentOrder.product_type == PaymentProductType.LESSON, PaymentOrder.product_id == lesson.id),
+        select(StudentEntitlement.id).where(StudentEntitlement.entitlement_type == EntitlementType.LESSON,
+                                             StudentEntitlement.resource_id == lesson.id),
+        select(LessonProgress.id).where(LessonProgress.lesson_id == lesson.id),
+        select(LessonComment.id).where(LessonComment.lesson_id == lesson.id),
+    ]
+    if lesson.module_id:
+        from app.models.platform import QuizModuleLink, AssignmentModuleLink
+        references += [select(Quiz.id).where(Quiz.module_id == lesson.module_id),
+            select(Assignment.id).where(Assignment.module_id == lesson.module_id),
+            select(QuizModuleLink.module_id).where(QuizModuleLink.module_id == lesson.module_id),
+            select(AssignmentModuleLink.module_id).where(AssignmentModuleLink.module_id == lesson.module_id)]
+    if any(db.scalar(query.limit(1)) is not None for query in references):
+        raise HTTPException(409, 'هذا الدرس مرتبط بمدفوعات أو تقييمات أو سجل طالب؛ اسحب نشره بدل حذفه للحفاظ على السجل.')
 
     # Outbox intents and relational deletion commit together. A rollback must
     # leave the original video/material bytes intact.
@@ -394,21 +420,25 @@ def publish_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> Quiz:
         _validate_assessment_scope(db, course, value, None)
     if quiz.starts_at and quiz.ends_at and _as_utc(quiz.starts_at) >= _as_utc(quiz.ends_at):
         raise ValueError('Quiz end must be after its start')
-    rows = db.execute(select(Question, QuizQuestion.points).join(
+    rows = db.execute(select(Question, QuizQuestion).join(
         QuizQuestion, QuizQuestion.question_id == Question.id).where(
         QuizQuestion.quiz_id == quiz.id).with_for_update()).all()
     if not rows:
         raise ValueError('A quiz must contain at least one valid question')
-    for question, points in rows:
+    for question, link in rows:
+        if link.question_snapshot is not None:
+            from types import SimpleNamespace
+            _validate_quiz_question(SimpleNamespace(**link.question_snapshot), link.question_snapshot['points'])
+            continue
         if (not question.is_active or question.institution_id != quiz.institution_id
                 or question.course_id not in (None, course.id)
                 or (user.role == UserRole.TEACHER and question.author_id != user.id)):
             raise ValueError('Quiz contains an unavailable question')
-        _validate_quiz_question(question, points)
+        _validate_quiz_question(question, link.points)
     from app.services.quiz_snapshot import freeze_exam
     freeze_exam(db, quiz)
     quiz.status = QuizStatus.PUBLISHED
-    quiz.published_at = datetime.now(UTC)
+    quiz.published_at = quiz.published_at or datetime.now(UTC)
     from app.services.assessment_schedule import sync_assessment_schedule
     sync_assessment_schedule(db, quiz)
     db.commit()
@@ -832,7 +862,8 @@ def submit_assignment(
 def grade_submission(
     db: Session, user: User, submission_id: uuid.UUID, payload: GradeSubmissionRequest
 ) -> AssignmentSubmission:
-    submission = db.get(AssignmentSubmission, submission_id)
+    submission = db.scalar(select(AssignmentSubmission).where(
+        AssignmentSubmission.id == submission_id).with_for_update())
     if submission is None or submission.institution_id != user.institution_id:
         raise LookupError("Submission not found")
     assignment = db.get(Assignment, submission.assignment_id)
@@ -845,13 +876,27 @@ def grade_submission(
     if payload.final_score > assignment.max_score:
         raise ValueError("Score cannot exceed assignment maximum")
     now = datetime.now(UTC)
+    # Preserve the old decision before any correction, in the same commit.
+    from app.models.platform import AuditLog
+    db.add(AuditLog(institution_id=user.institution_id, actor_id=user.id,
+        action='submission_grade_revision', resource_type='assignment_submission',
+        resource_id=str(submission.id), occurred_at=now,
+        before_json={'score': submission.final_score, 'feedback': submission.teacher_feedback,
+                     'approved_at': submission.approved_at.isoformat() if submission.approved_at else None},
+        after_json={'score': payload.final_score, 'feedback': payload.teacher_feedback, 'approved': payload.approve}))
     submission.final_score = payload.final_score
     submission.teacher_feedback = payload.teacher_feedback
     submission.graded_by = user.id
     submission.graded_at = now
     submission.status = SubmissionStatus.APPROVED if payload.approve else SubmissionStatus.GRADED
-    if payload.approve:
-        submission.approved_at = now
+    submission.approved_at = now if payload.approve else None
+
+    # Draft corrections are manager-only, including notifications and SSE.
+    if not payload.approve:
+        db.commit()
+        db.refresh(submission)
+        assessment_changed(db, assignment, student_id=submission.student_id)
+        return submission
 
     status_text = "قبول وتصحيح" if payload.approve else "تصحيح"
     notif = Notification(
@@ -1078,14 +1123,7 @@ def create_calendar_event(
         event_broker.publish_event(
             institution_id=event.institution_id,
             event_type="calendar_updated",
-            data={
-                "event_id": str(event.id),
-                "action": "created",
-                "title": event.title,
-                "event_type": event.event_type,
-                "starts_at": event.starts_at.isoformat() if event.starts_at else None,
-                "ends_at": event.ends_at.isoformat() if event.ends_at else None,
-            },
+            data={},  # Re-read authorized calendar; no institution-wide title leak.
         )
     except Exception:
         logger.exception("Failed to publish calendar_updated event")

@@ -106,14 +106,17 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
   function handlePrintQuiz(quiz: PublishedQuizRecord) {
     const printWindow = window.open("", "_blank");
     if (!printWindow) return;
+    printWindow.opener = null;
+    const escapes: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+    const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g,
+      char => escapes[char]);
 
     const htmlContent = `
       <!DOCTYPE html>
       <html dir="rtl" lang="ar">
       <head>
         <meta charset="utf-8" />
-        <title>${quiz.title} - ورقة الاختبار</title>
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css" />
+        <title>${escape(quiz.title)} - ورقة الاختبار</title>
         <style>
           @page { size: A4; margin: 20mm; }
           html, body { direction: rtl; unicode-bidi: plaintext; }
@@ -137,13 +140,13 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
         <div class="header">
           <div style="text-align: center; margin-bottom: 8px;">
             <h2 style="margin: 0; font-size: 20px;">منصة التعلّم الذكية</h2>
-            <h3 style="margin: 4px 0; font-size: 17px; color: #064e3b;">${quiz.title}</h3>
+            <h3 style="margin: 4px 0; font-size: 17px; color: #064e3b;">${escape(quiz.title)}</h3>
           </div>
           <div class="meta-box">
-            <span>الصف: ${quiz.academicYearLabel}</span>
+            <span>الصف: ${escape(quiz.academicYearLabel)}</span>
             <span>النوع: ${quiz.assessmentType === "quiz" ? "اختبار إلكتروني" : "واجب منزلي"}</span>
-            <span>الزمن: ${quiz.quizDurationMinutes ? `${quiz.quizDurationMinutes} دقيقة` : "مفتوح"}</span>
-            <span>الدرجة الكلية: ${quiz.totalPoints} درجة</span>
+            <span>الزمن: ${quiz.quizDurationMinutes ? `${escape(quiz.quizDurationMinutes)} دقيقة` : "مفتوح"}</span>
+            <span>الدرجة الكلية: ${escape(quiz.totalPoints)} درجة</span>
           </div>
           <div class="student-info">
             <span>اسم الطالب: ................................................................</span>
@@ -158,15 +161,15 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
               (q, idx) => `
             <div class="question">
               <div class="q-title">
-                <span class="points">[ ${q.points} درجات ]</span>
-                السؤال ${idx + 1}: ${q.question_text}
+                <span class="points">[ ${escape(q.points)} درجات ]</span>
+                السؤال ${idx + 1}: ${escape(q.question_text)}
               </div>
               ${
                 q.options && q.options.length > 0
                   ? `
                   <div class="options-grid">
                     ${q.options
-                      .map((opt) => `<div class="option-item">(${opt.key}) ${opt.text}</div>`)
+                      .map((opt) => `<div class="option-item">(${escape(opt.key)}) ${escape(opt.text)}</div>`)
                       .join("")}
                   </div>
                   `
@@ -558,14 +561,14 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
                 >
                   <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                      <span
+                      <span className={!isQuiz ? 'assignment-teal-label' : undefined}
                         style={{
                           fontSize: "11px",
                           fontWeight: 800,
                           padding: "3px 8px",
                           borderRadius: "6px",
                           background: isQuiz ? "#ccfbf1" : "#ecfdf5",
-                          color: isQuiz ? "#0f766e" : "#0f392b",
+                          color: "rgb(15, 118, 110)",
                           border: isQuiz ? "1px solid #99f6e4" : "1px solid #a7f3d0",
                         }}
                       >
@@ -866,7 +869,7 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
             >
               <div>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
-                  <span
+                  <span className={previewQuiz.assessmentType === 'assignment' ? 'assignment-teal-label' : undefined}
                     style={{
                       background: "rgba(52, 211, 153, 0.25)",
                       color: "#34d399",

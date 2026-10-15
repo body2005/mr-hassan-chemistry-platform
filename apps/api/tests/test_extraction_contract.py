@@ -387,6 +387,7 @@ def test_ocr_cache_uses_full_file_sha256(tmp_path, monkeypatch) -> None:
     """OCR cache keys depend on full file sha256, page number, language, and parser version."""
     import hashlib
     from app.services import document_parsers as parser
+    monkeypatch.setenv('STORAGE_DIR', str(tmp_path / 'storage'))
 
     # Identical long prefixes must not cause the second file to reuse OCR.
     prefix = b"%PDF-1.4 " + (b"A" * 200000)

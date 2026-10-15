@@ -8,6 +8,7 @@ export interface VideoUploadSession {
   fingerprint: string;
   uploaded_parts: { number: number; size_bytes: number }[];
   error_code?: string;
+  retryable?: boolean;
   processing_percent?: number | null;
   processing_stage?: string | null;
 }
@@ -47,24 +48,32 @@ export async function waitForVideo(id: string, active: () => boolean, update: (s
     const session = await apiRequest<VideoUploadSession>(`/video-uploads/${id}`, { cacheTtlMs: 0 });
     update(session);
     if (session.status === "ready") return;
-    if (["failed", "cancelled", "expired", "superseded", "aborted", "rejected"].includes(session.status)) throw new Error(`تعذر تجهيز الفيديو: ${session.error_code || session.status}`);
+    if (["failed", "cancelled", "expired", "superseded", "aborted", "rejected"].includes(session.status)) throw new Error(videoUploadFailure(session.error_code));
     // Deliberately NO retry on 401, 429 or 503; the caller offers an explicit
     // resume button. Polling is bounded, even if a worker never recovers.
     await new Promise(resolve => window.setTimeout(resolve, 5000));
   }
-  throw new Error("توقفت متابعة المعالجة؛ يمكنك التحقق مجددًا دون إعادة رفع الملف.");
+  throw new Error("توقفت متابعة رفع الفيديو. أعد المحاولة للتحقق من حالته؛ الأجزاء المحفوظة لن تُرفع مرة أخرى.");
 }
 
-export function videoProcessingLabel(session: { status: string; processing_percent?: number | null; processing_stage?: string | null }): string {
-  if (session.status === 'ready') return 'الفيديو جاهز للمشاهدة';
-  if (session.status === 'queued') return 'اكتمل رفع الملف؛ في انتظار معالج الفيديو على جهاز المدرس';
-  const stage = session.processing_stage;
-  const percent = session.processing_percent == null ? '' : ` ${session.processing_percent}٪`;
-  if (stage === 'uploading') return `جارٍ حفظ الجودات النهائية${percent}`;
-  if (stage === 'downloading') return 'اكتمل الرفع؛ جارٍ نقل نسخة إلى معالج الفيديو';
-  if (stage?.startsWith('encoding:')) {
-    const [, quality, current, total] = stage.split(':');
-    return `اكتمل الرفع؛ تجهيز جودة ${quality} (${current} من ${total})${percent}`;
+export const VIDEO_UPLOAD_LABEL = 'جاري رفع الفيديو…';
+
+/** Weighted completed work, NOT elapsed time or an ETA. Transfer owns 0–40;
+ * server work (source bytes, encoded timeline, durable output bytes) owns 40–99.
+ * Only the authoritative ready acknowledgement is allowed to set 100. */
+export function videoOverallProgress(uploadPercent: number, processingPercent?: number | null): number {
+  const bounded = (value: number) => Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+  return Math.min(99, Math.floor(processingPercent == null
+    ? bounded(uploadPercent) * 0.4
+    : 40 + bounded(processingPercent) * 0.59));
+}
+
+export function videoUploadFailure(code?: string | null): string {
+  if (code === 'VIDEO_WORKER_MEMORY_TOO_LOW' || code === 'VIDEO_OUTPUT_LIMIT_EXCEEDED') {
+    return 'تعذر إكمال رفع الفيديو بسبب عدم كفاية موارد جهاز الرفع. وفّر مساحة وذاكرة ثم أعد المحاولة.';
   }
-  return 'اكتمل الرفع؛ جارٍ تجهيز جودات الفيديو على جهاز المدرس';
+  if (code === 'VIDEO_DECODE_FAILED' || code === 'VIDEO_INVALID_METADATA' || code === 'VIDEO_LIMIT_EXCEEDED') {
+    return 'تعذر إكمال رفع الفيديو. تحقق من سلامة الملف وصيغته ثم أعد المحاولة.';
+  }
+  return 'لم يكتمل رفع الفيديو. أعد المحاولة؛ سيُستكمل من الأجزاء المحفوظة متى كانت متاحة.';
 }

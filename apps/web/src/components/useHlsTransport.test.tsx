@@ -7,20 +7,26 @@ import type Hls from 'hls.js';
 interface MockHls {
   levels: Array<{ height: number }>;
   currentLevel: number;
+  nextLevel: number;
+  readonly manualLevel: number;
   autoLevelCapping: number;
   handlers: Map<string, () => void>;
   stopLoad: ReturnType<typeof vi.fn>;
   destroy: ReturnType<typeof vi.fn>;
+  config: { maxBufferLength: number; maxMaxBufferLength: number; frontBufferFlushThreshold: number };
 }
 const mocks = vi.hoisted(() => ({ instances: [] as MockHls[] }));
-vi.mock('hls.js/light', () => ({ default: class {
+vi.mock('hls.js', () => ({ default: class {
   static isSupported = () => true;
-  static Events = { MANIFEST_PARSED: 'manifest', ERROR: 'error' };
+  static Events = { MANIFEST_PARSED: 'manifest', ERROR: 'error', FRAG_BUFFERED: 'fragment', LEVEL_SWITCHING: 'switching' };
   levels = [{ height: 144 }, { height: 360 }, { height: 720 }, { height: 720 }];
   currentLevel = -1;
+  nextLevel = -1;
+  get manualLevel() { return this.nextLevel; }
   autoLevelCapping = -1;
   handlers = new Map<string, () => void>();
-  constructor() { mocks.instances.push(this); }
+  config: MockHls['config'];
+  constructor(config: MockHls['config']) { this.config = config; mocks.instances.push(this); }
   on(event: string, callback: () => void) { this.handlers.set(event, callback); }
   attachMedia() {}
   loadSource() {}
@@ -59,13 +65,15 @@ it('aborts the old progressive resource when changing lessons or awaiting fresh 
   expect(video.load).toHaveBeenCalledTimes(2);
 });
 
-it('switches the media level, restores automatic bandwidth ABR, and keeps a manual choice through token renewal', async () => {
+it('schedules a quality switch without forcing a buffer reset, restores ABR, and keeps the choice through token renewal', async () => {
   await render('/hls/first/master.m3u8'); await parsed();
   expect([...host.querySelectorAll('button')].map(button => button.textContent)).toEqual([AUTO_QUALITY, '144p', '360p', '720p']);
-  await choose('720p'); expect(mocks.instances[0].currentLevel).toBe(2);
+  await choose('720p'); expect(mocks.instances[0].nextLevel).toBe(2);
+  expect(mocks.instances[0].currentLevel).toBe(-1);
   await render('/hls/first/master.m3u8?token=renewed'); await parsed();
-  expect(mocks.instances[1].currentLevel).toBe(2);
-  await choose(AUTO_QUALITY); expect(mocks.instances[1].currentLevel).toBe(-1);
+  expect(mocks.instances[1].nextLevel).toBe(2);
+  expect(mocks.instances[1].currentLevel).toBe(-1);
+  await choose(AUTO_QUALITY); expect(mocks.instances[1].nextLevel).toBe(-1);
   expect(host.querySelector('output')?.textContent).toBe(AUTO_QUALITY);
 });
 
@@ -86,8 +94,9 @@ it('caps automatic playback at 1080p and excludes larger manual levels', async (
   expect(hls.autoLevelCapping).toBe(1);
   expect([...host.querySelectorAll('button')].map(button => button.textContent)).toEqual([AUTO_QUALITY, '360p', '1080p']);
   await choose('1080p');
-  expect(hls.currentLevel).toBe(1);
-  await choose(AUTO_QUALITY);
+  expect(hls.nextLevel).toBe(1);
   expect(hls.currentLevel).toBe(-1);
+  await choose(AUTO_QUALITY);
+  expect(hls.nextLevel).toBe(-1);
   expect(hls.autoLevelCapping).toBe(1);
 });

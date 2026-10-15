@@ -60,7 +60,7 @@ def ocr_slot():
     store = _get_redis_client()
     lock = store.lock("extraction:ocr:process", timeout=60, blocking_timeout=2) if store else None
     acquired = False
-    if get_settings().redis_required and lock is None:
+    if (get_settings().redis_required or get_settings().deployment_environment) and lock is None:
         raise ExtractionLimitError("OCR capacity service temporarily unavailable")
     try:
         if lock:

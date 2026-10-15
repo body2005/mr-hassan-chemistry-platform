@@ -24,7 +24,7 @@ def discussion(db):
     db.add(module)
     db.flush()
     lesson = Lesson(module_id=module.id, title="Paid discussion", kind=LessonKind.VIDEO,
-                    position=1, price_egp=25)
+                    position=1, price_egp=25, video_asset_key='videos/synthetic-discussion.mp4')
     db.add(lesson)
     db.flush()
     comment = LessonComment(institution_id=inst.id, lesson_id=lesson.id,
@@ -71,7 +71,7 @@ def test_malformed_discussion_payload_is_422_not_500(db, payload):
     assert db.scalar(select(func.count(LessonComment.id))) == 1
 
 
-def test_reply_to_reply_is_rejected_instead_of_becoming_invisible(db):
+def test_reply_to_reply_remains_visible_in_the_nested_discussion(db):
     inst, owner, _, lesson, comment = discussion(db)
     reply = LessonComment(institution_id=inst.id, lesson_id=lesson.id, student_id=owner.id,
                           parent_id=comment.id, body="Visible reply")
@@ -82,8 +82,13 @@ def test_reply_to_reply_is_rejected_instead_of_becoming_invisible(db):
         response = client.post(f"/api/v1/lessons/{lesson.id}/comments",
                                json={"body": "Invisible grandchild", "parent_id": str(reply.id)},
                                headers=csrf_headers(client))
-        assert response.status_code == 422, response.text
-    assert db.scalar(select(func.count(LessonComment.id))) == 2
+        assert response.status_code == 201, response.text
+        tree = client.get(f"/api/v1/lessons/{lesson.id}/comments").json()
+        parent = next(row for row in tree['comments'] if row['id'] == str(comment.id))
+        child = next(row for row in parent['replies'] if row['id'] == str(reply.id))
+        assert child['replies'][0]['id'] == response.json()['id']
+        assert child['replies'][0]['body'] == 'Invisible grandchild'
+    assert db.scalar(select(func.count(LessonComment.id))) == 3
 
 
 @pytest.mark.parametrize("role", ["owner", "paid_student"])

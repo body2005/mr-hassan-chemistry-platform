@@ -29,11 +29,18 @@ def sync_assessment_schedule(db, assessment):
             metadata = {}
         local = event.starts_at.astimezone(ZoneInfo('Africa/Cairo'))
         metadata.update(publishStartDate=local.strftime('%Y-%m-%d'), publishStartTime=local.strftime('%H:%M'))
+        close = as_utc(end).astimezone(ZoneInfo('Africa/Cairo')) if end else None
+        metadata.update(closeDeadlineDate=close.strftime('%Y-%m-%d') if close else '',
+                        closeDeadlineTime=close.strftime('%H:%M') if close else '')
         event.description = json.dumps(metadata, ensure_ascii=False)
     prefix = f'#MyCourses?assessment={assessment.id}&kind={kind}'
     for notice in db.scalars(select(Notification).where(
             Notification.institution_id == assessment.institution_id,
             Notification.action_url.startswith(prefix))):
+        # Delivered notices are history. Editing/re-publishing an assessment
+        # must not re-arm them or announce the same message a second time.
+        if notice.delivered_at is not None:
+            continue
         notice.scheduled_for = as_utc(assessment.starts_at)
         notice.delivery_status = DeliveryStatus.PENDING if published else DeliveryStatus.FAILED
         notice.delivered_at = None

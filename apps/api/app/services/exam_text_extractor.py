@@ -10,9 +10,16 @@ from __future__ import annotations
 import json
 import os
 import re
+import unicodedata
 from typing import Any
-
 from app.services.document_parsers import clean_chemical_formula_text, fix_arabic_bidi_scrambling
+
+# Render explicit scientific notation and mechanically recover displaced PDF
+# tokens, while preserving prose words and the source's chemical capitalization.
+def _preserve_source_text(text: str) -> str:
+    text = ''.join(unicodedata.normalize('NFKC', char)
+        if '\ufb50' <= char <= '\ufdff' or '\ufe70' <= char <= '\ufeff' else char for char in text)
+    return clean_chemical_formula_text(fix_arabic_bidi_scrambling(text), preserve_prose=True)
 
 KEY_SECTION_PATTERNS = [
     r"نموذج\s+(?:ال)?(?:[اإأ]جاب[ةه]|[اإأ]جابات|حل)",
@@ -756,7 +763,7 @@ class ExamQuestionSegmenter:
 
         stem_text = " ".join(self._q_stem_parts).strip()
         stem_text = clean_points_tokens_from_text(stem_text)
-        stem_text = clean_chemical_formula_text(fix_arabic_bidi_scrambling(stem_text))
+        stem_text = _preserve_source_text(stem_text)
         for pattern in _UI_LEAK_PATTERNS:
             stem_text = pattern.sub("", stem_text)
         stem_text = re.sub(r"[ \t]{2,}", " ", stem_text).strip()
@@ -767,7 +774,7 @@ class ExamQuestionSegmenter:
             return
 
         # Check if stem is purely an administrative or excluded header
-        if any(re.search(pat, stem_text, re.IGNORECASE) for pat in ADMINISTRATIVE_METADATA_PATTERNS):
+        if not self._q_num and not self._options and not re.search('[؟?]', stem_text) and any(re.search(pat, stem_text, re.IGNORECASE) for pat in ADMINISTRATIVE_METADATA_PATTERNS):
             self._reset_builder()
             return
 
@@ -783,7 +790,7 @@ class ExamQuestionSegmenter:
         # Build options
         formatted_options: list[dict[str, Any]] = []
         for k, txt in self._options:
-            clean_opt_txt = clean_chemical_formula_text(fix_arabic_bidi_scrambling(txt))
+            clean_opt_txt = _preserve_source_text(txt)
             m_opt_paren = re.match(r"^(\([^\)]+\))\s+([\u0600-\u06FF\s]{3,})$", clean_opt_txt)
             if m_opt_paren:
                 clean_opt_txt = f"{m_opt_paren.group(2).strip()} {m_opt_paren.group(1).strip()}"
@@ -855,7 +862,8 @@ class ExamQuestionSegmenter:
 
         if canonical_type == "ESSAY":
             formatted_options = []
-            corr_text = None
+            # Preserve an explicit source answer; absence is never guessed.
+            corr_text = str(ans_raw).strip() if ans_raw else None
             needs_rev = False
 
         answer_confidence = "confirmed" if (corr_text and not needs_rev) else "unknown"

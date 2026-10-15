@@ -8,7 +8,7 @@ export interface FloatingProgressFabProps {
   placement?: 'inline' | 'floating';
   currentUser: CurrentUser | null;
   theme: "light" | "dark";
-  assessmentState?: 'loading' | 'error' | 'ready';
+  assessmentState?: 'loading' | 'error' | 'restricted' | 'ready';
   onRetryAssessments?: () => void;
 }
 
@@ -313,7 +313,7 @@ export const FloatingProgressFab: React.FC<FloatingProgressFabProps> = ({
           </div>
 
           {!assessmentsReady && <div role={assessmentState === 'error' ? 'alert' : 'status'} style={{ color: 'var(--text-main)', fontSize: '13px' }}>
-            <p>{assessmentState === 'error' ? 'تعذر حساب الإنجاز الكامل؛ بيانات التقييمات غير متاحة.' : 'جارٍ تحميل تقييمات المقرر لحساب الإنجاز الكامل…'}</p>
+            <p>{assessmentState === 'restricted' ? 'تقييمات الدروس متاحة بعد اعتماد شراء الدرس.' : assessmentState === 'error' ? 'تعذر حساب الإنجاز الكامل؛ بيانات التقييمات غير متاحة.' : 'جارٍ تحميل تقييمات المقرر لحساب الإنجاز الكامل…'}</p>
             {assessmentState === 'error' && onRetryAssessments && <button type="button" className="btn-secondary" onClick={onRetryAssessments}>إعادة تحميل بيانات الإنجاز</button>}
           </div>}
 

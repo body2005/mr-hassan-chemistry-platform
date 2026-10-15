@@ -35,13 +35,23 @@ Manager = Annotated[
 
 
 def _translate(exc: Exception) -> HTTPException:
+    from botocore.exceptions import BotoCoreError, ClientError
+    from sqlalchemy.exc import OperationalError, TimeoutError as DatabaseTimeout
+    if isinstance(exc, (BotoCoreError, ClientError, OperationalError, DatabaseTimeout)):
+        raise exc  # Unified dependency handler supplies redacted503/Retry-After.
+    if isinstance(exc, (HTTPException, ApiError)):
+        raise exc
     if isinstance(exc, LookupError):
         raise ApiError("NOT_FOUND", str(exc), status_code=404)
     if isinstance(exc, PermissionError):
         raise ApiError("FORBIDDEN", str(exc), status_code=403)
     if isinstance(exc, ValueError) and str(exc) == "IDEMPOTENCY_KEY_REUSED":
         raise ApiError("IDEMPOTENCY_KEY_REUSED", "Key was already used with a different payload", 409)
-    raise ApiError("BAD_REQUEST", str(exc), status_code=400)
+    if isinstance(exc, ValueError):
+        raise ApiError("BAD_REQUEST", str(exc), status_code=400)
+    import logging
+    logging.getLogger(__name__).warning('Extended operation failed (reason=%s)', type(exc).__name__)
+    raise ApiError('INTERNAL_SERVER_ERROR', 'Unable to complete operation', status_code=500)
 
 
 # ---------------------------------------------------------------------------

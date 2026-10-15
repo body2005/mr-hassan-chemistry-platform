@@ -6,7 +6,7 @@ import type { CourseAssessmentRef } from '../types/lms';
 export function useCourseAssessments(courseId: string | undefined, userId: string | undefined, accessRevision = '') {
   const key = `${userId || ''}:${courseId || ''}:${accessRevision}`;
   const [attempt, setAttempt] = useState(0);
-  const [snapshot, setSnapshot] = useState<{ key: string; items: CourseAssessmentRef[]; error: boolean }>();
+  const [snapshot, setSnapshot] = useState<{ key: string; items: CourseAssessmentRef[]; error: boolean; restricted: boolean }>();
   const retry = useCallback(() => { setSnapshot(undefined); setAttempt(value => value + 1); }, []);
   useEffect(() => {
     if (!courseId || !userId) return;
@@ -28,8 +28,10 @@ export function useCourseAssessments(courseId: string | undefined, userId: strin
     const controller = new AbortController();
     let active = true;
     void courseService.getCourseAssessmentRefs(courseId, { signal: controller.signal, skipCache: true })
-      .then(items => { if (active) setSnapshot({ key, items, error: false }); })
-      .catch(() => { if (active) setSnapshot({ key, items: [], error: true }); });
+      .then(items => { if (active) setSnapshot({ key, items, error: false, restricted: false }); })
+      .catch(error => {
+        if (active) setSnapshot({ key, items: [], error: error?.status !== 403, restricted: error?.status === 403 });
+      });
     return () => { active = false; controller.abort(); };
   }, [courseId, userId, key, attempt]);
   const current = snapshot?.key === key ? snapshot : undefined;
@@ -37,6 +39,7 @@ export function useCourseAssessments(courseId: string | undefined, userId: strin
     items: current?.items || [],
     loading: !!courseId && !!userId && !current,
     error: current?.error || false,
+    restricted: current?.restricted || false,
     retry,
   };
 }

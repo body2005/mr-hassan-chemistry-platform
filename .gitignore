@@ -10,6 +10,8 @@ pytest_full.log
 
 # Environment & secrets
 .env
+.env.*
+**/.env.*
 .env.*.local
 .env.docker.local
 apps/*/.env
@@ -17,6 +19,14 @@ apps/*/.env.*.local
 !*.env.example
 !*.env.docker.example
 cookies.txt
+cookies*.json
+*.har
+*.pem
+*.key
+*.p12
+*.pfx
+**/storage-state*.json
+**/.auth/
 *.cookies
 tests/screenshots/
 *.patch
@@ -41,6 +51,10 @@ apps/api/tmp_render/
 
 # Backups & artifacts
 backups/
+*.dump
+*.tar
+*.tar.gz
+*.bak
 *.sql.gz
 
 # OS

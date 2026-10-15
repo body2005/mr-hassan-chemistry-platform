@@ -26,6 +26,8 @@ from app.services.storage_cleanup import enqueue_cleanup
 PART_BYTES = 32 * 1024 * 1024
 EXTENSIONS = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm"}
 ACTIVE_STATES = ("creating", "uploading", "completing", "queued", "processing")
+RETRYABLE_PROCESSING_ERRORS = {'VIDEO_WORKER_RETRY_EXHAUSTED', 'VIDEO_PROCESSING_TEMPORARILY_UNAVAILABLE',
+    'VIDEO_WORKER_MEMORY_TOO_LOW', 'VIDEO_OUTPUT_LIMIT_EXCEEDED', 'VIDEO_ENCODING_TIMEOUT'}
 
 
 def enqueue_published_source(db: Session, owner: User, lesson: Lesson) -> VideoUpload:
@@ -36,8 +38,8 @@ def enqueue_published_source(db: Session, owner: User, lesson: Lesson) -> VideoU
     """
     if not get_settings().video_processing_enabled:
         raise HTTPException(503, "معالج جودات الفيديو غير مفعّل على الاستضافة بعد.")
-    if get_settings().video_drm_required:
-        raise HTTPException(503, "Licensed DRM packaging is required")
+    if get_settings().video_drm_required and not get_settings().video_drm_packaging_enabled:
+        raise HTTPException(503, 'Licensed DRM packaging is required')
     provider = get_storage_provider()
     if not isinstance(provider, S3StorageProvider):
         raise HTTPException(503, "Video quality processing requires object storage")
@@ -82,6 +84,11 @@ def enqueue_source_cleanup(db: Session, upload: VideoUpload) -> None:
     key = lesson.video_asset_key if lesson else None
     if key == upload.object_key or (key and key.startswith("s3://") and key.split("/", 3)[-1] == upload.object_key):
         return
+    # A DRM migration reads an existing generation's private original. Failed
+    # or cancelled migration must never delete that generation's source.
+    if db.scalar(select(VideoUpload.id).where(VideoUpload.id != upload.id,
+            VideoUpload.object_key == upload.object_key, VideoUpload.status == 'ready').limit(1)):
+        return
     enqueue_cleanup(db, upload.object_key)
 
 
@@ -90,8 +97,11 @@ def storage() -> S3StorageProvider:
     if not settings.video_direct_upload_enabled:
         raise HTTPException(503, "Direct video upload is not configured")
     if settings.video_drm_required:
-        # The local FFmpeg encoder does NOT produce licensed DRM media.
-        raise HTTPException(503, "A DRM packaging provider must be configured before uploading protected assets")
+        if not settings.video_drm_packaging_enabled:
+            raise HTTPException(503, 'Licensed DRM packaging is required')
+        from app.services.video_drm import communication_key, fairplay_certificate
+        communication_key()
+        fairplay_certificate()
     provider = get_storage_provider()
     if not isinstance(provider, S3StorageProvider):
         raise HTTPException(503, "Object storage is required")
@@ -269,9 +279,30 @@ def abort(db: Session, upload: VideoUpload) -> None:
     db.commit()
 
 
+def retry_processing(db: Session, upload: VideoUpload) -> None:
+    if upload.status in {'queued', 'processing', 'ready'}:
+        return
+    if upload.status != 'failed' or upload.error_code not in RETRYABLE_PROCESSING_ERRORS:
+        raise HTTPException(409, 'لا يمكن استئناف هذا الفيديو من النسخة الحالية.')
+    expires = upload.expires_at.replace(tzinfo=timezone.utc) if upload.expires_at.tzinfo is None else upload.expires_at
+    if expires <= datetime.now(timezone.utc):
+        raise HTTPException(409, 'انتهت مهلة الاحتفاظ بالرفع غير المكتمل.')
+    provider = get_storage_provider()
+    try:
+        if provider.get_size(upload.object_key) != upload.size_bytes:
+            raise HTTPException(409, 'Stored source size mismatch')
+    except FileNotFoundError as exc:
+        raise HTTPException(409, 'النسخة المحفوظة غير متاحة للاستئناف.') from exc
+    # Completed source stays private and is reused. Retry creates a fresh
+    # output generation, not another multipart upload or attachment.
+    upload.status, upload.attempts, upload.error_code, upload.retry_after = 'queued', 0, None, None
+    db.commit()
+
+
 def summary(upload: VideoUpload, parts: list[dict] | None = None) -> dict:
     return {"id": str(upload.id), "lesson_id": str(upload.lesson_id), "status": upload.status,
         "part_bytes": PART_BYTES, "size_bytes": upload.size_bytes, "fingerprint": upload.fingerprint,
         "uploaded_parts": [{"number": p["PartNumber"], "size_bytes": p["Size"]} for p in (parts or [])],
         "error_code": upload.error_code, "duration_seconds": upload.duration_seconds,
+        "retryable": upload.status == 'failed' and upload.error_code in RETRYABLE_PROCESSING_ERRORS,
         "processing_percent": upload.processing_percent, "processing_stage": upload.processing_stage}

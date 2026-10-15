@@ -48,6 +48,17 @@ it('preserves a failed read as an error and retries only on manual action', asyn
   expect(host.textContent).toBe('recovered');
   expect(mocks.read.mock.calls[1][1].skipCache).toBe(true);
 });
+it('clears assessment data after purchase denial without treating403 as a retryable load failure', async () => {
+  mocks.read.mockResolvedValueOnce(refs('formerly-authorized')).mockRejectedValueOnce({ status: 403 });
+  await act(async () => root.render(<Probe />));
+  expect(host.textContent).toBe('formerly-authorized');
+  await act(async () => root.render(<Probe access="purchase-revoked" />));
+  expect(state.items).toEqual([]);
+  expect(state.restricted).toBe(true);
+  expect(state.error).toBe(false);
+  expect(host.textContent).not.toContain('formerly-authorized');
+  expect(mocks.read).toHaveBeenCalledTimes(2);
+});
 it('refreshes only this course after a real course/access update and cleans up listeners', async () => {
   vi.useFakeTimers();
   mocks.read.mockResolvedValue(refs('initial'));

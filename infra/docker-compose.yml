@@ -130,7 +130,7 @@ services:
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
     entrypoint: ["/bin/sh", "/srv/entrypoint-prod.sh"]
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--no-proxy-headers"]
     environment: *api-env
     secrets: *app-secrets
     volumes:

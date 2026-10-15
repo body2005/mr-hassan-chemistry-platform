@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.models.course import Enrollment
+from app.models.payment import EntitlementType, StudentEntitlement
 from app.models.platform import (Assignment, AssignmentStatus, AssignmentSubmission,
     AttemptStatus, Quiz, QuizAttempt, QuizStatus)
 from app.models.user import UserRole
@@ -19,6 +20,8 @@ def domain(db):
     other = make_user(db, inst.id, UserRole.STUDENT, 'other')
     course = make_course(db, inst, teacher)
     db.add(Enrollment(course_id=course.id, student_id=student.id))
+    db.add(StudentEntitlement(institution_id=inst.id, student_id=student.id,
+        entitlement_type=EntitlementType.COURSE, resource_id=course.id, starts_at=datetime.now(timezone.utc)))
     db.commit()
     return inst, teacher, student, other, course
 

@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { CurrentUser, NotificationItem, NotificationSchedule, StudentProfile } from "../types/lms";
 import { NavTab } from "../components/Sidebar";
-import { calendarService, notificationService } from "../services/lmsService";
+import { calendarService, notificationService, notificationScheduleStorageKey } from "../services/lmsService";
 import { InvoiceModal } from "../components/InvoiceModal";
 import { LessonAccessModal } from "../components/LessonAccessModal";
 import { formatDateTimeSimple } from "../utils/dateUtils";
@@ -28,6 +28,7 @@ interface NotificationsViewProps {
   notifications: NotificationItem[];
   onMarkNotificationRead: (id: string) => void;
   onNavigateToTab: (tab: NavTab) => void;
+  onSelectNotification?: (notification: NotificationItem) => void;
   onAddNotification?: (notif: NotificationItem) => Promise<void>;
   currentUser: CurrentUser;
   lang?: string;
@@ -158,6 +159,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   notifications,
   onMarkNotificationRead,
   onNavigateToTab,
+  onSelectNotification,
   onAddNotification,
   currentUser,
 }) => {
@@ -177,7 +179,8 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
 
   const [schedules, setSchedules] = useState<NotificationSchedule[]>(() => {
     try {
-      const stored = localStorage.getItem("lms_notification_schedules_v1");
+      const key = notificationScheduleStorageKey();
+      const stored = key ? localStorage.getItem(key) : null;
       if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed) && parsed.length > 0) {
@@ -486,6 +489,10 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   }
 
   function handleActionClick(n: NotificationItem) {
+    if (onSelectNotification && n.actionUrl && /^#(?:mycourses|lessonmanagement)\?/i.test(n.actionUrl)) {
+      onSelectNotification(n);
+      return;
+    }
     onMarkNotificationRead(n.id);
     if (
       n.type === "lesson_access" ||

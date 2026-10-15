@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 import math
+from fastapi import HTTPException
 from types import SimpleNamespace
 from datetime import datetime, timezone
 
@@ -379,11 +380,34 @@ def student_grades(db: Session, viewer: User, student_id: uuid.UUID) -> list[Gra
         # A separate ledger endpoint must not reveal an official quiz result
         # before the same approval required by quiz-results endpoints.
         from app.models.platform import QuizAttempt, AttemptStatus
-        approved = set(db.scalars(select(QuizAttempt.quiz_id).where(
+        approved = dict(db.execute(select(QuizAttempt.quiz_id, func.max(QuizAttempt.results_approved_at)).where(
             QuizAttempt.student_id == student_id, QuizAttempt.institution_id == viewer.institution_id,
             QuizAttempt.is_practice.is_(False), QuizAttempt.status == AttemptStatus.SUBMITTED,
-            QuizAttempt.results_approved_at.is_not(None))))
-        rows = [row for row in rows if row.item_type != "quiz" or row.item_id in approved]
+            QuizAttempt.results_approved_at.is_not(None)).group_by(QuizAttempt.quiz_id)).all())
+        assignment_approved = dict(db.execute(select(AssignmentSubmission.assignment_id,
+            func.max(AssignmentSubmission.approved_at)).where(
+                AssignmentSubmission.student_id == student_id,
+                AssignmentSubmission.institution_id == viewer.institution_id,
+                AssignmentSubmission.status == 'approved', AssignmentSubmission.approved_at.is_not(None))
+            .group_by(AssignmentSubmission.assignment_id)).all())
+        # Generic course ledger values have no approval workflow; students
+        # receive their approved aggregate from gradebook, never this shortcut.
+        from app.services.content_access import as_utc, require_assessment_access
+        visible = []
+        for row in rows:
+            dates = approved if row.item_type == 'quiz' else assignment_approved if row.item_type == 'assignment' else {}
+            approval = dates.get(row.item_id)
+            if not approval or as_utc(row.updated_at) > as_utc(approval):
+                continue
+            item = db.get(Quiz if row.item_type == 'quiz' else Assignment, row.item_id)
+            try:
+                require_assessment_access(db, viewer, item, results=True)
+            except HTTPException as exc:
+                if exc.status_code in {403, 404}:
+                    continue
+                raise
+            visible.append(row)
+        rows = visible
     return list(rows)
 
 
@@ -494,6 +518,18 @@ def compute_student_mastery_report(db: Session, user: User, student_id: uuid.UUI
     for attempt, course_id, is_pending in db.execute(query):
         latest.setdefault(attempt.quiz_id, (attempt, course_id, is_pending))
     selected = {attempt.id: (attempt, course_id) for attempt, course_id, is_pending in latest.values() if not is_pending}
+    if user.role == UserRole.STUDENT:
+        from app.services.content_access import require_assessment_access
+        visible = {}
+        for identity, (attempt, course_id) in selected.items():
+            try:
+                require_assessment_access(db, user, db.get(Quiz, attempt.quiz_id), results=True)
+            except HTTPException as exc:
+                if exc.status_code in {403, 404}:
+                    continue
+                raise
+            visible[identity] = (attempt, course_id)
+        selected = visible
     legacy = sum(1 for attempt, _ in selected.values() if attempt.question_snapshot is None)
     invalid = 0
     totals = {}

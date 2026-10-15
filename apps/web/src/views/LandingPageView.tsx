@@ -3,7 +3,6 @@ import {
   Award,
   CheckCircle2,
   ChevronDown,
-  Clock,
   GraduationCap,
   Grid,
   Mail,
@@ -61,9 +60,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
     setShowYearsDropdown(false); setMobileYearsOpen(false); setMobileMenuOpen(false);
   };
 
-  const subscriptions = filteredCourses.flatMap(course => course.lessons
-    .filter(lesson => lesson.hasUploadedVideo)
-    .map(lesson => ({ course, lesson })));
+  const subscriptions = filteredCourses;
   useEffect(() => {
     if (catalog.error) toast(lang === 'ar' ? 'تعذر تحميل الاشتراكات. أعد المحاولة.' : 'Subscriptions could not load. Please retry.', 'danger');
   }, [catalog.error, toast, lang]);
@@ -749,17 +746,16 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
         {!catalog.loading && !catalog.error && subscriptions.length === 0 && <p className="catalog-empty">{lang === 'ar'
           ? 'لا توجد اشتراكات منشورة في هذا الصف حاليًا.' : 'No subscriptions are published for this grade yet.'}</p>}
         <div className="subscription-grid">
-          {subscriptions.map(({ course, lesson }) => <article className="subscription-card" key={lesson.id}>
+          {subscriptions.map(course => <article className="subscription-card" key={course.id}>
             <span className="subscription-grade">{course.academicYearLabel}</span>
-            <h3>{lesson.title}</h3>
-            {lesson.durationFormatted && <p className="subscription-duration"><Clock size={16} aria-hidden="true" />{lesson.durationFormatted}</p>}
+            <h3>{course.title}</h3>
+            {course.description && <p>{course.description}</p>}
             <div className="subscription-actions">
               <div>
-                <strong>{(lesson.price || course.price)
-                  ? `${(lesson.price || course.price || 0).toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-US')} ${lang === 'ar' ? 'ج.م' : 'EGP'}`
+                <small className="subscription-price-note">{lang === 'ar' ? 'سعر المقرر' : 'Course price'}</small>
+                <strong>{course.price
+                  ? `${course.price.toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-US')} ${lang === 'ar' ? 'ج.م' : 'EGP'}`
                   : (lang === 'ar' ? 'مجاني' : 'Free')}</strong>
-                {!lesson.price && Boolean(course.price) && <small className="subscription-price-note">
-                  {lang === 'ar' ? 'ضمن اشتراك الصف' : 'Included in the course subscription'}</small>}
               </div>
               <button type="button" className="btn-primary" onClick={() => onNavigateToAuth('signin', course)}>
                 {lang === 'ar' ? 'اشترك الآن' : 'Subscribe now'}</button>

@@ -7,7 +7,7 @@ import { useProtectedPlayback } from './useProtectedPlayback';
 
 const fake = vi.hoisted(() => ({ request: vi.fn(), generation: 0, scope: 'teacher' }));
 vi.mock('../services/apiClient', () => ({ apiRequest: fake.request, apiUrl: (url: string) => url,
-  getApiAuthGeneration: () => fake.generation, getApiAuthScope: () => fake.scope }));
+  getApiAuthGeneration: () => fake.generation, getApiAuthScope: () => fake.scope, getApiSessionRevision: () => '' }));
 const pending: { signal: AbortSignal; resolve: (value: { stream_url: string }) => void; reject: (error: unknown) => void }[] = [];
 let host: HTMLDivElement, root: Root;
 const videoRef = { current: null as HTMLVideoElement | null };

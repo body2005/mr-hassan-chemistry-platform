@@ -234,6 +234,18 @@ class S3StorageProvider(BaseStorageProvider):
         self._client = None
         self._probe_cache: tuple[float, dict[str, Any]] | None = None
 
+    def _object_key(self, storage_key: str) -> str:
+        prefix = f's3://{self.bucket_name}/'
+        if storage_key.startswith('s3://'):
+            if not storage_key.startswith(prefix):
+                raise ValueError('Storage bucket mismatch')
+            storage_key = storage_key[len(prefix):]
+        if (not storage_key or storage_key.startswith('/') or '\\' in storage_key
+                or any(ord(char) < 32 for char in storage_key)
+                or '..' in storage_key.split('/') or '://' in storage_key):
+            raise ValueError('Invalid object storage key')
+        return storage_key
+
     def _get_client(self):
         if self._client is None:
             import boto3
@@ -258,6 +270,7 @@ class S3StorageProvider(BaseStorageProvider):
 
     def save_file(self, local_source_path: str, storage_key: str, content_type: str | None = None) -> str:
         client = self._get_client()
+        storage_key = self._object_key(storage_key)
         extra_args: dict[str, Any] = {}
         if content_type:
             extra_args["ContentType"] = content_type
@@ -283,6 +296,7 @@ class S3StorageProvider(BaseStorageProvider):
 
     def save_bytes(self, data: bytes, storage_key: str, content_type: str | None = None) -> str:
         client = self._get_client()
+        storage_key = self._object_key(storage_key)
         extra_args: dict[str, Any] = {}
         if content_type:
             extra_args["ContentType"] = content_type
@@ -294,7 +308,7 @@ class S3StorageProvider(BaseStorageProvider):
 
     def open_stream(self, storage_key: str, start: int = 0, length: int | None = None) -> Generator[bytes, None, None]:
         client = self._get_client()
-        key = storage_key.replace(f"s3://{self.bucket_name}/", "")
+        key = self._object_key(storage_key)
         range_header = f"bytes={start}-"
         if length is not None:
             range_header = f"bytes={start}-{start + length - 1}"
@@ -308,7 +322,7 @@ class S3StorageProvider(BaseStorageProvider):
 
     def get_size(self, storage_key: str) -> int:
         client = self._get_client()
-        key = storage_key.replace(f"s3://{self.bucket_name}/", "")
+        key = self._object_key(storage_key)
         from botocore.exceptions import ClientError
         try:
             response = client.head_object(Bucket=self.bucket_name, Key=key)
@@ -320,7 +334,7 @@ class S3StorageProvider(BaseStorageProvider):
 
     def exists(self, storage_key: str) -> bool:
         client = self._get_client()
-        key = storage_key.replace(f"s3://{self.bucket_name}/", "")
+        key = self._object_key(storage_key)
         try:
             client.head_object(Bucket=self.bucket_name, Key=key)
             return True
@@ -334,7 +348,7 @@ class S3StorageProvider(BaseStorageProvider):
 
     def delete(self, storage_key: str) -> bool:
         client = self._get_client()
-        key = storage_key.replace(f"s3://{self.bucket_name}/", "")
+        key = self._object_key(storage_key)
         try:
             client.delete_object(Bucket=self.bucket_name, Key=key)
             return True
@@ -349,7 +363,7 @@ class S3StorageProvider(BaseStorageProvider):
         Only call after a persisted deletion intent, not for a live upload.
         """
         from botocore.exceptions import ClientError
-        key = storage_key.removeprefix(f"s3://{self.bucket_name}/")
+        key = self._object_key(storage_key)
         client = self._get_client()
         aborted = 0
         for page in client.get_paginator("list_multipart_uploads").paginate(Bucket=self.bucket_name, Prefix=key):
@@ -369,7 +383,7 @@ class S3StorageProvider(BaseStorageProvider):
     def generate_presigned_url(self, storage_key: str, expires_in: int = 300) -> str | None:
         """Generates a private, short-lived (default 5 minutes) signed URL for viewing/downloading."""
         client = self._get_client()
-        key = storage_key.replace(f"s3://{self.bucket_name}/", "")
+        key = self._object_key(storage_key)
         try:
             url = client.generate_presigned_url(
                 "get_object",

@@ -64,6 +64,7 @@ def capabilities(user: CurrentUser, response: Response) -> dict:
     response.headers["Cache-Control"] = "private, no-store"
     settings = get_settings()
     return {"direct_upload": settings.video_direct_upload_enabled,
+            "processing_enabled": settings.video_processing_enabled,
             "protocol": "s3-multipart", "max_bytes": service.MAX_VIDEO_BYTES,
             "part_bytes": service.PART_BYTES, "drm_required": settings.video_drm_required}
 
@@ -152,6 +153,81 @@ def abort_upload(upload_id: uuid.UUID, user: CurrentUser, db: Db, request: Reque
         service.abort(db, upload)
 
 
+@router.post('/video-uploads/{upload_id}/retry', status_code=202)
+def retry_upload(upload_id: uuid.UUID, user: CurrentUser, db: Db, request: Request, response: Response):
+    response.headers['Cache-Control'] = 'private, no-store'
+    enforce_rate_limit(request, bucket='video-upload-retry', category='upload', limit=5, window_seconds=300)
+    upload = service.owned(db, upload_id, user, lock=True)
+    manager(db, user, upload.lesson_id)
+    service.retry_processing(db, upload)
+    return service.summary(upload)
+
+
+def authorized_drm_asset(lesson_id, upload_id, request, db, token):
+    from app.api.routes.platform import _authorize_video_stream
+    from app.services.video_drm import current_asset
+    lesson = _authorize_video_stream(lesson_id, request, db, token)
+    asset = current_asset(db, lesson)
+    if not lesson.video_drm_protected or not asset or asset.id != upload_id or not asset.drm:
+        raise HTTPException(404, 'Encrypted video generation not found')
+    return lesson, asset
+
+
+@router.get('/lessons/{lesson_id}/hls/{upload_id}/drm/certificate')
+def drm_certificate(lesson_id: uuid.UUID, upload_id: uuid.UUID, request: Request, db: Db, token: str | None = None):
+    from app.services.video_drm import fairplay_certificate
+    authorized_drm_asset(lesson_id, upload_id, request, db, token)
+    return Response(fairplay_certificate(), media_type='application/octet-stream',
+        headers={'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})
+
+
+@router.post('/lessons/{lesson_id}/hls/{upload_id}/drm/license/{system}')
+async def drm_license(lesson_id: uuid.UUID, upload_id: uuid.UUID, system: str, request: Request, db: Db, token: str | None = None):
+    import httpx
+    from app.services.video_drm import LICENSE_ENDPOINTS, license_message
+    from app.core.security import decode_video_token
+    if system not in LICENSE_ENDPOINTS:
+        raise HTTPException(404, 'DRM system not supported')
+    enforce_rate_limit(request, bucket='drm-license', limit=12, window_seconds=60)
+    lesson, asset = authorized_drm_asset(lesson_id, upload_id, request, db, token)
+    claims = decode_video_token(token) or {}
+    subject = claims.get('sub')
+    # _authorize_video_stream has already checked subject, active cookie/family,
+    # revocation, institution, schedule and current entitlement. Never accept a
+    # client key ID or provider URL in place of this exact generation.
+    entitlement = license_message(asset, lesson, str(subject), is_student=claims.get('role') == 'student')
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > 256 * 1024:
+            raise HTTPException(413, 'DRM challenge is too large')
+    if not body:
+        raise HTTPException(422, 'DRM challenge is required')
+    db.close()
+    result = bytearray()
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False, trust_env=False) as client:
+            async with client.stream('POST', LICENSE_ENDPOINTS[system], content=bytes(body),
+                    headers={'Content-Type': 'application/octet-stream', 'X-AxDRM-Message': entitlement}) as upstream:
+                if upstream.status_code != 200:
+                    raise HTTPException(503 if upstream.status_code >= 500 or upstream.status_code == 429 else 403, 'DRM license could not be issued')
+                async for chunk in upstream.aiter_bytes():
+                    result.extend(chunk)
+                    if len(result) > 2 * 1024 * 1024:
+                        raise HTTPException(502, 'DRM license response is invalid')
+    except httpx.HTTPError:
+        # No provider exceptions/bodies/headers: they can contain entitlements.
+        raise HTTPException(503, 'DRM license service is temporarily unavailable') from None
+    if not result:
+        raise HTTPException(502, 'DRM license response is invalid')
+    # Re-check revocation/generation changes during the external request.
+    db.expire_all()
+    authorized_drm_asset(lesson_id, upload_id, request, db, token)
+    return Response(bytes(result), media_type='application/octet-stream', headers={
+        'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer',
+        'X-Content-Type-Options': 'nosniff', 'Cross-Origin-Resource-Policy': 'same-origin'})
+
+
 @router.get("/lessons/{lesson_id}/hls/{upload_id}/{name:path}")
 def hls(lesson_id: uuid.UUID, upload_id: uuid.UUID, name: str, request: Request, db: Db, token: str | None = None):
     import posixpath
@@ -161,13 +237,14 @@ def hls(lesson_id: uuid.UUID, upload_id: uuid.UUID, name: str, request: Request,
     from app.models.video_upload import VideoUpload
     from app.core.storage import get_storage_provider
     lesson = _authorize_video_stream(lesson_id, request, db, token)
-    if get_settings().video_drm_required:
-        raise HTTPException(503, "Licensed DRM playback is not configured")
     upload = db.get(VideoUpload, upload_id)
     if upload is None or upload.lesson_id != lesson_id or upload.status != "ready" or not upload.manifest_key:
         raise HTTPException(404, "Video generation not found")
     if not lesson.video_asset_key or not lesson.video_asset_key.endswith(f"/{upload.manifest_key}"):
         raise HTTPException(404, "Video generation is no longer current")
+    if lesson.video_drm_protected and (not upload.drm or upload.drm.get('scheme') != 'cbcs'
+            or not name.endswith(('.m3u8', '.mp4', '.m4s'))):
+        raise HTTPException(403, 'Clear playback is forbidden for this video')
     if name.startswith("/") or ".." in name.split("/") or "\\" in name:
         raise HTTPException(404, "Video part not found")
     rendition = re.match(r"(\d+)p/", name)
@@ -190,12 +267,23 @@ def hls(lesson_id: uuid.UUID, upload_id: uuid.UUID, name: str, request: Request,
             if name == "master.m3u8":
                 manifest = bounded_quality_manifest(manifest)
             lines = []
+            def admitted_uri(uri):
+                target = posixpath.normpath(posixpath.join(posixpath.dirname(name), uri))
+                if f'{prefix}/{target}' not in upload.outputs:
+                    raise HTTPException(503, 'Video manifest unavailable')
+                return f'/api/v1/lessons/{lesson_id}/hls/{upload_id}/{quote(target)}?token={quote(token or "")}'
             for line in manifest.splitlines():
                 if line and not line.startswith("#"):
-                    target = posixpath.normpath(posixpath.join(posixpath.dirname(name), line))
-                    if f"{prefix}/{target}" not in upload.outputs:
-                        raise HTTPException(503, "Video manifest unavailable")
-                    line = f"/api/v1/lessons/{lesson_id}/hls/{upload_id}/{quote(target)}?token={quote(token or '')}"
+                    line = admitted_uri(line)
+                elif 'URI="' in line:
+                    def rewrite_attribute(match):
+                        uri = match.group(1)
+                        # DRM signaling contains public KIDs/PSSH, never keys.
+                        # MAP/MEDIA references must always traverse admission.
+                        if upload.drm and line.startswith(('#EXT-X-KEY:', '#EXT-X-SESSION-KEY:')) and uri.startswith(('skd://', 'data:')):
+                            return match.group(0)
+                        return f'URI="{admitted_uri(uri)}"'
+                    line = re.sub(r'URI="([^"]+)"', rewrite_attribute, line)
                 lines.append(line)
             return Response("\n".join(lines) + "\n", media_type="application/vnd.apple.mpegurl", headers=headers)
         byte_range = _parse_byte_range(request.headers.get("range"), size)
@@ -206,7 +294,7 @@ def hls(lesson_id: uuid.UUID, upload_id: uuid.UUID, name: str, request: Request,
         if byte_range:
             headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         return StreamingResponse(provider.open_stream(key, start=start, length=length), status_code=206 if byte_range else 200,
-            media_type="video/mp2t", headers=headers)
+            media_type=('audio/mp4' if name.startswith('audio/') else 'video/mp4' if name.endswith(('.mp4', '.m4s')) else 'video/mp2t'), headers=headers)
     except HTTPException:
         raise
     except Exception as exc:

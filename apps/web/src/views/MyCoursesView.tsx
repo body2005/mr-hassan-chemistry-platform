@@ -1,7 +1,8 @@
 import { serverNow, synchronizeServerTime } from "../services/availabilityRefresh";
 import { useLessonNavigation } from '../services/useLessonNavigation';
+import { LessonDiscussionBell } from '../components/LessonDiscussionBell';
 import { materialFailureMessage } from '../services/playbackFailure';
-import React, { lazy, Suspense, useState, useEffect, useRef, useCallback } from "react";
+import React, { lazy, Suspense, useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -195,12 +196,12 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   const isStudent = currentUser?.role === "student";
   const studentYear = isStudent ? (currentUser as StudentProfile).academicYear : null;
 
-  const validEnrolledCourses = enrolledCourses.filter((c) => {
+  const validEnrolledCourses = useMemo(() => enrolledCourses.filter((c) => {
     if (studentYear) {
       return c.academicYear === studentYear;
     }
     return true;
-  });
+  }), [enrolledCourses, studentYear]);
 
   const [selectedCourseId, setSelectedCourseId] = useState(() => initialCourseId || '');
   const [catalogOpen, setCatalogOpen] = useState(false);
@@ -303,7 +304,15 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   // Interactive Modals State
   const [activeLessonModal, setActiveLessonModal] = useState<VideoLesson | null>(null);
-  const closeLesson = useLessonNavigation(activeLessonModal, setActiveLessonModal);
+  const closeLesson = useLessonNavigation(activeLessonModal, setActiveLessonModal, {
+    userId: currentUser?.id, courses: validEnrolledCourses,
+    onRestore: course => setSelectedCourseId(course.id),
+    canRestore: async (lesson, course) => {
+      if (!isStudent) return true;
+      const content = await courseService.getCourseAssessments(course.id, { skipCache: true });
+      return content.lessons.some(item => item.id === lesson.id && item.accessible);
+    },
+  });
 
   useEffect(() => {
     if (!initialLessonId || !initialCourseId || !currentUser) return;
@@ -1237,7 +1246,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           </div>
           <FloatingProgressFab key={currentCourse.id} course={{ ...currentCourse, assessments: serverAssessments }}
             completedLessonIds={completedLessonIds} currentUser={currentUser || null}
-            assessmentState={selectedAssessments.loading ? 'loading' : selectedAssessments.error ? 'error' : 'ready'}
+            assessmentState={selectedAssessments.loading ? 'loading' : selectedAssessments.restricted ? 'restricted' : selectedAssessments.error ? 'error' : 'ready'}
             onRetryAssessments={reloadSelectedAssessments}
             theme={theme || 'light'} placement="inline" />
         </div>
@@ -1575,7 +1584,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         </span>
 
                         {isPurchased ? (
-                          <button
+                          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}><button
                             type="button"
                             onClick={() => setActiveLessonModal(lesson)}
                             className="btn-primary"
@@ -1583,7 +1592,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                           >
                             <Play size={13} fill="currentColor" />
                             <span>مشاهدة الدرس</span>
-                          </button>
+                          </button><LessonDiscussionBell lessonId={lesson.id} unread={lesson.discussionUnreadCount} onOpen={() => setActiveLessonModal(lesson)} /></div>
                         ) : isPending ? (
                           <div
                             style={{

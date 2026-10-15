@@ -15,5 +15,10 @@
       "arn:aws:s3:::REPLACE_WITH_DEDICATED_BUCKET/video-assets/*",
       "arn:aws:s3:::REPLACE_WITH_DEDICATED_BUCKET/video-originals/*"
     ]
+  }, {
+    "Sid": "ReadMigratedVideoOnly",
+    "Effect": "Allow",
+    "Action": "s3:GetObject",
+    "Resource": "arn:aws:s3:::REPLACE_WITH_DEDICATED_BUCKET/legacy-import/*/video/*"
   }]
 }

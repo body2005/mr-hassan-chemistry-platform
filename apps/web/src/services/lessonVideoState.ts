@@ -1,6 +1,6 @@
 import type { VideoLesson } from '../types/lms';
 import type { UploadTask } from './uploadManager';
-import { videoProcessingLabel } from './directVideoUpload';
+import { VIDEO_UPLOAD_LABEL, videoOverallProgress } from './directVideoUpload';
 
 export interface LessonVideoState {
   phase: 'ready' | 'uploading' | 'processing' | 'error' | 'missing';
@@ -21,28 +21,27 @@ export function lessonVideoState(lesson: VideoLesson, tasks: UploadTask[], owner
   if (server?.id === local?.videoUploadId && server?.status === 'ready') {
     return { phase: 'ready', label: 'جاهز للتشغيل' };
   }
-  if (server?.id === local?.videoUploadId && server && ['failed', 'rejected', 'expired', 'aborted', 'superseded'].includes(server.status)) {
-    return { phase: 'error', label: 'لم يكتمل تجهيز الفيديو؛ أعد المحاولة' };
+  if (server?.id === local?.videoUploadId && server && ['failed', 'rejected', 'expired', 'aborted', 'cancelled', 'superseded'].includes(server.status)) {
+    return { phase: 'error', label: 'لم يكتمل رفع الفيديو؛ أعد المحاولة' };
   }
   if (local?.status === 'queued' || local?.status === 'uploading') {
-    const percent = Math.round(Math.max(0, Math.min(100, local.uploadPercent)));
-    return { phase: 'uploading', label: local.status === 'queued' ? 'في انتظار رفع الفيديو' : `جارٍ رفع الفيديو ${percent}٪`, percent };
+    return { phase: 'uploading', label: VIDEO_UPLOAD_LABEL, percent: Math.min(99, local.progress ?? videoOverallProgress(local.uploadPercent)) };
   }
   if (local?.status === 'processing') {
-    const serverIsNewer = server && server.id === local.videoUploadId && (server.processing_percent ?? -1) > local.progress;
-    return { phase: 'processing', label: serverIsNewer && server ? videoProcessingLabel(server) : local.statusDetail || (server ? videoProcessingLabel(server) : 'اكتمل الرفع؛ جارٍ تجهيز جودات الفيديو'), percent: serverIsNewer ? server?.processing_percent ?? undefined : local.progress || undefined };
+    const serverPercent = server?.id === local.videoUploadId ? videoOverallProgress(100, server?.processing_percent ?? 0) : 0;
+    return { phase: 'processing', label: VIDEO_UPLOAD_LABEL, percent: Math.min(99, Math.max(local.progress ?? videoOverallProgress(100, 0), serverPercent)) };
   }
   if (local?.status === 'error') return { phase: 'error', label: local.error || 'تعذر إكمال رفع الفيديو؛ أعد المحاولة' };
   if (server && ['creating', 'uploading', 'completing'].includes(server.status)) {
-    return { phase: 'uploading', label: 'جارٍ رفع الفيديو' };
+    return { phase: 'uploading', label: VIDEO_UPLOAD_LABEL, percent: server.status === 'completing' ? 40 : undefined };
   }
   if (server && ['queued', 'processing'].includes(server.status)) {
-    return { phase: 'processing', label: videoProcessingLabel(server), percent: server.processing_percent ?? undefined };
+    return { phase: 'processing', label: VIDEO_UPLOAD_LABEL, percent: videoOverallProgress(100, server.processing_percent ?? 0) };
   }
-  if (server && ['failed', 'rejected', 'expired', 'aborted'].includes(server.status)) {
-    return { phase: 'error', label: 'لم يكتمل تجهيز الفيديو؛ أعد رفع الملف للمحاولة مجددًا' };
+  if (server && ['failed', 'rejected', 'expired', 'aborted', 'cancelled', 'superseded'].includes(server.status)) {
+    return { phase: 'error', label: 'لم يكتمل رفع الفيديو؛ أعد المحاولة' };
   }
   if (lesson.hasUploadedVideo || lesson.videoUrl) return { phase: 'ready', label: 'جاهز للتشغيل' };
-  if (local?.status === 'completed') return { phase: 'processing', label: 'جارٍ تحديث بيانات الفيديو' };
+  if (local?.status === 'completed') return { phase: 'processing', label: VIDEO_UPLOAD_LABEL, percent: 99 };
   return { phase: 'missing', label: 'لا يوجد فيديو مرفوع' };
 }

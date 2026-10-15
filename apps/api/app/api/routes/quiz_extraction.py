@@ -314,10 +314,14 @@ async def extract_quiz_from_file(
         for rec in extracted_candidates:
             question_text = str(rec.get("question_text") or "").strip()
             # A shared introduction does not make two questions identical.
-            identity = [question_text, rec.get("canonical_type") or rec.get("question_type"),
+            # Identical wording in distinct source locations can be intentional.
+            # Deduplicate only a repeated record of the SAME located question.
+            location = [rec.get('source_page') or rec.get('page_number'), rec.get('source_block_ids') or []]
+            identity = [location, question_text, rec.get("canonical_type") or rec.get("question_type"),
                         rec.get("options") or []]
             fingerprint = json.dumps(identity, ensure_ascii=False, sort_keys=True)
-            if not question_text or fingerprint in seen_questions:
+            located = bool(location[0] or location[1])
+            if not question_text or (located and fingerprint in seen_questions):
                 continue
             seen_questions.add(fingerprint)
             opts = [
@@ -347,21 +351,15 @@ async def extract_quiz_from_file(
             else:
                 norm_type = "UNKNOWN"
 
-            if norm_type == "ESSAY":
-                opts = []
-                confirmed_answer = None
-                needs_ans_rev = False
-                needs_review = False
-                answer_conf = "confirmed"
             raw_text_source = str(rec.get("text_source") or "unknown")
             text_source = raw_text_source if raw_text_source in ("text_layer", "ocr") else "unknown"
             needs_content_rev = bool(rec.get("needs_content_review", False))
 
             if norm_type == "ESSAY":
                 opts = []
-                confirmed_answer = None
+                confirmed_answer = str(rec.get('correct_answer') or '').strip() or None
                 needs_ans_rev = False
-                answer_conf = "confirmed"
+                answer_conf = 'confirmed' if confirmed_answer else 'unknown'
                 needs_review = needs_content_rev
             else:
                 confirmed_answer = str(rec.get("correct_answer") or "").strip() or None

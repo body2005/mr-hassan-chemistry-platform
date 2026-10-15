@@ -130,6 +130,9 @@ class Lesson(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     content: Mapped[str | None] = mapped_column(Text)
     video_asset_key: Mapped[str | None] = mapped_column(String(512))
     video_duration_seconds: Mapped[int | None] = mapped_column(Integer)
+    # Sticky per-lesson protection: replacing an asset cannot downgrade it to
+    # progressive/clear playback, even if the global rollout switch is off.
+    video_drm_protected: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     materialization_status: Mapped[MaterializationStatus] = mapped_column(
         Enum(MaterializationStatus, name="materialization_status", native_enum=False, values_callable=enum_values),
         default=MaterializationStatus.NOT_INDEXED,

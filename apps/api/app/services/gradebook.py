@@ -1,7 +1,7 @@
-"""Equal assessment weights within each category; equal category weights.
+"""Published eligible assessment points, shared across gradebook consumers.
 
-Manager-only summaries. A missing/unmarked result contributes no earned points
-without writing a zero grade. Question counts never determine an item's weight.
+Missing/unmarked results contribute no earned points without writing a zero
+grade. Managers see provisional totals; students see approved contributions.
 """
 import math
 from collections import defaultdict
@@ -23,18 +23,23 @@ def group_grade_summary(summaries):
     earned = sum(row["earned_points"] for row in summaries)
     possible = sum(row["possible_points"] for row in summaries)
     def category_rate(kind):
-        values = [row[kind + "_success_rate"] for row in summaries if row[kind + "_success_rate"] is not None]
-        return round(sum(values) / len(values), 2) if values else None
-    overall = [row["total_overall_grade"] for row in summaries if row["total_overall_grade"] is not None]
+        denominator = sum(row[kind + "_possible"] for row in summaries)
+        numerator = sum(row[kind + "_earned"] for row in summaries)
+        return round(100 * numerator / denominator, 2) if denominator else None
     return {"quiz_success_rate": category_rate("quiz"), "homework_success_rate": category_rate("homework"),
             "earned_points": earned, "possible_points": possible,
-            "total_overall_grade": round(sum(overall) / len(overall), 2) if overall else None,
+            "total_overall_grade": round(100 * earned / possible, 2) if possible else None,
             "pending_assessments_count": sum(row["pending_assessments_count"] for row in summaries)}
 
 
 def published_grade_summaries(db, actor, student_ids, *, course_ids=None):
-    if actor.role not in {UserRole.TEACHER, UserRole.INSTITUTION_ADMIN, UserRole.PLATFORM_ADMIN}:
-        raise PermissionError("Gradebook summaries are restricted to managers")
+    student_ids = list(student_ids)
+    student_view = actor.role == UserRole.STUDENT
+    if student_view:
+        if any(identity != actor.id for identity in student_ids):
+            raise PermissionError("Students can only read their own approved summary")
+    elif actor.role not in {UserRole.TEACHER, UserRole.INSTITUTION_ADMIN, UserRole.PLATFORM_ADMIN}:
+        raise PermissionError("Gradebook summaries are restricted to authorized users")
     query = select(Course).where(Course.institution_id == actor.institution_id)
     if actor.role == UserRole.TEACHER:
         query = query.where(Course.teacher_id == actor.id)
@@ -60,8 +65,19 @@ def published_grade_summaries(db, actor, student_ids, *, course_ids=None):
         Quiz.course_id.in_(courses), Quiz.status.in_(["published", "closed"]))))
     assignments = list(db.scalars(select(Assignment).where(Assignment.institution_id == actor.institution_id,
         Assignment.course_id.in_(courses), Assignment.status.in_(["published", "closed"]))))
-    maxima = dict(db.execute(select(QuizQuestion.quiz_id, func.sum(QuizQuestion.points)).where(
-        QuizQuestion.quiz_id.in_([row.id for row in quizzes])).group_by(QuizQuestion.quiz_id)).all())
+    maxima = {}
+    invalid_maxima = set()
+    for link in db.scalars(select(QuizQuestion).where(QuizQuestion.quiz_id.in_([row.id for row in quizzes]))
+                          .order_by(QuizQuestion.quiz_id, QuizQuestion.position)):
+        # Publication snapshots fix the denominator, independent of later bank
+        # revisions or a mutable legacy question/link weight.
+        value = (link.question_snapshot or {}).get('points', link.points)
+        if not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+            invalid_maxima.add(link.quiz_id)
+        else:
+            maxima[link.quiz_id] = maxima.get(link.quiz_id, 0.0) + value
+    for identity in invalid_maxima:
+        maxima.pop(identity, None)
     pending = select(QuizAttemptAnswer.id).where(QuizAttemptAnswer.attempt_id == QuizAttempt.id,
         QuizAttemptAnswer.graded_at.is_(None)).exists()
     last_mark = select(func.max(QuizAttemptAnswer.graded_at)).where(
@@ -90,7 +106,7 @@ def published_grade_summaries(db, actor, student_ids, *, course_ids=None):
     for lesson in lessons.values():
         modules[(lesson.course_id, lesson.module_id)].add(lesson.id)
     totals = {student_id: dict(quiz_earned=0.0, quiz_possible=0.0, homework_earned=0.0,
-        homework_possible=0.0, quiz_percentage_sum=0.0, homework_percentage_sum=0.0,
+        homework_possible=0.0, approved_earned_points=0.0,
         published_assessments_count=0, pending_quiz_attempts=0,
         pending_homework_count=0, quiz_attempts_count=0, unattempted_assessments_count=0,
         invalid_assessments_count=0, quiz_assessments_count=0, homework_assessments_count=0, homework_submissions_count=0) for student_id in student_ids}
@@ -121,18 +137,26 @@ def published_grade_summaries(db, actor, student_ids, *, course_ids=None):
             data["published_assessments_count"] += 1
             score = None
             graded_at = None
+            approval_at = None
             if is_quiz:
                 result = attempts.get((student_id, assessment.id))
                 if result:
                     attempt, unmarked, marked_at = result
+                    approval_at = attempt.results_approved_at if not unmarked else None
                     graded_at = max(as_utc(value) for value in
                         (attempt.results_approved_at, marked_at, attempt.submitted_at) if value)
                     data["quiz_attempts_count"] += 1
                     data["pending_quiz_attempts"] += int(bool(unmarked or not attempt.results_approved_at))
-                    # Managers may see the current calculated contribution;
-                    # this function is never a student disclosure endpoint.
+                    # Provisional contributions stay manager-only; the
+                    # approved gate below applies to every student aggregate.
                     if attempt.total_points and math.isfinite(attempt.total_points) and attempt.total_points > 0:
-                        score = (attempt.score / attempt.total_points * maximum) if attempt.score is not None else None
+                        if math.isclose(attempt.total_points, maximum, rel_tol=1e-9, abs_tol=1e-6):
+                            score = attempt.score
+                        else:
+                            data['invalid_assessments_count'] += 1
+                            if approval_at:
+                                data['pending_quiz_attempts'] += 1
+                            approval_at = None
                 else:
                     data["unattempted_assessments_count"] += 1
             else:
@@ -141,7 +165,8 @@ def published_grade_summaries(db, actor, student_ids, *, course_ids=None):
                     data["homework_submissions_count"] += 1
                     graded_at = row.graded_at or row.submitted_at
                     graded = row.graded_at is not None and row.status in (SubmissionStatus.GRADED, SubmissionStatus.APPROVED)
-                    data["pending_homework_count"] += int(not graded or row.final_score is None)
+                    approval_at = row.approved_at if row.status == SubmissionStatus.APPROVED else None
+                    data["pending_homework_count"] += int(not graded or row.final_score is None or not approval_at)
                     score = row.final_score if graded else None
                 else:
                     data["unattempted_assessments_count"] += 1
@@ -153,19 +178,27 @@ def published_grade_summaries(db, actor, student_ids, *, course_ids=None):
                         and override.score is not None and math.isfinite(override.score)
                         and 0 <= override.score <= override.max_score):
                     score = override.score / override.max_score * maximum
+                    # A later correction needs a fresh approval; an old
+                    # approval cannot authorize a new ledger value.
+                    if approval_at and as_utc(override.updated_at) > as_utc(approval_at):
+                        approval_at = None
+                        data['pending_quiz_attempts' if is_quiz else 'pending_homework_count'] += 1
             if score is not None and math.isfinite(score) and 0 <= score <= maximum:
-                data[kind + "_earned"] += score
-                data[kind + "_percentage_sum"] += score / maximum * 100
+                if approval_at:
+                    data["approved_earned_points"] += score
+                if not student_view or approval_at:
+                    data[kind + "_earned"] += score
     result = {}
     for student_id, data in totals.items():
         possible = data["quiz_possible"] + data["homework_possible"]
         earned = data["quiz_earned"] + data["homework_earned"]
         def percentage(kind):
-            count = data[kind + "_assessments_count"]
-            return data[kind + "_percentage_sum"] / count if count else None
-        categories = [value for value in (percentage("quiz"), percentage("homework")) if value is not None]
+            denominator = data[kind + "_possible"]
+            return 100 * data[kind + "_earned"] / denominator if denominator else None
         result[student_id] = {**data, "earned_points": earned, "possible_points": possible,
-            "total_overall_grade": round(sum(categories) / len(categories), 2) if categories else None,
+            "total_overall_grade": round(100 * earned / possible, 2) if possible else None,
+            "approved_overall_grade": round(100 * data["approved_earned_points"] / possible, 2) if possible else None,
+            "grade_basis": "approved" if student_view else "provisional",
             "quiz_success_rate": round(percentage("quiz"), 2) if percentage("quiz") is not None else None,
             "average_quiz_score": round(percentage("quiz"), 2) if percentage("quiz") is not None else None,
             "homework_success_rate": round(percentage("homework"), 2) if percentage("homework") is not None else None,

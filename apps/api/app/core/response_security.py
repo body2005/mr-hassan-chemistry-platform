@@ -24,6 +24,14 @@ class ResponseSecurityHeadersMiddleware:
                 headers = MutableHeaders(scope=message)
                 for name, value in self.headers.items():
                     headers.setdefault(name, value)
+                # Personal JSON, files, early errors and SSE must never be
+                # reused for another cookie/account by a shared proxy cache.
+                if scope.get('path', '').startswith('/api/'):
+                    headers['Cache-Control'] = ('private, no-store, no-transform'
+                        if 'no-transform' in headers.get('Cache-Control', '') else 'private, no-store')
+                    vary = {part.strip() for part in headers.get('Vary', '').split(',') if part.strip()}
+                    vary.update(('Cookie', 'Authorization'))
+                    headers['Vary'] = ', '.join(sorted(vary))
             await send(message)
 
         await self.app(scope, receive, secured_send)

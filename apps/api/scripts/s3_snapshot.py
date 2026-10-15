@@ -23,8 +23,8 @@ METADATA = ("ContentType", "ContentDisposition", "ContentEncoding", "CacheContro
 def client():
     return boto3.client(
         "s3", endpoint_url=os.environ["S3_ENDPOINT_URL"],
-        aws_access_key_id=os.environ["S3_ACCESS_KEY"],
-        aws_secret_access_key=os.environ["S3_SECRET_KEY"],
+        aws_access_key_id=os.environ.get('S3_ACCESS_KEY_ID') or os.environ['S3_ACCESS_KEY'],
+        aws_secret_access_key=os.environ.get('S3_SECRET_ACCESS_KEY') or os.environ['S3_SECRET_KEY'],
         region_name=os.getenv("S3_REGION", "us-east-1"),
         config=Config(signature_version="s3v4", s3={"addressing_style": "path"},
                       connect_timeout=3, read_timeout=30,
@@ -136,7 +136,7 @@ def main():
     parser.add_argument("--directory", default="/backups/s3")
     parser.add_argument("--snapshot")
     args = parser.parse_args()
-    s3, bucket = client(), os.environ["S3_BUCKET"]
+    s3, bucket = client(), os.environ.get('S3_BUCKET_NAME') or os.environ['S3_BUCKET']
     if args.action == "init":
         ensure_bucket(s3, bucket)
         print("Private bucket ready")

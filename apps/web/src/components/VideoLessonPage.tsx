@@ -9,7 +9,7 @@ import {
   Minimize,
   Settings,
   Expand,
-  Share2,
+  Bell,
   Calendar,
   Download,
   FileText,
@@ -23,8 +23,18 @@ import { lessonAccessService } from "../services/paymentService";
 import { useToast, ToastRegion } from "./ToastProvider";
 import type Hls from "hls.js";
 import { useHlsTransport } from "./useHlsTransport";
+import { discussionIntentKey } from './LessonDiscussionBell';
+import { useVideoBufferedRanges } from './useVideoBufferedRanges';
 import { VideoLessonNavigation } from "./VideoLessonNavigation";
 import { LessonDiscussion } from "./LessonDiscussion";
+import { apiRequest } from '../services/apiClient';
+
+async function markDiscussionRead(lessonId: string) {
+  await apiRequest(`/lessons/${lessonId}/comments/read`, { method: 'POST' });
+  window.dispatchEvent(new CustomEvent('lms_discussion_read', { detail: { lessonId } }));
+  window.dispatchEvent(new Event('lms_notifications_updated'));
+  window.dispatchEvent(new Event('lms_courses_updated'));
+}
 
 export interface VideoLessonPageProps {
   lesson: VideoLesson;
@@ -95,6 +105,48 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const telemetryTrackerRef = useRef<VideoTelemetryTracker | null>(null);
   const playerContainerRef = useRef<HTMLDivElement | null>(null);
+  const discussionRef = useRef<HTMLDivElement | null>(null);
+  const [discussionSummary, setDiscussionSummary] = useState({ count: 0, unread: 0 });
+  const discussionScope = useRef('');
+  discussionScope.current = `${lesson.id}:${currentUser?.id || ''}`;
+  const [seekDenied, setSeekDenied] = useState(false);
+  const seekDeniedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showSeekDenied = () => {
+    setSeekDenied(true);
+    if (seekDeniedTimer.current) clearTimeout(seekDeniedTimer.current);
+    seekDeniedTimer.current = setTimeout(() => setSeekDenied(false), 2500);
+  };
+  useEffect(() => {
+    setSeekDenied(false);
+    setDiscussionSummary({ count: 0, unread: 0 });
+    return () => { if (seekDeniedTimer.current) clearTimeout(seekDeniedTimer.current); };
+  }, [lesson.id, currentUser?.id]);
+  const openDiscussion = async () => {
+    const scope = discussionScope.current;
+    if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
+    setIsWide(false);
+    requestAnimationFrame(() => {
+      discussionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      discussionRef.current?.focus({ preventScroll: true });
+    });
+    if (discussionSummary.unread > 0) void markDiscussionRead(lesson.id).then(() => {
+      if (scope !== discussionScope.current) return;
+      setDiscussionSummary(previous => ({ ...previous, unread: 0 }));
+    }).catch(() => toast('تعذر تحديث قراءة إشعارات التعليقات؛ حاول مجددًا.', 'danger'));
+  };
+  useEffect(() => {
+    let requested = new URLSearchParams(window.location.hash.split('?')[1] || '').get('discussion') === '1';
+    try {
+      if (sessionStorage.getItem(discussionIntentKey) === lesson.id) {
+        sessionStorage.removeItem(discussionIntentKey);
+        requested = true;
+      }
+    } catch { /* Hash navigation remains available. */ }
+    if (!requested) return;
+    void markDiscussionRead(lesson.id).catch(() => toast('تعذر تحديث قراءة إشعارات التعليقات؛ حاول مجددًا.', 'danger'));
+    const frame = requestAnimationFrame(() => { discussionRef.current?.scrollIntoView({ block: 'start' }); discussionRef.current?.focus({ preventScroll: true }); });
+    return () => cancelAnimationFrame(frame);
+  }, [lesson.id]);
 
   // Completion & Anti-skip tracking
   const isTeacher = Boolean(currentUser && currentUser.role !== "student");
@@ -105,7 +157,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
 
   // Playback state
   const hlsRef = useRef<Hls | null>(null);
-  const { playbackUrl, playbackError, setPlaybackError, renewProtectedPlayback, pendingPlaybackResumeRef } =
+  const { playbackUrl, drm, playbackError, setPlaybackError, renewProtectedPlayback, pendingPlaybackResumeRef, authorizeHlsRequest } =
     useProtectedPlayback(lesson, currentUser?.id, videoElementRef, hlsRef);
   const [qualityOptions, setQualityOptions] = useState<string[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -182,10 +234,11 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     setIsPlaying(false);
   }, [lesson.id, completedLessonIds, isTeacher, currentUser?.id]);
 
-  const { selectQuality } = useHlsTransport(playbackUrl, videoElementRef, hlsRef, setQualityOptions, setSelectedQuality, setPlaybackError);
+  const { selectQuality } = useHlsTransport(playbackUrl, videoElementRef, hlsRef, setQualityOptions, setSelectedQuality, setPlaybackError, authorizeHlsRequest, drm);
+  const bufferedRanges = useVideoBufferedRanges(videoElementRef, hlsRef, playbackUrl);
 
   useEffect(() => {
-    if (playbackError) toast(playbackError, 'danger');
+    if (playbackError) { setWaitingForVideo(false); toast(playbackError, 'danger'); }
   }, [playbackError, toast]);
 
   const [isAccessRequested, setIsAccessRequested] = useState(false);
@@ -251,7 +304,6 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   const handlePlayPause = async () => {
     if (!videoElementRef.current) return;
     if (videoElementRef.current.paused) {
-      setWaitingForVideo(true);
       try { await videoElementRef.current.play(); }
       catch { setWaitingForVideo(false); setIsPlaying(false); }
     } else {
@@ -269,6 +321,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     // Strict Anti-Skip: prevent skipping forward before finishing once (students only)
     if (!isTeacher && !isLessonFinished) {
       if (current > maxWatchedRef.current + 2) {
+        showSeekDenied();
         videoElementRef.current.currentTime = maxWatchedRef.current;
         setCurrentTime(maxWatchedRef.current);
         toast("لا يمكنك تقديم الفيديو للأمام قبل إكمال مشاهدة الدرس لأول مرة", "warning");
@@ -361,6 +414,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const targetTime = parseFloat(e.target.value);
     if (!isTeacher && !isLessonFinished && targetTime > maxWatchedRef.current + 1) {
+      showSeekDenied();
       toast("لا يمكنك تقديم الفيديو للأمام، يجب مشاهدة الدرس بالكامل أولاً", "warning");
       return;
     }
@@ -377,6 +431,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     const previousTime = videoElementRef.current.currentTime;
     const targetTime = previousTime + seconds;
     if (!isTeacher && seconds > 0 && !isLessonFinished && targetTime > maxWatchedRef.current + 1) {
+      showSeekDenied();
       toast("لا يمكنك تقديم الفيديو للأمام قبل إنهاء مشاهدته مرة على الأقل", "warning");
       return;
     }
@@ -484,22 +539,6 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     return `${h ? `${h}:` : ''}${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   };
 
-  // Share Lesson Action
-  const handleShare = async () => {
-    const url = new URL(window.location.pathname, window.location.origin);
-    url.hash = `mycourses?course=${encodeURIComponent(course.id)}&lesson=${encodeURIComponent(lesson.id)}`;
-    if (navigator.share) {
-      try { await navigator.share({ title: lesson.title, url: url.href }); return; }
-      catch (error) { if (error instanceof DOMException && error.name === 'AbortError') return; }
-    }
-    try {
-      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
-      await navigator.clipboard.writeText(url.href);
-      toast("تم نسخ رابط الدرس بنجاح إلى الحافظة", "success");
-    } catch {
-      toast("تعذر نسخ رابط الدرس. اسمح بالوصول للحافظة ثم أعد المحاولة.", "danger");
-    }
-  };
 
 
   // Progress computations:
@@ -612,6 +651,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
               onMouseMove={handleMouseMove}
               style={{
                 position: isWide ? "fixed" : "relative",
+                border: 'none',
                 inset: isWide ? 0 : undefined,
                 width: "100%",
                 height: isWide ? "100vh" : undefined,
@@ -623,6 +663,16 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                 zIndex: isWide ? 99999 : undefined,
               }}
             >
+              {seekDenied && <div className="lesson-seek-denied" role="status" aria-live="polite">
+                لا يمكنك التقديم قبل إكمال مشاهدة الدرس لأول مرة
+              </div>}
+              {currentUser?.role === 'student' && !isEmbed && <span className="lesson-viewer-watermark" aria-hidden="true" dir="ltr">
+                طالب · {currentUser.id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}
+              </span>}
+              <button type="button" className="lesson-discussion-bell" onClick={openDiscussion}
+                aria-label={`التعليقات: ${discussionSummary.count}، إشعارات غير مقروءة: ${discussionSummary.unread}`}>
+                <Bell size={20} aria-hidden="true" /><span>{discussionSummary.unread}</span>
+              </button>
               {seekFeedback && <div className={`lesson-seek-feedback lesson-seek-feedback-${seekFeedback.direction}`}
                 role="status" aria-live="polite" aria-atomic="true" dir="ltr">
                 {seekFeedback.direction === 'forward' ? <ChevronsRight aria-hidden="true" size={30} /> : <ChevronsLeft aria-hidden="true" size={30} />}
@@ -656,7 +706,15 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                     }}
                     onError={() => { setWaitingForVideo(false); void renewProtectedPlayback(); }}
                     onPlay={() => setIsPlaying(true)}
-                    onWaiting={() => setWaitingForVideo(true)}
+                    onWaiting={() => {
+                      const video = videoElementRef.current;
+                      setWaitingForVideo(Boolean(video && !video.paused && !video.ended && video.readyState < 3));
+                    }}
+                    onSeeking={() => {
+                      const video = videoElementRef.current;
+                      setWaitingForVideo(Boolean(video && !video.paused && video.readyState < 3));
+                    }}
+                    onCanPlay={() => setWaitingForVideo(false)}
                     onPlaying={() => setWaitingForVideo(false)}
                     onPause={() => { setIsPlaying(false); setWaitingForVideo(false); }}
                     onClick={handlePlayPause}
@@ -676,14 +734,18 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
 
                   {playbackError && (
                     <button type="button" onClick={() => { void renewProtectedPlayback(true); }}
-                      style={{ position: 'absolute', top: 12, insetInlineEnd: 12, zIndex: 30, color: '#fff',
+                      style={{ position: 'absolute', top: 68, insetInlineEnd: 12, zIndex: 30, color: '#fff',
                         border: '1px solid #64748b', borderRadius: 8, background: 'rgba(15,23,42,.9)', padding: '8px 12px' }}>
                       استئناف الفيديو
                     </button>
                   )}
 
                   {/* Center Glass Play Button (Shows when paused) */}
-                  {waitingForVideo && <div role="status" style={{ position: 'absolute', top: '45%', left: '50%', transform: 'translateX(-50%)', color: '#fff', background: 'rgba(0,0,0,.75)', padding: '10px 18px', borderRadius: 20, zIndex: 26 }}>جارٍ تحميل الفيديو…</div>}
+                  {waitingForVideo && (
+                    <div className="lesson-video-loading" role="status" aria-label="جارٍ تحميل الفيديو">
+                      <span className="lesson-video-loading__spinner" aria-hidden="true" />
+                    </div>
+                  )}
                   {!isPlaying && !waitingForVideo && (
                     <div
                       onClick={handlePlayPause}
@@ -749,23 +811,21 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                           position: "relative",
                           width: "100%",
                           height: "4px",
-                          background: "rgba(255, 255, 255, 0.28)",
+                          background: "rgb(95, 80, 70)",
                           borderRadius: "2px",
                           overflow: "hidden",
                         }}
                       >
-                        {/* Unlocked / Watched Progress Bar (Translucent Emerald) */}
-                        <div
-                          style={{
-                            position: "absolute",
-                            left: 0,
-                            top: 0,
-                            height: "100%",
-                            width: `${duration > 0 ? Math.min(100, Math.max(0, (maxWatchedTime / duration) * 100)) : 0}%`,
-                            background: "rgba(16, 185, 129, 0.42)",
-                            borderRadius: "2px",
-                          }}
-                        />
+                        {/* Actual downloaded ranges, behind the played portion. */}
+                        {duration > 0 && bufferedRanges.map((range, index) => {
+                          const start = Math.max(0, Math.min(duration, range.start));
+                          const end = Math.max(start, Math.min(duration, range.end));
+                          return <div key={index} aria-hidden="true" className="lesson-video-buffered-range" style={{
+                            position: 'absolute', left: `${start / duration * 100}%`, top: 0,
+                            width: `${(end - start) / duration * 100}%`, height: '100%',
+                            background: 'rgb(163, 153, 146)', borderRadius: 2,
+                          }} />;
+                        })}
                         {/* Played Progress (Green — site accent) */}
                         <div
                           style={{
@@ -1182,7 +1242,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                 boxShadow: "var(--card-shadow, 0 1px 3px rgba(0,0,0,0.05))",
               }}
             >
-              {/* Header: Title on Right, Share Button on Left */}
+              {/* Full lesson title */}
               <div
                 className="lesson-title-row"
                 style={{
@@ -1207,32 +1267,6 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                   </h1>
                 </div>
 
-                {/* Share Button (Website Brand Colors: Emerald Tint) */}
-                <button
-                  type="button"
-                  onClick={handleShare}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    background: "var(--bg-accent, #ecfdf5)",
-                    border: "1px solid var(--border-accent, #a7f3d0)",
-                    borderRadius: "12px",
-                    padding: "8px 18px",
-                    fontSize: "14px",
-                    fontWeight: 800,
-                    color: "var(--success-text)",
-                    cursor: "pointer",
-                    whiteSpace: "nowrap",
-                    transition: "all 0.15s ease",
-                    flexShrink: 0,
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "#d1fae5")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg-accent, #ecfdf5)")}
-                >
-                  <Share2 size={16} />
-                  <span>مشاركة</span>
-                </button>
               </div>
 
               {/* Only server-provided metadata; no invented views/dates. */}
@@ -1342,7 +1376,9 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
               )}
             </div>
 
-            <LessonDiscussion lessonId={lesson.id} currentUser={currentUser} />
+            <div ref={discussionRef} tabIndex={-1} style={{ scrollMarginTop: 100 }}>
+              <LessonDiscussion lessonId={lesson.id} currentUser={currentUser} onSummary={setDiscussionSummary} />
+            </div>
           </div>
 
           {/* =========================================================================

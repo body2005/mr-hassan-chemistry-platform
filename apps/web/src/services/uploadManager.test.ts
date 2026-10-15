@@ -106,7 +106,7 @@ it('prepares an existing stored video without a file transfer and completes from
   expect(calls[1].url).toContain('/video-uploads/prepared');
 });
 
-it('shows complete byte transfer separately from processing, then completes when the worker is ready', async () => {
+it('preserves unified progress across processing and completes only when the worker is ready', async () => {
   localStorage.setItem('lms_global_upload_tasks_v3', JSON.stringify([stored('teacher-a')]));
   let statusReads = 0; let finish: (response: Response) => void = () => {};
   vi.stubGlobal('fetch', vi.fn(async (input: string) => {
@@ -118,7 +118,9 @@ it('shows complete byte transfer separately from processing, then completes when
   const { UploadManager } = await import('./uploadManager'); const manager = new UploadManager();
   await manager.reconcileVideos();
   await vi.waitFor(() => expect(statusReads).toBe(3));
-  expect(manager.getTasks()[0]).toMatchObject({ status: 'processing', progress: 0, uploadPercent: 100 });
+  expect(manager.getTasks()[0]).toMatchObject({ status: 'processing', progress: 98, uploadPercent: 100 });
+  expect(manager.getTasks()[0].progress).toBeLessThan(100);
   finish(response('ready'));
   await vi.waitFor(() => expect(manager.getTasks()[0].status).toBe('completed'));
+  expect(manager.getTasks()[0].progress).toBe(100);
 });

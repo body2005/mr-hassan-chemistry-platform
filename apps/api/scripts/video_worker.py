@@ -4,7 +4,7 @@ Session advisory locks serialize each job across workers without holding a
 database transaction open during encoding. Unique attempt prefixes avoid mixing
 partial generations. A crash releases the lock, allowing another worker to retry.
 """
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import hashlib
 import mimetypes
@@ -12,24 +12,26 @@ import shutil
 import tempfile
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from botocore.exceptions import ClientError
 from sqlalchemy import select, text
 
 from app.core.database import SessionLocal, engine
+from app.core.config import get_settings
 from app.core.storage import get_storage_provider
 from app.models.course import Lesson
 from app.models.video_upload import VideoUpload
 from app.services.storage_cleanup import enqueue_cleanup
 from app.services.video_processing import InvalidVideo, encode
-from app.services.video_uploads import enqueue_source_cleanup
+from app.services.video_uploads import enqueue_source_cleanup, RETRYABLE_PROCESSING_ERRORS
+from app.services.video_worker_status import WorkerHeartbeat
 
 logger = logging.getLogger("video-worker")
 
 
-def process(identity):
+def process(identity, heartbeat=None):
     storage = get_storage_provider()
     with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as guard:
         key = int.from_bytes(identity.bytes[:8], "big", signed=True)
@@ -40,7 +42,7 @@ def process(identity):
                 job = db.get(VideoUpload, identity)
                 if job is None:
                     return
-                if job.lesson_id is None or (job.status in {"creating", "uploading", "completing"} and job.expires_at <= datetime.now(timezone.utc)):
+                if job.lesson_id is None or (job.status in {"creating", "uploading", "completing", 'failed'} and job.expires_at <= datetime.now(timezone.utc)):
                     allocations = [job.multipart_id] if job.multipart_id else []
                     if job.status == "creating":
                         for page in storage._get_client().get_paginator("list_multipart_uploads").paginate(Bucket=storage.bucket_name, Prefix=job.object_key):
@@ -59,21 +61,29 @@ def process(identity):
                     return
                 if job.status not in {"queued", "processing"}:
                     return
+                retry_after = job.retry_after.replace(tzinfo=timezone.utc) if job.retry_after and job.retry_after.tzinfo is None else job.retry_after
+                if job.status == 'queued' and retry_after and retry_after > datetime.now(timezone.utc):
+                    return
                 if job.attempts >= 3:
                     job.status, job.error_code = "failed", "VIDEO_WORKER_RETRY_EXHAUSTED"
-                    enqueue_source_cleanup(db, job)
+                    # Keep completed source until the existing 48h expiry so
+                    # an explicit retry need not upload the same bytes again.
                     for name in job.outputs:
                         enqueue_cleanup(db, name)
                     db.commit()
                     return
-                job.status, job.attempts = "processing", job.attempts + 1
-                job.processing_percent, job.processing_stage = 0, "downloading"
+                job.status, job.attempts, job.retry_after = "processing", job.attempts + 1, None
+                # Recovery retains the observed high-water mark. A retry must
+                # finish the whole new generation before it can become ready.
+                job.processing_percent, job.processing_stage = min(99, job.processing_percent or 0), "downloading"
                 # Clean previous interrupted attempt through the durable outbox.
                 for name in job.outputs:
                     enqueue_cleanup(db, name)
                 job.outputs = []
                 db.commit()
                 logger.info("video_id=%s state=processing attempt=%s", job.id, job.attempts)
+                if heartbeat:
+                    heartbeat.update('processing', identity, job.processing_stage, job.processing_percent)
                 try:
                     # This UUID's previous scratch belongs only to interrupted
                     # attempts. The advisory lock proves no other worker uses it.
@@ -89,10 +99,13 @@ def process(identity):
                         source = root / "source"
                         last_progress = [0.0]
                         def report(percent, stage):
+                            if heartbeat:
+                                heartbeat.update('processing', identity, stage, percent)
                             now = time.monotonic()
                             if stage == job.processing_stage and now - last_progress[0] < 10:
                                 return
-                            job.processing_percent, job.processing_stage = percent, stage
+                            job.processing_percent = max(job.processing_percent or 0, min(99, percent))
+                            job.processing_stage = stage
                             db.commit()
                             last_progress[0] = now
                         total = 0
@@ -107,21 +120,53 @@ def process(identity):
                                 report(min(4, int(5 * total / job.size_bytes)), "downloading")
                         if total != job.size_bytes:
                             raise InvalidVideo("VIDEO_SIZE_MISMATCH")
-                        info, files = encode(source, root / "hls", progress=report)
+                        if job.sha256 and job.sha256 != digest.hexdigest():
+                            raise InvalidVideo('VIDEO_SOURCE_CHANGED')
+                        job.sha256 = digest.hexdigest()
+                        db.commit()
+                        lesson_snapshot = db.get(Lesson, job.lesson_id)
+                        use_drm = bool(get_settings().video_drm_packaging_enabled or
+                            (lesson_snapshot and lesson_snapshot.video_drm_protected) or (job.drm or {}).get('requested'))
+                        replaces = (job.drm or {}).get('replaces')
+                        def encoding_progress(percent, stage):
+                            report(min(75, int(percent * 75 / 85)) if use_drm else percent, stage)
+                        info, files = encode(source, root / 'hls', progress=encoding_progress)
+                        output_root, drm_metadata = root / 'hls', None
+                        if use_drm:
+                            from app.services.video_drm_packaging import package
+                            output_root = root / 'encrypted'
+                            files, drm_metadata = package(root / 'hls', output_root, info, progress=report)
                         prefix = f"video-assets/{identity}/{uuid.uuid4().hex}"
                         # Save cleanup intents BEFORE each object write so a crash
                         # between remote write and DB acknowledgement isn't an orphan.
                         job.outputs = [f"{prefix}/{name}" for name in files]
                         db.commit()
                         def save_output(name):
-                            path = root / "hls" / name
-                            media = "application/vnd.apple.mpegurl" if name.endswith(".m3u8") else "video/mp2t"
+                            path = output_root / name
+                            media = ('application/vnd.apple.mpegurl' if name.endswith('.m3u8') else
+                                'audio/mp4' if name.startswith('audio/') else 'video/mp4' if use_drm else 'video/mp2t')
                             storage.save_file(str(path), f"{prefix}/{name}", media)
+                            size = path.stat().st_size
+                            if storage.get_size(f'{prefix}/{name}') != size:
+                                raise RuntimeError('VIDEO_REMOTE_OUTPUT_INCOMPLETE')
+                            return size
                         report(85, "uploading")
                         # Bounded network concurrency; only this thread touches DB.
+                        total_output_bytes = sum((output_root / name).stat().st_size for name in files)
+                        saved_bytes = 0
                         with ThreadPoolExecutor(max_workers=4) as uploads:
-                            for completed, _ in enumerate(uploads.map(save_output, files), 1):
-                                report(85 + int(14 * completed / len(files)), "uploading")
+                            # Bound submitted work too; do not queue thousands of
+                            # futures or allow upload threads to touch the DB.
+                            remaining = iter(files)
+                            pending = {uploads.submit(save_output, name) for name in [next(remaining, None) for _ in range(4)] if name is not None}
+                            while pending:
+                                completed = next(as_completed(pending))
+                                pending.remove(completed)
+                                saved_bytes += completed.result()
+                                report(85 + int(14 * saved_bytes / total_output_bytes), "uploading")
+                                name = next(remaining, None)
+                                if name is not None:
+                                    pending.add(uploads.submit(save_output, name))
                         original = f"video-originals/{identity}/{prefix.rsplit('/', 1)[-1]}/source.{job.filename.rsplit('.', 1)[-1].lower()}"
                         # Record a generation-unique original before remote copy.
                         # Previous-attempt cleanup must not delete a new attempt.
@@ -129,10 +174,16 @@ def process(identity):
                         db.commit()
                         storage._get_client().copy_object(Bucket=storage.bucket_name, Key=original,
                             CopySource={"Bucket": storage.bucket_name, "Key": job.object_key})
+                        if storage.get_size(original) != job.size_bytes:
+                            raise RuntimeError('VIDEO_REMOTE_ORIGINAL_INCOMPLETE')
                         quarantine = job.object_key
-                        lesson = db.scalar(select(Lesson).where(Lesson.id == job.lesson_id).with_for_update())
+                        lesson = db.scalar(select(Lesson).where(Lesson.id == job.lesson_id).with_for_update().execution_options(populate_existing=True))
                         if lesson is None:
                             raise InvalidVideo("VIDEO_LESSON_REMOVED")
+                        if replaces and lesson.video_asset_key != replaces:
+                            raise InvalidVideo('VIDEO_DRM_SOURCE_CHANGED')
+                        if lesson.video_drm_protected and not drm_metadata:
+                            raise InvalidVideo('VIDEO_DRM_DOWNGRADE_FORBIDDEN')
                         old_key = lesson.video_asset_key
                         for previous in db.scalars(select(VideoUpload).where(VideoUpload.lesson_id == lesson.id, VideoUpload.id != job.id, VideoUpload.status == "ready")):
                             for name in previous.outputs:
@@ -143,6 +194,8 @@ def process(identity):
                         job.sha256 = digest.hexdigest()
                         job.manifest_key = f"{prefix}/master.m3u8"
                         lesson.video_asset_key = f"s3://{storage.bucket_name}/{job.manifest_key}"
+                        job.drm = drm_metadata
+                        lesson.video_drm_protected = bool(lesson.video_drm_protected or drm_metadata)
                         job.duration_seconds = lesson.video_duration_seconds = int(info["duration"])
                         job.status, job.error_code = "ready", None
                         job.processing_percent, job.processing_stage = 100, "ready"
@@ -155,13 +208,17 @@ def process(identity):
                     # Infrastructure errors retry, invalid media fails explicitly.
                     job.status = "failed" if isinstance(exc, InvalidVideo) else "queued"
                     job.error_code = str(exc) if isinstance(exc, InvalidVideo) else "VIDEO_PROCESSING_TEMPORARILY_UNAVAILABLE"
-                    if job.status == "failed":
+                    job.retry_after = (datetime.now(timezone.utc) + timedelta(seconds=min(300, 30 * 2 ** max(0, job.attempts - 1)))) if job.status == 'queued' else None
+                    if job.status == "failed" and job.error_code not in RETRYABLE_PROCESSING_ERRORS:
                         enqueue_source_cleanup(db, job)
                     for name in job.outputs:
                         enqueue_cleanup(db, name)
                     job.outputs = []
                     db.commit()
                     logger.warning("video_id=%s state=%s error_code=%s", identity, job.status, job.error_code)
+                    if heartbeat and not isinstance(exc, InvalidVideo):
+                        heartbeat.update('waiting_dependencies', identity, job.error_code)
+                        return 'waiting_dependencies'
         finally:
             guard.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
 
@@ -172,18 +229,29 @@ def main():
     if not logger.handlers:
         logger.addHandler(logging.StreamHandler())
     Path("/work").mkdir(exist_ok=True)
-    while True:
-        try:
-            with SessionLocal() as db:
-                jobs = db.scalars(select(VideoUpload.id).where(
-                    (VideoUpload.status.in_(["queued", "processing"])) |
-                    ((VideoUpload.status.in_(["creating", "uploading", "completing"])) & (VideoUpload.expires_at < datetime.now(timezone.utc))) |
-                    ((VideoUpload.lesson_id.is_(None)) & (~VideoUpload.status.in_(["expired", "superseded", "cancelled"])))).limit(20)).all()
-            for identity in jobs:
-                process(identity)
-        except Exception:
-            logger.warning("Video worker dependency temporarily unavailable")
-        time.sleep(5)
+    heartbeat = WorkerHeartbeat()
+    heartbeat.start()
+    try:
+        while True:
+            try:
+                with SessionLocal() as db:
+                    jobs = db.scalars(select(VideoUpload.id).where(
+                        ((VideoUpload.status == 'queued') & ((VideoUpload.retry_after.is_(None)) | (VideoUpload.retry_after <= datetime.now(timezone.utc)))) |
+                        (VideoUpload.status == 'processing') |
+                        ((VideoUpload.status.in_(["creating", "uploading", "completing", 'failed'])) & (VideoUpload.expires_at < datetime.now(timezone.utc))) |
+                        ((VideoUpload.lesson_id.is_(None)) & (~VideoUpload.status.in_(["expired", "superseded", "cancelled"])))).order_by(VideoUpload.created_at).limit(20)).all()
+                if not jobs:
+                    heartbeat.update('idle')
+                for identity in jobs:
+                    outcome = process(identity, heartbeat)
+                    if outcome != 'waiting_dependencies':
+                        heartbeat.update('idle')
+            except Exception:
+                heartbeat.update('waiting_dependencies')
+                logger.warning("Video worker dependency temporarily unavailable")
+            time.sleep(5)
+    finally:
+        heartbeat.stop()
 
 
 if __name__ == "__main__":

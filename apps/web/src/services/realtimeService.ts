@@ -42,6 +42,7 @@ class RealTimeService {
       this.eventSource = es;
 
       es.onopen = () => {
+        if (!this.active || generation !== this.connectionGeneration || this.eventSource !== es) return;
         this.isConnecting = false;
         this.reconnectAttempts = 0;
         console.debug("[RealTime] Connected to event stream");
@@ -79,15 +80,18 @@ class RealTimeService {
 
       for (const eventName of registeredEvents) {
         es.addEventListener(eventName, (event: MessageEvent) => {
+          if (!this.active || generation !== this.connectionGeneration || this.eventSource !== es) return;
           this.handleIncomingEvent(eventName, event.data);
         });
       }
 
       es.onmessage = (event: MessageEvent) => {
+        if (!this.active || generation !== this.connectionGeneration || this.eventSource !== es) return;
         this.handleIncomingEvent("message", event.data);
       };
 
       es.onerror = (err) => {
+        if (!this.active || generation !== this.connectionGeneration || this.eventSource !== es) return;
         console.debug("[RealTime] SSE stream error or closed, scheduling reconnect", err);
         this.cleanupEventSource();
         this.scheduleReconnect(30000);
@@ -180,6 +184,10 @@ class RealTimeService {
         break;
       case "notification_created":
         invalidateApiCache("/notifications");
+        if (parsed && typeof parsed === 'object' && 'lesson_id' in parsed) {
+          invalidateApiCache('/courses');
+          window.dispatchEvent(new CustomEvent('lms_courses_updated'));
+        }
         window.dispatchEvent(new CustomEvent("lms_notifications_updated", { detail: parsed }));
         break;
 

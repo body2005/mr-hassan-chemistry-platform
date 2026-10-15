@@ -19,7 +19,8 @@ def setup(db):
     module = CourseModule(course_id=course.id, title='Batch module', position=1)
     db.add(module)
     db.flush()
-    lessons = [Lesson(module_id=module.id, title=f'Batch lesson {n}', kind=LessonKind.VIDEO, position=n) for n in (1, 2)]
+    lessons = [Lesson(module_id=module.id, title=f'Batch lesson {n}', kind=LessonKind.VIDEO, position=n,
+                      video_asset_key=f'videos/synthetic-batch-{n}.mp4') for n in (1, 2)]
     db.add_all(lessons)
     db.add(Enrollment(course_id=course.id, student_id=student.id))
     db.commit()

@@ -97,7 +97,7 @@ def test_paid_progress_is_allowed_after_entitlement_and_denied_atomically_before
     module = CourseModule(course_id=course.id, title='Unit', position=1)
     db.add(module); db.flush()
     lessons = [Lesson(module_id=module.id, title=title, kind=LessonKind.VIDEO,
-                position=index, price_egp=price) for index, (title, price) in enumerate([('Free', 0), ('Paid', 50)], 1)]
+                position=index, price_egp=price, video_asset_key=f'videos/synthetic-{index}.mp4') for index, (title, price) in enumerate([('Free', 0), ('Paid', 50)], 1)]
     db.add_all(lessons); db.commit()
     def events():
         return {'events': [{'lesson_id': str(row.id), 'client_event_id': uuid.uuid4().hex,

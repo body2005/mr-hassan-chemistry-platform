@@ -523,8 +523,8 @@ export const SubmissionsView: React.FC = () => {
               color: "var(--text-muted)",
             }}
           >
-            <span>{groupPendingCount ? `إجمالي مؤقت · ${groupPendingCount} بانتظار التصحيح` : "متوسط نسب الطلاب"}</span>
-            <span>الاختبارات والواجبات بوزن متساوٍ</span>
+            <span>{groupPendingCount ? `إجمالي مؤقت · ${groupPendingCount} بانتظار الاعتماد` : "إجمالي نقاط التقييمات المنشورة"}</span>
+            <span>النقاط المكتسبة ÷ مجموع الدرجات القصوى × 100</span>
           </div>
         </div>
 

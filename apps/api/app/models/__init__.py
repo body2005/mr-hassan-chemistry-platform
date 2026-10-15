@@ -94,4 +94,6 @@ __all__ = [
     "StudentMastery",
     "ReportJob",
     "IdempotencyKey",
+    "VideoWorkerHeartbeat",
 ]
+from app.models.video_worker_heartbeat import VideoWorkerHeartbeat

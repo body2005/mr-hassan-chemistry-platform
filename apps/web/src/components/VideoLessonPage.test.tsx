@@ -6,7 +6,7 @@ import type { Course, CurrentUser, StudentProfile, TeacherProfile, VideoLesson }
 
 const mocks = vi.hoisted(() => ({ request: vi.fn(), toast: vi.fn(), attach: vi.fn(), detach: vi.fn() }));
 vi.mock('../services/apiClient', () => ({ apiRequest: mocks.request, apiUrl: (url: string) => url,
-  getApiAuthGeneration: () => 0, getApiAuthScope: () => 'teacher' }));
+  getApiAuthGeneration: () => 0, getApiAuthScope: () => 'teacher', getApiSessionRevision: () => '' }));
 vi.mock('./ToastProvider', () => ({ useToast: () => mocks.toast, ToastRegion: () => null }));
 vi.mock('../services/videoTelemetry', () => ({
   VideoTelemetryTracker: class { attach = mocks.attach; detach = mocks.detach; },
@@ -308,13 +308,18 @@ it('keeps the discussion draft and reports failure when the server rejects a com
 it('uses the persisted comment UUID for replies, never an invented local ID', async () => {
   const original = mocks.request.getMockImplementation()!;
   const id = '3b111111-2222-4333-8444-555555555555';
+  const saved: { id: string; author: string; is_teacher: boolean; is_mine: boolean; body: string; created_at: string; replies: unknown[] }[] = [];
   mocks.request.mockImplementation((path: string, options?: { method?: string; body?: string }) => {
     if (path.endsWith('/comments') && options?.method === 'POST') {
       const payload = JSON.parse(options.body!);
-      return Promise.resolve({ id: payload.parent_id ? '6b111111-2222-4333-8444-555555555555' : id,
+      const comment = { id: payload.parent_id ? '6b111111-2222-4333-8444-555555555555' : id,
         author: 'Actual server author', is_teacher: true, is_mine: true, body: payload.body,
-        created_at: '2026-10-08T04:00:00Z', replies: [] });
+        created_at: '2026-10-08T04:00:00Z', replies: [] };
+      if (payload.parent_id) saved.find(parent => parent.id === payload.parent_id)!.replies.push(comment);
+      else saved.push(comment);
+      return Promise.resolve(comment);
     }
+    if (path.endsWith('/comments')) return Promise.resolve({ comments: saved });
     return original(path, options);
   });
   await render('first');

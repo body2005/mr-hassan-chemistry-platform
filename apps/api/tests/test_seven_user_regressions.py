@@ -103,12 +103,13 @@ def test_pending_essay_survives_bank_type_change_and_can_be_graded(db):
     with login(TestClient(app), teacher, inst.slug) as client:
         row = next(row for row in client.get('/api/v1/users').json() if row['id'] == str(student.id))
         assert row['pending_quiz_attempts'] == 1
-        assert row['average_quiz_score'] is None
+        assert row['average_quiz_score'] == 0
+        assert row['approved_overall_grade'] == 0
         grade = client.post(f'/api/v1/quiz-attempts/{attempt.id}/answers/{question.id}/grade',
             headers=csrf_headers(client), json={'awarded_points': 7})
         assert grade.status_code == 200, grade.text
         row = next(row for row in client.get('/api/v1/users').json() if row['id'] == str(student.id))
-        assert row['pending_quiz_attempts'] == 0
+        assert row['pending_quiz_attempts'] == 1  # Grading is provisional until explicit approval.
         assert row['average_quiz_score'] == 70
 
 

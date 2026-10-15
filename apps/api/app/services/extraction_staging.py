@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.course import Course, CourseModule, Lesson
-from app.models.user import User
+from app.models.user import User, UserRole
 
 
 def resolve_course_uuid(db: Session, user: User, course_id: str | None) -> uuid.UUID:
@@ -29,8 +29,10 @@ def resolve_course_uuid(db: Session, user: User, course_id: str | None) -> uuid.
     )
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
-    if user.role != "platform_admin" and hasattr(user, "role") and str(user.role) not in {"teacher", "admin", "platform_admin"}:
+    if user.role not in {UserRole.TEACHER, UserRole.INSTITUTION_ADMIN, UserRole.PLATFORM_ADMIN}:
         raise HTTPException(status_code=403, detail="Not allowed")
+    if user.role == UserRole.TEACHER and course.teacher_id != user.id:
+        raise HTTPException(status_code=404, detail="Course not found")
     return course_uuid
 
 

@@ -232,13 +232,22 @@ export async function exportToExcel(payload: ExportDataPayload, filename = "lms_
  */
 export function exportToCsv(payload: ExportDataPayload, filename = "lms_data.csv") {
   const csvRows: string[] = [];
+  const cell = (value: unknown) => {
+    let text = String(value ?? '');
+    // Quoting CSV fields does not stop spreadsheet formula execution.
+    // Preserve genuine numeric negatives; neutralize user-supplied strings.
+    let first = 0;
+    while (first < text.length && (text.charCodeAt(first) <= 31 || /\s/.test(text[first]))) first++;
+    if (typeof value !== 'number' && /^[=+\-@]/.test(text.slice(first))) text = `'${text}`;
+    return `"${text.replace(/"/g, '""')}"`;
+  };
 
   // Header line
-  csvRows.push(payload.headers.map((h) => `"${String(h).replace(/"/g, '""')}"`).join(","));
+  csvRows.push(payload.headers.map(cell).join(","));
 
   // Data rows
   payload.rows.forEach((row) => {
-    csvRows.push(row.map((val) => `"${String(val ?? "").replace(/"/g, '""')}"`).join(","));
+    csvRows.push(row.map(cell).join(","));
   });
 
   const csvContent = "\uFEFF" + csvRows.join("\r\n");

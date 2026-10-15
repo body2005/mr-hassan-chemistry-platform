@@ -6,6 +6,14 @@ let sessionKnownInvalid = false;
 type RefreshResult = 'renewed' | 'invalid' | 'transient' | 'cancelled';
 let refreshInFlight: Promise<RefreshResult> | null = null;
 let browserSessionActive = false;
+const sessionRevisionKey = 'lms_session_revision';
+let sessionRevision = '';
+
+/** Non-secret change marker: signed media tokens are bound to the live cookie. */
+export function getApiSessionRevision(): string {
+  try { return localStorage.getItem(sessionRevisionKey) || sessionRevision; }
+  catch { return sessionRevision; }
+}
 
 /**
  * True once a request proved the session is gone (401 that did not survive a
@@ -331,6 +339,9 @@ async function refreshSession(): Promise<RefreshResult> {
       browserSessionActive = true;
       sessionInvalidationDispatched = false;
       sessionKnownInvalid = false;
+      sessionRevision = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+      try { localStorage.setItem(sessionRevisionKey, sessionRevision); } catch { /* Same-tab event still works. */ }
+      window.dispatchEvent(new Event('lms_session_refreshed'));
       return 'renewed';
     } catch {
       if (refreshEpoch !== authScopeEpoch) return 'cancelled';

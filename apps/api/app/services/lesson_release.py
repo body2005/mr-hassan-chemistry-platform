@@ -9,11 +9,15 @@ def available_lesson_ids(db, lessons, courses):
     if not lessons:
         return set()
     ids = [lesson.id for lesson in lessons]
-    latest = {}
+    latest, attached_ready = {}, {}
+    attached_keys = {lesson.id: lesson.video_asset_key or '' for lesson in lessons}
     for row in db.scalars(select(VideoUpload).where(VideoUpload.lesson_id.in_(ids)).order_by(VideoUpload.created_at.desc(), VideoUpload.id.desc())):
         latest.setdefault(row.lesson_id, row)
+        if row.status == 'ready' and row.manifest_key and attached_keys[row.lesson_id].endswith('/' + row.manifest_key):
+            attached_ready.setdefault(row.lesson_id, row)
     materials = dict(db.execute(select(LessonAsset.lesson_id, func.count(LessonAsset.id)).where(
         LessonAsset.lesson_id.in_(ids), LessonAsset.object_key.is_not(None),
+        LessonAsset.object_key != '', LessonAsset.size_bytes > 0,
         LessonAsset.asset_kind.in_(["pdf", "document", "attachment"])).group_by(LessonAsset.lesson_id)).all())
     now = datetime.now(timezone.utc)
     result = set()
@@ -28,9 +32,16 @@ def available_lesson_ids(db, lessons, courses):
         if end and (end.replace(tzinfo=timezone.utc) if end.tzinfo is None else end) <= now:
             continue
         job = latest.get(lesson.id)
+        key = lesson.video_asset_key or ""
+        if job and job.status != 'ready' and (job.drm or {}).get('requested') and (job.drm or {}).get('replaces') == key:
+            # An encrypted migration is a replacement, not an initial upload.
+            # Keep serving the currently attached, authorized generation while
+            # the replacement is queued/processing/failed/cancelled.
+            job = attached_ready.get(lesson.id)
+            if job is None and key.endswith('.m3u8'):
+                continue
         if job and job.status != "ready":
             continue
-        key = lesson.video_asset_key or ""
         if lesson.kind == LessonKind.VIDEO or key:
             if not key or key.startswith(("http://", "https://")):
                 continue

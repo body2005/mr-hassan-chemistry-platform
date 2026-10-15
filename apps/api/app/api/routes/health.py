@@ -38,6 +38,55 @@ def metrics(_monitor=Depends(require_roles(UserRole.PLATFORM_ADMIN))) -> Respons
     return Response(content=render_metrics(), media_type="text/plain; version=0.0.4")
 
 
+@router.get('/operations/video', include_in_schema=False)
+def video_operations(_monitor=Depends(require_roles(UserRole.PLATFORM_ADMIN))):
+    from app.services.video_worker_status import worker_status
+    from app.models.video_upload import VideoUpload
+    from sqlalchemy import func, select
+    from datetime import datetime, timezone
+    try:
+        heartbeat = worker_status()
+    except Exception:
+        heartbeat = {'status': 'monitor_unavailable', 'workers': []}
+    with SessionLocal() as db:
+        rows = db.execute(select(VideoUpload.status, func.count(), func.min(VideoUpload.created_at))
+            .where(VideoUpload.status.in_(['queued', 'processing', 'failed', 'completing']))
+            .group_by(VideoUpload.status)).all()
+    now = datetime.now(timezone.utc)
+    return {**heartbeat, 'queue': [{'state': state, 'count': count,
+        'oldest_age_seconds': max(0, int((now - (oldest.replace(tzinfo=timezone.utc) if oldest.tzinfo is None else oldest)).total_seconds()))}
+        for state, count, oldest in rows]}
+
+
+@router.get('/operations/backlogs', include_in_schema=False)
+def operational_backlogs(_monitor=Depends(require_roles(UserRole.PLATFORM_ADMIN))):
+    from sqlalchemy import func, select
+    from app.models.mail_outbox import ResetMailOutbox, ResetRequestOutbox
+    from app.models.storage_cleanup import StorageCleanup
+    from app.models.platform import Notification, DeliveryStatus
+    from app.models.extended import ReportJob
+    import shutil
+    import os
+    with SessionLocal() as db:
+        def count(model, *conditions):
+            return db.scalar(select(func.count()).select_from(model).where(*conditions)) or 0
+        result = {
+            'reset_requests_pending': count(ResetRequestOutbox, ResetRequestOutbox.completed_at.is_(None)),
+            'reset_mail_pending': count(ResetMailOutbox, ResetMailOutbox.completed_at.is_(None)),
+            'reset_mail_retrying': count(ResetMailOutbox, ResetMailOutbox.completed_at.is_(None), ResetMailOutbox.attempts > 0),
+            'cleanup_pending': count(StorageCleanup),
+            'cleanup_retrying': count(StorageCleanup, StorageCleanup.attempts > 0),
+            'notifications_failed': count(Notification, Notification.delivery_status == DeliveryStatus.FAILED),
+            'reports_failed': count(ReportJob, ReportJob.status == 'failed'),
+            'mail_enabled': get_settings().email_enabled,
+        }
+    try:
+        result['staging_free_bytes'] = shutil.disk_usage(os.getenv('STORAGE_DIR', 'storage')).free
+    except OSError:
+        result['staging_free_bytes'] = None
+    return result
+
+
 def _probe_readiness(db: Session) -> ReadinessResponse:
     import os
     settings = get_settings()

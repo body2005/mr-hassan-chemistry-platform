@@ -92,6 +92,8 @@ class ManagedUserResponse(UserResponse):
     quiz_success_rate: float | None = None
     homework_success_rate: float | None = None
     total_overall_grade: float | None = None
+    approved_overall_grade: float | None = None
+    grade_basis: Literal['provisional', 'approved'] = 'provisional'
     group_overall_grade: float | None = None
     earned_points: float = 0
     possible_points: float = 0
@@ -310,6 +312,7 @@ class LessonResponse(BaseModel):
     has_video: bool = False
     # Public availability metadata; never grants playback access.
     has_uploaded_video: bool = False
+    discussion_unread_count: int = 0
     video_upload: VideoProcessingSummary | None = None
     video_url: str | None = None
     video_duration_seconds: int | None
@@ -345,6 +348,19 @@ class CourseResponse(BaseModel):
     price_egp: float = 0
     grade_level: str | None = None
     modules: list[ModuleResponse] = []
+
+
+class PublicCourseResponse(BaseModel):
+    """Explicit sales-catalog allowlist; never hydrate private lesson fields."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    code: str
+    title: str
+    description: str | None
+    status: CourseStatus
+    price_egp: float = 0
+    grade_level: str | None = None
 
 
 class EnrollmentResponse(BaseModel):
@@ -800,6 +816,10 @@ class GradeSubmissionRequest(BaseModel):
 class GradeQuizAnswerRequest(BaseModel):
     awarded_points: float = Field(ge=0, le=100_000, allow_inf_nan=False)
     feedback: str | None = Field(default=None, max_length=20_000)
+
+
+class ReopenQuizResultRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=2000)
 
 
 class CertificateResponse(BaseModel):

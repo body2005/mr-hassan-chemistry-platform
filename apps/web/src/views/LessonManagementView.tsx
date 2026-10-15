@@ -111,7 +111,10 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     : "SECONDARY_3";
   const [isDeleteMode, setIsDeleteMode] = useState(false);
   const [activeLessonModal, setActiveLessonModal] = useState<VideoLesson | null>(null);
-  const closeLesson = useLessonNavigation(activeLessonModal, setActiveLessonModal);
+  const closeLesson = useLessonNavigation(activeLessonModal, setActiveLessonModal, {
+    userId: currentUser.id, courses,
+    onRestore: course => { setSelectedYear(course.academicYear || '1st_secondary'); setSelectedCourseId(course.id); },
+  });
 
 
 
@@ -159,9 +162,23 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
 
   const individualVideoInputRef = useRef<HTMLInputElement>(null);
   const targetLessonIdForVideoRef = useRef<string | null>(null);
+  const resumeVideoTaskRef = useRef<string | null>(null);
+  const videoSelectionRef = useRef(0);
 
-  function triggerAttachVideoToLesson(lessonId: string) {
+  async function triggerAttachVideoToLesson(lessonId: string) {
+    const selection = ++videoSelectionRef.current;
     targetLessonIdForVideoRef.current = lessonId;
+    resumeVideoTaskRef.current = null;
+    const task = uploadManager.getTasks().filter(item => item.type === 'lesson_video' && item.lessonId === lessonId
+      && item.ownerScope === getApiAuthScope() && item.status === 'error')
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    const lesson = activeLessons.find(item => item.id === lessonId);
+    if (task && (!lesson?.videoUpload || lesson.videoUpload.id === task.videoUploadId
+      || task.createdAt >= Date.parse(lesson.videoUpload.createdAt))) {
+      const result = await uploadManager.retryUpload(task.id);
+      if (selection !== videoSelectionRef.current || result !== 'needs_file') return;
+      resumeVideoTaskRef.current = task.id;
+    }
     individualVideoInputRef.current?.click();
   }
 
@@ -172,11 +189,12 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       const lesson = activeLessons.find((l) => l.id === lessonId);
       const lessonTitle = lesson?.title || "الدرس";
       try {
-        uploadManager.enqueueVideoUpload({ lessonId, lessonTitle, file, courseId: lesson?.courseId || activeCourse?.id });
-        notify(`جاري رفع وتحديث فيديو "${lessonTitle}" في الخلفية إلى السحابة... يمكنك الاستمرار بالعمل بحرية.`);
+        if (resumeVideoTaskRef.current) uploadManager.resumeVideo(resumeVideoTaskRef.current, file);
+        else uploadManager.enqueueVideoUpload({ lessonId, lessonTitle, file, courseId: lesson?.courseId || activeCourse?.id });
+        notify('جاري رفع الفيديو…');
       } catch (error) {
         notify(error instanceof Error ? error.message : 'تعذر بدء رفع الفيديو', 'danger');
-      } finally { e.target.value = ""; }
+      } finally { e.target.value = ""; resumeVideoTaskRef.current = null; }
     }
   }
 
@@ -456,14 +474,15 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       }
       if (!course) throw new Error("تعذر إنشاء المقرر");
       const content = await courseService.getCourseContent(course.id);
-      let module: (typeof content.modules)[number] | undefined;
+      const modules = content.modules || [];
+      let module: (typeof modules)[number] | undefined;
       if (selectedModuleId === "new" && newModuleTitle.trim()) {
         module = await courseService.addModule(course.id, {
           title: newModuleTitle.trim(),
-          position: (content.modules?.length || 0) + 1,
+          position: modules.length + 1,
         });
       } else if (selectedModuleId) {
-        const found = content.modules.find((m) => m.id === selectedModuleId);
+        const found = modules.find((m) => m.id === selectedModuleId);
         if (!found || found.is_unassigned) throw new Error('الوحدة المحددة غير متاحة في هذا المقرر.');
         module = found;
       }
@@ -482,7 +501,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         required_material_count: attachedFiles.length,
         title: savedTitle,
         kind: selectedVideoFile ? "video" : "article",
-        position: Math.max(0, ...(module?.lessons || content.modules.filter(m => m.is_unassigned).flatMap(m => m.lessons)).map(l => l.position)) + 1,
+        position: Math.max(0, ...(module?.lessons || modules.filter(m => m.is_unassigned).flatMap(m => m.lessons)).map(l => l.position)) + 1,
         content: lessonContentWithMeta || (isRevision ? "<!--is_revision:true-->" : undefined),
         price_egp: lessonPrice,
       });
@@ -1351,6 +1370,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                       {/* Center Play Button Circle */}
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
                         <div
+                          className={!hasLessonVideo ? 'lesson-upload-icon' : undefined}
                           style={{
                             width: "48px",
                             height: "48px",
@@ -1396,7 +1416,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                               borderRadius: "4px",
                             }}
                           >
-                            {videoState.phase === 'missing' ? 'مرفق ملفات' : videoState.phase === 'error' ? 'تعذر تجهيز الفيديو' : 'الرفع قيد التنفيذ'}
+                            {videoState.phase === 'missing' ? 'مرفق ملفات' : videoState.phase === 'error' ? 'تعذر رفع الفيديو' : 'جاري رفع الفيديو…'}
                           </span>
                         )}
                       </div>
@@ -1431,6 +1451,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                           </span>
 
                           <LessonVideoAction state={videoState} onWatch={() => setActiveLessonModal(lesson)}
+                            lessonId={lesson.id} discussionUnreadCount={lesson.discussionUnreadCount}
                             onUpload={() => triggerAttachVideoToLesson(lesson.id)} />
                         </div>
 

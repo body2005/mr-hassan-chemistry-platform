@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   UploadCloud,
   CheckCircle2,
@@ -11,6 +11,8 @@ import {
   FileText,
 } from "lucide-react";
 import { uploadManager, UploadTask } from "../services/uploadManager";
+import { VIDEO_UPLOAD_LABEL } from '../services/directVideoUpload';
+import { VideoUploadProgress } from './VideoUploadProgress';
 
 interface CircularProgressProps {
   progress: number;
@@ -101,6 +103,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
   // account's filenames for even one frame before the subscription effect runs.
   const tasks = allTasks.filter(task => !!currentUser?.id && task.ownerScope === currentUser.id);
   const [isExpanded, setIsExpanded] = useState(false);
+  const resumeInputs = useRef<Record<string, HTMLInputElement | null>>({});
 
   // Strictly enforce role: Upload widget is exclusively for teachers
   const role = currentUser?.role;
@@ -125,6 +128,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
     (t) => t.status === "uploading" || t.status === "queued" || t.status === "processing"
   );
   const completedTasks = tasks.filter((t) => t.status === "completed");
+  const failedTasks = tasks.filter((t) => t.status === "error");
 
   const primaryActive = activeTasks[0];
 
@@ -201,8 +205,10 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
               strokeWidth={2.5}
               progressColor="#34d399"
               trackColor="rgba(255, 255, 255, 0.25)"
-              isProcessing={primaryActive?.status === "processing"}
+              isProcessing={primaryActive?.type === 'lesson_video' || primaryActive?.status === "processing"}
             />
+          ) : failedTasks.length > 0 ? (
+            <AlertCircle size={18} style={{ color: '#f87171' }} />
           ) : (
             <CheckCircle2 size={18} style={{ color: "#34d399" }} />
           )}
@@ -210,11 +216,12 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "2px" }}>
             <span>
               {activeTasks.length > 0
-                ? primaryActive?.status === "processing"
-                  ? (primaryActive?.progress ? `تجهيز الفيديو (${primaryActive.progress}٪)` : "اكتمل نقل الملف؛ تجهيز الفيديو")
+                ? primaryActive?.type === 'lesson_video' ? VIDEO_UPLOAD_LABEL : primaryActive?.status === "processing"
+                  ? "جاري الرفع…"
                   : `جاري الرفع (${primaryActive?.progress ?? 0}%)`
-                : "الرفع"}
+                : failedTasks.length > 0 ? 'تعذر إكمال الرفع' : "الرفع"}
             </span>
+            {primaryActive?.type === 'lesson_video' && <span style={{ fontSize: 11 }}>{primaryActive.progress}٪</span>}
             {activeTasks.length > 1 && (
               <span style={{ fontSize: "10px", opacity: 0.85, fontWeight: 500 }}>
                 +{activeTasks.length - 1} ملفات أخرى بالانتظار
@@ -258,19 +265,19 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                   strokeWidth={2.5}
                   progressColor="#34d399"
                   trackColor="rgba(255, 255, 255, 0.25)"
-                  isProcessing={primaryActive?.status === "processing"}
+                  isProcessing={primaryActive?.type === 'lesson_video' || primaryActive?.status === "processing"}
                 />
               ) : (
                 <UploadCloud size={18} style={{ color: "#34d399" }} />
               )}
               <div>
                 <strong style={{ fontSize: "13px", display: "block" }}>
-                  الرفع
+                  {primaryActive?.type === 'lesson_video' ? VIDEO_UPLOAD_LABEL : 'الرفع'}
                 </strong>
                 <span style={{ fontSize: "10.5px", opacity: 0.85 }}>
                   {activeTasks.length > 0
-                    ? `${activeTasks.length} قيد المعالجة (${primaryActive?.progress ?? 0}%)`
-                    : "جميع العمليات مكتملة"}
+                    ? primaryActive?.type === 'lesson_video' ? `${primaryActive.progress}٪` : `${activeTasks.length} جاري الرفع (${primaryActive?.progress ?? 0}%)`
+                    : failedTasks.length > 0 ? 'توجد ملفات تعذر رفعها؛ أعد المحاولة' : "جميع العمليات مكتملة"}
                 </span>
               </div>
             </div>
@@ -313,13 +320,14 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                   لا توجد عمليات رفع نشطة حالياً
                 </div>
                 <div style={{ fontSize: "11px", marginTop: "4px", lineHeight: 1.5 }}>
-                  عند رفع أي درس، فيديو أو مذكرة، ستظهر حالة ونسبة الرفع والمعالجة هنا لحظياً.
+                  عند رفع فيديو أو مذكرة، ستظهر حالة ونسبة الرفع هنا.
                 </div>
               </div>
             ) : (
               tasks.map((task) => {
               const isVideo = task.type === "lesson_video";
               const isUploading = task.status === "uploading";
+              const isQueued = task.status === "queued";
               const isProcessing = task.status === "processing";
               const isCompleted = task.status === "completed";
               const isError = task.status === "error";
@@ -377,7 +385,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
 
                     {/* Actions */}
                     <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                      {(isUploading || isProcessing) && (
+                      {(isUploading || isProcessing || isQueued) && (
                         <button
                           type="button"
                           onClick={() => uploadManager.cancelUpload(task.id)}
@@ -400,13 +408,17 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                       {isError && (
                         <button
                           type="button"
-                          onClick={() => uploadManager.retryUpload(task.id)}
+                          onClick={async () => {
+                            if (await uploadManager.retryUpload(task.id) === 'needs_file') resumeInputs.current[task.id]?.click();
+                          }}
                           style={{
                             background: "transparent",
                             border: "none",
                             color: "#0284c7",
                             cursor: "pointer",
                             padding: "4px",
+                            minWidth: 44,
+                            minHeight: 44,
                           }}
                           title="إعادة المحاولة"
                         >
@@ -433,8 +445,8 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                   </div>
 
                   {/* Progress Bar */}
-                  {(isUploading || isProcessing) && (
-                    <div>
+                  {(isUploading || isProcessing || isQueued) && (
+                    isVideo ? <VideoUploadProgress percent={task.progress} /> : <div>
                       <div
                         className="progress-bar-track"
                         style={{
@@ -465,7 +477,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                       >
                         <span>
                           {isProcessing
-                            ? task.statusDetail || "اكتمل نقل الملف؛ جارٍ تجهيز الفيديو."
+                            ? task.statusDetail || "جاري حفظ الملف…"
                             : (() => {
                                 const totalMB = ((task.fileSizeBytes || 0) / (1024 * 1024)).toFixed(1);
                                 const loadedBytes = task.loadedBytes ?? ((task.fileSizeBytes || 0) * (task.progress || 0)) / 100;
@@ -491,7 +503,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                       }}
                     >
                       <CheckCircle2 size={13} />
-                      <span>تم اكتمال الرفع والحفظ بالسحابة بنجاح!</span>
+                      <span>{isVideo ? 'تم رفع الفيديو بنجاح' : 'تم اكتمال الرفع والحفظ بالسحابة بنجاح!'}</span>
                     </div>
                   )}
 
@@ -502,6 +514,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                         display: "flex",
                         alignItems: "center",
                         gap: "5px",
+                        flexWrap: 'wrap',
                         fontSize: "10.5px",
                         color: "#dc2626",
                       }}
@@ -509,13 +522,12 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                       <AlertCircle size={13} />
                       <span>{task.error || "تعذر إكمال الرفع"}</span>
                       {task.type === "lesson_video" && (
-                        <label>
-                          اختيار نفس الفيديو للاستئناف
-                          <input type="file" accept=".mp4,.m4v,.mov,.webm" aria-label="اختيار الفيديو للاستئناف" onChange={event => {
+                          <input hidden style={{ display: 'none' }} ref={element => { resumeInputs.current[task.id] = element; }}
+                            type="file" accept=".mp4,.m4v,.mov,.webm" aria-label="ملف الفيديو" onChange={event => {
                             const file = event.target.files?.[0];
                             if (file) uploadManager.resumeVideo(task.id, file);
+                            event.target.value = '';
                           }} />
-                        </label>
                       )}
                     </div>
                   )}

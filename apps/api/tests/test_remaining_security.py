@@ -82,6 +82,8 @@ def test_summary_scope_students_teachers_admins_and_other_tenant(db):
         assignment = Assignment(institution_id=inst.id, course_id=course.id, creator_id=teacher.id,
                                 title='Summary assignment', prompt='Synthetic prompt', status=AssignmentStatus.PUBLISHED)
         db.add_all([lesson, quiz, question, assignment]); db.flush()
+        db.add(QuizQuestion(quiz_id=quiz.id, question_id=question.id, position=1, points=100,
+                           question_snapshot={'points': 100}))
         quizzes_by_course.append(str(quiz.id))
         for number, practice, pending in [(1, False, False), (2, True, False), (3, False, True)]:
             attempt = QuizAttempt(institution_id=inst.id, quiz_id=quiz.id, student_id=student.id,
@@ -98,8 +100,8 @@ def test_summary_scope_students_teachers_admins_and_other_tenant(db):
             completion_percent=100 if teacher == t1 else 0))
     db.commit()
     for viewer, count, quizzes, avg, completion, top in [
-        (t1, 1, 1, 10, 100, [quizzes_by_course[0]]), (t2, 2, 1, 90, 0, [quizzes_by_course[1]]),
-        (admin, 3, 2, 50, 33.33, list(reversed(quizzes_by_course)))]:
+        (t1, 1, 1, 10, 100, [quizzes_by_course[0]]), (t2, 2, 1, 45, 0, [quizzes_by_course[1]]),
+        (admin, 3, 2, 33.33, 33.33, list(reversed(quizzes_by_course)))]:
         client = TestClient(app); login(client, viewer, inst.slug)
         response = client.get('/api/v1/reports/summary')
         assert response.status_code == 200, response.text

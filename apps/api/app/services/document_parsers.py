@@ -419,7 +419,7 @@ SUB_MAP = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
 SUP_MAP = str.maketrans("0123456789+-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻")
 
 
-def clean_chemical_formula_text(text: str) -> str:
+def clean_chemical_formula_text(text: str, *, preserve_prose: bool = False) -> str:
     """
     Normalizes chemical formulas, cleans LaTeX remnants and removes markdown asterisks.
     Fully deterministic and general across scientific & chemical texts.
@@ -442,11 +442,12 @@ def clean_chemical_formula_text(text: str) -> str:
     # enthalpy. Only the explicitly written H belongs in the result.
     s = re.sub(r"\\Delta\s*H\b|Delta\s*H\b", "ΔH", s)
     s = re.sub(r"\\Delta\b", "Δ", s)
-    s = re.sub(r"\bquad\s*,\s*quad\b", ", ", s)
-    s = re.sub(r"\bquad\b", " ", s)
+    if not preserve_prose:
+        s = re.sub(r"\bquad\s*,\s*quad\b", ", ", s)
+        s = re.sub(r"\bquad\b", " ", s)
     s = re.sub(r"\\[,;:]", " ", s)
-    s = re.sub(r"\\mid\b|(?<=\w)\s+mid\s+(?=\w)", " | ", s)
-    s = re.sub(r"\\parallel\b|(?<=\w)\s+parallel\s+(?=\w)", " || ", s)
+    s = re.sub(r"\\mid\b" if preserve_prose else r"\\mid\b|(?<=\w)\s+mid\s+(?=\w)", " | ", s)
+    s = re.sub(r"\\parallel\b" if preserve_prose else r"\\parallel\b|(?<=\w)\s+parallel\s+(?=\w)", " || ", s)
 
     # 4. Equilibrium constants and potentials
     s = re.sub(r"K_\{?sp\}?", "Ksp", s)
@@ -477,7 +478,8 @@ def clean_chemical_formula_text(text: str) -> str:
     s = re.sub(r"\\+", "", s)
 
     # 8. Standard chemical symbols
-    s = re.sub(r"\bPH\b", "pH", s)
+    if not preserve_prose:
+        s = re.sub(r"\bPH\b", "pH", s)
 
     # Clean double spaces
     s = re.sub(r"[ \t]{2,}", " ", s)
@@ -524,8 +526,6 @@ def fix_arabic_bidi_scrambling(text: str) -> str:
         unit = m.group(3).strip()
         if val.endswith("+") or val.endswith("-"):
             val = val[-1] + val[:-1]
-        elif not val.startswith("+") and not val.startswith("-"):
-            val = "+" + val
         return f"{clause} = {val} {unit}"
 
     s = re.sub(
@@ -1403,8 +1403,7 @@ _OCR_SEMAPHORE = threading.Semaphore(int(os.getenv("OCR_CONCURRENCY_LIMIT", "2")
 
 def prune_ocr_cache(max_age_days: int = 7, max_size_mb: int = 500) -> None:
     """Prunes disk OCR cache based on TTL and aggregate size limit."""
-    api_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    cache_base = os.path.join(api_dir, "storage", "ocr_cache")
+    cache_base = os.path.join(os.getenv('STORAGE_DIR', 'storage'), 'ocr_cache')
     if not os.path.isdir(cache_base):
         return
 
@@ -1458,18 +1457,15 @@ def ocr_pdf_page(file_bytes: bytes | None = None, page_number: int = 1, lang: st
         else:
             file_hash = "generic_ocr"
 
-        api_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        possible_dirs = [
-            os.path.join(api_dir, "storage", "ocr_cache", file_hash),
-            os.path.join("storage", "ocr_cache", file_hash),
-        ]
-        cache_dir = possible_dirs[0]
+        # The runtime image owns code read-only. Cache is regenerable scratch,
+        # never a final uploaded document and never a reason to require KC.
+        cache_dir = os.path.join(os.getenv('STORAGE_DIR', 'storage'), 'ocr_cache', file_hash)
         os.makedirs(cache_dir, exist_ok=True)
         cache_file = os.path.join(cache_dir, f"page_{page_number}_{lang}_{PARSER_OCR_VERSION}.txt")
         if os.path.exists(cache_file):
             with open(cache_file, "r", encoding="utf-8") as cf:
-                cached_text = cf.read()
-                if cached_text:
+                cached_text = cf.read(2 * 1024 * 1024 + 1)
+                if cached_text and len(cached_text) <= 2 * 1024 * 1024:
                     return cached_text
     except Exception:
         pass

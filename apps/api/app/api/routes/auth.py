@@ -64,7 +64,10 @@ def profile_summary(user: CurrentUser, db: Db):
     if user.role == UserRole.STUDENT:
         rows = db.execute(select(LessonProgress, Lesson.title).join(Lesson, Lesson.id == LessonProgress.lesson_id)
                           .where(LessonProgress.student_id == user.id, LessonProgress.institution_id == user.institution_id)).all()
-        return {"progress": [{"lesson_id": str(p.lesson_id), "title": title, "completion_percent": p.completion_percent} for p, title in rows]}
+        from app.services.gradebook import published_grade_summaries
+        grade = published_grade_summaries(db, user, [user.id])[user.id]
+        return {"progress": [{"lesson_id": str(p.lesson_id), "title": title, "completion_percent": p.completion_percent} for p, title in rows],
+                "grade_summary": grade}
     managed = select(Course.id).where(Course.institution_id == user.institution_id)
     if user.role == UserRole.TEACHER:
         managed = managed.where(Course.teacher_id == user.id)

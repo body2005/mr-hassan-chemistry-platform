@@ -1,11 +1,8 @@
 """Real Uvicorn startup, sanitized subprocess env, synthetic values only."""
 import os
 from pathlib import Path
-import socket
 import subprocess
 import sys
-import time
-from urllib.request import urlopen
 
 import pytest
 from sqlalchemy import create_engine
@@ -52,31 +49,14 @@ def test_actual_startup_rejects_insecure_cookie_setting(tmp_path):
     assert b"Secure cookies must remain enabled" in result.stdout
 
 
-def test_actual_startup_control_serves_health_with_external_test_secret(tmp_path):
+def test_actual_startup_rejects_missing_required_event_transport_with_external_test_secret(tmp_path):
     env = runtime_env(tmp_path, "production_like", "synthetic-control-secret-not-for-deployment-2026")
     engine = create_engine(env["DATABASE_URL"])
     Base.metadata.create_all(engine); engine.dispose()
-    with socket.socket() as reservation:
-        reservation.bind(("127.0.0.1", 0))
-        port = reservation.getsockname()[1]
-    # This is the internal upstream HTTP socket, not a replacement for the
-    # externally required HTTPS reverse proxy or a browser certificate test.
-    with (tmp_path / "startup-control.log").open("wb") as log:
-        process = subprocess.Popen(command(port), cwd=tmp_path, env=env, stdout=log, stderr=log)
-        try:
-            deadline = time.monotonic() + 20
-            while time.monotonic() < deadline:
-                assert process.poll() is None, "Synthetic control API exited before health"
-                try:
-                    with urlopen(f"http://127.0.0.1:{port}/api/v1/health", timeout=0.5) as response:
-                        assert response.status == 200
-                        return
-                except OSError:
-                    time.sleep(0.1)
-            pytest.fail("Synthetic control API did not start")
-        finally:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill(); process.wait(timeout=5)
+    # A valid signing key does not replace required Redis. Production must
+    # fail closed even if REDIS_REQUIRED was accidentally configured false.
+    result = subprocess.run(command(), cwd=tmp_path, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20)
+    assert result.returncode != 0
+    assert b"Event transport temporarily unavailable" in result.stdout
+    assert b"Application startup complete" not in result.stdout

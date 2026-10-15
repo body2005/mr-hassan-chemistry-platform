@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactElement } from 'react';
 import { CornerDownLeft } from 'lucide-react';
 import type { CurrentUser } from '../types/lms';
 import { apiRequest } from '../services/apiClient';
@@ -38,9 +38,10 @@ function CommentText({ comment }: { comment: ServerComment }) {
 }
 
 /** Own discussion persistence independently of player/token/telemetry state. */
-export function LessonDiscussion({ lessonId, currentUser }: {
+export function LessonDiscussion({ lessonId, currentUser, onSummary }: {
   lessonId: string;
   currentUser?: CurrentUser | null;
+  onSummary?: (summary: { count: number; unread: number }) => void;
 }) {
   const toast = useToast();
   const [comments, setComments] = useState<ServerComment[]>([]);
@@ -64,16 +65,18 @@ export function LessonDiscussion({ lessonId, currentUser }: {
     if (!quiet) setLoading(true);
     setLoadError(false);
     try {
-      const result = await apiRequest<{ comments: ServerComment[] }>(`/lessons/${lessonId}/comments`, { skipCache: true });
+      const result = await apiRequest<{ comments: ServerComment[]; unread_count?: number }>(`/lessons/${lessonId}/comments`, { skipCache: true });
       if (scopeRef.current !== scope || sequence !== loadSequence.current) return;
       if (!Array.isArray(result.comments)) throw new Error('Invalid discussion response');
-      setComments(result.comments.map(validateComment));
+      const saved = result.comments.map(validateComment);
+      setComments(saved);
+      onSummary?.({ count: countComments(saved), unread: Math.max(0, result.unread_count ?? 0) });
     } catch {
       if (scopeRef.current === scope && sequence === loadSequence.current) setLoadError(true);
     } finally {
       if (scopeRef.current === scope && sequence === loadSequence.current) setLoading(false);
     }
-  }, [lessonId]);
+  }, [lessonId, onSummary]);
 
   useEffect(() => {
     const scope = {};
@@ -103,9 +106,11 @@ export function LessonDiscussion({ lessonId, currentUser }: {
     const offStatus = realtimeService.on<{ status: string }>('status', data => {
       if (data.status === 'connected') schedule();
     });
-    const clearScope = () => { offComment(); offStatus(); window.clearTimeout(timer); scopeRef.current = null; };
+    const read = (event: Event) => { if ((event as CustomEvent<{ lessonId: string }>).detail?.lessonId === lessonId) schedule(); };
+    window.addEventListener('lms_discussion_read', read);
+    const clearScope = () => { offComment(); offStatus(); window.removeEventListener('lms_discussion_read', read); window.clearTimeout(timer); scopeRef.current = null; };
     window.addEventListener('lms_auth_scope_updated', clearScope);
-    return () => { offComment(); offStatus(); window.clearTimeout(timer); window.removeEventListener('lms_auth_scope_updated', clearScope); };
+    return () => { offComment(); offStatus(); window.removeEventListener('lms_discussion_read', read); window.clearTimeout(timer); window.removeEventListener('lms_auth_scope_updated', clearScope); };
   }, [lessonId, userId, load]);
 
   async function submitComment(event: FormEvent) {
@@ -124,6 +129,7 @@ export function LessonDiscussion({ lessonId, currentUser }: {
       const saved = validateComment(result);
       setComments(previous => [saved, ...previous.filter(item => item.id !== saved.id)]);
       setDraft('');
+      void load(true);
       toast('تم إضافة تعليقك بنجاح', 'success');
     } catch {
       if (scopeRef.current !== scope) return;
@@ -148,11 +154,13 @@ export function LessonDiscussion({ lessonId, currentUser }: {
       });
       if (scopeRef.current !== scope) return;
       const saved = validateComment(result);
-      setComments(previous => previous.map(parent => parent.id === parentId ? {
+      const insert = (items: ServerComment[]): ServerComment[] => items.map(parent => parent.id === parentId ? {
         ...parent, replies: [...(parent.replies ?? []).filter(item => item.id !== saved.id), saved],
-      } : parent));
+      } : { ...parent, replies: insert(parent.replies ?? []) });
+      setComments(insert);
       setReplyDrafts(previous => ({ ...previous, [parentId]: '' }));
       setReplyTarget(null);
+      void load(true);
       toast('تم إرسال الرد بنجاح', 'success');
     } catch {
       if (scopeRef.current !== scope) return;
@@ -165,7 +173,25 @@ export function LessonDiscussion({ lessonId, currentUser }: {
 
   const busy = loading || saving || savingReply !== null;
   const ordered = [...comments].sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || b.id.localeCompare(a.id));
-  const count = comments.reduce((sum, item) => sum + 1 + (item.replies?.length ?? 0), 0);
+  const count = countComments(comments);
+  const renderComment = (comment: ServerComment, depth = 0): ReactElement => <article key={comment.id} data-comment-id={comment.id}
+    style={depth >= 2 ? { padding: '12px 0', borderInline: 0, borderRadius: 0, background: 'transparent' } : undefined}>
+    <CommentText comment={comment} />
+    <button type="button" className="discussion-reply-toggle" disabled={busy || loadError || !userId || depth >= 7}
+      aria-expanded={replyTarget === comment.id}
+      onClick={() => setReplyTarget(previous => previous === comment.id ? null : comment.id)}>
+      <CornerDownLeft size={14} aria-hidden="true" />رد
+    </button>
+    {replyTarget === comment.id && <form className="discussion-reply-composer" onSubmit={event => void submitReply(event, comment.id)}>
+      <input type="text" aria-label={`الرد على تعليق ${comment.author}`} maxLength={2000}
+        placeholder="اكتب ردك هنا..." value={replyDrafts[comment.id] ?? ''} disabled={busy}
+        onChange={event => setReplyDrafts(previous => ({ ...previous, [comment.id]: event.target.value }))} />
+      <button type="submit" disabled={busy || !replyDrafts[comment.id]?.trim()}>{savingReply === comment.id ? 'جاري الإرسال...' : 'رد'}</button>
+    </form>}
+    <div className="discussion-replies" style={depth >= 2 ? { marginInlineStart: 0, paddingInlineStart: 0 } : undefined}>
+      {comment.replies?.map(reply => renderComment(reply, depth + 1))}
+    </div>
+  </article>;
   return <section className="lesson-discussion" aria-label="التعليقات والمناقشات">
     <header className="discussion-header">
       <h3>التعليقات والمناقشات{!loading && !loadError ? ` (${count})` : ''}</h3>
@@ -187,24 +213,10 @@ export function LessonDiscussion({ lessonId, currentUser }: {
     {!loading && !loadError && comments.length === 0 && <p className="discussion-empty">
       لا توجد تعليقات بعد على هذا الدرس — كن أول من يطرح سؤاله أو استفساره.
     </p>}
-    <div className="discussion-list">{ordered.map(comment => <article key={comment.id} data-comment-id={comment.id}>
-      <CommentText comment={comment} />
-      <button type="button" className="discussion-reply-toggle" disabled={busy || loadError || !userId}
-        aria-expanded={replyTarget === comment.id}
-        onClick={() => setReplyTarget(previous => previous === comment.id ? null : comment.id)}>
-        <CornerDownLeft size={14} aria-hidden="true" />رد
-      </button>
-      {replyTarget === comment.id && <form className="discussion-reply-composer" onSubmit={event => void submitReply(event, comment.id)}>
-        <input type="text" aria-label={`الرد على تعليق ${comment.author}`} maxLength={2000}
-          placeholder="اكتب ردك هنا..." value={replyDrafts[comment.id] ?? ''} disabled={busy}
-          onChange={event => setReplyDrafts(previous => ({ ...previous, [comment.id]: event.target.value }))} />
-        <button type="submit" disabled={busy || !replyDrafts[comment.id]?.trim()}>
-          {savingReply === comment.id ? 'جاري الإرسال...' : 'رد'}
-        </button>
-      </form>}
-      <div className="discussion-replies">{comment.replies?.map(reply => <article key={reply.id} data-comment-id={reply.id}>
-        <CommentText comment={reply} />
-      </article>)}</div>
-    </article>)}</div>
+    <div className="discussion-list">{ordered.map(comment => renderComment(comment))}</div>
   </section>;
+}
+
+function countComments(items: ServerComment[]): number {
+  return items.reduce((sum, item) => sum + 1 + countComments(item.replies ?? []), 0);
 }

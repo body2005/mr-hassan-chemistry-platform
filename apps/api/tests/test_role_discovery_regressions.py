@@ -49,7 +49,10 @@ def test_profile_counts_and_history_are_persisted_and_owner_scoped(db):
         assert me['enrolled_students_count'] == me['uploaded_videos_count'] == 1
         assert learner.get('/api/v1/auth/profile-summary').json()['progress'] == [
             {'lesson_id': str(lesson.id), 'title': 'Real progress lesson', 'completion_percent': 37}]
-        assert fresh.get('/api/v1/auth/profile-summary').json() == {'progress': []}
+        empty = fresh.get('/api/v1/auth/profile-summary').json()
+        assert empty['progress'] == []
+        assert empty['grade_summary']['grade_basis'] == 'approved'
+        assert empty['grade_summary']['total_overall_grade'] is None
 
 
 def test_atomic_publication_validation_order_and_retry(db):

@@ -33,6 +33,7 @@ async function render(courses = [course]) {
 }
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  window.history.replaceState(null, '', '/');
   mocks.tasks = []; mocks.open.mockClear(); mocks.getCourses.mockReset(); mocks.unsubscribe.mockClear();
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
@@ -40,16 +41,19 @@ afterEach(async () => {
   await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); vi.useRealTimers();
 });
 
-it('replaces watch with byte progress, prevents opening the card, and restores watch only after processing completes', async () => {
+it('shows one unified progress bar and restores watch only after processing completes', async () => {
   mocks.tasks = [task]; await render();
-  expect(host.textContent).toContain('جارٍ رفع الفيديو 42٪');
+  expect(host.textContent).toContain('جاري رفع الفيديو…');
+  expect(host.textContent).toContain('16٪');
   expect(host.textContent).not.toContain('مشاهدة الدرس');
   expect(host.textContent).not.toContain('تجهيز الجودات');
-  expect(host.querySelector('progress')?.value).toBe(42);
-  await act(async () => host.querySelector<HTMLElement>('[title="جارٍ رفع الفيديو 42٪"]')!.click());
+  expect(host.querySelectorAll('[role="progressbar"]')).toHaveLength(1);
+  expect(host.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('16');
+  await act(async () => host.querySelector<HTMLElement>('[title="جاري رفع الفيديو…"]')!.click());
   expect(mocks.open).not.toHaveBeenCalled();
   await act(async () => mocks.listener!([{ ...task, status: 'processing', uploadPercent: 100 }]));
-  expect(host.querySelector('progress')?.hasAttribute('value')).toBe(false);
+  expect(host.querySelectorAll('[role="progressbar"]')).toHaveLength(1);
+  expect(host.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('40');
   expect(host.textContent).not.toContain('مشاهدة الدرس');
   await act(async () => mocks.listener!([{ ...task, status: 'completed', uploadPercent: 100 }]));
   const watch = [...host.querySelectorAll('button')].find(button => button.textContent === 'مشاهدة الدرس')!;

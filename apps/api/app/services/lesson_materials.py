@@ -209,11 +209,23 @@ def open_material_stream(db: Session, user: User, lesson_id: uuid.UUID, asset_id
     # even when paid DRM is disabled. This also covers preview requests.
     raw_key = asset.object_key.split('/', 3)[-1] if asset.object_key.startswith('s3://') else asset.object_key.lstrip('/')
     extension = os.path.splitext(asset.filename or raw_key)[1].lower()
+    key_extension = os.path.splitext(raw_key)[1].lower()
+    parts = raw_key.split('/')
+    migrated_video = len(parts) > 3 and parts[0] == 'legacy-import' and parts[2] == 'video'
     if (asset.asset_kind == 'video' or (asset.mime_type or '').lower().startswith('video/')
             or raw_key.startswith(('video-assets/', 'video-originals/', 'video-quarantine/', 'lesson_videos/'))
             or asset.object_key == lesson.video_asset_key
+            or migrated_video
+            or key_extension in {'.mp4', '.m4v', '.mov', '.webm', '.mkv', '.avi', '.mpeg', '.mpg', '.3gp', '.m3u8', '.m4s', '.ts'}
             or extension in {'.mp4', '.m4v', '.mov', '.webm', '.mkv', '.avi', '.mpeg', '.mpg', '.3gp', '.m3u8', '.m4s', '.ts'}):
         raise HTTPException(403, 'Video must be viewed through the authorized player')
+    if lesson.video_drm_protected:
+        # Legacy ingestion assets can include the clear video. Knowing their
+        # UUID must not turn the materials endpoint into a DRM bypass.
+        raw_key = asset.object_key.split('/', 3)[-1] if asset.object_key.startswith('s3://') else asset.object_key.lstrip('/')
+        if (asset.asset_kind not in {'pdf', 'document', 'attachment'} or (asset.mime_type or '').startswith('video/')
+                or raw_key.startswith(('video-assets/', 'video-originals/', 'video-quarantine/', 'lesson_videos/'))):
+            raise HTTPException(403, 'Protected video cannot be downloaded as a material')
     from app.core.storage import get_storage_provider
 
     storage = get_storage_provider()

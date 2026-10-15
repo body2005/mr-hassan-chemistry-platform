@@ -90,11 +90,9 @@ def test_paid_course_requires_approved_order(db, monkeypatch) -> None:
     _login(student_client, student, "payments", "student-password")
 
     public_course = TestClient(app).get(f"/api/v1/courses/{course.id}")
-    assert public_course.status_code == 200
-    public_lesson = public_course.json()["modules"][0]["lessons"][0]
-    assert public_lesson["content"] is None
-    assert public_lesson["video_url"] is None
-    assert public_lesson["has_video"] is False
+    assert public_course.status_code == 401
+    assert 'modules' not in public_course.json()
+    assert str(lesson.id) not in public_course.text
 
     assert student_client.post(
         f"/api/v1/courses/{course.id}/enroll", headers=_csrf_headers(student_client)

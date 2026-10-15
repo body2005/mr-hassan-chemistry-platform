@@ -33,8 +33,8 @@ export function VideoLessonNavigation({ courseTitle, lessonTitle, isTeacher, onC
         <button type="button" onClick={onClose} style={navigationButton}>{courseTitle}</button>
         <ChevronLeft size={14} aria-hidden="true" style={{ color: 'var(--text-muted, #64748b)', flexShrink: 0 }} />
         <span aria-current="page" style={{
-          color: 'var(--text-main, #0f172a)', fontWeight: 800, maxWidth: 'min(320px, 100%)',
-          minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          color: 'var(--text-main, #0f172a)', fontWeight: 800, maxWidth: '100%',
+          minWidth: 0, whiteSpace: 'normal', overflowWrap: 'anywhere', lineHeight: 1.7,
         }}>{lessonTitle}</span>
       </nav>
       <button type="button" onClick={onClose} style={{

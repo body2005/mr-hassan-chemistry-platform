@@ -44,7 +44,7 @@ class AnalyticsSummary(BaseModel):
     risk_students_count: int = 0
     top_quizzes: list[dict[str, Any]] = []
     assignments_on_time_rate: float | None = None
-    metric_policy: str = "points/published-eligible/latest-submitted-official/v2"
+    metric_policy: str = "points/published-eligible/approval-gated/frozen-max/v3"
     quiz_eligible_count: int = 0
     quiz_completed_count: int = 0
     quiz_scored_count: int = 0

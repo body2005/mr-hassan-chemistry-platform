@@ -19,7 +19,7 @@ services:
     preDeployCommand: alembic upgrade head && python scripts/seed_teacher.py
     # Do not enable Uvicorn's wildcard forwarded-header trust. The app uses
     # direct peer IPs until Render's documented proxy CIDRs are configured.
-    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --no-proxy-headers
     envVars:
       - key: APP_ENV
         value: production
@@ -38,8 +38,13 @@ services:
         # comma-separated so FastAPI's credentialed CORS middleware accepts
         # requests from either deployment.
         value: https://mr-hassan-chemistry.vercel.app,https://mr-hassan-chemistry-platform.vercel.app
+      - key: PUBLIC_FRONTEND_URL
+        value: https://mr-hassan-chemistry-platform.vercel.app
+      - key: INGESTION_BACKEND
+        # Extract runs in the API with admission limits. No retired KC queue.
+        value: disabled
       - key: COOKIE_CROSS_SITE
-        value: "true"
+        value: "false"
       - key: INITIAL_TEACHER_EMAIL
         value: teacher@hassanshaban.com
       - key: INITIAL_TEACHER_USERNAME
@@ -112,7 +117,7 @@ services:
           name: chemistry-platform-redis
           property: connectionString
       - key: USE_CELERY_INGESTION
-        value: "true"
+        value: "false"
     autoDeployTrigger: "off"
 
   - type: worker

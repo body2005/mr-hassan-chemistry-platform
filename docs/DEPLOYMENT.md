@@ -19,7 +19,7 @@
    - Build Command: `pip install -r requirements.txt`
    - Start Command:
      ```bash
-     alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+     alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT --no-proxy-headers
      ```
 4. Environment Variables:
    | Key | Value |

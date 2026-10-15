@@ -108,7 +108,9 @@ def test_shared_student_grades_and_mastery_are_course_scoped(db):
     assert mastery.status_code == 200
     assert [(m['title'], m['mastery'], m['evidence_count']) for m in mastery.json()['items']] == [(course.code, 1, 1)]
     own = login(TestClient(app), student, inst.slug)
-    assert len(own.get(f'/api/v1/grades/students/{student.id}').json()) == 2
+    # Generic course ledger entries have no result-approval workflow and
+    # cannot disclose a provisional grade through a student read.
+    assert own.get(f'/api/v1/grades/students/{student.id}').json() == []
 
 
 @pytest.mark.parametrize('invalid', ['empty', 'prompt', 'inactive', 'type', 'options', 'answer', 'points'])
@@ -156,6 +158,11 @@ def test_legacy_quiz_accepts_a_real_dict_option_key_or_text(db, answer):
 
 def test_assessment_query_count_does_not_grow_with_content(db):
     inst, owner, _, student, course = domain(db)
+    from app.models.payment import EntitlementType, StudentEntitlement
+    db.add(StudentEntitlement(institution_id=inst.id, student_id=student.id,
+        entitlement_type=EntitlementType.COURSE, resource_id=course.id,
+        starts_at=datetime.now(timezone.utc)))
+    db.commit()
     c = login(TestClient(app), student, inst.slug)
     statements = []
     def observe(*args):
@@ -168,19 +175,22 @@ def test_assessment_query_count_does_not_grow_with_content(db):
             assert response.status_code == 200
             return len(statements), response.json()
         finally: event.remove(db.bind, 'before_cursor_execute', observe)
-    small, _ = read()
+    empty, _ = read()
     for i in range(12):
         module = CourseModule(course_id=course.id, title=f'M{i}', position=i)
         db.add(module); db.flush()
         for j in range(3):
             lesson = Lesson(module_id=module.id, title=f'L{i}-{j}', kind=LessonKind.VIDEO, position=j,
-                price_egp=0 if j < 2 else 10)
+                price_egp=0 if j < 2 else 10, video_asset_key=f'videos/synthetic-query-{i}-{j}.mp4')
             db.add(lesson); db.flush()
             db.add(Quiz(institution_id=inst.id, creator_id=owner.id, course_id=course.id,
                 title=f'Q{i}-{j}', lesson_id=lesson.id, module_id=module.id, status=QuizStatus.PUBLISHED))
+        if i == 0:
+            db.commit()
+            small, _ = read()
     db.commit()
     large, payload = read()
-    print(f'assessment SELECT count: empty={small}, 12 modules/36 lessons/36 quizzes={large}')
+    print(f'assessment SELECT count: empty={empty}, 1 module={small}, 12 modules/36 lessons/36 quizzes={large}')
     assert large <= small + 2, f'SELECT budget grew from {small} to {large}'
     assert len(payload['lessons']) == 36 and len(payload['quizzes']) == 36
-    assert sum(l['accessible'] for l in payload['lessons']) == 24
+    assert sum(l['accessible'] for l in payload['lessons']) == 36  # Active whole-course entitlement.

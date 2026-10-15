@@ -88,10 +88,6 @@ def classify_rate_limit_category(method: str, path: str) -> str:
         f"{api_prefix}/auth/me", f"{api_prefix}/auth/profile-summary", f"{api_prefix}/auth/avatar",
     }:
         return "read"
-    if normalized_path == f"{api_prefix}/auth/refresh":
-        return "session_refresh"
-    if normalized_path == f"{api_prefix}/auth/logout":
-        return "session_logout"
     if normalized_path.startswith(f"{api_prefix}/auth/"):
         return "auth"
     if (
@@ -123,6 +119,9 @@ def classify_rate_limit_category(method: str, path: str) -> str:
         ("/reindex", "/stop-indexing")
     ):
         return "mutation"
+    if normalized_method in {'GET', 'HEAD'} and '/lessons/' in normalized_path and (
+            '/hls/' in normalized_path or normalized_path.endswith('/stream')):
+        return 'video_stream'
     if normalized_method in {"GET", "HEAD"}:
         return "read"
     return "default"
@@ -240,7 +239,7 @@ async def security_middleware(request, call_next):
         return err_res
 
     record_request(
-        request.url.path,
+        getattr(request.scope.get('route'), 'path', '/unmatched'),
         request.method,
         response.status_code,
         int((time.perf_counter() - started) * 1000),

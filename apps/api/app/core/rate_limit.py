@@ -128,7 +128,16 @@ def resolve_client_ip(request: Request) -> str:
     forwarded = request.headers.get("X-Forwarded-For")
     if not forwarded:
         return direct_ip
-    hops = [ip.strip() for ip in forwarded.split(",") if ip.strip()]
+    # Malformed/unbounded values must not create attacker-chosen limiter
+    # identities, even when received through a trusted intermediary.
+    if len(forwarded) > 2048:
+        return direct_ip
+    try:
+        hops = [str(ipaddress.ip_address(ip.strip())) for ip in forwarded.split(',')]
+    except ValueError:
+        return direct_ip
+    if len(hops) > 32:
+        return direct_ip
     for hop in reversed(hops):
         if not _is_trusted(hop, trusted_exact, trusted_networks):
             return hop
@@ -159,6 +168,8 @@ def _get_category_defaults(category: str) -> tuple[int, int]:
     window = settings.rate_limit_window_seconds
     cat_lower = category.lower().replace("-", "_")
 
+    if cat_lower == 'video_stream':
+        return settings.rate_limit_video_stream, window
     if "login" in cat_lower or "auth" in cat_lower:
         return settings.rate_limit_login, window
     if "read" in cat_lower or "preview" in cat_lower:

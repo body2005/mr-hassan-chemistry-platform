@@ -66,7 +66,8 @@ def paid_content(db):
     course = make_course(db, inst, teacher)
     module = CourseModule(course_id=course.id, title='Unit', position=1)
     db.add(module); db.flush()
-    lesson = Lesson(module_id=module.id, title='Paid lesson', kind=LessonKind.ARTICLE, position=1, price_egp=25)
+    lesson = Lesson(module_id=module.id, title='Paid lesson', kind=LessonKind.ARTICLE, position=1, price_egp=25,
+                    content='Synthetic published lesson content')
     db.add(lesson); db.flush()
     quiz = Quiz(institution_id=inst.id, course_id=course.id, creator_id=teacher.id, lesson_id=lesson.id,
                 title='Paid quiz', status=QuizStatus.PUBLISHED, attempts_allowed=3)
@@ -204,17 +205,22 @@ def test_manual_essay_is_pending_until_authorized_bounded_grading(db):
         summary = next(item for item in managed.json() if item['id'] == str(student.id))
         assert summary['has_completed_exam'] is True
         assert summary['quiz_attempts_count'] == summary['pending_quiz_attempts'] == 1
-        assert summary['average_quiz_score'] is None
+        assert summary['average_quiz_score'] == 0  # Published denominator, no earned points yet.
+        assert summary['approved_overall_grade'] == 0
         assert client.post(path, json={'awarded_points': 6}, headers=csrf_headers(client)).status_code == 422
         assert client.post(path, json={'awarded_points': -1}, headers=csrf_headers(client)).status_code == 422
         graded = client.post(path, json={'awarded_points': 3, 'feedback': 'Explain units next time'}, headers=csrf_headers(client))
         assert graded.status_code == 200, graded.text
         assert graded.json()['score'] == 3
         summary = next(item for item in client.get('/api/v1/users?role=student').json() if item['id'] == str(student.id))
-        assert summary['pending_quiz_attempts'] == 0
+        assert summary['pending_quiz_attempts'] == 1  # A mark alone is not official approval.
         assert summary['average_quiz_score'] == 60
+        assert summary['approved_overall_grade'] == 0
         approval = client.post(f'/api/v1/quiz-attempts/{attempt_id}/approve', headers=csrf_headers(client))
         assert approval.status_code == 200, approval.text
+        summary = next(item for item in client.get('/api/v1/users?role=student').json() if item['id'] == str(student.id))
+        assert summary['pending_quiz_attempts'] == 0
+        assert summary['approved_overall_grade'] == 60
         login(client, student, inst.slug)
         result = client.get(f'/api/v1/quizzes/{quiz.id}/result').json()
         assert result['grading_status'] == 'complete'

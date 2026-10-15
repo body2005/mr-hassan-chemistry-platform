@@ -13,7 +13,7 @@ const courses = [
   { id: 'alpha', title: 'مقرر الذرة', academicYear: '1st_secondary', academicYearLabel: 'الأول الثانوي' },
   { id: 'beta', title: 'مقرر التفاعل', academicYear: '3rd_secondary', academicYearLabel: 'الثالث الثانوي' },
 ].map(c => ({ ...c, subject: 'Chemistry', teacherName: 'Synthetic', teacherTitle: 'Teacher',
-  description: 'شرح مقرر الكيمياء', thumbnailColor: '#0f392b', lessonsCount: 0,
+  description: 'شرح مقرر الكيمياء', price: 125, thumbnailColor: '#0f392b', lessonsCount: 0,
   totalDurationFormatted: '0', lessons: [{ id: `${c.id}-lesson`, courseId: c.id, academicYear: c.academicYear,
     title: c.title, description: '', durationMinutes: 10, durationFormatted: '10 دقائق', videoUrl: '',
     materials: [], uploadedByTeacherName: 'Synthetic', uploadedAt: '', order: 1,
@@ -90,7 +90,7 @@ it('loads only the requested page and resets pagination when the grade changes',
   expect(courseService.getPublicCatalogPage).toHaveBeenLastCalledWith(1, '', '1st_secondary', expect.any(AbortSignal));
 });
 
-it('shows only uploaded subscriptions with real prices, without a search or library', async () => {
+it('shows public course subscriptions with real prices, without a search or library', async () => {
   await landing();
   expect(host.querySelector('#catalog-search')).toBeNull();
   expect(host.querySelector('#library')).toBeNull();
@@ -137,12 +137,14 @@ it('shows the full static headline and passes the exact selected course to sign 
   expect(host.querySelector('#courses')!.textContent).not.toContain('أضف المقرر');
 });
 
-it('explains the paid course subscription instead of calling an included lesson free', async () => {
-  const paid = { ...courses[0], price: 300, lessons: [{ ...courses[0].lessons[0], price: 0 }] };
+it('renders a course summary with its real price without requiring private lessons', async () => {
+  const paid = { ...courses[0], price: 300, lessons: [], lessonsCount: 0 };
   await act(async () => root.render(<LandingPageView courses={[paid]} lang="ar" theme="light"
     onNavigateToAuth={navigate} onToggleLang={vi.fn()} onToggleTheme={vi.fn()} />));
   expect(host.querySelector('.subscription-actions')?.textContent).toContain('٣٠٠');
-  expect(host.querySelector('.subscription-price-note')?.textContent).toBe('ضمن اشتراك الصف');
+  expect(host.querySelector('.subscription-card h3')?.textContent).toBe(paid.title);
+  expect(host.querySelector('.subscription-duration')).toBeNull();
+  expect(host.querySelectorAll('.subscription-card')).toHaveLength(1);
   expect(host.querySelector('.subscription-actions')?.textContent).not.toContain('مجاني');
 });
 

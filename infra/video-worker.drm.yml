@@ -1,0 +1,16 @@
+# Optional staging overlay. No image rebuild/install and no DRM activation.
+# Supply a verified, compatible Linux Shaka Packager artifact privately first.
+services:
+  video-worker:
+    environment:
+      VIDEO_DRM_PROVIDER: axinom
+      VIDEO_DRM_PACKAGER_PATH: /opt/drm/packager
+      VIDEO_DRM_PACKAGING_ENABLED: "false"
+      VIDEO_DRM_REQUIRED: "false"
+    volumes:
+      - type: bind
+        source: ./drm/packager
+        target: /opt/drm/packager
+        read_only: true
+        bind:
+          create_host_path: false

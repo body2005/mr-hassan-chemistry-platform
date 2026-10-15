@@ -1,4 +1,6 @@
 import { GeneratedQuestion } from "../types/quiz";
+import { getApiAuthScope } from './apiClient';
+import { assessmentTimestamp } from './assessmentSchedule';
 
 export interface PublishedQuizRecord {
   id: string;
@@ -26,27 +28,35 @@ export interface PublishedQuizRecord {
   status: "active" | "closed" | "scheduled";
 }
 
-const STORAGE_KEY = "lms_teacher_quiz_history_v1";
+const STORAGE_KEY = "lms_teacher_quiz_history_v2";
 
 const INITIAL_SAMPLE_HISTORY: PublishedQuizRecord[] = [];
 
 class QuizHistoryService {
+  private scope = '';
   private memoryCache: PublishedQuizRecord[] | null = null;
   private listeners: Set<(records: PublishedQuizRecord[]) => void> = new Set();
+
+  constructor() {
+    if (typeof window !== 'undefined') window.addEventListener('lms_auth_scope_updated', () => {
+      this.memoryCache = null;
+      this.notify();
+    });
+  }
 
   private computeStatus(record: PublishedQuizRecord): "active" | "closed" | "scheduled" {
     try {
       const now = new Date();
       if (record.closeDeadlineDate) {
-        const closeStr = `${record.closeDeadlineDate}T23:59:59`;
-        const closeDate = new Date(closeStr);
-        if (!isNaN(closeDate.getTime()) && now > closeDate) {
+        const closeStr = assessmentTimestamp(`${record.closeDeadlineDate}T${record.closeDeadlineTime || '23:59:59'}`, 'الإغلاق');
+        const closeDate = new Date(closeStr!);
+        if (!isNaN(closeDate.getTime()) && now >= closeDate) {
           return "closed";
         }
       }
       if (record.publishStartDate) {
-        const startStr = `${record.publishStartDate}T00:00:00`;
-        const startDate = new Date(startStr);
+        const startStr = assessmentTimestamp(`${record.publishStartDate}T${record.publishStartTime || '00:00'}`, 'الإتاحة');
+        const startDate = new Date(startStr!);
         if (!isNaN(startDate.getTime()) && now < startDate) {
           return "scheduled";
         }
@@ -58,12 +68,20 @@ class QuizHistoryService {
   }
 
   public getHistory(): PublishedQuizRecord[] {
+    const scope = getApiAuthScope();
+    if (scope !== this.scope) {
+      this.scope = scope;
+      this.memoryCache = null;
+    }
+    if (!scope || scope === 'anonymous') return [];
     if (this.memoryCache !== null) {
       return this.memoryCache;
     }
 
     try {
-      const raw = typeof localStorage !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
+      // Never attribute the old unscoped v1 blob to the next signed-in user.
+      // It is left intact for an explicit owner-reviewed migration later.
+      const raw = typeof localStorage !== "undefined" ? localStorage.getItem(`${STORAGE_KEY}:${scope}`) : null;
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
@@ -90,7 +108,8 @@ class QuizHistoryService {
   private persist(records: PublishedQuizRecord[]) {
     try {
       if (typeof localStorage !== "undefined") {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+        if (this.scope && this.scope !== 'anonymous')
+          localStorage.setItem(`${STORAGE_KEY}:${this.scope}`, JSON.stringify(records));
       }
     } catch (e) {
       console.error("Failed to persist quiz history:", e);
@@ -109,6 +128,7 @@ class QuizHistoryService {
     payload: Omit<PublishedQuizRecord, "id" | "publishedAt" | "status"> & { id?: string }
   ): PublishedQuizRecord {
     const list = [...this.getHistory()];
+    if (!this.scope || this.scope === 'anonymous') throw new Error('يلزم تسجيل الدخول لحفظ سجل التقييم.');
     const now = new Date();
     const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(
       now.getDate()

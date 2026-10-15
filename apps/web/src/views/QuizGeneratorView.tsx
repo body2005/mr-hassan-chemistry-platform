@@ -1041,7 +1041,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
         <>
           {/* Header */}
           <div style={{ marginBottom: "20px" }}>
-            <span style={{ fontSize: "14px", fontWeight: 800, color: assessmentType === "quiz" ? "#0f766e" : "#0f392b", background: assessmentType === "quiz" ? "#ccfbf1" : "#ecfdf5", padding: "3px 8px", borderRadius: "6px" }}>
+            <span className={assessmentType === 'assignment' ? 'assignment-teal-label' : undefined} style={{ fontSize: "14px", fontWeight: 800, color: "rgb(15, 118, 110)", background: assessmentType === "quiz" ? "#ccfbf1" : "#ecfdf5", padding: "3px 8px", borderRadius: "6px" }}>
               استوديو المعلم • {assessmentType === "quiz" ? "صانع الاختبارات والتقييمات" : "صانع الواجبات المنزلية"}
             </span>
             <h1 style={{ margin: "6px 0 2px", fontSize: "24px", color: "var(--text-main, #0f172a)" }}>

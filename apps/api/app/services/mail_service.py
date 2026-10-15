@@ -60,7 +60,7 @@ def send_password_reset_email(recipient: str, token: str, settings: Settings | N
 
     # Keep the secret in the fragment so it is not included in HTTP requests
     # or Referrer headers.
-    origin = config.cors_origins[0].rstrip("/")
+    origin = (config.public_frontend_url or config.cors_origins[0]).rstrip("/")
     reset_link = f"{origin}/#auth?{urlencode({'reset_token': token})}"
     subject = "إعادة تعيين كلمة المرور — منصة الكيمياء"
     text = (

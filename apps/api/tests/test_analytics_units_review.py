@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.models.course import Enrollment, EnrollmentStatus
 from app.models.platform import (AttemptStatus, Question, Quiz, QuizStatus, QuizAttempt,
-                                QuizAttemptAnswer, Assignment, AssignmentStatus, AssignmentSubmission)
+                                QuizAttemptAnswer, QuizQuestion, Assignment, AssignmentStatus, AssignmentSubmission)
 from app.models.user import UserRole
 from tests.test_security_and_tenancy import make_institution, make_user, make_course, login
 
@@ -25,10 +25,16 @@ def domain(db):
     return inst, teacher, student, course, client
 
 
-def quiz(db, inst, teacher, course):
+def quiz(db, inst, teacher, course, points=10):
     row = Quiz(institution_id=inst.id, creator_id=teacher.id, course_id=course.id,
                title="Synthetic assessment", status=QuizStatus.PUBLISHED)
     db.add(row); db.flush()
+    question = Question(institution_id=inst.id, author_id=teacher.id,
+                        question_type='essay', prompt='Synthetic assessment', points=points)
+    db.add(question); db.flush()
+    db.add(QuizQuestion(quiz_id=row.id, question_id=question.id, position=1, points=points,
+                       question_snapshot={'points': points}))
+    db.flush()
     return row
 
 
@@ -57,15 +63,15 @@ def summary(client):
 
 def test_percentage_average_order_and_mastery_use_each_attempt_total(db):
     inst, teacher, student, course, client = domain(db)
-    quizzes = [quiz(db, inst, teacher, course) for _ in range(3)]
+    quizzes = [quiz(db, inst, teacher, course, points) for points in (10, 10, 200)]
     for row, score, total in zip(quizzes, [10, 5, 80], [10, 10, 200]):
         attempt(db, inst, student, row, score, total)
     result = summary(client)
-    assert result["quiz_avg_score"] == 63.33
+    assert result["quiz_avg_score"] == 43.18
     assert result["quiz_completion_rate"] == 100
     assert [item["quiz_id"] for item in result["top_quizzes"]] == [str(q.id) for q in quizzes]
     assert [item["score"] for item in result["top_quizzes"]] == [100, 50, 40]
-    assert result["mastery_distribution"] == {"ممتاز": 1, "جيد جداً": 0, "جيد": 0, "مقبول": 0, "ضعيف": 2}
+    assert result["mastery_distribution"] == {"ممتاز": 0, "جيد جداً": 0, "جيد": 0, "مقبول": 0, "ضعيف": 1}
 
 
 def test_empty_in_progress_pending_and_practice_are_not_results(db):
@@ -76,8 +82,8 @@ def test_empty_in_progress_pending_and_practice_are_not_results(db):
     attempt(db, inst, student, quizzes[2], 0, 10, graded=False)
     attempt(db, inst, student, quizzes[3], 10, 10, practice=True)
     result = summary(client)
-    assert result["quiz_avg_score"] == 100
-    assert result["quiz_completion_rate"] == 25
+    assert result["quiz_avg_score"] == 25
+    assert result["quiz_completion_rate"] == 50
     assert sum(result["mastery_distribution"].values()) == 1
 
 
@@ -92,8 +98,8 @@ def test_official_revisions_count_one_opportunity_latest_submission_wins(db):
     assert sum(result["mastery_distribution"].values()) == 1
     # A newer pending submission is not silently replaced by an older result.
     attempt(db, inst, student, row, 0, 10, number=3, graded=False)
-    assert summary(client)["quiz_avg_score"] is None
-    assert summary(client)["quiz_completion_rate"] == 0
+    assert summary(client)["quiz_avg_score"] == 0
+    assert summary(client)["quiz_completion_rate"] == 100
 
 
 def test_zero_missing_or_inconsistent_totals_are_explicit_not_clamped(db):
@@ -101,9 +107,9 @@ def test_zero_missing_or_inconsistent_totals_are_explicit_not_clamped(db):
     for score, total in [(0, 0), (None, 10), (5, None), (20, 10), (-1, 10)]:
         attempt(db, inst, student, quiz(db, inst, teacher, course), score, total)
     result = summary(client)
-    assert result["quiz_avg_score"] is None
+    assert result["quiz_avg_score"] == 0
     assert result["invalid_score_count"] == 5
-    assert sum(result["mastery_distribution"].values()) == 0
+    assert sum(result["mastery_distribution"].values()) == 1
     assert result["top_quizzes"] == []
 
 
@@ -126,7 +132,7 @@ def test_enrollment_opportunities_not_retries_or_all_students_are_denominator(db
     attempt(db, inst, outsider, row, 0, 10)
     attempt(db, inst, student, quiz(db, inst, colleague, other_course), 0, 10)
     result = summary(client)
-    assert result["quiz_avg_score"] == 100
+    assert result["quiz_avg_score"] == 50
     assert result["quiz_completion_rate"] == 50
     assert result["assignment_submission_rate"] == 100
     assert result["quiz_eligible_count"] == 2
