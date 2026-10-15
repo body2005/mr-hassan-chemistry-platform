@@ -1,4 +1,8 @@
 export const lessonEn = {
+  publicationSteps: 'Publication steps', prepareAssessment: 'Questions and file', assessmentDetails: 'Activity details and linked content',
+  assessmentSchedule: 'Schedule and duration', questionFile: 'Question file', backQuestions: 'Back to questions',
+  nextSchedule: 'Next: schedule and duration', backDetails: 'Back to activity details', reviewPublication: 'Review and confirm publication',
+  watchedLabel: 'Watched', watchedLoading: 'Loading watch progress', watchedUnavailable: 'Could not load watch progress',
   player: 'Video player; use the arrow keys to seek',
   seekDenied: 'Watch the lesson once before skipping ahead',
   seekWarning: 'You cannot skip ahead before watching the lesson once',

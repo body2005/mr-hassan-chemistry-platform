@@ -1,4 +1,8 @@
 export const lessonAr = {
+  publicationSteps: 'خطوات نشر النشاط', prepareAssessment: 'الأسئلة والملف', assessmentDetails: 'بيانات النشاط والمحتوى المرتبط',
+  assessmentSchedule: 'المواعيد ومدة الحل', questionFile: 'ملف الأسئلة', backQuestions: 'رجوع للأسئلة',
+  nextSchedule: 'التالي: المواعيد ومدة الحل', backDetails: 'رجوع لبيانات النشاط', reviewPublication: 'مراجعة وتأكيد النشر',
+  watchedLabel: 'نسبة المشاهدة', watchedLoading: 'جارٍ تحميل تقدم المشاهدة', watchedUnavailable: 'تعذر تحميل تقدم المشاهدة',
   player: 'مشغل الفيديو؛ استخدم السهمين للتقديم والرجوع',
   seekDenied: 'لا يمكنك التقديم قبل إكمال مشاهدة الدرس لأول مرة',
   seekWarning: 'لا يمكنك تقديم الفيديو للأمام قبل إكمال مشاهدة الدرس لأول مرة',

@@ -2128,6 +2128,24 @@ svg {
   outline: none;
 }
 .lesson-video-player { border: none !important; }
+.lesson-card-watch-progress { padding: 10px 18px; border-bottom: 1px solid var(--border-color); background: var(--bg-surface); }
+.lesson-card-watch-progress > div:first-child { display: flex; justify-content: space-between; gap: 10px; color: var(--text-muted); font-size: 12px; }
+.lesson-card-watch-progress strong { color: var(--text-main); }
+.lesson-card-watch-track { height: 5px; border-radius: 8px; margin-top: 7px; overflow: hidden; background: var(--bg-surface-secondary); }
+.lesson-card-watch-track > span { display: block; height: 100%; border-radius: inherit; background: #10b981; }
+.quiz-editor-flow { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.assessment-flow-steps { display: flex; flex-wrap: wrap; gap: 10px; list-style: none; padding: 0; margin: 0; }
+.assessment-flow-steps li { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 14px; }
+.assessment-flow-steps li[aria-current="step"] { color: var(--text-main); font-weight: 800; }
+.assessment-flow-steps li > span { display: grid; place-items: center; border: 1px solid var(--border-color); border-radius: 50%; width: 28px; height: 28px; flex-shrink: 0; }
+.assessment-flow-steps li[aria-current="step"] > span { background: #0f766e; border-color: #0f766e; color: white; }
+.assessment-step-heading { margin: 0; color: var(--text-main); font-size: 20px; scroll-margin-top: 90px; }
+.assessment-step-heading:focus { outline: none; }
+.assessment-step-panel { width: 100%; max-width: 800px; margin-inline: auto; border: 1px solid var(--border-color); border-radius: 16px; padding: 24px; background: var(--bg-surface); }
+.assessment-file-panel { max-width: 900px; width: 100%; margin-inline: auto; }
+.assessment-step-actions { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; padding-top: 20px; }
+.assessment-step-actions button { min-height: 44px; }
+@media (max-width: 600px) { .assessment-step-panel { padding: 16px; } .assessment-step-actions button { flex: 1 1 160px; } }
 .lesson-video-player:focus-visible .lesson-player-controls-row button:focus-visible {
   outline: 2px solid #fff; outline-offset: 2px;
 }

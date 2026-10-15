@@ -8,6 +8,14 @@ const input = (): PublicationInput => ({ title: 'اختبار الكيمياء',
     correct_answer: 'A', difficulty: 'easy', topic: '', explanation: '',
     options: [{ key: 'A', text: 'حديد', is_correct: true }, { key: 'B', text: 'هواء', is_correct: false }] }],
 });
+it('validates each wizard stage without treating later empty fields as an error', () => {
+  const value = { ...input(), title: '', lessonId: undefined, duration: '', startDate: '', endDate: '' };
+  expect(validateAssessmentPublication(value, 'review')).toBeNull();
+  expect(validateAssessmentPublication(value, 'setup')?.stage).toBe('setup');
+  value.title = 'Exam';
+  expect(validateAssessmentPublication({ ...value, lessonId: 'lesson' }, 'setup')).toBeNull();
+  expect(validateAssessmentPublication({ ...value, lessonId: 'lesson' })?.stage).toBe('publish');
+});
 it('keeps manually graded assignments publishable without an automatic answer key', () => {
   const value = input(); value.isQuiz = false; value.questions[0].correct_answer = null;
   value.questions[0].options!.forEach(option => { option.is_correct = false; });

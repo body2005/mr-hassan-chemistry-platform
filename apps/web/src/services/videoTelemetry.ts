@@ -112,6 +112,7 @@ export class VideoTelemetryTracker {
         body: JSON.stringify({ events: batch }),
       });
       this.retryAt = 0;
+      window.dispatchEvent(new CustomEvent('lms_video_progress_updated', { detail: { lessonId: this.lessonId } }));
     } catch (error) {
       if (error instanceof ApiClientError && [401, 403].includes(error.status)) {
         this.disabled = true;

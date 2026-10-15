@@ -1102,8 +1102,8 @@ export const courseService = {
     return this.getEnrolledCourseIds();
   },
 
-  async getLessonProgress(): Promise<ApiLessonProgress[]> {
-    return apiRequest<ApiLessonProgress[]>("/progress/me", { cacheTtlMs: 15_000 });
+  async getLessonProgress(options?: { skipCache?: boolean }): Promise<ApiLessonProgress[]> {
+    return apiRequest<ApiLessonProgress[]>("/progress/me", { cacheTtlMs: 15_000, ...options });
   },
 
   async completeLesson(lessonId: string): Promise<ApiLessonProgress> {

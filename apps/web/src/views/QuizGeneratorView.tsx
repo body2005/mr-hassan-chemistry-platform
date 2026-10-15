@@ -38,6 +38,7 @@ import { McqOptionsEditor } from "../components/McqOptionsEditor";
 import { QuestionSourceReview } from "../components/QuestionSourceReview";
 import { AssessmentScopePicker } from "../components/AssessmentScopePicker";
 import { validateAssessmentPublication, type EditorStage } from "../services/assessmentPublication";
+import { useTranslation } from '../utils/i18n';
 
 const QUIZ_DRAFT_STORAGE_KEY_PREFIX = "lms_quiz_maker_unuploaded_draft_v2";
 
@@ -125,7 +126,13 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
 
   // Sub-tab: Creator vs History
   const [activeSubTab, setActiveSubTab] = useState<"create" | "history">("create");
-  const [editorStage, setEditorStage] = useState<EditorStage>('setup');
+  const [editorStage, setEditorStage] = useState<EditorStage>('review');
+  const { t: tr } = useTranslation();
+  const stepHeadingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    stepHeadingRef.current?.focus({ preventScroll: true });
+    stepHeadingRef.current?.scrollIntoView?.({ block: 'start' });
+  }, [editorStage]);
   const [historyCount, setHistoryCount] = useState<number>(() => quizHistoryService.getHistory().length);
 
   useEffect(() => {
@@ -320,7 +327,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     if (approved) {
       clearOwnSavedDraft();
       setHasRestoredDraft(false);
-      setEditorStage('setup');
+      setEditorStage('review');
       return;
     }
 
@@ -418,6 +425,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       setExtractedAt(null);
       setApproved(false);
       setHasRestoredDraft(false);
+      setEditorStage('review');
       toast({
         message: "تم مسح المسودة والبدء باختبار جديد بنجاح.",
         tone: "info",
@@ -721,24 +729,39 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   }
 
   // ================= PUBLISH & SCHEDULE HANDLER (AI & MANUAL) =================
-  function publicationProblem() {
+  function publicationProblem(stage?: EditorStage) {
     return validateAssessmentPublication({
-      title: quizTitle, lessonId: selectedLessonIds[0] || selectedModuleIds[0], isQuiz: assessmentType === "quiz",
+      title: quizTitle, lessonId: selectedLessonIds[0] || selectedModuleIds[0], isQuiz: stage === 'review' ? false : assessmentType === "quiz",
       duration: quizDurationMinutes, startDate: publishStartDate, startTime: publishStartTime,
       endDate: closeDeadlineDate, endTime: closeDeadlineTime, questions: activeQuestionsList(),
-    });
+    }, stage);
   }
 
   function handleInitiatePublish() {
     setAttemptedSubmit(true);
-    const problem = publicationProblem();
+    const problem = publicationProblem('review');
     if (problem) {
       setError(problem.message);
       setEditorStage(problem.stage);
       return;
     }
     setError(null);
-    setShowPublishConfirmModal(true);
+    setAttemptedSubmit(false);
+    setEditorStage('setup');
+  }
+
+  function handleDetailsNext() {
+    setAttemptedSubmit(true);
+    const problem = publicationProblem('setup');
+    if (problem) { setError(problem.message); return; }
+    setError(null); setAttemptedSubmit(false); setEditorStage('publish');
+  }
+
+  function handleReviewPublication() {
+    setAttemptedSubmit(true);
+    const problem = publicationProblem();
+    if (problem) { setError(problem.message); setEditorStage(problem.stage); return; }
+    setError(null); setShowPublishConfirmModal(true);
   }
 
   async function handleConfirmPublish() {
@@ -925,6 +948,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     setSendScheduledNotification(false);
     setApproved(false);
     setActiveSubTab("create");
+    setEditorStage('review');
     toast({
       message: `تم فتح اختبار (${quizRecord.title}) في الصانع للتعديل.`,
       tone: "success",
@@ -1061,133 +1085,18 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
         <AlertCircle size={20} aria-hidden="true" /><span>{error}</span>
         <button type="button" aria-label="إغلاق خطأ إعداد النشاط" onClick={() => setError(null)}><X size={20} /></button>
       </div>}
-      <div className="responsive-split-grid quiz-editor-grid">
-        {/* Left Column: Configuration Form */}
-        <div className="quiz-settings-panel" style={{ background: "var(--bg-surface, #ffffff)", border: "1px solid var(--border-color, #e2e8f0)", borderRadius: "16px", padding: "20px" }}>
-          <div className="quiz-setup-fields">
-          {/* Assessment Mode Selector (Quiz vs Assignment) */}
-          <div style={{ marginBottom: "18px" }}>
-            <label style={{ display: "block", fontSize: "14px", fontWeight: 800, marginBottom: "6px", color: "var(--text-main)" }}>
-              نوع النشاط التعليمي:
-            </label>
-            <div className="responsive-2col" style={{ gap: "8px" }}>
-              <button
-                type="button"
-                onClick={() => setAssessmentType("quiz")}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: "6px",
-                  padding: "10px 6px",
-                  borderRadius: "10px",
-                  border: assessmentType === "quiz" ? "2px solid #0f766e" : "1px solid var(--border-color)",
-                  background: assessmentType === "quiz" ? "#0f766e" : "var(--bg-surface-secondary)",
-                  color: assessmentType === "quiz" ? "#ffffff" : "var(--text-main)",
-                  fontSize: "12.5px",
-                  fontWeight: 800,
-                  cursor: "pointer",
-                }}
-              >
-                <span>اختبار إلكتروني</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setAssessmentType("assignment")}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: "6px",
-                  padding: "10px 6px",
-                  borderRadius: "10px",
-                  border: assessmentType === "assignment" ? "2px solid #0f392b" : "1px solid var(--border-color)",
-                  background: assessmentType === "assignment" ? "#0f392b" : "var(--bg-surface-secondary)",
-                  color: assessmentType === "assignment" ? "#ffffff" : "var(--text-main)",
-                  fontSize: "12.5px",
-                  fontWeight: 800,
-                  cursor: "pointer",
-                }}
-              >
-                <span>واجب منزلي</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Academic Year Selection */}
-          <div style={{ marginBottom: "16px" }}>
-            <label style={{ display: "block", fontSize: "14px", fontWeight: 700, marginBottom: "6px", color: "var(--text-main)" }}>
-              الصف الدراسي:
-            </label>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "6px", marginBottom: "12px" }}>
-              {[
-                { id: "1st_secondary" as const, label: "الأول الثانوي" },
-                { id: "2nd_secondary" as const, label: "الثاني الثانوي" },
-                { id: "3rd_secondary" as const, label: "الثالث الثانوي" },
-              ].map((y) => (
-                <button
-                  key={y.id}
-                  type="button"
-                  onClick={() => { setSelectedAcademicYear(y.id); setSelectedLessonIds([]); setSelectedModuleIds([]); setSelectedCourseId(''); }}
-                  style={{
-                    padding: "8px 2px",
-                    borderRadius: "8px",
-                    border: selectedAcademicYear === y.id ? "2px solid #059669" : "1px solid var(--border-color)",
-                    background: selectedAcademicYear === y.id ? "#0f392b" : "var(--bg-surface-secondary)",
-                    color: selectedAcademicYear === y.id ? "#ffffff" : "var(--text-main)",
-                    fontSize: "11.5px",
-                    fontWeight: 800,
-                    cursor: "pointer",
-                    textAlign: "center",
-                    minWidth: 0,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {y.label}
-                </button>
-              ))}
-            </div>
-
-
-
-          </div>
-
-          {/* Assessment title is editable */}
-          <div style={{ marginBottom: "16px" }}>
-            <label style={{ display: "block", fontSize: "14px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
-              اسم {assessmentType === "quiz" ? "الاختبار" : "الواجب"}:
-            </label>
-            <input
-              type="text"
-              required
-              value={quizTitle}
-              onChange={(e) => setQuizTitle(e.target.value)}
-              onBlur={() => markTouched("quizTitle")}
-              placeholder={`أدخل اسم ${assessmentType === "quiz" ? "الاختبار" : "الواجب"} هنا...`}
-              style={{
-                width: "100%",
-                padding: "8px 12px",
-                border: quizTitleHasError ? "1.5px solid #ef4444" : "1px solid var(--border-color-strong)",
-                boxShadow: quizTitleHasError ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
-                borderRadius: "8px",
-                fontSize: "14px",
-                background: "var(--bg-surface)",
-                color: "var(--text-main)",
-                boxSizing: "border-box",
-                marginBottom: quizTitleHasError ? "4px" : "16px",
-              }}
-            />
-            {quizTitleHasError && (
-              <div style={{ display: "flex", alignItems: "center", gap: "5px", marginBottom: "14px", color: "#ef4444", fontSize: "11.5px", fontWeight: 700 }}>
-                <AlertCircle size={13} style={{ flexShrink: 0 }} />
-                <span>يلزم ادخاله</span>
-              </div>
-            )}
-          </div>
-
+      <div className="quiz-editor-flow">
+        <ol className="assessment-flow-steps" aria-label={tr('lesson.publicationSteps')}>
+          {(['review', 'setup', 'publish'] as const).map((stage, index) => <li key={stage}
+            aria-current={editorStage === stage ? 'step' : undefined}>
+            <span aria-hidden="true">{index + 1}</span>{tr(`lesson.${stage === 'review' ? 'prepareAssessment' : stage === 'setup' ? 'assessmentDetails' : 'assessmentSchedule'}`)}
+          </li>)}
+        </ol>
+        <h2 ref={stepHeadingRef} tabIndex={-1} className="assessment-step-heading">
+          {tr(`lesson.${editorStage === 'review' ? 'prepareAssessment' : editorStage === 'setup' ? 'assessmentDetails' : 'assessmentSchedule'}`)}
+        </h2>
+        {editorStage === 'review' ? <>
+          <section className="assessment-file-panel" aria-label={tr('lesson.questionFile')}>
           {/* Dedicated file upload for question extraction */}
           <div
             onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -1301,183 +1210,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
             )}
           </div>
 
-          <AssessmentScopePicker courses={gradeCourses} courseId={currentCourse?.id}
-            lessonIds={selectedLessonIds} moduleIds={selectedModuleIds}
-            onChange={(id, lessons, modules) => { setSelectedCourseId(id); setSelectedLessonIds(lessons); setSelectedModuleIds(modules); markTouched('lesson'); }} />
-          {lessonHasError && <p className="registration-error">اختَر درسًا أو وحدة واحدة على الأقل.</p>}
 
-          {/* Schedule & Timing Configuration */}
-          </div>
-          <div className="quiz-publication-fields" style={{ marginBottom: "18px", background: "var(--bg-surface-secondary, #f8fafc)", border: "1.5px solid var(--border-color, #e2e8f0)", borderRadius: "10px", padding: "14px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "12px" }}>
-              <Clock size={16} style={{ color: "#059669" }} />
-              <strong style={{ fontSize: "14px", color: "var(--text-main)" }}>
-                مواعيد الإتاحة ومدة الحل:
-              </strong>
-            </div>
-
-            {/* Exam Timer */}
-            {assessmentType === "quiz" && (
-              <div style={{ marginBottom: "12px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
-                  <label style={{ fontSize: "11.5px", fontWeight: 700, color: "var(--text-main)" }}>
-                    مدة حل الاختبار للطالب:
-                  </label>
-                  {quizDurationMinutes ? (
-                    <strong style={{ fontSize: "14px", color: "#059669" }}>{quizDurationMinutes} دقيقة</strong>
-                  ) : null}
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <input
-                    type="number"
-                    required
-                    min={5}
-                    max={300}
-                    step={5}
-                    value={quizDurationMinutes}
-                    placeholder="أدخل مدة الحل بالدقائق (مثال: 45)"
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setQuizDurationMinutes(val === "" ? "" : Math.max(1, parseInt(val) || 0));
-                    }}
-                    onBlur={() => markTouched("duration")}
-                    style={{
-                      width: "100%",
-                      padding: "8px 12px",
-                      border: durationHasError ? "1.5px solid #ef4444" : "1px solid var(--border-color-strong)",
-                      boxShadow: durationHasError ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
-                      borderRadius: "6px",
-                      fontSize: "14px",
-                      fontWeight: 800,
-                      background: "var(--bg-surface)",
-                      color: "var(--text-main)",
-                    }}
-                  />
-                  <span style={{ fontSize: "14px", color: "var(--text-muted)", flexShrink: 0 }}>دقيقة</span>
-                </div>
-                {durationHasError && (
-                  <div style={{ display: "flex", alignItems: "center", gap: "5px", marginTop: "5px", color: "#ef4444", fontSize: "11.5px", fontWeight: 700 }}>
-                    <AlertCircle size={13} style={{ flexShrink: 0 }} />
-                    <span>يلزم ادخاله</span>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Start Date & Time */}
-            <div style={{ marginBottom: "10px" }}>
-              <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
-                {assessmentType === "quiz" ? "موعد النشر وبدء الإتاحة:" : "موعد نشر الواجب:"}
-              </label>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "8px" }}>
-                <input
-                  type="date"
-                  aria-label="تاريخ بداية الإتاحة"
-                  required
-                  value={publishStartDate}
-                  onChange={(e) => setPublishStartDate(e.target.value)}
-                  onBlur={() => markTouched("publishStart")}
-                  style={{
-                    width: "100%",
-                    boxSizing: "border-box",
-                    minWidth: 0,
-                    padding: "10px 12px",
-                    border: publishStartHasError && !publishStartDate ? "1.5px solid #ef4444" : "1px solid var(--border-color-strong)",
-                    boxShadow: publishStartHasError && !publishStartDate ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
-                    borderRadius: "6px",
-                    fontSize: "18px",
-                    minHeight: 48,
-                    fontWeight: 700,
-                    background: "var(--bg-surface)",
-                    color: "var(--text-main)",
-                  }}
-                />
-                <TimeField label="بداية الإتاحة" value={publishStartTime} onChange={setPublishStartTime}
-                  onBlur={() => markTouched("publishStart")} error={publishStartHasError && !publishStartTime.trim()} />
-              </div>
-              {publishStartHasError && (
-                <div style={{ display: "flex", alignItems: "center", gap: "5px", marginTop: "5px", color: "#ef4444", fontSize: "11.5px", fontWeight: 700 }}>
-                  <AlertCircle size={13} style={{ flexShrink: 0 }} />
-                  <span>يلزم ادخاله</span>
-                </div>
-              )}
-            </div>
-
-            {/* Close Date & Time */}
-            <div style={{ marginBottom: "12px" }}>
-              <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
-                {assessmentType === "quiz" ? "موعد انتهاء الإتاحة وإغلاق الاختبار:" : "آخر موعد لتسليم الواجب:"}
-              </label>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "8px" }}>
-                <input
-                  type="date"
-                  aria-label="تاريخ انتهاء الإتاحة"
-                  required
-                  value={closeDeadlineDate}
-                  onChange={(e) => setCloseDeadlineDate(e.target.value)}
-                  onBlur={() => markTouched("closeDeadline")}
-                  style={{
-                    width: "100%",
-                    boxSizing: "border-box",
-                    minWidth: 0,
-                    padding: "10px 12px",
-                    border: closeDeadlineHasError && !closeDeadlineDate ? "1.5px solid #ef4444" : "1px solid var(--border-color-strong)",
-                    boxShadow: closeDeadlineHasError && !closeDeadlineDate ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
-                    borderRadius: "6px",
-                    fontSize: "18px",
-                    minHeight: 48,
-                    fontWeight: 700,
-                    background: "var(--bg-surface)",
-                    color: "var(--text-main)",
-                  }}
-                />
-                <TimeField label="نهاية الإتاحة" value={closeDeadlineTime} onChange={setCloseDeadlineTime}
-                  onBlur={() => markTouched("closeDeadline")} error={closeDeadlineHasError && !closeDeadlineTime.trim()} />
-              </div>
-              {closeDeadlineHasError && (
-                <div style={{ display: "flex", alignItems: "center", gap: "5px", marginTop: "5px", color: "#ef4444", fontSize: "11.5px", fontWeight: 700 }}>
-                  <AlertCircle size={13} style={{ flexShrink: 0 }} />
-                  <span>يلزم ادخاله</span>
-                </div>
-              )}
-            </div>
-
-            {/* Unified Schedule Checkbox (Calendar + Instant Notification - Image 1 combined) */}
-            <label
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "10px 12px",
-                background: (showOnStudentCalendar && sendScheduledNotification) ? "rgba(5, 150, 105, 0.12)" : "var(--bg-surface)",
-                border: (showOnStudentCalendar && sendScheduledNotification) ? "1.5px solid #059669" : "1px solid var(--border-color)",
-                borderRadius: "8px",
-                cursor: "pointer",
-                transition: "all 0.2s ease",
-              }}
-            >
-              <div style={{ fontSize: "14px" }}>
-                <strong style={{ color: "var(--text-main)", display: "block", marginBottom: "2px" }}>
-                  إظهار في تقويم وجدول الطلاب وإرسال إشعار فوري
-                </strong>
-                <span style={{ fontSize: "14px", color: "var(--text-muted)" }}>
-                  تثبيت الموعد في جدول الطلاب مع إرسال تنبيه مباشر لهم
-                </span>
-              </div>
-              <input
-                type="checkbox"
-                checked={showOnStudentCalendar && sendScheduledNotification}
-                onChange={(e) => {
-                  const val = e.target.checked;
-                  setShowOnStudentCalendar(val);
-                  setSendScheduledNotification(val);
-                }}
-                style={{ width: "18px", height: "18px", accentColor: "#059669", cursor: "pointer", flexShrink: 0 }}
-              />
-            </label>
-          </div>
-        </div>
-
+          </section>
         {/* Right Column: Questions Canvas (Extraction Review or Manual Builder) */}
         <div className="quiz-question-canvas" style={{ background: "var(--bg-surface, #ffffff)", border: "1px solid var(--border-color, #e2e8f0)", borderRadius: "16px", padding: "24px" }}>
 
@@ -1489,37 +1223,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                 جاهز {assessmentType === "quiz" ? "لاستخراج أسئلة الاختبار الإلكتروني" : "لاستخراج أسئلة الواجب المنزلي"}
               </h3>
               <p style={{ margin: "0 0 18px", fontSize: "14px", maxWidth: "440px", marginInline: "auto" }}>
-                قم برفع ملف الامتحان أو بنك الأسئلة أدناه لاستخراج جميع الأسئلة والخيارات والرسومات وتعديلها فوراً، أو ابدأ بإضافة الأسئلة يدوياً.
+                قم برفع ملف الامتحان أو بنك الأسئلة أعلاه لاستخراج جميع الأسئلة والخيارات والرسومات وتعديلها فوراً، أو ابدأ بإضافة الأسئلة يدوياً.
               </p>
-
-              <div
-                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setDragOver(false);
-                  if (e.dataTransfer.files?.[0]) handleExtractFromFile(e.dataTransfer.files[0]);
-                }}
-                onClick={() => fileInputRef.current?.click()}
-                style={{
-                  maxWidth: "460px",
-                  margin: "0 auto",
-                  padding: "24px 18px",
-                  border: dragOver ? "2px dashed #0f766e" : "2px dashed #cbd5e1",
-                  borderRadius: "12px",
-                  background: dragOver ? "#f0fdfa" : "#f8fafc",
-                  cursor: "pointer",
-                  transition: "all 0.2s ease",
-                }}
-              >
-                <UploadCloud size={36} style={{ color: "#0f766e", margin: "0 auto 10px" }} />
-                <strong style={{ display: "block", fontSize: "14px", color: "#0f172a", marginBottom: "4px" }}>
-                  اضغط لاختيار ملف أسئلة أو اسحبه هنا
-                </strong>
-                <span style={{ fontSize: "14px", color: "#64748b" }}>
-                  يدعم ملفات PDF، Word (.docx)، نصوص TXT، وصور الامتحانات
-                </span>
-              </div>
 
               <div style={{ marginTop: "24px", display: "flex", alignItems: "center", justifyContent: "center", gap: "12px" }}>
                 <div style={{ height: "1px", background: "var(--border-color, #e2e8f0)", flex: 1, maxWidth: "120px" }} />
@@ -1646,6 +1351,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
 
                   <button
                     onClick={handleInitiatePublish}
+                    disabled={approved || isPublishing || extractingFile}
                     className="btn-secondary quiz-desktop-publish"
                     style={{ background: approved ? "#15803d" : (assessmentType === "quiz" ? "#0f766e" : "#0f392b"), fontSize: "14px", gap: "6px" }}
                   >
@@ -2278,6 +1984,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                       <button
                         type="button"
                         onClick={handleInitiatePublish}
+                        disabled={approved || isPublishing || extractingFile}
                         className="btn-primary quiz-final-publish"
                         style={{
                           background: approved ? "#15803d" : (assessmentType === "quiz" ? "#0f766e" : "#0f392b"),
@@ -2320,7 +2027,320 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
               </div>
             )}
           </div>
-        </div>
+        </> : <section className="quiz-settings-panel assessment-step-panel">
+          {editorStage === 'setup' ? <>
+          <div className="quiz-setup-fields">
+          {/* Assessment Mode Selector (Quiz vs Assignment) */}
+          <div style={{ marginBottom: "18px" }}>
+            <label style={{ display: "block", fontSize: "14px", fontWeight: 800, marginBottom: "6px", color: "var(--text-main)" }}>
+              نوع النشاط التعليمي:
+            </label>
+            <div className="responsive-2col" style={{ gap: "8px" }}>
+              <button
+                type="button"
+                onClick={() => setAssessmentType("quiz")}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "6px",
+                  padding: "10px 6px",
+                  borderRadius: "10px",
+                  border: assessmentType === "quiz" ? "2px solid #0f766e" : "1px solid var(--border-color)",
+                  background: assessmentType === "quiz" ? "#0f766e" : "var(--bg-surface-secondary)",
+                  color: assessmentType === "quiz" ? "#ffffff" : "var(--text-main)",
+                  fontSize: "12.5px",
+                  fontWeight: 800,
+                  cursor: "pointer",
+                }}
+              >
+                <span>اختبار إلكتروني</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setAssessmentType("assignment")}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "6px",
+                  padding: "10px 6px",
+                  borderRadius: "10px",
+                  border: assessmentType === "assignment" ? "2px solid #0f392b" : "1px solid var(--border-color)",
+                  background: assessmentType === "assignment" ? "#0f392b" : "var(--bg-surface-secondary)",
+                  color: assessmentType === "assignment" ? "#ffffff" : "var(--text-main)",
+                  fontSize: "12.5px",
+                  fontWeight: 800,
+                  cursor: "pointer",
+                }}
+              >
+                <span>واجب منزلي</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Academic Year Selection */}
+          <div style={{ marginBottom: "16px" }}>
+            <label style={{ display: "block", fontSize: "14px", fontWeight: 700, marginBottom: "6px", color: "var(--text-main)" }}>
+              الصف الدراسي:
+            </label>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "6px", marginBottom: "12px" }}>
+              {[
+                { id: "1st_secondary" as const, label: "الأول الثانوي" },
+                { id: "2nd_secondary" as const, label: "الثاني الثانوي" },
+                { id: "3rd_secondary" as const, label: "الثالث الثانوي" },
+              ].map((y) => (
+                <button
+                  key={y.id}
+                  type="button"
+                  onClick={() => { setSelectedAcademicYear(y.id); setSelectedLessonIds([]); setSelectedModuleIds([]); setSelectedCourseId(''); }}
+                  style={{
+                    padding: "8px 2px",
+                    borderRadius: "8px",
+                    border: selectedAcademicYear === y.id ? "2px solid #059669" : "1px solid var(--border-color)",
+                    background: selectedAcademicYear === y.id ? "#0f392b" : "var(--bg-surface-secondary)",
+                    color: selectedAcademicYear === y.id ? "#ffffff" : "var(--text-main)",
+                    fontSize: "11.5px",
+                    fontWeight: 800,
+                    cursor: "pointer",
+                    textAlign: "center",
+                    minWidth: 0,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {y.label}
+                </button>
+              ))}
+            </div>
+
+
+
+          </div>
+
+          {/* Assessment title is editable */}
+          <div style={{ marginBottom: "16px" }}>
+            <label style={{ display: "block", fontSize: "14px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
+              اسم {assessmentType === "quiz" ? "الاختبار" : "الواجب"}:
+            </label>
+            <input
+              type="text"
+              required
+              value={quizTitle}
+              onChange={(e) => setQuizTitle(e.target.value)}
+              onBlur={() => markTouched("quizTitle")}
+              placeholder={`أدخل اسم ${assessmentType === "quiz" ? "الاختبار" : "الواجب"} هنا...`}
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                border: quizTitleHasError ? "1.5px solid #ef4444" : "1px solid var(--border-color-strong)",
+                boxShadow: quizTitleHasError ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
+                borderRadius: "8px",
+                fontSize: "14px",
+                background: "var(--bg-surface)",
+                color: "var(--text-main)",
+                boxSizing: "border-box",
+                marginBottom: quizTitleHasError ? "4px" : "16px",
+              }}
+            />
+            {quizTitleHasError && (
+              <div style={{ display: "flex", alignItems: "center", gap: "5px", marginBottom: "14px", color: "#ef4444", fontSize: "11.5px", fontWeight: 700 }}>
+                <AlertCircle size={13} style={{ flexShrink: 0 }} />
+                <span>يلزم ادخاله</span>
+              </div>
+            )}
+          </div>
+
+
+          <AssessmentScopePicker courses={gradeCourses} courseId={currentCourse?.id}
+            lessonIds={selectedLessonIds} moduleIds={selectedModuleIds}
+            onChange={(id, lessons, modules) => { setSelectedCourseId(id); setSelectedLessonIds(lessons); setSelectedModuleIds(modules); markTouched('lesson'); }} />
+          {lessonHasError && <p className="registration-error">اختَر درسًا أو وحدة واحدة على الأقل.</p>}
+
+
+          </div>
+          <footer className="assessment-step-actions">
+            <button type="button" className="btn-secondary" onClick={() => { setError(null); setEditorStage('review'); }}>{tr('lesson.backQuestions')}</button>
+            <button type="button" className="btn-primary" onClick={handleDetailsNext}>{tr('lesson.nextSchedule')}</button>
+          </footer>
+          </> : <>
+          <div className="quiz-publication-fields" style={{ marginBottom: "18px", background: "var(--bg-surface-secondary, #f8fafc)", border: "1.5px solid var(--border-color, #e2e8f0)", borderRadius: "10px", padding: "14px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "12px" }}>
+              <Clock size={16} style={{ color: "#059669" }} />
+              <strong style={{ fontSize: "14px", color: "var(--text-main)" }}>
+                مواعيد الإتاحة ومدة الحل:
+              </strong>
+            </div>
+
+            {/* Exam Timer */}
+            {assessmentType === "quiz" && (
+              <div style={{ marginBottom: "12px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+                  <label style={{ fontSize: "11.5px", fontWeight: 700, color: "var(--text-main)" }}>
+                    مدة حل الاختبار للطالب:
+                  </label>
+                  {quizDurationMinutes ? (
+                    <strong style={{ fontSize: "14px", color: "#059669" }}>{quizDurationMinutes} دقيقة</strong>
+                  ) : null}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <input
+                    type="number"
+                    required
+                    min={5}
+                    max={300}
+                    step={5}
+                    value={quizDurationMinutes}
+                    placeholder="أدخل مدة الحل بالدقائق (مثال: 45)"
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setQuizDurationMinutes(val === "" ? "" : Math.max(1, parseInt(val) || 0));
+                    }}
+                    onBlur={() => markTouched("duration")}
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      border: durationHasError ? "1.5px solid #ef4444" : "1px solid var(--border-color-strong)",
+                      boxShadow: durationHasError ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
+                      borderRadius: "6px",
+                      fontSize: "14px",
+                      fontWeight: 800,
+                      background: "var(--bg-surface)",
+                      color: "var(--text-main)",
+                    }}
+                  />
+                  <span style={{ fontSize: "14px", color: "var(--text-muted)", flexShrink: 0 }}>دقيقة</span>
+                </div>
+                {durationHasError && (
+                  <div style={{ display: "flex", alignItems: "center", gap: "5px", marginTop: "5px", color: "#ef4444", fontSize: "11.5px", fontWeight: 700 }}>
+                    <AlertCircle size={13} style={{ flexShrink: 0 }} />
+                    <span>يلزم ادخاله</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Start Date & Time */}
+            <div style={{ marginBottom: "10px" }}>
+              <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
+                {assessmentType === "quiz" ? "موعد النشر وبدء الإتاحة:" : "موعد نشر الواجب:"}
+              </label>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "8px" }}>
+                <input
+                  type="date"
+                  aria-label="تاريخ بداية الإتاحة"
+                  required
+                  value={publishStartDate}
+                  onChange={(e) => setPublishStartDate(e.target.value)}
+                  onBlur={() => markTouched("publishStart")}
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    minWidth: 0,
+                    padding: "10px 12px",
+                    border: publishStartHasError && !publishStartDate ? "1.5px solid #ef4444" : "1px solid var(--border-color-strong)",
+                    boxShadow: publishStartHasError && !publishStartDate ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
+                    borderRadius: "6px",
+                    fontSize: "18px",
+                    minHeight: 48,
+                    fontWeight: 700,
+                    background: "var(--bg-surface)",
+                    color: "var(--text-main)",
+                  }}
+                />
+                <TimeField label="بداية الإتاحة" value={publishStartTime} onChange={setPublishStartTime}
+                  onBlur={() => markTouched("publishStart")} error={publishStartHasError && !publishStartTime.trim()} />
+              </div>
+              {publishStartHasError && (
+                <div style={{ display: "flex", alignItems: "center", gap: "5px", marginTop: "5px", color: "#ef4444", fontSize: "11.5px", fontWeight: 700 }}>
+                  <AlertCircle size={13} style={{ flexShrink: 0 }} />
+                  <span>يلزم ادخاله</span>
+                </div>
+              )}
+            </div>
+
+            {/* Close Date & Time */}
+            <div style={{ marginBottom: "12px" }}>
+              <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
+                {assessmentType === "quiz" ? "موعد انتهاء الإتاحة وإغلاق الاختبار:" : "آخر موعد لتسليم الواجب:"}
+              </label>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "8px" }}>
+                <input
+                  type="date"
+                  aria-label="تاريخ انتهاء الإتاحة"
+                  required
+                  value={closeDeadlineDate}
+                  onChange={(e) => setCloseDeadlineDate(e.target.value)}
+                  onBlur={() => markTouched("closeDeadline")}
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    minWidth: 0,
+                    padding: "10px 12px",
+                    border: closeDeadlineHasError && !closeDeadlineDate ? "1.5px solid #ef4444" : "1px solid var(--border-color-strong)",
+                    boxShadow: closeDeadlineHasError && !closeDeadlineDate ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : undefined,
+                    borderRadius: "6px",
+                    fontSize: "18px",
+                    minHeight: 48,
+                    fontWeight: 700,
+                    background: "var(--bg-surface)",
+                    color: "var(--text-main)",
+                  }}
+                />
+                <TimeField label="نهاية الإتاحة" value={closeDeadlineTime} onChange={setCloseDeadlineTime}
+                  onBlur={() => markTouched("closeDeadline")} error={closeDeadlineHasError && !closeDeadlineTime.trim()} />
+              </div>
+              {closeDeadlineHasError && (
+                <div style={{ display: "flex", alignItems: "center", gap: "5px", marginTop: "5px", color: "#ef4444", fontSize: "11.5px", fontWeight: 700 }}>
+                  <AlertCircle size={13} style={{ flexShrink: 0 }} />
+                  <span>يلزم ادخاله</span>
+                </div>
+              )}
+            </div>
+
+            {/* Unified Schedule Checkbox (Calendar + Instant Notification - Image 1 combined) */}
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "10px 12px",
+                background: (showOnStudentCalendar && sendScheduledNotification) ? "rgba(5, 150, 105, 0.12)" : "var(--bg-surface)",
+                border: (showOnStudentCalendar && sendScheduledNotification) ? "1.5px solid #059669" : "1px solid var(--border-color)",
+                borderRadius: "8px",
+                cursor: "pointer",
+                transition: "all 0.2s ease",
+              }}
+            >
+              <div style={{ fontSize: "14px" }}>
+                <strong style={{ color: "var(--text-main)", display: "block", marginBottom: "2px" }}>
+                  إظهار في تقويم وجدول الطلاب وإرسال إشعار فوري
+                </strong>
+                <span style={{ fontSize: "14px", color: "var(--text-muted)" }}>
+                  تثبيت الموعد في جدول الطلاب مع إرسال تنبيه مباشر لهم
+                </span>
+              </div>
+              <input
+                type="checkbox"
+                checked={showOnStudentCalendar && sendScheduledNotification}
+                onChange={(e) => {
+                  const val = e.target.checked;
+                  setShowOnStudentCalendar(val);
+                  setSendScheduledNotification(val);
+                }}
+                style={{ width: "18px", height: "18px", accentColor: "#059669", cursor: "pointer", flexShrink: 0 }}
+              />
+            </label>
+          </div>
+          <footer className="assessment-step-actions">
+            <button type="button" className="btn-secondary" disabled={isPublishing} onClick={() => { setError(null); setEditorStage('setup'); }}>{tr('lesson.backDetails')}</button>
+            <button type="button" className="btn-primary" disabled={isPublishing} onClick={handleReviewPublication}>{tr('lesson.reviewPublication')}</button>
+          </footer>
+          </>}
+        </section>}
+      </div>
       </>
       )}
 

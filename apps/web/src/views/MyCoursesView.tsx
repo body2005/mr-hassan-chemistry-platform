@@ -52,6 +52,7 @@ import { FloatingProgressFab } from '../components/FloatingProgressFab';
 import { assessmentBand, assessmentPercent } from '../services/assessmentOutcome';
 import { useCourseAssessments } from '../services/useCourseAssessments';
 import { compareNewestLessons, newestLessonsFirst } from '../services/lessonOrder';
+import { LessonWatchProgress } from '../components/LessonWatchProgress';
 
 const VideoLessonPage = lazy(() => import('../components/VideoLessonPage')
   .then(module => ({ default: module.VideoLessonPage })));
@@ -298,14 +299,29 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   // Track completed quizzes
   const [completedQuizzes, setCompletedQuizzes] = useState<Record<string, { score: number; maxScore: number; completedAt: string }>>({});
 
-  useEffect(() => {
-    void courseService.getLessonProgress()
-      .then((items) => setCompletedLessonIds(items.filter((item) => item.completion_percent >= 100).map((item) => item.lesson_id)))
-      .catch(() => setCompletedLessonIds([]));
-  }, [currentUser?.id]);
+  const [watchProgress, setWatchProgress] = useState<{ userId: string; values: Record<string, number>; error: boolean }>();
 
   // Interactive Modals State
   const [activeLessonModal, setActiveLessonModal] = useState<VideoLesson | null>(null);
+  useEffect(() => {
+    const userId = currentUser?.id;
+    if (!isStudent || !userId || activeLessonModal) return;
+    let active = true, sequence = 0;
+    const load = () => {
+      const request = ++sequence;
+      void courseService.getLessonProgress({ skipCache: true }).then(items => {
+        if (!active || sequence !== request) return;
+        setWatchProgress({ userId, error: false, values: Object.fromEntries(items.map(item => [item.lesson_id, item.completion_percent])) });
+        setCompletedLessonIds(items.filter(item => item.completion_percent >= 100).map(item => item.lesson_id));
+      }).catch(() => {
+        if (active && sequence === request) setWatchProgress({ userId, values: {}, error: true });
+      });
+    };
+    load();
+    // A final telemetry batch can finish just after the player closes.
+    window.addEventListener('lms_video_progress_updated', load);
+    return () => { active = false; window.removeEventListener('lms_video_progress_updated', load); };
+  }, [currentUser?.id, isStudent, activeLessonModal]);
   const closeLesson = useLessonNavigation(activeLessonModal, setActiveLessonModal, {
     userId: currentUser?.id, courses: validEnrolledCourses,
     onRestore: course => setSelectedCourseId(course.id),
@@ -1561,6 +1577,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     </div>
 
                     {/* Lesson Card Body */}
+                    {isStudent && isPurchased && <LessonWatchProgress
+                      percent={watchProgress?.userId === currentUser?.id && !watchProgress.error ? watchProgress.values[lesson.id] ?? 0 : undefined}
+                      unavailable={watchProgress?.userId === currentUser?.id && watchProgress.error} />}
                     <div style={{ padding: "18px", flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
                       <div>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px", marginBottom: "6px" }}>
@@ -1733,6 +1752,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         </div>
 
                         {/* Content */}
+                        {isStudent && <LessonWatchProgress
+                          percent={watchProgress?.userId === currentUser?.id && !watchProgress.error ? watchProgress.values[lesson.id] ?? 0 : undefined}
+                          unavailable={watchProgress?.userId === currentUser?.id && watchProgress.error} />}
                         <div style={{ padding: "18px", flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
                           <div>
                             {lesson.description && (
