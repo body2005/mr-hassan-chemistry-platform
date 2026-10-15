@@ -1,4 +1,5 @@
 import { QuestionPointsTable } from "../components/QuestionPointsTable";
+import { sharedAssessmentUrl } from '../utils/sharedAssessment';
 import { assessmentTimestamp } from "../services/assessmentSchedule";
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
@@ -882,7 +883,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
 
       newCalendarEvent.id = `evt_assessment_${assessmentType}_${publishedId}`;
       newNotif.id = `assessment-published:${assessmentType}:${publishedId}`;
-      newNotif.actionUrl = `#MyCourses?assessment=${publishedId}&kind=${assessmentType}`;
+      newNotif.actionUrl = sharedAssessmentUrl({ courseId: currentCourse.id, assessmentId: publishedId, kind: assessmentType });
 
       // 4. Save to Teacher Quiz History Archive (local mirror for the teacher)
       quizHistoryService.saveQuiz({

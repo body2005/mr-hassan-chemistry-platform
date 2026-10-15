@@ -1,6 +1,7 @@
 import { useApplyDisplaySize } from "./services/displaySize";
 import { PageLoadingScreen } from "./components/PageLoadingScreen";
 import { readSharedLesson, clearSharedLesson } from './utils/sharedLesson';
+import { readSharedAssessment, clearSharedAssessment, sharedAssessmentUrl } from './utils/sharedAssessment';
 import { lazy, Suspense, useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Sidebar, NavTab } from "./components/Sidebar";
 import { Header } from "./components/Header";
@@ -109,7 +110,7 @@ function App() {
     return (saved as "light" | "dark") || "light";
   });
 
-  const { lang, toggleLang: handleToggleLang } = useTranslation();
+  const { lang, t: tr, toggleLang: handleToggleLang } = useTranslation();
 
   const [courses, setCourses] = useState<Course[]>(() => courseService.getCachedCourses());
   // Cached identity does not imply that this user's course catalog is loaded.
@@ -294,6 +295,7 @@ function App() {
 
   const [authInitialTab, setAuthInitialTab] = useState(() => readAuthTab(window.location.hash));
   const [sharedLessonTarget, setSharedLessonTarget] = useState(readSharedLesson);
+  const [sharedAssessmentTarget, setSharedAssessmentTarget] = useState(readSharedAssessment);
   const [menuOpen, setMenuOpen] = useState(false);
 
   // Navigate to Tab and push to Google Chrome history stack
@@ -304,22 +306,28 @@ function App() {
       : rawTab;
     setActiveTab(targetTab);
     localStorage.setItem("lms_active_tab", targetTab);
-    const targetHash = `#${targetTab.toLowerCase()}`;
+    const targetHash = targetTab === 'MyCourses' && sharedAssessmentTarget
+      ? sharedAssessmentUrl(sharedAssessmentTarget) : `#${targetTab.toLowerCase()}`;
     if (window.location.hash.toLowerCase() !== targetHash) {
       window.location.hash = targetHash;
     }
-  }, [currentUser]);
+  }, [currentUser, sharedAssessmentTarget]);
 
   useEffect(() => {
-    if (sharedLessonTarget && authStatus === 'unauthenticated' && activeTab !== 'Auth') {
+    if ((sharedLessonTarget || sharedAssessmentTarget) && authStatus === 'unauthenticated' && activeTab !== 'Auth') {
       setAuthInitialTab('signin');
       navigateToTab('Auth');
     }
-  }, [sharedLessonTarget, authStatus, activeTab, navigateToTab]);
+  }, [sharedLessonTarget, sharedAssessmentTarget, authStatus, activeTab, navigateToTab]);
 
   useEffect(() => {
     const receiveLink = () => {
-      if (/^#(?:mycourses|lessonmanagement)\?/i.test(window.location.hash)) setSharedLessonTarget(readSharedLesson());
+      if (/^#(?:mycourses|lessonmanagement)\?/i.test(window.location.hash)) {
+        setSharedLessonTarget(readSharedLesson());
+        setSharedAssessmentTarget(readSharedAssessment());
+      } else if (!/^#auth(?:\?|$)/i.test(window.location.hash)) {
+        setSharedAssessmentTarget(null);
+      }
     };
     window.addEventListener('hashchange', receiveLink);
     return () => window.removeEventListener('hashchange', receiveLink);
@@ -520,6 +528,13 @@ function App() {
       navigateToTab("PaymentManagement");
       return;
     }
+    if (currentUser?.role === 'student' && notif.actionUrl && /^#mycourses\?.*assessment=/i.test(notif.actionUrl)) {
+      window.location.hash = notif.actionUrl;
+      setSharedLessonTarget(readSharedLesson());
+      setSharedAssessmentTarget(readSharedAssessment());
+      setActiveTab('MyCourses');
+      return;
+    }
     if (notif.actionTab) {
       if (notif.actionUrl && /^#(?:mycourses|lessonmanagement)\?/i.test(notif.actionUrl)) {
         window.location.hash = notif.actionUrl;
@@ -546,6 +561,7 @@ function App() {
     } finally {
       authSyncId.current += 1;
       clearSharedLesson(); setSharedLessonTarget(null);
+      clearSharedAssessment(); setSharedAssessmentTarget(null);
       setCurrentUser(null);
       setCourseScopeReady(null);
       setCourseHydrationIssue(false);
@@ -741,6 +757,9 @@ function App() {
           onNavigateHome={() => navigateToTab(currentUser?.role === "teacher" ? "LessonManagement" : "MyCourses")}
           currentUser={currentUser}
         />
+        {activeTab === 'MyCourses' && !sharedAssessmentTarget && new URLSearchParams(window.location.hash.split('?')[1] || '').has('assessment') && (
+          <p role="alert">{tr('lesson.sharedAssessmentUnavailable')}</p>
+        )}
 
         {courseHydrationIssue && authStatus !== 'temporarily_unavailable' && (
           <div role="alert" className="course-hydration-warning">
@@ -781,6 +800,14 @@ function App() {
           <MyCoursesView
             initialCourseId={sharedLessonTarget?.courseId || enrollmentIntent?.id}
             initialLessonId={sharedLessonTarget?.lessonId}
+            initialAssessment={sharedAssessmentTarget ?? undefined}
+            onInitialAssessmentHandled={() => {
+              clearSharedAssessment(); setSharedAssessmentTarget(null);
+              const [page, query = ''] = window.location.hash.split('?');
+              const params = new URLSearchParams(query);
+              params.delete('assessment'); params.delete('kind');
+              window.history.replaceState(window.history.state, '', `${page}${params.size ? `?${params}` : ''}`);
+            }}
             onInitialLessonHandled={() => { clearSharedLesson(); setSharedLessonTarget(null); }}
             enrolledCourses={enrolledCoursesList}
             onEnrollCourse={handleEnrollCourse}

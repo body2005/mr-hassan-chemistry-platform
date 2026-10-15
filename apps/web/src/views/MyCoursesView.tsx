@@ -1,4 +1,5 @@
 import { ScheduleBadges } from "../components/ScheduleBadges";
+import type { SharedAssessment } from '../utils/sharedAssessment';
 import { searchText } from "../utils/searchText";
 import { serverNow, synchronizeServerTime } from "../services/availabilityRefresh";
 import { useLessonNavigation } from '../services/useLessonNavigation';
@@ -44,7 +45,7 @@ import { Course, CourseAssessmentRef, CurrentUser, NotificationItem, StudentProf
 import { Language, translations, useTranslation } from "../utils/i18n";
 import { EducationalBookItem, RevisionPackageItem } from "./GeneralHomeView";
 import { courseService } from "../services/lmsService";
-import { apiRequest, fetchApiBlob, uploadWithProgress } from "../services/apiClient";
+import { apiRequest, fetchApiBlob, uploadWithProgress, getApiAuthGeneration } from "../services/apiClient";
 import { useToast, ToastRegion } from "../components/ToastProvider";
 import { FormulaRenderer } from "../components/FormulaRenderer";
 import { PaymentTarget, lessonAccessService } from "../services/paymentService";
@@ -145,6 +146,8 @@ export interface CourseQuiz {
 interface MyCoursesViewProps {
   initialCourseId?: string;
   initialLessonId?: string;
+  initialAssessment?: SharedAssessment;
+  onInitialAssessmentHandled?: () => void;
   onInitialLessonHandled?: () => void;
   enrolledCourses: Course[];
   onEnrollCourse?: (courseId: string) => Promise<void>;
@@ -169,6 +172,8 @@ interface MyCoursesViewProps {
 export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   initialCourseId,
   initialLessonId,
+  initialAssessment,
+  onInitialAssessmentHandled,
   onInitialLessonHandled,
   enrolledCourses,
   onEnrollCourse,
@@ -223,6 +228,53 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   // Sub-tabs: Lessons, Revisions, Assignments, Quizzes, Books
   const [activeContentTab, setActiveContentTab] = useState<"lessons" | "revisions" | "assignments" | "quizzes" | "books">("lessons");
+  const [assessmentPreview, setAssessmentPreview] = useState<{ userId: string; courseId: string; item: CourseAssessmentRef } | null>(null);
+  const [checkingAssessment, setCheckingAssessment] = useState(false);
+  const assessmentHandled = useRef(onInitialAssessmentHandled);
+  assessmentHandled.current = onInitialAssessmentHandled;
+  const assessmentFeedback = useRef({ tr, toast });
+  assessmentFeedback.current = { tr, toast };
+  const assessmentCourseId = initialAssessment?.courseId;
+  const assessmentId = initialAssessment?.assessmentId;
+  const assessmentKind = initialAssessment?.kind;
+  const assessmentUserId = currentUser?.id;
+  useEffect(() => {
+    setAssessmentPreview(null);
+  }, [currentUser?.id]);
+  useEffect(() => {
+    if (!assessmentCourseId || !assessmentId || !assessmentKind || !assessmentUserId || !isStudent) { setCheckingAssessment(false); return; }
+    const { tr, toast } = assessmentFeedback.current;
+    const course = validEnrolledCourses.find(item => item.id === assessmentCourseId);
+    if (!course) {
+      setCheckingAssessment(false);
+      setAssessmentPreview(null);
+      toast({ message: tr('lesson.sharedAssessmentUnavailable'), tone: 'warning' });
+      assessmentHandled.current?.();
+      return;
+    }
+    let active = true;
+    const authGeneration = getApiAuthGeneration();
+    const isCurrent = () => active && authGeneration === getApiAuthGeneration();
+    const controller = new AbortController();
+    setCheckingAssessment(true);
+    setAssessmentPreview(null);
+    void courseService.getCourseAssessmentRefs(course.id, { skipCache: true, signal: controller.signal }).then(items => {
+      if (!isCurrent()) return;
+      const target = items.find(item => item.id === assessmentId && item.kind === assessmentKind);
+      if (target?.accessible && (!target.availabilityState || target.availabilityState === 'open')) {
+        setSelectedCourseId(course.id);
+        setActiveContentTab(target.kind === 'quiz' ? 'quizzes' : 'assignments');
+        setCourseSearchQuery('');
+        setAssessmentPreview({ userId: assessmentUserId, courseId: course.id, item: target });
+      } else toast({ message: tr('lesson.sharedAssessmentUnavailable'), tone: 'warning' });
+      assessmentHandled.current?.();
+    }).catch(() => {
+      if (!isCurrent()) return;
+      toast({ message: tr('lesson.sharedAssessmentRetry'), tone: 'danger' });
+      assessmentHandled.current?.();
+    }).finally(() => { if (isCurrent()) setCheckingAssessment(false); });
+    return () => { active = false; controller.abort(); };
+  }, [assessmentCourseId, assessmentId, assessmentKind, assessmentUserId, validEnrolledCourses, isStudent]);
 
   // Search query within current course tabs
   const [courseSearchQuery, setCourseSearchQuery] = useState("");
@@ -453,11 +505,51 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   const [assignmentFile, setAssignmentFile] = useState<File | null>(null);
   const [assignmentUploading, setAssignmentUploading] = useState(false);
   const [assignmentUploadDone, setAssignmentUploadDone] = useState<{ version: number; submittedAt: string } | null>(null);
+  const solveGeneration = useRef({ quiz: 0, assignment: 0 });
+  const solveUser = useRef(currentUser?.id);
+  solveUser.current = currentUser?.id;
+
+  const closeServerQuiz = useCallback(() => {
+    solveGeneration.current.quiz += 1;
+    setServerQuizLoading(false);
+    setServerQuiz(null);
+    setServerQuizError(null);
+    setServerQuizAttempt(null);
+    setServerQuizDeadline(null);
+    setServerQuizRemaining(null);
+    setServerQuizResult(null);
+    setServerQuizAnswers({});
+    setShowQuizSubmitConfirm(false);
+  }, []);
+  const closeServerAssignment = useCallback(() => {
+    solveGeneration.current.assignment += 1;
+    setServerAssignmentLoading(false);
+    setServerAssignment(null);
+    setServerAssignmentError(null);
+    setAssignmentFile(null);
+    setAssignmentUploadDone(null);
+  }, []);
+  useEffect(() => {
+    const generations = solveGeneration.current;
+    closeServerQuiz(); closeServerAssignment();
+    return () => { generations.quiz += 1; generations.assignment += 1; };
+  }, [currentUser?.id, closeServerQuiz, closeServerAssignment]);
 
   // ── Browser Back Button & History Stack for Overlays / Modals ──
   const overlayHistoryStack = useRef<string[]>([]);
+  const ignoredOverlayPops = useRef(0);
 
   const closeOverlay = useCallback((overlayKey: string, directClose: () => void) => {
+    if (overlayKey === 'serverQuiz' || overlayKey === 'serverAssignment') {
+      // Close synchronously; a pending browser Back must not close a new solve.
+      directClose();
+      if (overlayHistoryStack.current.includes(overlayKey)) {
+        overlayHistoryStack.current = overlayHistoryStack.current.filter(key => key !== overlayKey);
+        ignoredOverlayPops.current += 1;
+        window.history.back();
+      }
+      return;
+    }
     if (overlayHistoryStack.current.includes(overlayKey)) {
       window.history.back();
     } else {
@@ -475,6 +567,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   };
 
   const handleHeaderNavigateHome = () => {
+    closeServerQuiz(); closeServerAssignment();
     overlayHistoryStack.current = [];
     setShowQuizSubmitConfirm(false);
     setServerQuiz(null);
@@ -493,6 +586,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   useEffect(() => {
     const handleCloseOverlays = () => {
+      closeServerQuiz(); closeServerAssignment();
       overlayHistoryStack.current = [];
       setShowQuizSubmitConfirm(false);
       setServerQuiz(null);
@@ -509,12 +603,12 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     };
     window.addEventListener("lms:close-overlays", handleCloseOverlays);
     return () => window.removeEventListener("lms:close-overlays", handleCloseOverlays);
-  }, []);
+  }, [closeServerQuiz, closeServerAssignment]);
 
   // Sync overlays with browser history for Google Chrome Back button support
-  const hasServerQuiz = Boolean(serverQuiz);
+  const hasServerQuiz = Boolean(serverQuiz || serverQuizLoading || serverQuizError);
   const hasQuizResultPage = Boolean(quizResultPage);
-  const hasServerAssignment = Boolean(serverAssignment);
+  const hasServerAssignment = Boolean(serverAssignment || serverAssignmentLoading || serverAssignmentError);
   const hasActiveBookModal = Boolean(activeBookModal);
   const hasActiveQuizHistoryModal = Boolean(activeQuizHistoryModal);
   const hasActiveQuizModal = Boolean(activeQuizModal);
@@ -594,12 +688,14 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   useEffect(() => {
     const handlePopState = () => {
+      if (ignoredOverlayPops.current > 0) { ignoredOverlayPops.current -= 1; return; }
       const top = overlayHistoryStack.current.pop();
       if (!top) return;
 
       if (top === "quizSubmitConfirm") {
         setShowQuizSubmitConfirm(false);
       } else if (top === "serverQuiz") {
+        closeServerQuiz();
         setShowQuizSubmitConfirm(false);
         setServerQuiz(null);
         setServerQuizError(null);
@@ -610,6 +706,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         setQuizResultPage(null);
         setQuizResultError(null);
       } else if (top === "serverAssignment") {
+        closeServerAssignment();
         setServerAssignment(null);
         setServerAssignmentError(null);
         setAssignmentFile(null);
@@ -628,7 +725,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     return () => {
       window.removeEventListener("popstate", handlePopState);
     };
-  }, []);
+  }, [closeServerQuiz, closeServerAssignment]);
 
   /** Open the standalone graded-result page for the given attempt (or latest attempt if omitted). */
   async function openQuizResultPage(quizId: string, attemptId?: string) {
@@ -671,6 +768,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   }
 
   async function openServerQuiz(assessment: CourseAssessmentRef) {
+    const generation = ++solveGeneration.current.quiz;
+    const userId = currentUser?.id;
+    const authGeneration = getApiAuthGeneration();
+    const isCurrent = () => solveGeneration.current.quiz === generation && solveUser.current === userId && authGeneration === getApiAuthGeneration();
     setServerQuiz(null);
     setServerQuizError(null);
     setServerQuizAnswers({});
@@ -689,6 +790,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         attempt: { id: string; attempt_number: number; started_at: string | null; expires_at: string | null } | null;
         questions: Array<Omit<ServerQuizSolve["questions"][number], "options"> & { options: unknown }>;
       }>(`/quizzes/${assessment.id}/solve`, { skipCache: true });
+      if (!isCurrent()) return;
       synchronizeServerTime(data.server_time);
       setServerQuiz({
         quizId: data.quiz.id,
@@ -714,9 +816,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         setServerQuizDeadline(data.attempt.expires_at ? new Date(data.attempt.expires_at).getTime() : null);
       }
     } catch (err) {
-      setServerQuizError(err instanceof Error ? err.message : tr("lesson.examOpenError"));
+      if (isCurrent()) setServerQuizError(err instanceof Error ? err.message : tr("lesson.examOpenError"));
     } finally {
-      setServerQuizLoading(false);
+      if (isCurrent()) setServerQuizLoading(false);
     }
   }
 
@@ -811,6 +913,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   /** Open the standalone assignment page: PDF download → solve → upload. */
   async function openServerAssignment(assessment: CourseAssessmentRef) {
+    const generation = ++solveGeneration.current.assignment;
+    const userId = currentUser?.id;
+    const authGeneration = getApiAuthGeneration();
+    const isCurrent = () => solveGeneration.current.assignment === generation && solveUser.current === userId && authGeneration === getApiAuthGeneration();
     setServerAssignment(null);
     setServerAssignmentError(null);
     setAssignmentFile(null);
@@ -825,6 +931,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         max_score: number;
         my_latest_submission: { version: number; status: string; submitted_at: string | null; has_file: boolean } | null;
       }>(`/assignments/${assessment.id}/solve`);
+      if (!isCurrent()) return;
       setServerAssignment({
         id: data.id,
         title: data.title,
@@ -842,9 +949,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           : null,
       });
     } catch (err) {
-      setServerAssignmentError(err instanceof Error ? err.message : tr("lesson.assignmentOpenError"));
+      if (isCurrent()) setServerAssignmentError(err instanceof Error ? err.message : tr("lesson.assignmentOpenError"));
     } finally {
-      setServerAssignmentLoading(false);
+      if (isCurrent()) setServerAssignmentLoading(false);
     }
   }
 
@@ -1221,6 +1328,20 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   return (
     <div className="page-container">
       <ToastRegion label={tr("lesson.courseMessages")} />
+      {checkingAssessment && <p role="status">{tr('lesson.sharedAssessmentLoading')}</p>}
+      {assessmentPreview?.userId === currentUser?.id && assessmentPreview?.courseId === activeCourse?.id && assessmentPreview && (
+        <section role="region" aria-label={assessmentPreview.item.title} className="card" style={{ padding: 18, marginBottom: 18 }}>
+          <h2>{assessmentPreview.item.title}</h2>
+          <ScheduleBadges startsAt={assessmentPreview.item.startsAt} endsAt={assessmentPreview.item.dueLabel} />
+          <button className="btn-primary" onClick={() => {
+            const target = assessmentPreview.item;
+            setAssessmentPreview(null);
+            if (target.kind === 'quiz') void openServerQuiz(target);
+            else void openServerAssignment(target);
+          }}>{tr('lesson.sharedAssessmentStart')}</button>
+          <button className="btn-secondary" onClick={() => setAssessmentPreview(null)}>{tr('lesson.backCourse')}</button>
+        </section>
+      )}
       {initialLessonId && !validEnrolledCourses.some(item => item.id === initialCourseId) && <p role="status">{tr("lesson.sharedEnrollment")}</p>}
       <button className="btn-secondary" onClick={() => setCatalogOpen(prev => !prev)}>{catalogOpen ? tr("lesson.closeCatalog") : tr("lesson.browseCatalog")}</button>
       {catalogOpen && freeCatalog}
@@ -2664,10 +2785,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  closeOverlay("serverQuiz", () => {
-                    setServerQuiz(null);
-                    setServerQuizError(null);
-                  });
+                  closeOverlay("serverQuiz", closeServerQuiz);
                 }}
                 style={{
                   display: "inline-flex",
@@ -2829,10 +2947,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       className="btn-secondary"
                       style={{ flex: 1, minWidth: "160px", justifyContent: "center", gap: "6px", padding: "12px 18px", fontSize: "14px", fontWeight: 800 }}
                       onClick={() => {
-                        closeOverlay("serverQuiz", () => {
-                          setServerQuiz(null);
-                          setServerQuizError(null);
-                        });
+                        closeOverlay("serverQuiz", closeServerQuiz);
                       }}
                     >
                       {tr("lesson.returnCourse")}
@@ -3741,10 +3856,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
               <button
                 onClick={() => {
-                  closeOverlay("serverAssignment", () => {
-                    setServerAssignment(null);
-                    setServerAssignmentError(null);
-                  });
+                  closeOverlay("serverAssignment", closeServerAssignment);
                 }}
                 style={{ display: "inline-flex", alignItems: "center", gap: "6px", background: "rgb(118, 40, 40)", border: "none", borderRadius: "8px", padding: "7px 14px", fontSize: "12.5px", fontWeight: 800, color: "#ffffff", cursor: "pointer", flexShrink: 0 }}
               >
@@ -3914,10 +4026,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  closeOverlay("serverAssignment", () => {
-                    setServerAssignment(null);
-                    setServerAssignmentError(null);
-                  });
+                  closeOverlay("serverAssignment", closeServerAssignment);
                 }}
                 style={{
                   display: "inline-flex", alignItems: "center", gap: "6px",

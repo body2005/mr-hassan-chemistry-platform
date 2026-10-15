@@ -453,7 +453,7 @@ function mapApiSubmission(item: ApiSubmission): AssignmentSubmission {
     version: item.version,
     submittedAt: item.submitted_at,
     maxScore: item.max_score || 100,
-    finalScore: item.final_score || 0,
+    finalScore: item.final_score ?? null,
     teacherFeedback: item.teacher_feedback || undefined,
     status: item.status === "approved" ? "approved" : item.status === "graded" ? "graded" : "needs_review",
   };

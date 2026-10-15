@@ -252,7 +252,7 @@ export interface AssignmentSubmission {
   version?: number;
   submittedAt: string;
   maxScore: number;
-  finalScore: number;
+  finalScore: number | null;
   teacherFeedback?: string;
   status: "graded" | "needs_review" | "approved";
 }

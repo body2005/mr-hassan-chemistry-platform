@@ -72,4 +72,63 @@ it('checks the precise assessment in a nonfirst course without starting an attem
   await act(async () => admit(assessments));
   expect(host.textContent).toContain('Second course'); expect(host.textContent).toContain('Slow Exam');
   expect(mocks.request).not.toHaveBeenCalled(); expect(handled).toHaveBeenCalled();
+  expect(host.querySelector('select')?.value).toBe('second');
+  await click('فتح التقييم');
+  expect(mocks.request).toHaveBeenCalledWith('/quizzes/quiz/solve', expect.anything());
+});
+it.each(['quiz', 'assignment'] as const)('ignores a former account’s late %s solve response', async kind => {
+  let finish!: (value: unknown) => void;
+  mocks.request.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  await render(); await click(kind === 'quiz' ? 'الامتحانات' : 'الواجبات والتكليفات');
+  await click(kind === 'quiz' ? 'بدء حل الاختبار' : 'فتح الواجب وتسليم الحل');
+  await render({}, { ...student, id: 'two' });
+  await act(async () => finish(kind === 'quiz' ? quizResponse('Former account quiz') : { id: 'assignment', title: 'Former account assignment' }));
+  expect(host.textContent).not.toContain('Former account');
+  expect(host.textContent).not.toContain('جاري تحميل أسئلة الاختبار');
+  expect(host.textContent).not.toContain('جاري تحميل الواجب');
+});
+it('ignores an older quiz error and finally after another solve opens', async () => {
+  let rejectOld!: (error: Error) => void;
+  mocks.request.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectOld = reject; }))
+    .mockResolvedValueOnce(quizResponse('Current quiz'));
+  await render(); await click('الامتحانات'); await click('بدء حل الاختبار'); await click('خروج'); await click('بدء حل الاختبار');
+  await act(async () => rejectOld(new Error('Stale error')));
+  expect(host.textContent).toContain('Current quiz'); expect(host.textContent).not.toContain('Stale error');
+});
+it.each(['deleted', 'restricted', 'scheduled', 'closed'] as const)('does not open a %s assessment from a link', async state => {
+  mocks.refs.mockResolvedValue(state === 'deleted' ? [] : [{ ...assessments[0], accessible: state !== 'restricted', availabilityState: state === 'scheduled' || state === 'closed' ? state : 'open' }]);
+  const handled = vi.fn();
+  await render({ initialAssessment: { courseId: 'second', assessmentId: 'quiz', kind: 'quiz' }, onInitialAssessmentHandled: handled });
+  expect(host.querySelector('[role="region"][aria-label="Slow Exam"]')).toBeNull();
+  expect(mocks.request).not.toHaveBeenCalled(); expect(handled).toHaveBeenCalled();
+  expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ tone: 'warning' }));
+});
+it('does not apply an old notification response after switching accounts', async () => {
+  let finish!: (value: CourseAssessmentRef[]) => void;
+  mocks.refs.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; })).mockResolvedValueOnce([]);
+  const target = { initialAssessment: { courseId: 'second', assessmentId: 'quiz', kind: 'quiz' } };
+  await render(target); await render(target, { ...student, id: 'two' });
+  await act(async () => finish(assessments));
+  expect(host.querySelector('[role="region"][aria-label="Slow Exam"]')).toBeNull(); expect(mocks.request).not.toHaveBeenCalled();
+});
+it('handles failed admission without loading a solve or starting an attempt', async () => {
+  mocks.refs.mockRejectedValue(new Error('offline'));
+  await render({ initialAssessment: { courseId: 'second', assessmentId: 'quiz', kind: 'quiz' } });
+  expect(mocks.request).not.toHaveBeenCalled();
+  expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ tone: 'danger' }));
+});
+it('selects the assignment tab for a linked assignment and waits for an explicit open', async () => {
+  mocks.refs.mockResolvedValue(assessments);
+  await render({ initialAssessment: { courseId: 'second', assessmentId: 'assignment', kind: 'assignment' } });
+  expect(host.querySelector('[role="region"][aria-label="Slow assignment"]')).not.toBeNull();
+  expect(host.querySelector('select')?.value).toBe('second');
+  expect(mocks.request).not.toHaveBeenCalled();
+  await click('فتح التقييم');
+  expect(mocks.request).toHaveBeenCalledWith('/assignments/assignment/solve');
+});
+it('rejects a target outside the account catalog without any assessment request', async () => {
+  await render({ initialAssessment: { courseId: 'unrelated', assessmentId: 'quiz', kind: 'quiz' } });
+  expect(mocks.refs).not.toHaveBeenCalled(); expect(mocks.request).not.toHaveBeenCalled();
+  expect(host.textContent).not.toContain('جارٍ التحقق من إتاحة التقييم');
+  expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ tone: 'warning' }));
 });

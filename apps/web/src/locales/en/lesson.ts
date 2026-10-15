@@ -299,4 +299,10 @@ export const lessonEn = {
   assignmentScore: "Submit homework • Points: {score}",
   dueDate: "Submission deadline:",
   timedExam: "Online exam • {minutes} min",
+  awaitingGrading: 'Awaiting grading',
+  awaitingGradeApproval: 'Awaiting teacher approval',
+  sharedAssessmentLoading: 'Checking assessment availability…',
+  sharedAssessmentUnavailable: 'This assessment is currently unavailable to your account or has been deleted.',
+  sharedAssessmentRetry: 'Could not verify this assessment. Please try again.',
+  sharedAssessmentStart: 'Open assessment',
 };

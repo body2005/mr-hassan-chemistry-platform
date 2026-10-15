@@ -11,15 +11,21 @@ import {
 import { AssignmentSubmission, CurrentUser } from "../types/lms";
 import { submissionService } from "../services/lmsService";
 import { exportToDocx, exportToExcel, exportToPrintPdf } from "../utils/exportEngine";
+import { useTranslation } from "../utils/i18n";
+
+function hasApprovedScore(item: AssignmentSubmission): item is AssignmentSubmission & { finalScore: number } {
+  return item.status === 'approved' && item.finalScore !== null && Number.isFinite(item.finalScore) && item.finalScore >= 0;
+}
 
 export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ currentUser }) => {
+  const { t: tr } = useTranslation();
   const [submissions, setSubmissions] = useState<AssignmentSubmission[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false);
   const averageScore = useMemo(() => {
-    const graded = submissions.filter((item) => item.maxScore > 0 && item.finalScore >= 0);
-    if (!graded.length) return 0;
+    const graded = submissions.filter(hasApprovedScore).filter(item => item.maxScore > 0);
+    if (!graded.length) return null;
     return Math.round(
       graded.reduce((sum, item) => sum + (item.finalScore / item.maxScore) * 100, 0) /
         graded.length,
@@ -30,6 +36,7 @@ export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ curr
     let active = true;
     setLoading(true);
     setError(null);
+    setSubmissions([]);
     void submissionService.getStudentSubmissions()
       .then((items) => {
         if (active) setSubmissions(items);
@@ -46,7 +53,12 @@ export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ curr
     return () => {
       active = false;
     };
-  }, []);
+  }, [currentUser.id]);
+
+  function scoreLabel(item: AssignmentSubmission) {
+    if (hasApprovedScore(item)) return `${item.finalScore} / ${item.maxScore}`;
+    return tr(item.status === 'graded' ? 'lesson.awaitingGradeApproval' : 'lesson.awaitingGrading');
+  }
 
   function getExportPayload() {
     const headers = ["عنوان الواجب", "الدرس", "تاريخ التسليم", "الدرجة النهائية", "ملاحظات المعلم"];
@@ -54,7 +66,7 @@ export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ curr
       s.assignmentTitle,
       s.lessonTitle,
       s.submittedAt,
-      `${s.finalScore} / ${s.maxScore}`,
+      scoreLabel(s),
       s.teacherFeedback || "—",
     ]);
 
@@ -65,7 +77,7 @@ export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ curr
       rows,
       summaryStats: [
         { label: "إجمالي الواجبات المسلمة", value: submissions.length },
-        { label: "متوسط الدرجات", value: `${averageScore}%` },
+        { label: "متوسط الدرجات", value: averageScore === null ? '—' : `${averageScore}%` },
         { label: "المعتمد من المعلم", value: submissions.filter((item) => item.status === "approved").length },
       ],
     };
@@ -88,6 +100,7 @@ export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ curr
         <div style={{ position: "relative" }}>
           <button
             className="btn-primary"
+            disabled={loading || !!error}
             onClick={() => setExportDropdownOpen(!exportDropdownOpen)}
             style={{ fontSize: "12px", gap: "6px" }}
           >
@@ -182,7 +195,7 @@ export const MySubmissionsView: React.FC<{ currentUser: CurrentUser }> = ({ curr
               <div style={{ textAlign: "left", background: "#f8fafc", padding: "8px 16px", borderRadius: "10px", border: "1px solid #e2e8f0" }}>
                 <span style={{ fontSize: "11px", color: "#64748b", display: "block" }}>الدرجة المرصودة</span>
                 <strong style={{ fontSize: "20px", color: "#0f392b" }}>
-                  {sub.finalScore} / {sub.maxScore}
+                  {scoreLabel(sub)}
                 </strong>
               </div>
             </div>

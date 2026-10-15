@@ -303,4 +303,10 @@ export const lessonAr = {
   assignmentScore: "تسليم الواجب المنزلي • الدرجة: {score}",
   dueDate: "الموعد النهائي للتسليم:",
   timedExam: "امتحان تقييمي إلكتروني • {minutes} دقيقة",
+  awaitingGrading: 'بانتظار التصحيح',
+  awaitingGradeApproval: 'بانتظار اعتماد المعلم',
+  sharedAssessmentLoading: 'جارٍ التحقق من إتاحة التقييم…',
+  sharedAssessmentUnavailable: 'هذا التقييم غير متاح لحسابك حاليًا، أو تم حذفه.',
+  sharedAssessmentRetry: 'تعذر التحقق من التقييم. حاول مرة أخرى.',
+  sharedAssessmentStart: 'فتح التقييم',
 };

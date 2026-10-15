@@ -4,6 +4,7 @@ export function readSharedLesson(): SharedLesson | null {
   try {
     const [page, query = ''] = window.location.hash.slice(1).split('?');
     const params = new URLSearchParams(query);
+    if (params.has('assessment')) { clearSharedLesson(); return null; }
     const courseId = params.get('course');
     const lessonId = params.get('lesson');
     const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

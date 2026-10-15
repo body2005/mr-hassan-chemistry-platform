@@ -34,7 +34,7 @@ export const AssignmentModal: React.FC<AssignmentModalProps> = ({
 
   useEffect(() => {
     if (!submission) return;
-    setScore(submission.finalScore);
+    setScore(submission.finalScore ?? 0);
     setTeacherNotes(submission.teacherFeedback || "");
     setSaveError(null);
     setSaving(false);
