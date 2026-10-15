@@ -1,3 +1,5 @@
+import { ScheduleBadges } from "../components/ScheduleBadges";
+import { searchText } from "../utils/searchText";
 import { serverNow, synchronizeServerTime } from "../services/availabilityRefresh";
 import { useLessonNavigation } from '../services/useLessonNavigation';
 import { LessonDiscussionBell } from '../components/LessonDiscussionBell';
@@ -322,7 +324,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     window.addEventListener('lms_video_progress_updated', load);
     return () => { active = false; window.removeEventListener('lms_video_progress_updated', load); };
   }, [currentUser?.id, isStudent, activeLessonModal]);
-  const closeLesson = useLessonNavigation(activeLessonModal, setActiveLessonModal, {
+  const { close: closeLesson, restoring: restoringLesson } = useLessonNavigation(activeLessonModal, setActiveLessonModal, {
     userId: currentUser?.id, courses: validEnrolledCourses,
     onRestore: course => setSelectedCourseId(course.id),
     canRestore: async (lesson, course) => {
@@ -334,6 +336,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   useEffect(() => {
     if (!initialLessonId || !initialCourseId || !currentUser) return;
+    if (new URLSearchParams(window.location.hash.split('?')[1] || '').get('lesson') === initialLessonId) {
+      onInitialLessonHandled?.();
+      return;
+    }
     const sharedCourse = validEnrolledCourses.find(item => item.id === initialCourseId);
     if (!sharedCourse) return; // A shared link never enrolls a user or grants access.
     let cancelled = false;
@@ -971,13 +977,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   const filteredRevisionVideoLessons = React.useMemo(() => {
     if (!courseSearchQuery.trim()) return revisionVideoLessons;
-    const q = courseSearchQuery.trim().toLowerCase();
+    const q = searchText(courseSearchQuery);
     return revisionVideoLessons.filter(
       (item) =>
-        item.lesson.title.toLowerCase().includes(q) ||
-        (item.lesson.description && item.lesson.description.toLowerCase().includes(q)) ||
-        (item.lesson.unitTitle && item.lesson.unitTitle.toLowerCase().includes(q)) ||
-        item.course.title.toLowerCase().includes(q)
+        searchText(item.lesson.title).includes(q) ||
+        (item.lesson.description && searchText(item.lesson.description).includes(q)) ||
+        (item.lesson.unitTitle && searchText(item.lesson.unitTitle).includes(q)) ||
+        searchText(item.course.title).includes(q)
     );
   }, [revisionVideoLessons, courseSearchQuery]);
 
@@ -1116,6 +1122,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     }, 2000);
   }
 
+  if (restoringLesson || (!activeLessonModal && initialLessonId && validEnrolledCourses.some(item => item.id === initialCourseId))) {
+    return <PageLoadingScreen message={tr("lesson.loadingPlayer")} />;
+  }
+
   // Empty catalog state
   if (validEnrolledCourses.length === 0) {
     return (
@@ -1157,54 +1167,54 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   const completedLessonsCount = courseLessons.filter((l) => completedLessonIds.includes(l.id)).length;
 
   // Search query filter for current tab items
-  const searchQueryNormalized = courseSearchQuery.trim().toLowerCase();
+  const searchQueryNormalized = searchText(courseSearchQuery);
 
   const filteredLessons = courseLessons.filter((l) => {
     if (!searchQueryNormalized) return true;
     return (
-      l.title.toLowerCase().includes(searchQueryNormalized) ||
-      (l.description && l.description.toLowerCase().includes(searchQueryNormalized))
+      searchText(l.title).includes(searchQueryNormalized) ||
+      (l.description && searchText(l.description).includes(searchQueryNormalized))
     );
   });
 
   const filteredRevisions = allRevisions.filter((r) => {
     if (!searchQueryNormalized) return true;
     return (
-      r.title.toLowerCase().includes(searchQueryNormalized) ||
-      (r.description && r.description.toLowerCase().includes(searchQueryNormalized))
+      searchText(r.title).includes(searchQueryNormalized) ||
+      (r.description && searchText(r.description).includes(searchQueryNormalized))
     );
   });
 
   const filteredAssignments = courseAssignments.filter((a) => {
     if (!searchQueryNormalized) return true;
     return (
-      a.title.toLowerCase().includes(searchQueryNormalized) ||
-      (a.description && a.description.toLowerCase().includes(searchQueryNormalized))
+      searchText(a.title).includes(searchQueryNormalized) ||
+      (a.description && searchText(a.description).includes(searchQueryNormalized))
     );
   });
 
   const filteredServerAssignments = serverAssignments.filter((a) => {
     if (!searchQueryNormalized) return true;
-    return a.title.toLowerCase().includes(searchQueryNormalized);
+    return searchText(a.title).includes(searchQueryNormalized);
   });
 
   const filteredQuizzes = courseQuizzes.filter((item) => {
     if (!searchQueryNormalized) return true;
-    return item.title.toLowerCase().includes(searchQueryNormalized);
+    return searchText(item.title).includes(searchQueryNormalized);
   });
 
   const filteredServerQuizzes = serverQuizzes.filter((item) => {
     if (!searchQueryNormalized) return true;
-    return item.title.toLowerCase().includes(searchQueryNormalized);
+    return searchText(item.title).includes(searchQueryNormalized);
   });
 
   const filteredBooks = allPurchasedBooks.filter((b) => {
     if (!searchQueryNormalized) return true;
     return (
-      b.title.toLowerCase().includes(searchQueryNormalized) ||
-      (b.description && b.description.toLowerCase().includes(searchQueryNormalized)) ||
-      (b.author && b.author.toLowerCase().includes(searchQueryNormalized)) ||
-      (b.lessonTitle && b.lessonTitle.toLowerCase().includes(searchQueryNormalized))
+      searchText(b.title).includes(searchQueryNormalized) ||
+      (b.description && searchText(b.description).includes(searchQueryNormalized)) ||
+      (b.author && searchText(b.author).includes(searchQueryNormalized)) ||
+      (b.lessonTitle && searchText(b.lessonTitle).includes(searchQueryNormalized))
     );
   });
 
@@ -1577,9 +1587,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     </div>
 
                     {/* Lesson Card Body */}
-                    {isStudent && isPurchased && <LessonWatchProgress
-                      percent={watchProgress?.userId === currentUser?.id && !watchProgress.error ? watchProgress.values[lesson.id] ?? 0 : undefined}
-                      unavailable={watchProgress?.userId === currentUser?.id && watchProgress.error} />}
+
                     <div style={{ padding: "18px", flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
                       <div>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px", marginBottom: "6px" }}>
@@ -1592,6 +1600,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                             </span>
                           )}
                         </div>
+
+                    {isStudent && isPurchased && <LessonWatchProgress
+                      percent={watchProgress?.userId === currentUser?.id && !watchProgress.error ? watchProgress.values[lesson.id] ?? 0 : undefined}
+                      unavailable={watchProgress?.userId === currentUser?.id && watchProgress.error} />}
+                        {isStudent && <ScheduleBadges startsAt={lesson.publishAt} endsAt={lesson.availableUntil} />}
                         <p style={{ margin: "0 0 12px", fontSize: "12.5px", color: "var(--text-muted)", lineHeight: "1.5" }}>
                           {lesson.description || tr("lesson.defaultDescription")}
                         </p>
@@ -1748,15 +1761,18 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                           <h3 style={{ margin: "4px 0 2px", fontSize: "15.5px", fontWeight: 800, lineHeight: 1.35 }}>
                             {lesson.title}
                           </h3>
+                        {isStudent && <LessonWatchProgress
+                          percent={watchProgress?.userId === currentUser?.id && !watchProgress.error ? watchProgress.values[lesson.id] ?? 0 : undefined}
+                          unavailable={watchProgress?.userId === currentUser?.id && watchProgress.error} />}
+
                           <span style={{ fontSize: "11.5px", opacity: 0.85 }}>{course.title}</span>
                         </div>
 
                         {/* Content */}
-                        {isStudent && <LessonWatchProgress
-                          percent={watchProgress?.userId === currentUser?.id && !watchProgress.error ? watchProgress.values[lesson.id] ?? 0 : undefined}
-                          unavailable={watchProgress?.userId === currentUser?.id && watchProgress.error} />}
+
                         <div style={{ padding: "18px", flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
                           <div>
+                            <ScheduleBadges startsAt={lesson.publishAt} endsAt={lesson.availableUntil} />
                             {lesson.description && (
                               <p style={{ fontSize: "12.5px", color: "var(--text-muted)", lineHeight: 1.5, margin: "0 0 14px" }}>
                                 {lesson.description}
@@ -1896,9 +1912,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 )}
               </div>
               <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)" }}>{asg.title}</h3>
+              <ScheduleBadges startsAt={asg.startsAt} endsAt={asg.dueLabel} />
               <p style={{ margin: "0 0 14px", fontSize: "12.5px", color: "var(--text-muted)" }}>
                 {tr('lesson.linkedLesson', { title: asg.lessonId ? lessonTitleById.get(asg.lessonId) || "—" : tr("lesson.wholeCourse") })}
-                {asg.dueLabel ? ` • ${tr('lesson.due', { date: new Date(asg.dueLabel).toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-GB', { timeZone: "Africa/Cairo" }) })}` : ""}
+
               </p>
               {asg.accessible ? (
                 <button
@@ -2097,10 +2114,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   )}
                 </div>
                 <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)", lineHeight: 1.4 }}>{qz.title}</h3>
+              <ScheduleBadges startsAt={qz.startsAt} endsAt={qz.dueLabel} />
                 <p style={{ margin: "0 0 14px", fontSize: "12.5px", color: "var(--text-muted)", lineHeight: 1.5 }}>
                   {tr('lesson.relatedLessons', { titles: (qz.lessonIds?.length ? qz.lessonIds : qz.lessonId ? [qz.lessonId] : []).map(id => lessonTitleById.get(id) || tr("lesson.relatedLesson")).join(lang === 'ar' ? '، ' : ', ') || (qz.moduleIds?.length ? tr('lesson.wholeUnits', { count: qz.moduleIds.length }) : tr("lesson.academicYear")) })}
-                  {qz.startsAt ? ` • ${tr('lesson.opens', { date: new Date(qz.startsAt).toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-GB', { timeZone: "Africa/Cairo" }) })}` : ""}
-                  {qz.dueLabel ? ` • ${tr('lesson.closes', { date: new Date(qz.dueLabel).toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-GB', { timeZone: "Africa/Cairo" }) })}` : ""}
+
+
                 </p>
               </div>
               {quizAvailability(qz) ? <div>

@@ -1,3 +1,4 @@
+import { searchText } from "../utils/searchText";
 import React, { useState, useEffect } from "react";
 import {
   Ban,
@@ -182,9 +183,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       return false;
     }
     if (studentSearchTerm.trim()) {
-      const q = studentSearchTerm.trim().toLowerCase();
-      const matchName = (s.name || "").toLowerCase().includes(q);
-      const matchEmail = (s.email || "").toLowerCase().includes(q);
+      const q = searchText(studentSearchTerm);
+      const matchName = searchText((s.name || "")).includes(q);
+      const matchEmail = searchText((s.email || "")).includes(q);
       const matchPhone = (s.studentPhone || s.phone || "").includes(q);
       const matchNatId = (s.nationalId || "").includes(q);
       return matchName || matchEmail || matchPhone || matchNatId;

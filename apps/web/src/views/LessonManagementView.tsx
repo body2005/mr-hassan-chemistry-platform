@@ -1,3 +1,5 @@
+import { searchText } from "../utils/searchText";
+import { PageLoadingScreen } from "../components/PageLoadingScreen";
 import React, { useState, useRef, useEffect } from "react";
 import {
   Film,
@@ -112,7 +114,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     : "SECONDARY_3";
   const [isDeleteMode, setIsDeleteMode] = useState(false);
   const [activeLessonModal, setActiveLessonModal] = useState<VideoLesson | null>(null);
-  const closeLesson = useLessonNavigation(activeLessonModal, setActiveLessonModal, {
+  const { close: closeLesson, restoring: restoringLesson } = useLessonNavigation(activeLessonModal, setActiveLessonModal, {
     userId: currentUser.id, courses,
     onRestore: course => { setSelectedYear(course.academicYear || '1st_secondary'); setSelectedCourseId(course.id); },
   });
@@ -281,10 +283,10 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   const filteredLessons: VideoLesson[] = React.useMemo(() => {
     let result = activeLessons;
     if (videoSearchQuery.trim()) {
-      const q = videoSearchQuery.trim().toLowerCase();
+      const q = searchText(videoSearchQuery);
       result = result.filter((l) => {
-        const title = (l.title || "").toLowerCase();
-        const desc = (l.description || "").toLowerCase();
+        const title = searchText(l.title);
+        const desc = searchText(l.description);
         return title.includes(q) || desc.includes(q);
       });
     }
@@ -596,6 +598,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
       ],
     };
   }
+
+  if (restoringLesson) return <PageLoadingScreen message={lang === "ar" ? "جارٍ فتح الدرس…" : "Opening video…"} />;
 
   if (activeLessonModal && activeCourse) {
     return (

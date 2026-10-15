@@ -12,8 +12,9 @@ const admit = vi.fn(), restored = vi.fn();
 function Probe({ user = 'student' }: { user?: string }) {
   const [selection, setSelection] = useState<VideoLesson | null>(null);
   open = setSelection;
-  close = useLessonNavigation(selection, setSelection, { userId: user, courses, onRestore: restored, canRestore: admit });
-  return <div>{selection?.title || 'List'}</div>;
+  const navigation = useLessonNavigation(selection, setSelection, { userId: user, courses, onRestore: restored, canRestore: admit });
+  close = navigation.close;
+  return <div>{selection?.title || (navigation.restoring ? 'Restoring' : 'List')}</div>;
 }
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
@@ -46,6 +47,25 @@ it('does not restore a revoked or unpaid lesson from a saved URL', async () => {
   window.history.replaceState(null, '', '/#mycourses?course=course&lesson=lesson');
   await act(async () => root.render(<Probe />));
   expect(host.textContent).toBe('List'); expect(restored).not.toHaveBeenCalled();
+});
+it('keeps the lesson loading screen visible instead of flashing the list during admission', async () => {
+  let finish!: (allowed: boolean) => void;
+  admit.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  window.history.replaceState(null, '', '/#mycourses?course=course&lesson=lesson');
+  await act(async () => root.render(<Probe />));
+  expect(host.textContent).toBe('Restoring');
+  await act(async () => finish(true));
+  expect(host.textContent).toBe('Restored video');
+});
+it('stops loading after a failed admission request without opening protected content', async () => {
+  let fail!: (reason: Error) => void;
+  admit.mockImplementation(() => new Promise((_, reject) => { fail = reject; }));
+  window.history.replaceState(null, '', '/#mycourses?course=course&lesson=lesson');
+  await act(async () => root.render(<Probe />));
+  expect(host.textContent).toBe('Restoring');
+  await act(async () => fail(new Error('offline')));
+  expect(host.textContent).toBe('List');
+  expect(restored).not.toHaveBeenCalled();
 });
 it('ignores late admission after leaving the player URL', async () => {
   let finish!: (allowed: boolean) => void;

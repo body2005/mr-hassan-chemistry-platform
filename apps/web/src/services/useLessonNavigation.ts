@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Course, VideoLesson } from '../types/lms';
 
 function playerHash(lesson: VideoLesson) {
@@ -25,6 +25,7 @@ interface RestoreOptions {
 
 /** A player is a history entry inside its originating list, for either role. */
 export function useLessonNavigation(lesson: VideoLesson | null, setLesson: (lesson: VideoLesson | null) => void, options: RestoreOptions) {
+  const [restoring, setRestoring] = useState(() => Boolean(new URLSearchParams(window.location.hash.split('?')[1] || '').get('lesson')));
   const known = useRef(new Map<string, VideoLesson>());
   const latest = useRef({ lesson, options });
   useLayoutEffect(() => { latest.current = { lesson, options }; }, [lesson, options]);
@@ -53,6 +54,7 @@ export function useLessonNavigation(lesson: VideoLesson | null, setLesson: (less
   }, [lesson, options.userId]);
   const restore = useCallback(async () => {
     const revision = ++restoreRevision.current;
+    setRestoring(false);
     const { lesson: current, options: settings } = latest.current;
     if (!settings.userId) return;
     const hash = window.location.hash;
@@ -70,6 +72,7 @@ export function useLessonNavigation(lesson: VideoLesson | null, setLesson: (less
     const course = settings.courses.find(item => item.id === state.lessonCourse);
     const selected = course?.lessons.find(item => item.id === state.lmsLesson);
     if (!course || !selected) return;
+    setRestoring(true);
     try {
       const allowed = !settings.canRestore || await settings.canRestore(selected, course);
       if (!allowed || restoreRevision.current !== revision || latest.current.options.userId !== settings.userId ||
@@ -79,6 +82,7 @@ export function useLessonNavigation(lesson: VideoLesson | null, setLesson: (less
       latest.current.options.onRestore(course);
       setLesson(selected);
     } catch { /* Keep the list usable if admission cannot be verified. */ }
+    finally { if (restoreRevision.current === revision) setRestoring(false); }
   }, [setLesson]);
   useEffect(() => {
     known.current.clear();
@@ -109,7 +113,7 @@ export function useLessonNavigation(lesson: VideoLesson | null, setLesson: (less
       window.removeEventListener('popstate', navigate);
     };
   }, [setLesson, restore]);
-  return useCallback(() => {
+  const close = useCallback(() => {
     const state = window.history.state;
     if (state?.lmsLesson && state.lessonCanGoBack === false) {
       window.history.replaceState(null, '', state.lessonListHash || listHash(window.location.hash));
@@ -117,4 +121,5 @@ export function useLessonNavigation(lesson: VideoLesson | null, setLesson: (less
     } else if (state?.lmsLesson) window.history.back();
     else setLesson(null);
   }, [setLesson]);
+  return { close, restoring };
 }

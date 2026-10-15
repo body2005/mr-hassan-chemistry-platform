@@ -1,3 +1,4 @@
+import { QuestionPointsTable } from "../components/QuestionPointsTable";
 import { assessmentTimestamp } from "../services/assessmentSchedule";
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
@@ -114,12 +115,12 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   const [hasRestoredDraft, setHasRestoredDraft] = useState<boolean>(() => !!initialDraft);
 
   const [extractingFile, setExtractingFile] = useState(false);
-  const [extractedFileName, setExtractedFileName] = useState<string | null>(null);
+  const [extractedFileName, setExtractedFileName] = useState<string | null>(() => initialDraft?.extractedFileName || null);
   // The draft is bound to the exact file it came from: name + SHA-256 + time.
   // A new extraction replaces all three, so a restored draft can never be
   // mistaken for the result of a different file.
-  const [extractedFileFingerprint, setExtractedFileFingerprint] = useState<string | null>(null);
-  const [extractedAt, setExtractedAt] = useState<string | null>(null);
+  const [extractedFileFingerprint, setExtractedFileFingerprint] = useState<string | null>(() => initialDraft?.extractedFileFingerprint || null);
+  const [extractedAt, setExtractedAt] = useState<string | null>(() => initialDraft?.extractedAt || null);
   const extractionRequestRef = useRef(0);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -447,7 +448,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     // CRITICAL: Immediately clear stale questions from state and local storage
     setQuizTitle("");
     setQuestions([]);
-    setExtractedFileName(null);
+    setExtractedFileName(file.name);
     setExtractedFileFingerprint(null);
     setExtractedAt(null);
     clearOwnSavedDraft();
@@ -495,6 +496,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       // Keep state clean on error: never retain or fall back to old questions
       setQuestions([]);
       setDraft(null);
+      setExtractedFileName(null);
       const errMsg = err instanceof Error ? err.message : "فشل استخراج الأسئلة من الملف. يرجى التأكد من صحة الملف وصيغته.";
       setError(errMsg);
     } finally {
@@ -1140,14 +1142,14 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
             {extractingFile ? (
               <div style={{ padding: "12px 0", color: "#0f766e" }}>
                 <Loader2 size={24} className="animate-spin" style={{ margin: "0 auto 6px" }} />
-                <div style={{ fontSize: "14px", fontWeight: 700 }}>جاري استخراج الأسئلة من الملف...</div>
+                <div style={{ fontSize: "14px", fontWeight: 700 }}>جاري استخراج الأسئلة من الملف...</div><p className="assessment-file-name">{extractedFileName}</p>
                 <div style={{ fontSize: "14px", color: "var(--text-muted)" }}>تحليل الأسئلة والخيارات والرسومات التوضيحية</div>
               </div>
             ) : extractedFileName ? (
               <div>
                 <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "#ecfdf5", border: "1px solid #a7f3d0", padding: "8px 10px", borderRadius: "6px", marginBottom: "8px" }}>
                   <CheckCircle2 size={16} color="#059669" />
-                  <span style={{ fontSize: "11.5px", color: "#065f46", fontWeight: 700, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <span style={{ fontSize: "11.5px", color: "#065f46", fontWeight: 700, flex: 1, overflowWrap: "anywhere", minWidth: 0 }}>
                     {extractedFileName}
                   </span>
                   <button
@@ -1212,6 +1214,10 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
 
 
           </section>
+        <div className="assessment-authoring-grid">
+          <QuestionPointsTable questions={displayedQuestions} disabled={approved || extractingFile || isPublishing}
+            onChange={(type, points) => setActiveQuestionsList(prev => prev.map(question => canonicalQuestionType(question.question_type) === type
+              ? { ...question, points, needs_points_assignment: points === null } : question))} />
         {/* Right Column: Questions Canvas (Extraction Review or Manual Builder) */}
         <div className="quiz-question-canvas" style={{ background: "var(--bg-surface, #ffffff)", border: "1px solid var(--border-color, #e2e8f0)", borderRadius: "16px", padding: "24px" }}>
 
@@ -2027,6 +2033,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
               </div>
             )}
           </div>
+        </div>
         </> : <section className="quiz-settings-panel assessment-step-panel">
           {editorStage === 'setup' ? <>
           <div className="quiz-setup-fields">

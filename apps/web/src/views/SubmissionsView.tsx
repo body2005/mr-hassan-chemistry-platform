@@ -1,3 +1,4 @@
+import { searchText } from "../utils/searchText";
 import React, { useState } from "react";
 import {
   AlertTriangle,
@@ -141,10 +142,10 @@ export const SubmissionsView: React.FC = () => {
   const yearStudents = students.filter((s) => s.academicYear === selectedYear);
   const filteredYearStudents = yearStudents.filter((s) => {
     if (!searchQuery.trim()) return true;
-    const q = searchQuery.trim().toLowerCase();
-    const nameMatch = s.name.toLowerCase().includes(q);
+    const q = searchText(searchQuery);
+    const nameMatch = searchText(s.name).includes(q);
     const phoneMatch = (s.guardianPhone || "").replace(/\s+/g, "").includes(q);
-    const emailMatch = s.email.toLowerCase().includes(q);
+    const emailMatch = searchText(s.email).includes(q);
     const nationalIdMatch = (s.nationalId || "").includes(q);
     return nameMatch || phoneMatch || emailMatch || nationalIdMatch;
   });

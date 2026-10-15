@@ -1,3 +1,4 @@
+import { DisplaySettings } from "./DisplaySettings";
 import React, { useState } from "react";
 import {
   ArrowRight,
@@ -122,7 +123,8 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: "10px", position: "relative" }}>
+      <div className="topbar-actions" style={{ display: "flex", alignItems: "center", gap: "10px", position: "relative" }}>
+        <DisplaySettings lang={lang} />
         {/* Dark Mode / Light Mode Toggle */}
         <button
           className="icon-btn"

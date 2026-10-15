@@ -1,3 +1,4 @@
+import { ScheduleBadges } from "../components/ScheduleBadges";
 import { assessmentTimestamp } from "../services/assessmentSchedule";
 import React, { useState, useEffect, useRef } from "react";
 import {
@@ -1024,6 +1025,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                           <strong style={{ display: "block", fontSize: "13.5px", color: "var(--text-main, #0f172a)", marginBottom: "3px" }}>
                             {n.title}
                           </strong>
+                          {!isTeacher && n.scheduledFor && <ScheduleBadges startsAt={n.scheduledFor} />}
                           {n.message?.trim() && <p className="notification-message" style={{ margin: 0, fontSize: "13px", color: "var(--text-muted)", lineHeight: 1.7 }}>{n.message}</p>}
 
                         </div>
@@ -1529,6 +1531,16 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
             <div className="calendar-days">
               {renderMonthCalendarCells()}
             </div>
+            {!isTeacher && calendarEvents.filter(event => event.academicYear === selectedGrade
+              && event.isPublishedToStudents === true && !event.isCancelled
+              && event.date.split('T')[0] === selectedDayDate).map(event => {
+              let start: string | null = null;
+              let end: string | null = null;
+              try { start = assessmentTimestamp(`${event.publishStartDate || event.date.split('T')[0]}T${event.publishStartTime || event.time}`, 'الإتاحة'); } catch { /* Hide malformed legacy dates. */ }
+              try { end = assessmentTimestamp(event.closeDeadline, 'الإغلاق'); } catch { /* No invented deadline. */ }
+              return <ScheduleBadges key={event.id} startsAt={start} endsAt={end} />;
+            })}
+
           </div>
         </div>
       </div>

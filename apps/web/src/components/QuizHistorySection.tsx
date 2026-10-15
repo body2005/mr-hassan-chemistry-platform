@@ -1,3 +1,4 @@
+import { searchText } from "../utils/searchText";
 import React, { useState, useEffect, useMemo } from "react";
 import {
   FileQuestion,
@@ -60,13 +61,13 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
         if (selectedStatus !== "all" && q.status !== selectedStatus) return false;
 
         if (searchQuery.trim()) {
-          const qText = searchQuery.toLowerCase().trim();
-          const matchTitle = q.title.toLowerCase().includes(qText);
+          const qText = searchText(searchQuery);
+          const matchTitle = searchText(q.title).includes(qText);
           const matchQuestions = q.questions.some(
             (item) =>
-              item.question_text.toLowerCase().includes(qText) ||
-              item.topic.toLowerCase().includes(qText) ||
-              (item.options && item.options.some((opt) => opt.text.toLowerCase().includes(qText)))
+              searchText(item.question_text).includes(qText) ||
+              searchText(item.topic).includes(qText) ||
+              (item.options && item.options.some((opt) => searchText(opt.text).includes(qText)))
           );
           if (!matchTitle && !matchQuestions) return false;
         }

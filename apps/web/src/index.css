@@ -2166,3 +2166,46 @@ svg {
   outline: 3px solid #b91c1c;
   outline-offset: 3px;
 }
+
+/* Authoring stays readable alongside its score summary, then stacks on phones. */
+.assessment-authoring-grid { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 20px; align-items: start; min-width: 0; }
+.question-points-panel { position: sticky; top: 90px; max-height: calc(100dvh - 110px); overflow: auto; padding: 16px; border: 1px solid var(--border-color); border-radius: 14px; background: var(--bg-surface); color: var(--text-main); }
+.question-points-panel h3 { font-size: 16px; margin: 0 0 8px; }
+.question-points-panel p { font-size: 12px; color: var(--text-muted); line-height: 1.6; margin: 0 0 12px; }
+.question-points-panel table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
+.question-points-panel th, .question-points-panel td { padding: 8px 3px; text-align: start; border-bottom: 1px solid var(--border-color); overflow-wrap: anywhere; }
+.question-points-panel thead th:nth-child(2), .question-points-panel td:nth-child(2) { width: 42px; text-align: center; }
+.question-points-panel input { min-height: 44px; width: 100%; min-width: 0; padding: 6px; color: var(--text-main); background: var(--bg-surface-secondary); border: 1px solid var(--border-color); border-radius: 8px; }
+.question-points-panel input:disabled { opacity: .5; }
+.assessment-file-panel > div > div:first-child { flex-wrap: wrap; gap: 8px; }
+.assessment-file-name { overflow-wrap: anywhere; color: var(--text-main); }
+.quiz-question-canvas { min-width: 0; }
+.quiz-question-canvas input, .quiz-question-canvas textarea, .quiz-question-canvas select { max-width: 100%; }
+.quiz-question-canvas .question-card-controls { flex-wrap: wrap; gap: 8px; }
+.lesson-card-watch-progress { padding: 8px 0 12px; border: 0; background: transparent; }
+.lesson-card-watch-progress strong, .lesson-card-watch-progress > div:first-child { color: inherit; }
+.schedule-badges { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+.schedule-badges > div { flex: 1 1 140px; min-width: 0; border: 1px solid #99f6e4; background: #ccfbf1; color: #115e59; border-radius: 8px; padding: 8px 10px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.schedule-badges span, .schedule-badges time, .schedule-badges small { display: block; }
+.schedule-badges span { font-weight: 800; }
+[data-theme="dark"] .schedule-badges > div { border-color: #0f766e; background: #0f392b; color: #99f6e4; }
+.display-settings { position: relative; }
+.display-settings summary { list-style: none; }
+.display-settings summary::-webkit-details-marker { display: none; }
+.display-settings-panel { position: absolute; inset-inline-end: 0; top: calc(100% + 10px); width: min(260px, 80vw); padding: 16px; z-index: 100; background: var(--bg-surface); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 12px; box-shadow: 0 8px 30px #0003; }
+.display-settings-panel label { display: grid; gap: 10px; font-weight: 700; }
+.display-settings-panel select { min-height: 44px; width: 100%; color: inherit; background: var(--bg-surface-secondary); border: 1px solid var(--border-color); border-radius: 8px; padding: 8px; }
+.display-settings-panel p { margin: 10px 0 0; font-size: 12px; line-height: 1.6; color: var(--text-muted); }
+@media (max-width: 1100px) { .assessment-authoring-grid { grid-template-columns: minmax(0, 1fr); } .question-points-panel { position: static; max-height: none; } }
+@media (max-width: 600px) {
+ .quiz-question-canvas { padding: 12px !important; }
+ .quiz-question-canvas [data-testid^="question-card-"] { padding: 12px !important; }
+ .quiz-question-canvas .question-card-controls > div { max-width: 100%; flex-wrap: wrap; }
+ .quiz-question-canvas button { white-space: normal; overflow-wrap: anywhere; }
+ .quiz-question-canvas .question-card-controls button { min-height: 44px; }
+ .assessment-flow-steps { gap: 8px; }
+ .assessment-flow-steps li { flex: 1 1 120px; font-size: 12px; }
+ .assessment-authoring-grid { gap: 12px; }
+ .topbar-actions { gap: 4px !important; }
+ .display-settings-panel { position: fixed; inset-inline: 8px; top: 70px; width: auto; }
+}

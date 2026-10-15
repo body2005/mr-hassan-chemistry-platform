@@ -1,3 +1,4 @@
+import { useApplyDisplaySize } from "./services/displaySize";
 import { PageLoadingScreen } from "./components/PageLoadingScreen";
 import { readSharedLesson, clearSharedLesson } from './utils/sharedLesson';
 import { lazy, Suspense, useEffect, useState, useCallback, useMemo, useRef } from "react";
@@ -100,6 +101,8 @@ function App() {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [authLoading, setAuthLoading] = useState(() => !cachedUser);
   const authSyncId = useRef(0);
+
+  useApplyDisplaySize();
 
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     const saved = localStorage.getItem("lms_theme");

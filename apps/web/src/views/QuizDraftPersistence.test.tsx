@@ -170,3 +170,13 @@ it('lets the teacher choose an assignment after preparing questions without requ
   expect(host.querySelector('input[type="number"]')).toBeNull();
   expect(host.querySelectorAll('input[type="date"]')).toHaveLength(2);
 });
+
+it('restores the full original extraction filename inside the upload area', async () => {
+  const filename = 'ورقة أسئلة الكيمياء - الفصل الأول - نسخة المدرس الأصلية.pdf';
+  localStorage.setItem(key, JSON.stringify({ title: 'Saved extraction', questions: [], extractedFileName: filename,
+    extractedFileFingerprint: 'source-fingerprint', extractedAt: '2026-10-15T08:00:00Z' }));
+  await render();
+  const uploader = host.querySelector('.assessment-file-panel')!;
+  expect(uploader.textContent).toContain(filename);
+  expect(uploader.textContent).toContain('source-fingerpri');
+});
