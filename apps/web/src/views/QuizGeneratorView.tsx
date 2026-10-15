@@ -1666,7 +1666,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
 
               {approved && (
                 <div role={publicationWarning && !isPublishing ? 'alert' : 'status'} aria-atomic="true"
-                  style={{ padding: "12px 16px", background: publicationWarning && !isPublishing ? "var(--bg-surface-secondary)" : "#dcfce7", color: publicationWarning && !isPublishing ? "var(--text-main)" : "#166534", borderRadius: "10px", fontSize: "14px", fontWeight: 700, marginBottom: "16px", border: "1px solid var(--border-color)", display: "flex", alignItems: "center", gap: "8px" }}>
+                  className={publicationWarning && !isPublishing ? undefined : 'assessment-publication-success'}
+                  style={{ padding: "12px 16px", background: publicationWarning && !isPublishing ? "var(--bg-surface-secondary)" : undefined, color: publicationWarning && !isPublishing ? "var(--text-main)" : undefined, borderRadius: "10px", fontSize: "14px", fontWeight: 700, marginBottom: "16px", border: "1px solid var(--border-color)", display: "flex", alignItems: "center", gap: "8px" }}>
                   <CheckSquare size={18} />
                   <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
                     {publicationWarning || <>تم حفظ ونشر {assessmentType === "quiz" ? "الاختبار" : "الواجب المنزلي"} للطلاب بنجاح.</>}

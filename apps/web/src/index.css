@@ -333,6 +333,14 @@ progress::-webkit-progress-bar {
   background: #ecfdf5 !important;
 }
 
+:root .assessment-publication-success {
+  background: #ccfbf1;
+  color: rgb(15, 118, 110);
+}
+:root .assessment-publication-success > span {
+  color: inherit;
+}
+
 .lesson-video-loading {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
   display: grid; place-items: center; width: 64px; height: 64px;
