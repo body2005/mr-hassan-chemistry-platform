@@ -297,6 +297,7 @@ class LessonResponse(BaseModel):
 
     id: uuid.UUID
     course_id: uuid.UUID
+    uploaded_at: datetime | None = None
     module_id: uuid.UUID | None = None
     publication_status: str = 'published'
     publish_at: datetime | None = None

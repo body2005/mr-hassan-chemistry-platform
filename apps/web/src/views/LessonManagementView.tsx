@@ -29,6 +29,7 @@ import { cairoLocalValue, cairoToUtc } from '../utils/cairoTime';
 import { useLessonNavigation } from '../services/useLessonNavigation';
 import { LessonScheduleFields } from '../components/LessonScheduleFields';
 import { materialFailureMessage } from '../services/playbackFailure';
+import { newestLessonsFirst } from '../services/lessonOrder';
 
 /** Tracks the app-wide light/dark theme by watching the `data-theme`
  * attribute on <html>, so inline styles can pick theme-aware colors. */
@@ -247,9 +248,9 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     setActiveLessonModal(lesson);
     onSharedLessonHandled?.();
   }, [initialSharedLesson, courses, onSharedLessonHandled]);
-  // Reverse order so the latest uploaded video/lesson is always displayed at the top
+  // Creation time spans units and courses; unit position is not upload time.
   const activeLessons: VideoLesson[] = React.useMemo(() => {
-    return courses.filter(course => course.academicYear === selectedYear).flatMap(course => course.lessons).reverse();
+    return newestLessonsFirst(courses.filter(course => course.academicYear === selectedYear).flatMap(course => course.lessons));
   }, [courses, selectedYear]);
 
   // Load modules (units) for the active course

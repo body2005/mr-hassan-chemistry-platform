@@ -77,6 +77,8 @@ it('keeps an already approved result read-only after reopening', async () => {
   graded = true;
   request.mockResolvedValue({...solution(), approval_status:'approved'});
   await render();
+  expect(host.querySelector('select')?.closest('label')?.firstChild?.textContent).toBe('الاختبار');
+  expect(host.textContent).not.toContain('إعادة فتح التصحيح');
   expect(host.querySelector<HTMLInputElement>('input[aria-label="درجة السؤال 1"]')!.disabled).toBe(true);
   const button = [...host.querySelectorAll('button')].find(item => item.textContent?.includes('النتيجة معتمدة'))!;
   expect(button.disabled).toBe(true);

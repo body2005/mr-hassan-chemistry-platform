@@ -55,6 +55,18 @@ interface StoredVideoProgress {
   updatedAt: number;
 }
 
+type LandscapeOrientation = ScreenOrientation & { lock?: (orientation: 'landscape') => Promise<void> };
+type NativeFullscreenVideo = HTMLVideoElement & {
+  webkitEnterFullscreen?: () => void;
+  webkitExitFullscreen?: () => void;
+  webkitDisplayingFullscreen?: boolean;
+};
+
+function isPhoneVideoViewport(): boolean {
+  return Math.min(window.innerWidth, window.innerHeight) < 768
+    && Boolean(window.matchMedia?.('(pointer: coarse)').matches);
+}
+
 const getVideoProgressStorageKey = (userId?: string | null, lessonId?: string) => {
   return `lms_video_progress_${userId || "student"}_${lessonId || ""}`;
 };
@@ -168,6 +180,8 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const orientationLockedRef = useRef(false);
+  const fullscreenMountedRef = useRef(true);
   const [showControls, setShowControls] = useState(true);
   const [selectedQuality, setSelectedQuality] = useState("");
   const [showQualityMenu, setShowQualityMenu] = useState(false);
@@ -186,16 +200,41 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
 
   // Sync fullscreen state & mark body for hiding floating action buttons
   useEffect(() => {
+    fullscreenMountedRef.current = true;
     const handleFsChange = () => {
-      setIsFullscreen(Boolean(document.fullscreenElement));
+      const active = document.fullscreenElement === playerContainerRef.current
+        || Boolean((videoElementRef.current as NativeFullscreenVideo | null)?.webkitDisplayingFullscreen);
+      setIsFullscreen(active);
+      if (!active && orientationLockedRef.current) {
+        screen.orientation?.unlock?.();
+        orientationLockedRef.current = false;
+      }
     };
     document.addEventListener("fullscreenchange", handleFsChange);
     document.addEventListener("webkitfullscreenchange", handleFsChange);
     return () => {
+      fullscreenMountedRef.current = false;
       document.removeEventListener("fullscreenchange", handleFsChange);
       document.removeEventListener("webkitfullscreenchange", handleFsChange);
+      if (orientationLockedRef.current) {
+        screen.orientation?.unlock?.();
+        orientationLockedRef.current = false;
+      }
     };
   }, []);
+
+  useEffect(() => {
+    const video = videoElementRef.current;
+    if (!video) return;
+    const begin = () => setIsFullscreen(true);
+    const end = () => setIsFullscreen(false);
+    video.addEventListener('webkitbeginfullscreen', begin);
+    video.addEventListener('webkitendfullscreen', end);
+    return () => {
+      video.removeEventListener('webkitbeginfullscreen', begin);
+      video.removeEventListener('webkitendfullscreen', end);
+    };
+  }, [playbackUrl]);
 
   useEffect(() => {
     const isEnlarged = isFullscreen || isWide;
@@ -484,18 +523,53 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     }
   };
 
-  const handleToggleFullscreen = () => {
-    if (!playerContainerRef.current) return;
-    if (!document.fullscreenElement) {
-      playerContainerRef.current.requestFullscreen?.().then(() => setIsFullscreen(true)).catch(() => undefined);
-    } else {
-      document.exitFullscreen?.().then(() => setIsFullscreen(false)).catch(() => undefined);
+  const handleToggleFullscreen = async () => {
+    const container = playerContainerRef.current;
+    const video = videoElementRef.current as NativeFullscreenVideo | null;
+    if (!container) return;
+    if (video?.webkitDisplayingFullscreen) {
+      video.webkitExitFullscreen?.();
+      return;
+    }
+    if (document.fullscreenElement) {
+      await document.exitFullscreen?.().catch(() => undefined);
+      return;
+    }
+    // iPhone's native video fullscreen remains available when container
+    // fullscreen is absent. Its orientation is managed by the browser/OS.
+    if (!container.requestFullscreen) {
+      if (video?.webkitEnterFullscreen) {
+        try { video.webkitEnterFullscreen(); } catch { setIsWide(true); }
+      } else setIsWide(wide => !wide);
+      return;
+    }
+    try {
+      await container.requestFullscreen();
+      if (!fullscreenMountedRef.current || document.fullscreenElement !== container) return;
+      setIsFullscreen(true);
+      if (isPhoneVideoViewport()) {
+        const orientation = screen.orientation as LandscapeOrientation | undefined;
+        if (orientation?.lock) {
+          try {
+            await orientation.lock('landscape');
+            if (fullscreenMountedRef.current && document.fullscreenElement === container) orientationLockedRef.current = true;
+            else orientation.unlock();
+          } catch { /* Keep fullscreen playback when orientation locking is denied. */ }
+        }
+      }
+    } catch {
+      if (fullscreenMountedRef.current) setIsWide(true);
     }
   };
 
   // Wide mode replaces the old Picture-in-Picture mini window: the video
   // expands to cover the full screen (width-driven theater view).
   const handleToggleWide = () => {
+    if (isPhoneVideoViewport()) {
+      if (isWide) setIsWide(false);
+      else void handleToggleFullscreen();
+      return;
+    }
     setIsWide((w) => !w);
   };
 

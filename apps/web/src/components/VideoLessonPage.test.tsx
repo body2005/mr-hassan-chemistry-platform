@@ -32,6 +32,35 @@ const teacher: TeacherProfile = {
 };
 let host: HTMLDivElement;
 let root: Root;
+const restoreFullscreenProperties: Array<() => void> = [];
+
+function fullscreenPhone(lock = vi.fn().mockResolvedValue(undefined)) {
+  vi.stubGlobal('innerWidth', 390);
+  vi.stubGlobal('innerHeight', 844);
+  vi.stubGlobal('matchMedia', () => ({ matches: true }));
+  const unlock = vi.fn();
+  vi.stubGlobal('screen', { orientation: { lock, unlock } });
+  let fullscreen: Element | null = null;
+  for (const name of ['fullscreenElement', 'exitFullscreen']) {
+    const descriptor = Object.getOwnPropertyDescriptor(document, name);
+    restoreFullscreenProperties.push(() => {
+      if (descriptor) Object.defineProperty(document, name, descriptor);
+      else Reflect.deleteProperty(document, name);
+    });
+  }
+  Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => fullscreen });
+  Object.defineProperty(document, 'exitFullscreen', { configurable: true, value: vi.fn(async () => {
+    fullscreen = null;
+    document.dispatchEvent(new Event('fullscreenchange'));
+  }) });
+  const container = host.querySelector<HTMLElement>('.lesson-video-player')!;
+  const request = vi.fn(async () => {
+    fullscreen = container;
+    document.dispatchEvent(new Event('fullscreenchange'));
+  });
+  Object.defineProperty(container, 'requestFullscreen', { configurable: true, value: request });
+  return { lock, unlock, request };
+}
 const student: StudentProfile = {
   id: 'student', name: 'Student', email: 'student@example.test', role: 'student', nationalId: '',
   studentPhone: '', guardianPhone: '', age: 16, academicYear: '1st_secondary', academicYearLabel: '',
@@ -65,10 +94,58 @@ beforeEach(() => {
 });
 afterEach(async () => {
   await act(async () => root.unmount());
+  restoreFullscreenProperties.splice(0).reverse().forEach(restore => restore());
   host.remove();
   vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+it.each(['ملء الشاشة', 'تكبير الفيديو بعرض الشاشة'])('requests landscape on a phone through %s and unlocks on exit', async title => {
+  await render('first'); await resolve(0, '/teacher.mp4');
+  const { request, lock, unlock } = fullscreenPhone();
+  await act(async () => host.querySelector<HTMLButtonElement>(`button[title="${title}"]`)!.click());
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(lock).toHaveBeenCalledWith('landscape');
+  expect(document.body.hasAttribute('data-video-enlarged')).toBe(true);
+  await act(async () => document.exitFullscreen());
+  expect(unlock).toHaveBeenCalledTimes(1);
+  expect(document.body.hasAttribute('data-video-enlarged')).toBe(false);
+});
+
+it('keeps fullscreen available when the phone rejects orientation locking', async () => {
+  await render('first'); await resolve(0, '/teacher.mp4');
+  fullscreenPhone(vi.fn().mockRejectedValue(new DOMException('Not supported', 'NotSupportedError')));
+  await act(async () => host.querySelector<HTMLButtonElement>('button[title="ملء الشاشة"]')!.click());
+  expect(document.fullscreenElement).toBe(host.querySelector('.lesson-video-player'));
+  expect(host.querySelector('video')?.getAttribute('src')).toBe('/teacher.mp4');
+});
+
+it('releases a landscape lock that resolves after fullscreen has already closed', async () => {
+  await render('first'); await resolve(0, '/teacher.mp4');
+  let finishLock!: () => void;
+  const { unlock } = fullscreenPhone(vi.fn(() => new Promise<void>(resolve => { finishLock = resolve; })));
+  await act(async () => host.querySelector<HTMLButtonElement>('button[title="ملء الشاشة"]')!.click());
+  await act(async () => document.exitFullscreen());
+  await act(async () => finishLock());
+  expect(unlock).toHaveBeenCalledTimes(1);
+  expect(document.body.hasAttribute('data-video-enlarged')).toBe(false);
+});
+
+it('uses native video fullscreen on phones that do not expose container fullscreen', async () => {
+  await render('first'); await resolve(0, '/teacher.mp4');
+  vi.stubGlobal('innerWidth', 390); vi.stubGlobal('innerHeight', 844);
+  vi.stubGlobal('matchMedia', () => ({ matches: true }));
+  const container = host.querySelector<HTMLElement>('.lesson-video-player')!;
+  Object.defineProperty(container, 'requestFullscreen', { configurable: true, value: undefined });
+  const video = host.querySelector('video')!;
+  const enter = vi.fn(() => video.dispatchEvent(new Event('webkitbeginfullscreen')));
+  Object.defineProperty(video, 'webkitEnterFullscreen', { configurable: true, value: enter });
+  await act(async () => host.querySelector<HTMLButtonElement>('button[title="تكبير الفيديو بعرض الشاشة"]')!.click());
+  expect(enter).toHaveBeenCalledTimes(1);
+  expect(document.body.hasAttribute('data-video-enlarged')).toBe(true);
+  await act(async () => video.dispatchEvent(new Event('webkitendfullscreen')));
+  expect(document.body.hasAttribute('data-video-enlarged')).toBe(false);
 });
 
 it('tracks student playback once across ordinary rerenders and never tracks management previews', async () => {

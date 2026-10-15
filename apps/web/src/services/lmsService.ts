@@ -107,6 +107,7 @@ type ApiCourse = {
     position: number;
     lessons: Array<{
       id: string;
+      uploaded_at?: string | null;
       publication_status?: 'draft' | 'published';
       publish_at?: string | null;
       available_until?: string | null;
@@ -310,7 +311,7 @@ function mapApiCourse(course: ApiCourse): Course {
               uploadedAt: m.created_at,
             })),
             uploadedByTeacherName: "",
-            uploadedAt: (lesson.video_duration_seconds ? course.updated_at : course.created_at) || '',
+            uploadedAt: lesson.uploaded_at || '',
             order: lesson.position,
             materialization_status: lesson.materialization_status || "NOT_INDEXED",
           };

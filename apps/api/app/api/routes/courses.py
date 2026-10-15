@@ -110,6 +110,17 @@ def _safe_course_responses(db: Session, user: User | None, courses: list, *,
     
     # Collect all lesson IDs across returned courses
     all_lesson_ids = [lesson.id for course in responses for module in course.modules for lesson in module.lessons]
+    from app.models.video_upload import VideoUpload
+    upload_dates = dict(db.execute(
+        select(VideoUpload.lesson_id, func.max(VideoUpload.created_at))
+        .where(VideoUpload.lesson_id.in_(all_lesson_ids), VideoUpload.status == 'ready')
+        .group_by(VideoUpload.lesson_id)
+    ).all()) if all_lesson_ids else {}
+    for course in responses:
+        for module in course.modules:
+            for lesson in module.lessons:
+                source = orm_lessons_by_id.get(lesson.id)
+                lesson.uploaded_at = upload_dates.get(lesson.id) or (source.created_at if source else None)
     materials_by_lesson: dict[uuid.UUID, list[LessonMaterialSummary]] = {}
     if all_lesson_ids:
         from app.models.extended import LessonAsset
@@ -138,7 +149,6 @@ def _safe_course_responses(db: Session, user: User | None, courses: list, *,
     if user and user.role != UserRole.STUDENT:
         # One bulk read restores processing state after navigation or reload;
         # never expose source keys, worker errors, or jobs to the public catalog.
-        from app.models.video_upload import VideoUpload
         from app.schemas import VideoProcessingSummary
 
         latest_uploads = {}
@@ -158,6 +168,8 @@ def _safe_course_responses(db: Session, user: User | None, courses: list, *,
                 for lesson in module.lessons:
                     lesson.materials = materials_by_lesson.get(lesson.id, [])
                     lesson.video_upload = latest_uploads.get(lesson.id)
+                    if lesson.video_upload and lesson.video_upload.status not in {'expired', 'cancelled', 'superseded', 'creating'}:
+                        lesson.uploaded_at = lesson.video_upload.created_at
                     orm_lesson = orm_lessons_by_id.get(lesson.id)
                     if orm_lesson is not None:
                         lesson.has_video, lesson.video_url = _video_playback_fields(orm_lesson, allow_external=True)
@@ -222,6 +234,7 @@ def _safe_course_responses(db: Session, user: User | None, courses: list, *,
                     lesson.announce_to_students = False
                     lesson.required_material_count = 0
                     lesson.discussion_unread_count = 0
+                    lesson.uploaded_at = None
                     lesson.materialization_status = MaterializationStatus.NOT_INDEXED
     return responses
 

@@ -1,4 +1,4 @@
-"""Regression source for metadata policy; not executed as part of this change."""
+"""Authorization regressions for course metadata projection."""
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -69,6 +69,29 @@ def test_public_only_uses_same_allowlist_even_with_owner_cookie(db):
     assert private['modules'][0]['lessons'][1]['content'] == 'SEALED LESSON BODY'
 
 
+def test_reuploaded_lesson_uses_latest_ready_upload_date_for_both_roles(db):
+    from app.models.video_upload import VideoUpload
+
+    inst, owner, student, _, course, free, *_ = domain(db)
+    now = datetime.now(timezone.utc)
+    free.created_at = now - timedelta(days=2)
+    old_at, newest_at = now - timedelta(hours=2), now - timedelta(hours=1)
+    for state, created in [('superseded', old_at), ('ready', newest_at)]:
+        db.add(VideoUpload(lesson_id=free.id, owner_id=owner.id, request_key=state,
+            filename='synthetic.mp4', content_type='video/mp4', size_bytes=100,
+            fingerprint='0' * 64, object_key=f'quarantine/{state}', status=state,
+            created_at=created, expires_at=now + timedelta(days=1), outputs=[]))
+    db.add(Enrollment(course_id=course.id, student_id=student.id, status=EnrollmentStatus.ACTIVE))
+    db.commit()
+    teacher = login(TestClient(app), owner, inst.slug)
+    own = teacher.get(f'/api/v1/courses/{course.id}').json()['modules'][0]['lessons'][0]
+    assert datetime.fromisoformat(own['uploaded_at']).replace(tzinfo=timezone.utc) == newest_at
+    learner = login(TestClient(app), student, inst.slug)
+    visible = learner.get('/api/v1/courses?enrolled_only=true').json()['items'][0]['modules'][0]['lessons'][0]
+    assert datetime.fromisoformat(visible['uploaded_at']).replace(tzinfo=timezone.utc) == newest_at
+    assert visible['video_upload'] is None
+
+
 @pytest.mark.parametrize('account', ['student', 'other'])
 def test_unenrolled_students_receive_no_assessment_metadata(db, account):
     inst, _, student, other, course, *_ = domain(db)
@@ -96,7 +119,7 @@ def test_free_enrollment_cannot_read_purchase_endpoints_but_sales_entries_are_re
     # without granting access to content or private playback/schedule details.
     assert details[1]['title'] == paid.title and details[1]['price_egp'] == 50
     for key in ['content', 'video_url', 'video_upload', 'video_duration_seconds',
-                'publish_at', 'available_until', 'materialization_error']:
+                'publish_at', 'available_until', 'materialization_error', 'uploaded_at']:
         assert details[1][key] is None
     assert details[1]['materials'] == []
 

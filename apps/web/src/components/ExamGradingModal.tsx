@@ -174,27 +174,6 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
     return { label, color: "#dc2626", bg: "rgba(220, 38, 38, 0.12)" };
   };
 
-  async function handleReopen() {
-    if (!student || !solutionData?.attempt || savingGrade || solutionData.approval_status !== 'approved') return;
-    if (notes.trim().length < 3) {
-      setGradeError('اكتب سبب تعديل النتيجة في الملاحظات أولًا. ستُحجب النتيجة عن الطالب حتى تعتمدها من جديد.');
-      return;
-    }
-    setSavingGrade(true);
-    setGradeError(null);
-    try {
-      await apiRequest(`/quiz-attempts/${solutionData.attempt.id}/reopen-results`, {
-        method: 'POST', body: JSON.stringify({ reason: notes.trim() }),
-      });
-      const updated = await apiRequest<QuizSolutionData>(`/students/${student.id}/quiz-solution?attempt_id=${solutionData.attempt.id}`, { skipCache: true });
-      setSolutionData(updated);
-      setScoreOverride(null);
-      setAnswerGrades({});
-    } catch (error) {
-      setGradeError(error instanceof Error ? error.message : 'تعذر إعادة فتح التصحيح.');
-    } finally { setSavingGrade(false); }
-  }
-
   const status = solutionData?.history_state === 'legacy-unverified'
     ? { label: 'سجل قديم — لا توجد نسخة أسئلة موثقة', color: 'var(--text-muted)', bg: 'var(--bg-surface-secondary)' }
     : solutionData?.grading_status === "pending"
@@ -301,7 +280,7 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
 
         {/* Modal Scrollable Body */}
         <div style={{ overflowY: "auto", flex: 1, padding: "14px 2px", display: "flex", flexDirection: "column", gap: "18px" }}>
-          {solutionData?.attempt && <label>محاولة الاختبار الجاري تصحيحها
+          {solutionData?.attempt && <label>الاختبار
             <select disabled={savingGrade || loadingSolution} value={solutionData.attempt.id} onChange={event => {
               setAttemptSelection({ studentId: student.id, id: event.target.value });
             }}>
@@ -820,12 +799,6 @@ export const ExamGradingModal: React.FC<ExamGradingModalProps> = ({
           >
             إلغاء
           </button>
-          {solutionData?.approval_status === 'approved' && solutionData.history_state !== 'legacy-unverified' && (
-            <button type="button" className="btn-secondary" disabled={savingGrade || loadingSolution}
-              onClick={handleReopen} style={{ minHeight: 44 }}>
-              إعادة فتح التصحيح
-            </button>
-          )}
           <button
             type="button"
             onClick={handleSave}

@@ -51,6 +51,7 @@ import { FreeCourseCatalog } from "../components/FreeCourseCatalog";
 import { FloatingProgressFab } from '../components/FloatingProgressFab';
 import { assessmentBand, assessmentPercent } from '../services/assessmentOutcome';
 import { useCourseAssessments } from '../services/useCourseAssessments';
+import { compareNewestLessons, newestLessonsFirst } from '../services/lessonOrder';
 
 const VideoLessonPage = lazy(() => import('../components/VideoLessonPage')
   .then(module => ({ default: module.VideoLessonPage })));
@@ -948,7 +949,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         }
       });
     });
-    return list;
+    return list.sort((a, b) => compareNewestLessons(a.lesson, b.lesson));
   }, [validEnrolledCourses]);
 
   const filteredRevisionVideoLessons = React.useMemo(() => {
@@ -1135,7 +1136,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     );
   }
 
-  const courseLessons = currentCourse?.lessons || [];
+  const courseLessons = newestLessonsFirst(currentCourse?.lessons || []);
   const completedLessonsCount = courseLessons.filter((l) => completedLessonIds.includes(l.id)).length;
 
   // Search query filter for current tab items

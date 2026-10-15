@@ -41,6 +41,17 @@ afterEach(async () => {
   await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); vi.useRealTimers();
 });
 
+it('lists newest lessons first across courses and units', async () => {
+  const older = { ...course.lessons[0], id: 'older', title: 'Older upload', uploadedAt: '2026-10-01T12:00:00Z', order: 99, moduleId: 'unit-two' };
+  const newer = { ...course.lessons[0], id: 'newer', title: 'Newer upload', uploadedAt: '2026-10-15T12:00:00Z', order: 1, moduleId: 'unit-one' };
+  const middle = { ...older, id: 'middle', title: 'Middle upload', uploadedAt: '2026-10-10T12:00:00Z', courseId: 'another-course' };
+  await render([{ ...course, lessons: [newer, older] }, { ...course, id: 'another-course', lessons: [middle] }]);
+  const headings = [...host.querySelectorAll('h3')].map(heading => heading.textContent);
+  expect(headings.indexOf('Newer upload')).toBeGreaterThan(-1);
+  expect(headings.indexOf('Newer upload')).toBeLessThan(headings.indexOf('Middle upload'));
+  expect(headings.indexOf('Middle upload')).toBeLessThan(headings.indexOf('Older upload'));
+});
+
 it('shows one unified progress bar and restores watch only after processing completes', async () => {
   mocks.tasks = [task]; await render();
   expect(host.textContent).toContain('جاري رفع الفيديو…');
