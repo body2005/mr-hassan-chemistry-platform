@@ -28,13 +28,20 @@ beforeEach(() => {
   mocks.scope = 'teacher-a'; mocks.generation = 1;
   mocks.students.mockResolvedValue([{ id: 'student', display_name: 'Student', email: 'student@test', is_active: true }]);
   saved = { columns: [definition], values: { student: { 'column-one': 'Called guardian' } } };
-  mocks.request.mockReset().mockImplementation(async (path: string, init?: RequestInit) => {
+  mocks.toast.mockReset();
+  mocks.request.mockReset().mockImplementation(async (_path: string, init?: RequestInit) => {
     if (init?.method === 'PUT') { saved.values.student['column-one'] = JSON.parse(String(init.body)).value; return { value: saved.values.student['column-one'] }; }
     return structuredClone(saved);
   });
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+async function editCell(value: string) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(cell()!, value);
+    cell()!.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
 it('hydrates saved definitions and values and preserves them after grade events and remount/login', async () => {
   await render(); expect(cell()?.value).toBe('Called guardian');
   await act(async () => { window.dispatchEvent(new Event('lms_submission_graded')); await new Promise(resolve => setTimeout(resolve, 350)); });
@@ -63,4 +70,81 @@ it('reports failed hydration and provides an actual retry', async () => {
   const retry = [...host.querySelectorAll('button')].find(button => button.textContent === 'إعادة تحميل المتابعة');
   expect(retry).toBeDefined();
   await act(async () => retry!.click()); expect(cell()?.value).toBe('Called guardian');
+});
+it('saves a changed cell only after API acknowledgement and restores it on remount', async () => {
+  await render(); await editCell('Updated note');
+  expect(host.textContent).toContain('تعديل غير محفوظ');
+  let finish!: (value: { value: string }) => void;
+  mocks.request.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'حفظ القيمة')!.click());
+  expect(host.textContent).toContain('جارٍ الحفظ'); expect(host.textContent).not.toContain('تم الحفظ');
+  saved.values.student['column-one'] = 'Updated note';
+  await act(async () => finish({ value: 'Updated note' }));
+  expect(host.textContent).toContain('تم الحفظ');
+  await act(async () => root.unmount()); root = createRoot(host); await render();
+  expect(cell()?.value).toBe('Updated note');
+});
+it('keeps a failed edit visibly unsaved and retries the same value', async () => {
+  await render(); await editCell('Retry note');
+  mocks.request.mockRejectedValueOnce(new Error('offline'));
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'حفظ القيمة')!.click());
+  expect(host.textContent).toContain('القيمة غير محفوظة'); expect(cell()?.value).toBe('Retry note');
+  expect(saved.values.student['column-one']).toBe('Called guardian');
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'إعادة محاولة الحفظ')!.click());
+  expect(host.textContent).toContain('تم الحفظ'); expect(saved.values.student['column-one']).toBe('Retry note');
+});
+it('ignores a former account late save and does not mark a new teacher cell saved', async () => {
+  await render(); await editCell('Teacher A private note');
+  let finish!: (value: { value: string }) => void;
+  mocks.request.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'حفظ القيمة')!.click());
+  mocks.request.mockResolvedValue({ columns: [], values: {} }); mocks.scope = 'teacher-b'; mocks.generation++;
+  await act(async () => window.dispatchEvent(new Event('lms_auth_scope_updated')));
+  await act(async () => finish({ value: 'Teacher A private note' }));
+  expect(host.textContent).not.toContain('تم الحفظ'); expect(cell()).toBeNull();
+});
+it('does not dismiss column creation or claim success before save, and retains form on failure', async () => {
+  await render();
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent?.includes('إضافة عمود مخصص'))!.click());
+  const name = host.querySelector<HTMLInputElement>('input[placeholder="مثال: ملاحظات السلوك، تاريخ التواصل..."]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(name, 'New column');
+    name.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  mocks.request.mockRejectedValueOnce(new Error('offline'));
+  await act(async () => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  expect(host.textContent).toContain('تعذر حفظ العمود'); expect(name.value).toBe('New column');
+  expect(mocks.toast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'تم حفظ العمود المخصص' }));
+});
+it('does not lose a newly saved column when an older refresh finishes after creation', async () => {
+  await render();
+  let finishAdd!: (value: typeof definition) => void;
+  let finishSnapshot!: (value: typeof saved) => void;
+  mocks.request.mockImplementation((_path: string, init?: RequestInit) => init?.method === 'POST'
+    ? new Promise(resolve => { finishAdd = resolve; })
+    : new Promise(resolve => { finishSnapshot = resolve; }));
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent?.includes('إضافة عمود مخصص'))!.click());
+  const name = host.querySelector<HTMLInputElement>('input[placeholder="مثال: ملاحظات السلوك، تاريخ التواصل..."]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(name, 'New column');
+    name.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await act(async () => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  await act(async () => { window.dispatchEvent(new Event('lms_submission_graded')); await new Promise(resolve => setTimeout(resolve, 350)); });
+  await act(async () => finishAdd({ ...definition, id: 'new-column', name: 'New column' }));
+  expect(host.querySelector('thead')?.textContent).toContain('New column');
+  await act(async () => finishSnapshot(saved));
+  expect(host.querySelector('thead')?.textContent).toContain('New column');
+});
+it('does not resurrect a deleted column when an older refresh finishes after deletion', async () => {
+  await render();
+  let finishDelete!: (value?: unknown) => void;
+  let finishSnapshot!: (value: typeof saved) => void;
+  mocks.request.mockImplementation((_path: string, init?: RequestInit) => init?.method === 'DELETE'
+    ? new Promise(resolve => { finishDelete = resolve; })
+    : new Promise(resolve => { finishSnapshot = resolve; }));
+  await act(async () => host.querySelector<HTMLButtonElement>('button[title="حذف هذا العمود المخصص"]')!.click());
+  await act(async () => { window.dispatchEvent(new Event('lms_submission_graded')); await new Promise(resolve => setTimeout(resolve, 350)); });
+  await act(async () => finishDelete()); expect(cell()).toBeNull();
+  await act(async () => finishSnapshot(saved)); expect(cell()).toBeNull();
 });
