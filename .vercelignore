@@ -1,0 +1,15 @@
+# The linked Vercel project's root directory is apps/web.
+# Upload only its source; keep private local data and unrelated projects out.
+**/*
+!apps/
+!apps/web/
+!apps/web/**
+apps/web/node_modules/
+apps/web/dist/
+apps/web/.vercel/
+apps/web/.env*
+apps/web/**/*.har
+apps/web/**/*.key
+apps/web/**/*.pem
+apps/web/**/.auth/
+apps/web/**/storage-state*.json
