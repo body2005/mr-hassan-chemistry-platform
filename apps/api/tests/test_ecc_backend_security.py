@@ -296,7 +296,11 @@ def test_supported_provider_urls_create_sync_engine_without_connecting(scheme):
 
 def test_environment_template_uses_installed_sync_driver():
     repo_root = Path(os.environ["QA_REPO_ROOT"]) if "QA_REPO_ROOT" in os.environ else next(
-        (parent for parent in Path(__file__).resolve().parents if (parent / ".env.example").is_file()),
+        (
+            parent
+            for parent in Path(__file__).resolve().parents
+            if (parent / ".env.example").is_file()
+        ),
         Path("/repo"),
     )
     template = (repo_root / ".env.example").read_text(encoding="utf-8")
