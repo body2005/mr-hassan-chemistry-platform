@@ -5,6 +5,7 @@ import { apiRequest } from '../services/apiClient';
 import { useToast } from './ToastProvider';
 import { realtimeService } from '../services/realtimeService';
 import './LessonDiscussion.css';
+import { useTranslation } from '../utils/i18n';
 
 interface ServerComment {
   id: string;
@@ -24,13 +25,14 @@ function validateComment(comment: ServerComment): ServerComment {
 }
 
 function CommentText({ comment }: { comment: ServerComment }) {
+  const { t, lang } = useTranslation();
   const date = comment.created_at ? new Date(comment.created_at) : null;
   return <>
     <div className="discussion-author">
       <strong>{comment.author}</strong>
-      {comment.is_teacher && <span className="discussion-teacher">المعلم</span>}
+      {comment.is_teacher && <span className="discussion-teacher">{t('lesson.teacher')}</span>}
       <time dateTime={date && Number.isFinite(date.valueOf()) ? date.toISOString() : undefined}>
-        {date && Number.isFinite(date.valueOf()) ? date.toLocaleString('ar-EG') : 'وقت التعليق غير متاح'}
+        {date && Number.isFinite(date.valueOf()) ? date.toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-GB', { timeZone: 'Africa/Cairo' }) : t('lesson.noCommentDate')}
       </time>
     </div>
     <p className="discussion-body">{comment.body}</p>
@@ -44,6 +46,7 @@ export function LessonDiscussion({ lessonId, currentUser, onSummary }: {
   onSummary?: (summary: { count: number; unread: number }) => void;
 }) {
   const toast = useToast();
+  const { t: tr } = useTranslation();
   const [comments, setComments] = useState<ServerComment[]>([]);
   const [draft, setDraft] = useState('');
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
@@ -130,11 +133,11 @@ export function LessonDiscussion({ lessonId, currentUser, onSummary }: {
       setComments(previous => [saved, ...previous.filter(item => item.id !== saved.id)]);
       setDraft('');
       void load(true);
-      toast('تم إضافة تعليقك بنجاح', 'success');
+      toast(tr('lesson.commentSaved'), 'success');
     } catch {
       if (scopeRef.current !== scope) return;
-      setMutationError('تعذر نشر التعليق؛ النص محفوظ. يمكنك إعادة المحاولة يدويًا.');
-      toast('تعذر نشر التعليق، حاول مجدداً', 'danger');
+      setMutationError(tr('lesson.commentPreserved'));
+      toast(tr('lesson.commentError'), 'danger');
     } finally {
       if (scopeRef.current === scope) { writeRef.current = null; setSaving(false); }
     }
@@ -161,11 +164,11 @@ export function LessonDiscussion({ lessonId, currentUser, onSummary }: {
       setReplyDrafts(previous => ({ ...previous, [parentId]: '' }));
       setReplyTarget(null);
       void load(true);
-      toast('تم إرسال الرد بنجاح', 'success');
+      toast(tr('lesson.replySaved'), 'success');
     } catch {
       if (scopeRef.current !== scope) return;
-      setMutationError('تعذر إرسال الرد؛ النص محفوظ. يمكنك إعادة المحاولة يدويًا.');
-      toast('تعذر إرسال الرد، حاول مجدداً', 'danger');
+      setMutationError(tr('lesson.replyPreserved'));
+      toast(tr('lesson.replyError'), 'danger');
     } finally {
       if (scopeRef.current === scope) { writeRef.current = null; setSavingReply(null); }
     }
@@ -180,38 +183,38 @@ export function LessonDiscussion({ lessonId, currentUser, onSummary }: {
     <button type="button" className="discussion-reply-toggle" disabled={busy || loadError || !userId || depth >= 7}
       aria-expanded={replyTarget === comment.id}
       onClick={() => setReplyTarget(previous => previous === comment.id ? null : comment.id)}>
-      <CornerDownLeft size={14} aria-hidden="true" />رد
+      <CornerDownLeft size={14} aria-hidden="true" />{tr('lesson.reply')}
     </button>
     {replyTarget === comment.id && <form className="discussion-reply-composer" onSubmit={event => void submitReply(event, comment.id)}>
-      <input type="text" aria-label={`الرد على تعليق ${comment.author}`} maxLength={2000}
-        placeholder="اكتب ردك هنا..." value={replyDrafts[comment.id] ?? ''} disabled={busy}
+      <input type="text" aria-label={tr('lesson.replyTo', { author: comment.author })} maxLength={2000}
+        placeholder={tr('lesson.replyPlaceholder')} value={replyDrafts[comment.id] ?? ''} disabled={busy}
         onChange={event => setReplyDrafts(previous => ({ ...previous, [comment.id]: event.target.value }))} />
-      <button type="submit" disabled={busy || !replyDrafts[comment.id]?.trim()}>{savingReply === comment.id ? 'جاري الإرسال...' : 'رد'}</button>
+      <button type="submit" disabled={busy || !replyDrafts[comment.id]?.trim()}>{tr(savingReply === comment.id ? 'lesson.sending' : 'lesson.reply')}</button>
     </form>}
     <div className="discussion-replies" style={depth >= 2 ? { marginInlineStart: 0, paddingInlineStart: 0 } : undefined}>
       {comment.replies?.map(reply => renderComment(reply, depth + 1))}
     </div>
   </article>;
-  return <section className="lesson-discussion" aria-label="التعليقات والمناقشات">
+  return <section className="lesson-discussion" aria-label={tr('lesson.discussion')}>
     <header className="discussion-header">
-      <h3>التعليقات والمناقشات{!loading && !loadError ? ` (${count})` : ''}</h3>
+      <h3>{tr('lesson.discussion')}{!loading && !loadError ? ` (${count})` : ''}</h3>
     </header>
-    {loading && <p role="status">جارٍ تحميل المناقشة...</p>}
+    {loading && <p role="status">{tr('lesson.discussionLoading')}</p>}
     {loadError && <div role="alert" className="discussion-error">
-      <p>تعذر تحميل المناقشة. لا يعني ذلك عدم وجود تعليقات.</p>
-      <button type="button" disabled={busy} onClick={() => void load()}>إعادة تحميل المناقشة</button>
+      <p>{tr('lesson.discussionLoadError')}</p>
+      <button type="button" disabled={busy} onClick={() => void load()}>{tr('lesson.discussionRetry')}</button>
     </div>}
     {mutationError && <p role="alert" className="discussion-error">{mutationError}</p>}
     <form onSubmit={submitComment} className="discussion-composer">
-      <input type="text" aria-label="تعليقك على الدرس" maxLength={2000} value={draft}
+      <input type="text" aria-label={tr('lesson.commentLabel')} maxLength={2000} value={draft}
         disabled={busy || loadError || !userId}
-        onChange={event => setDraft(event.target.value)} placeholder="اكتب سؤالك أو تعليقك حول هذا الدرس..." />
+        onChange={event => setDraft(event.target.value)} placeholder={tr('lesson.commentPlaceholder')} />
       <button type="submit" disabled={busy || loadError || !userId || !draft.trim()}>
-        {saving ? 'جاري النشر...' : 'إضافة تعليق'}
+        {tr(saving ? 'lesson.publishing' : 'lesson.addComment')}
       </button>
     </form>
     {!loading && !loadError && comments.length === 0 && <p className="discussion-empty">
-      لا توجد تعليقات بعد على هذا الدرس — كن أول من يطرح سؤاله أو استفساره.
+      {tr('lesson.noComments')}
     </p>}
     <div className="discussion-list">{ordered.map(comment => renderComment(comment))}</div>
   </section>;

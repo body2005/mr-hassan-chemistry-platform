@@ -4,7 +4,7 @@ export const coursesEn = {
   navHomeSub: "Explore Available Chemistry Courses",
   navMyCourses: "My Courses & Lessons",
   navMyCoursesSub: "Enrolled Chemistry Curriculum",
-  navMySubmissions: "My Assignments & Quizzes",
+  navMySubmissions: "My Assignments & Exams",
   navMySubmissionsSub: "Evaluated Grades & Feedback",
 
   // Landing

@@ -22,12 +22,13 @@ import { VideoTelemetryTracker } from "../services/videoTelemetry";
 import { lessonAccessService } from "../services/paymentService";
 import { useToast, ToastRegion } from "./ToastProvider";
 import type Hls from "hls.js";
-import { useHlsTransport } from "./useHlsTransport";
+import { AUTO_QUALITY, useHlsTransport } from "./useHlsTransport";
 import { discussionIntentKey } from './LessonDiscussionBell';
 import { useVideoBufferedRanges } from './useVideoBufferedRanges';
 import { VideoLessonNavigation } from "./VideoLessonNavigation";
 import { LessonDiscussion } from "./LessonDiscussion";
 import { apiRequest } from '../services/apiClient';
+import { useTranslation } from '../utils/i18n';
 
 async function markDiscussionRead(lessonId: string) {
   await apiRequest(`/lessons/${lessonId}/comments/read`, { method: 'POST' });
@@ -114,6 +115,9 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   onDownloadMaterial,
 }) => {
   const toast = useToast();
+  const { t: tr, lang, dir } = useTranslation();
+  const feedbackRef = useRef({ toast, tr });
+  useEffect(() => { feedbackRef.current = { toast, tr }; }, [toast, tr]);
   const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const telemetryTrackerRef = useRef<VideoTelemetryTracker | null>(null);
   const playerContainerRef = useRef<HTMLDivElement | null>(null);
@@ -144,7 +148,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     if (discussionSummary.unread > 0) void markDiscussionRead(lesson.id).then(() => {
       if (scope !== discussionScope.current) return;
       setDiscussionSummary(previous => ({ ...previous, unread: 0 }));
-    }).catch(() => toast('تعذر تحديث قراءة إشعارات التعليقات؛ حاول مجددًا.', 'danger'));
+    }).catch(() => toast(tr("lesson.commentsReadError"), 'danger'));
   };
   useEffect(() => {
     let requested = new URLSearchParams(window.location.hash.split('?')[1] || '').get('discussion') === '1';
@@ -155,7 +159,10 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
       }
     } catch { /* Hash navigation remains available. */ }
     if (!requested) return;
-    void markDiscussionRead(lesson.id).catch(() => toast('تعذر تحديث قراءة إشعارات التعليقات؛ حاول مجددًا.', 'danger'));
+    void markDiscussionRead(lesson.id).catch(() => {
+      const feedback = feedbackRef.current;
+      feedback.toast(feedback.tr("lesson.commentsReadError"), 'danger');
+    });
     const frame = requestAnimationFrame(() => { discussionRef.current?.scrollIntoView({ block: 'start' }); discussionRef.current?.focus({ preventScroll: true }); });
     return () => cancelAnimationFrame(frame);
   }, [lesson.id]);
@@ -292,7 +299,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
         void renewProtectedPlayback(true).then(ready => {
           if (disposed || !ready) return;
           setIsAccessRequested(false);
-          toast({ message: "تمت إتاحة الدرس بنجاح، جاري تشغيل الفيديو!", tone: "success" });
+          toast({ message: feedbackRef.current.tr("lesson.unlocked"), tone: "success" });
         });
       }
     };
@@ -309,12 +316,12 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
       await lessonAccessService.requestAccess(lesson.id);
       setIsAccessRequested(true);
       toast({
-        message: "تم إرسال طلب إتاحة الدرس للمعلم. سيتم بدء تشغيل الفيديو تلقائياً فور موافقة المعلم.",
+        message: tr("lesson.requestSent"),
         tone: "success",
       });
     } catch (err) {
       toast({
-        message: err instanceof Error ? err.message : "تعذر إرسال طلب الإتاحة",
+        message: err instanceof Error ? err.message : tr("lesson.requestError"),
         tone: "danger",
       });
     } finally {
@@ -363,7 +370,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
         showSeekDenied();
         videoElementRef.current.currentTime = maxWatchedRef.current;
         setCurrentTime(maxWatchedRef.current);
-        toast("لا يمكنك تقديم الفيديو للأمام قبل إكمال مشاهدة الدرس لأول مرة", "warning");
+        toast(tr("lesson.seekWarning"), "warning");
         return;
       }
       if (current > maxWatchedRef.current) {
@@ -379,7 +386,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
         if (!completedLessonIds.includes(lesson.id)) {
           onToggleCompleteLesson(lesson.id);
         }
-        toast("تهانينا! لقد أتممت مشاهدة الدرس بالكامل وتم تسجيل إنجازك بنجاح", "success");
+        toast(tr("lesson.completedToast"), "success");
       }
     }
 
@@ -398,7 +405,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
       if (!completedLessonIds.includes(lesson.id)) {
         onToggleCompleteLesson(lesson.id);
       }
-      toast("تهانينا! لقد أتممت مشاهدة الدرس بالكامل وتم تسجيل إنجازك بنجاح", "success");
+      toast(tr("lesson.completedToast"), "success");
     }
     saveVideoProgressToStorage(currentUser?.id, lesson.id, duration, duration, duration);
   };
@@ -454,7 +461,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     const targetTime = parseFloat(e.target.value);
     if (!isTeacher && !isLessonFinished && targetTime > maxWatchedRef.current + 1) {
       showSeekDenied();
-      toast("لا يمكنك تقديم الفيديو للأمام، يجب مشاهدة الدرس بالكامل أولاً", "warning");
+      toast(tr('lesson.seekWarning'), "warning");
       return;
     }
     setCurrentTime(targetTime);
@@ -471,7 +478,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     const targetTime = previousTime + seconds;
     if (!isTeacher && seconds > 0 && !isLessonFinished && targetTime > maxWatchedRef.current + 1) {
       showSeekDenied();
-      toast("لا يمكنك تقديم الفيديو للأمام قبل إنهاء مشاهدته مرة على الأقل", "warning");
+      toast(tr('lesson.seekWarning'), "warning");
       return;
     }
     const clampedTime = Math.max(0, Math.min(targetTime, duration));
@@ -499,7 +506,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
     videoElementRef.current.currentTime = 0;
     setCurrentTime(0);
     saveVideoProgressToStorage(currentUser?.id, lesson.id, 0, maxWatchedRef.current, duration);
-    toast("تم إرجاع الفيديو للبداية (00:00). نسبة تقدمك المسجلة محفوظة بالكامل ويمكنك تقديم الفيديو لأي جزء شاهدته سابقاً.", "info");
+    toast(tr("lesson.restarted"), "info");
   };
 
   const handleVolumeChange = (newVolume: number) => {
@@ -596,7 +603,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
   const handleNextLesson = () => {
     if (!nextLesson) return;
     if (!isLessonFinished) {
-      toast("يجب إكمال مشاهدة الدرس الحالي أولاً قبل الانتقال للدرس التالي", "warning");
+      toast(tr("lesson.finishFirst"), "warning");
       return;
     }
     onSelectLesson(nextLesson);
@@ -659,7 +666,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
 
   return (
     <div
-      dir="rtl"
+      dir={dir}
       style={{
         width: "100%",
         minHeight: "calc(100vh - 68px)",
@@ -707,7 +714,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
               ref={playerContainerRef}
               className="lesson-video-player"
               tabIndex={0}
-              aria-label="مشغل الفيديو؛ استخدم السهمين للتقديم والرجوع"
+              aria-label={tr("lesson.player")}
               onPointerDown={(event) => {
                 if (!(event.target as HTMLElement).closest('input, textarea, select, button, [contenteditable="true"]')) {
                   event.currentTarget.focus({ preventScroll: true });
@@ -738,19 +745,16 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
               }}
             >
               {seekDenied && <div className="lesson-seek-denied" role="status" aria-live="polite">
-                لا يمكنك التقديم قبل إكمال مشاهدة الدرس لأول مرة
+                {tr("lesson.seekDenied")}
               </div>}
-              {currentUser?.role === 'student' && !isEmbed && <span className="lesson-viewer-watermark" aria-hidden="true" dir="ltr">
-                طالب · {currentUser.id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}
-              </span>}
               <button type="button" className="lesson-discussion-bell" onClick={openDiscussion}
-                aria-label={`التعليقات: ${discussionSummary.count}، إشعارات غير مقروءة: ${discussionSummary.unread}`}>
+                aria-label={tr('lesson.comments', discussionSummary)}>
                 <Bell size={20} aria-hidden="true" /><span>{discussionSummary.unread}</span>
               </button>
               {seekFeedback && <div className={`lesson-seek-feedback lesson-seek-feedback-${seekFeedback.direction}`}
                 role="status" aria-live="polite" aria-atomic="true" dir="ltr">
                 {seekFeedback.direction === 'forward' ? <ChevronsRight aria-hidden="true" size={30} /> : <ChevronsLeft aria-hidden="true" size={30} />}
-                <span>{seekFeedback.direction === 'forward' ? '+' : '−'}{seekFeedback.seconds} <span lang="ar">ثوانٍ</span></span>
+                <span>{seekFeedback.direction === 'forward' ? '+' : '−'}{seekFeedback.seconds} <span lang={lang}>{tr("lesson.seconds")}</span></span>
               </div>}
               {/* Embed (YouTube / Google Drive) */}
               {isEmbed ? (
@@ -810,13 +814,13 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                     <button type="button" onClick={() => { void renewProtectedPlayback(true); }}
                       style={{ position: 'absolute', top: 68, insetInlineEnd: 12, zIndex: 30, color: '#fff',
                         border: '1px solid #64748b', borderRadius: 8, background: 'rgba(15,23,42,.9)', padding: '8px 12px' }}>
-                      استئناف الفيديو
+                      {tr("lesson.resumeVideo")}
                     </button>
                   )}
 
                   {/* Center Glass Play Button (Shows when paused) */}
                   {waitingForVideo && (
-                    <div className="lesson-video-loading" role="status" aria-label="جارٍ تحميل الفيديو">
+                    <div className="lesson-video-loading" role="status" aria-label={tr("lesson.loading")}>
                       <span className="lesson-video-loading__spinner" aria-hidden="true" />
                     </div>
                   )}
@@ -885,7 +889,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                           position: "relative",
                           width: "100%",
                           height: "4px",
-                          background: "rgb(95, 80, 70)",
+                          background: "#000000C0",
                           borderRadius: "2px",
                           overflow: "hidden",
                         }}
@@ -931,7 +935,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                       {/* Interactive Range Input Overlay */}
                       <input
                         type="range"
-                        aria-label="موضع تشغيل الفيديو"
+                        aria-label={tr("lesson.position")}
                         min={0}
                         max={duration || 100}
                         step={0.1}
@@ -976,7 +980,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                             justifyContent: "center",
                             padding: "4px",
                           }}
-                          title={isPlaying ? "إيقاف مؤقت" : "تشغيل"}
+                          title={isPlaying ? tr("lesson.pause") : tr("lesson.play")}
                         >
                           {isPlaying ? (
                             <Pause size={22} fill="#ffffff" color="#ffffff" />
@@ -1000,7 +1004,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                             padding: "4px",
                             opacity: 0.9,
                           }}
-                          title="إرجاع الفيديو للبداية (00:00) مع الاحتفاظ بنسبة تقدمك"
+                          title={tr("lesson.restartTitle")}
                         >
                           <RotateCcw size={18} color="#ffffff" />
                         </button>
@@ -1032,7 +1036,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                               alignItems: "center",
                               justifyContent: "center",
                             }}
-                            title={isMuted ? "إلغاء كتم الصوت" : "كتم الصوت"}
+                            title={isMuted ? tr("lesson.unmute") : tr("lesson.mute")}
                           >
                             {isMuted || volume === 0 ? <VolumeX size={17} /> : <Volume2 size={17} />}
                           </button>
@@ -1081,7 +1085,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                             />
                             <input
                               type="range"
-                              aria-label="مستوى صوت الفيديو"
+                              aria-label={tr("lesson.volume")}
                               min={0}
                               max={1}
                               step={0.05}
@@ -1132,7 +1136,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                               padding: "4px",
                               transition: "transform 0.15s ease",
                             }}
-                            title="الإعدادات والجودة"
+                            title={tr("lesson.settings")}
                             aria-expanded={showQualityMenu}
                             aria-controls="lesson-quality-options"
                           >
@@ -1181,7 +1185,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                                     textAlign: "right",
                                   }}
                                 >
-                                  {q} {selectedQuality === q && "✓"}
+                                  {q === AUTO_QUALITY ? tr('lesson.autoQuality') : q} {selectedQuality === q && "✓"}
                                 </button>
                               ))}
                             </div>
@@ -1201,7 +1205,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                             alignItems: "center",
                             padding: "4px",
                           }}
-                          title={isWide ? "إرجاع حجم الفيديو الطبيعي" : "تكبير الفيديو بعرض الشاشة"}
+                          title={isWide ? tr("lesson.normalSize") : tr("lesson.wide")}
                         >
                           {isWide ? <Minimize size={19} /> : <Expand size={19} />}
                         </button>
@@ -1219,7 +1223,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                             alignItems: "center",
                             padding: "4px",
                           }}
-                          title={isFullscreen ? "تصغير الشاشة" : "ملء الشاشة"}
+                          title={isFullscreen ? tr("lesson.exitFullscreen") : tr("lesson.fullscreen")}
                         >
                           {isFullscreen ? <Minimize size={20} /> : <Maximize size={20} />}
                         </button>
@@ -1259,7 +1263,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                     {lesson.title}
                   </strong>
                   <span style={{ fontSize: "14px", opacity: 0.8 }}>
-                    {playbackError || "جاري إعداد مشغل الفيديو التفاعلي..."}
+                    {playbackError || tr("lesson.preparing")}
                   </span>
                   {playbackError && lesson.requiresProtectedPlayback && currentUser?.role === "student" && (
                     <div style={{ marginTop: "16px" }}>
@@ -1278,7 +1282,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                             border: "1px solid rgba(217, 119, 6, 0.4)",
                           }}
                         >
-                          تم إرسال طلب الإتاحة (بانتظار موافقة المعلم...)
+                          {tr("lesson.requestPending")}
                         </span>
                       ) : (
                         <button
@@ -1297,7 +1301,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                             boxShadow: "0 4px 14px rgba(2, 132, 199, 0.35)",
                           }}
                         >
-                          {isSubmittingAccessRequest ? "جاري إرسال الطلب..." : "طلب إتاحة الدرس من المعلم"}
+                          {isSubmittingAccessRequest ? tr("lesson.requesting") : tr("lesson.requestAccess")}
                         </button>
                       )}
                     </div>
@@ -1361,14 +1365,14 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                     <Calendar size={15} style={{ color: "#059669" }} />
                     <span>
                       {lesson.uploadedAt && Number.isFinite(Date.parse(lesson.uploadedAt))
-                        ? `تاريخ النشر: ${new Date(lesson.uploadedAt).toLocaleDateString("ar-EG", { year: "numeric", month: "long", day: "numeric" })}`
-                        : "تاريخ النشر غير متاح"}
+                        ? tr('lesson.published', { date: new Date(lesson.uploadedAt).toLocaleDateString(lang === 'ar' ? 'ar-EG' : 'en-GB', { year: "numeric", month: "long", day: "numeric" }) })
+                        : tr("lesson.noPublishDate")}
                     </span>
                   </div>
                 </div>
               </div>
 
-              {/* "حول هذا الدرس" Section (Only shown if teacher provided description) */}
+              {/* tr("lesson.about") Section (Only shown if teacher provided description) */}
               {lesson.description && lesson.description.trim() ? (
                 <div>
                   <h3
@@ -1379,7 +1383,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                       color: "var(--text-main, #0f172a)",
                     }}
                   >
-                    حول هذا الدرس
+                    {tr("lesson.about")}
                   </h3>
                   <p
                     style={{
@@ -1399,7 +1403,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
               {lesson.materials && lesson.materials.length > 0 && (
                 <div style={{ marginTop: "20px", paddingTop: "16px", borderTop: "1px dashed var(--border-color, #e2e8f0)" }}>
                   <h4 style={{ margin: "0 0 10px", fontSize: "13.5px", fontWeight: 800, color: "var(--text-main, #0f172a)" }}>
-                    المرفقات والمذكرات المرفقة:
+                    {tr("lesson.materials")}
                   </h4>
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                     {lesson.materials.map((mat) => (
@@ -1440,7 +1444,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                             }}
                           >
                             <Download size={13} />
-                            <span>تنزيل المذكرة - PDF</span>
+                            <span>{tr("lesson.download")}</span>
                           </button>
                         )}
                       </div>
@@ -1488,7 +1492,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                     color: "var(--text-main, #0f172a)",
                   }}
                 >
-                  تقدمك في هذا الدرس
+                  {tr("lesson.progress")}
                 </h3>
 
                 <div
@@ -1516,8 +1520,8 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                     }}
                   >
                     {isLessonFinished || completedLessonIds.includes(lesson.id)
-                      ? "مكتمل بالكامل"
-                      : `${formatTime(maxWatchedTime)} من ${formatTime(duration)} تم مشاهدتها`}
+                      ? tr("lesson.complete")
+                      : tr('lesson.watched', { watched: formatTime(maxWatchedTime), duration: formatTime(duration) })}
                   </span>
                 </div>
 
@@ -1568,10 +1572,10 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                       color: "var(--text-main, #0f172a)",
                       cursor: "pointer",
                     }}
-                    title="مشاهدة الفيديو من البداية دون التأثير على نسبة تقدمك المسجلة"
+                    title={tr("lesson.restartProgressTitle")}
                   >
                     <RotateCcw size={13} />
-                    <span>إعادة من الأول</span>
+                    <span>{tr("lesson.restart")}</span>
                   </button>
 
                   {maxWatchedTime > 5 && currentTime < maxWatchedTime - 5 && (
@@ -1596,9 +1600,9 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                         color: "#059669",
                         cursor: "pointer",
                       }}
-                      title="الرجوع إلى أقصى نقطة وصلتها لمواصلة المشاهدة"
+                      title={tr("lesson.resumeTitle")}
                     >
-                      <span>متابعة من حيث توقفت</span>
+                      <span>{tr("lesson.resume")}</span>
                     </button>
                   )}
                 </div>
@@ -1616,7 +1620,7 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
                     color: "var(--text-muted, #64748b)",
                   }}
                 >
-                  <span>إجمالي المقرر ({completedCount} من {totalLessonsCount} درس):</span>
+                  <span>{tr('lesson.total', { completed: completedCount, total: totalLessonsCount })}</span>
                   <strong style={{ color: "var(--text-main)", fontWeight: 800 }}>{courseProgressPercent}%</strong>
                 </div>
               </div>
@@ -1633,6 +1637,9 @@ export const VideoLessonPage: React.FC<VideoLessonPageProps> = ({
           .video-sidebar-container {
             width: 100% !important;
           }
+        }
+        @media (max-width: 767px) {
+          .video-sidebar-container { order: -1; }
         }
       `}</style>
     </div>

@@ -40,7 +40,7 @@ export const authEn = {
   academicStats: "Academic Statistics",
   completedLessonsCount: "Completed Lessons",
   totalWatchTime: "Total Watch Time",
-  quizzesTaken: "Completed Quizzes",
+  quizzesTaken: "Completed Exams",
   averageScore: "Average Grade",
   lastActive: "Last Active",
   institution: "Educational Institution",

@@ -11,6 +11,7 @@ it('shares the entire bootstrap mapping so concurrent callers do not cancel each
   const first = bootstrapService.getBootstrap();
   const second = bootstrapService.getBootstrap();
   expect(second).toBe(first);
+  await vi.waitFor(() => expect(resolve).toBeTypeOf('function'));
   resolve(new Response(JSON.stringify({ authenticated: true, user: {
     id: 'teacher', role: 'teacher', display_name: 'Teacher', email: 'teacher@example.com',
     created_at: '2026-10-12T00:00:00Z', institution_id: 'school', username: 'teacher',

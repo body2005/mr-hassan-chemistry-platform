@@ -2128,7 +2128,9 @@ svg {
   outline: none;
 }
 .lesson-video-player { border: none !important; }
-.lesson-video-player:focus-visible .lesson-player-controls-row { box-shadow: inset 0 -2px #10b981; }
+.lesson-video-player:focus-visible .lesson-player-controls-row button:focus-visible {
+  outline: 2px solid #fff; outline-offset: 2px;
+}
 .lesson-seek-denied {
   position: absolute; inset-inline: 12px; top: 25%; z-index: 35;
   padding: 12px; border-radius: 10px; text-align: center;
@@ -2145,31 +2147,4 @@ svg {
 .destructive-action:focus-visible {
   outline: 3px solid #b91c1c;
   outline-offset: 3px;
-}
-/* Identification deterrent only; this overlay is not DRM or capture blocking. */
-.lesson-viewer-watermark {
-  position: absolute;
-  z-index: 4;
-  top: 18%;
-  left: 25%;
-  transform: translateX(-50%);
-  max-width: 72%;
-  padding: .25rem .5rem;
-  color: rgba(255, 255, 255, .78);
-  background: rgba(17, 24, 39, .45);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, .8);
-  border-radius: .25rem;
-  font-size: clamp(.65rem, 2vw, .85rem);
-  pointer-events: none;
-  user-select: none;
-  animation: lesson-watermark-position 36s steps(1, end) infinite;
-}
-@keyframes lesson-watermark-position {
-  0%, 100% { top: 18%; left: 25%; }
-  25% { top: 30%; left: 70%; }
-  50% { top: 56%; left: 25%; }
-  75% { top: 45%; left: 70%; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .lesson-viewer-watermark { animation: none; }
 }

@@ -1,6 +1,21 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import type { Course, VideoLesson } from '../types/lms';
 
+function playerHash(lesson: VideoLesson) {
+  const [page, query = ''] = window.location.hash.split('?');
+  const params = new URLSearchParams(query);
+  params.set('course', lesson.courseId);
+  params.set('lesson', lesson.id);
+  return `${page}?${params}`;
+}
+
+function listHash(hash: string) {
+  const [page, query = ''] = hash.split('?');
+  const params = new URLSearchParams(query);
+  for (const key of ['course', 'lesson', 'discussion']) params.delete(key);
+  return `${page}${params.size ? `?${params}` : ''}`;
+}
+
 interface RestoreOptions {
   userId?: string;
   courses: Course[];
@@ -23,20 +38,31 @@ export function useLessonNavigation(lesson: VideoLesson | null, setLesson: (less
     const selection = { lmsLesson: lesson.id, lessonCourse: lesson.courseId, lessonUser: options.userId };
     if (!state?.lmsLesson || state.lessonOrigin !== window.location.hash || state.lessonUser !== options.userId) {
       listPosition.current = window.scrollY;
-      origin.current = window.location.hash;
-      window.history.pushState({ ...state, ...selection, lessonOrigin: origin.current, lessonListPosition: listPosition.current }, '');
+      origin.current = listHash(window.location.hash);
+      const hash = playerHash(lesson);
+      // The URL survives a reload even when a mobile browser discards history.state.
+      // It contains identifiers only; admission is rechecked when restoring.
+      window.history.pushState({ ...state, ...selection, lessonOrigin: hash, lessonListHash: origin.current,
+        lessonCanGoBack: true, lessonListPosition: listPosition.current }, '', hash);
       window.scrollTo(0, 0);
     } else if (state.lmsLesson !== lesson.id || state.lessonCourse !== lesson.courseId) {
       // Playlist changes stay in this player entry; Back always returns to the list.
-      window.history.replaceState({ ...state, ...selection }, '');
+      const hash = playerHash(lesson);
+      window.history.replaceState({ ...state, ...selection, lessonOrigin: hash }, '', hash);
     }
   }, [lesson, options.userId]);
   const restore = useCallback(async () => {
     const revision = ++restoreRevision.current;
-    const state = window.history.state;
     const { lesson: current, options: settings } = latest.current;
-    if (!state?.lmsLesson || state.lessonOrigin !== window.location.hash || state.lessonUser !== settings.userId || !settings.userId) return;
-    origin.current = state.lessonOrigin;
+    if (!settings.userId) return;
+    const hash = window.location.hash;
+    const params = new URLSearchParams(hash.split('?')[1] || '');
+    const state = window.history.state?.lmsLesson ? window.history.state : {
+      lmsLesson: params.get('lesson'), lessonCourse: params.get('course'), lessonUser: settings.userId,
+      lessonOrigin: hash, lessonListHash: listHash(hash), lessonCanGoBack: false,
+    };
+    if (!state.lmsLesson || state.lessonOrigin !== hash || state.lessonUser !== settings.userId) return;
+    origin.current = state.lessonListHash || listHash(state.lessonOrigin);
     listPosition.current = Number.isFinite(state.lessonListPosition) ? state.lessonListPosition : 0;
     if (current?.id === state.lmsLesson) return;
     // Only identifiers survive Refresh. Resolve content from this account's
@@ -46,9 +72,9 @@ export function useLessonNavigation(lesson: VideoLesson | null, setLesson: (less
     if (!course || !selected) return;
     try {
       const allowed = !settings.canRestore || await settings.canRestore(selected, course);
-      if (!allowed || restoreRevision.current !== revision || window.history.state?.lmsLesson !== selected.id ||
-          window.history.state?.lessonUser !== settings.userId || latest.current.options.userId !== settings.userId ||
-          window.location.hash !== state.lessonOrigin) return;
+      if (!allowed || restoreRevision.current !== revision || latest.current.options.userId !== settings.userId ||
+          window.location.hash !== hash || (window.history.state?.lessonUser && window.history.state.lessonUser !== settings.userId)) return;
+      if (!window.history.state?.lmsLesson) window.history.replaceState(state, '', hash);
       known.current.set(selected.id, selected);
       latest.current.options.onRestore(course);
       setLesson(selected);
@@ -84,7 +110,11 @@ export function useLessonNavigation(lesson: VideoLesson | null, setLesson: (less
     };
   }, [setLesson, restore]);
   return useCallback(() => {
-    if (window.history.state?.lmsLesson) window.history.back();
+    const state = window.history.state;
+    if (state?.lmsLesson && state.lessonCanGoBack === false) {
+      window.history.replaceState(null, '', state.lessonListHash || listHash(window.location.hash));
+      setLesson(null);
+    } else if (state?.lmsLesson) window.history.back();
     else setLesson(null);
   }, [setLesson]);
 }

@@ -74,6 +74,18 @@ async function render(id: string, account: CurrentUser = teacher) {
 async function resolve(index: number, url: string) {
   await act(async () => pending[index].resolve({ stream_url: url }));
 }
+it('renders English student controls and progress without an identity overlay', async () => {
+  localStorage.setItem('lms_lang', 'en');
+  try {
+    await render('first', student);
+    await resolve(0, '/api/v1/lessons/first/video/stream');
+    expect(host.querySelector('.lesson-viewer-watermark')).toBeNull();
+    expect(host.textContent).toContain('Your progress in this lesson');
+    expect(host.querySelector('[aria-label="Video playback position"]')).not.toBeNull();
+    expect(host.querySelector('[title="Fullscreen"]')).not.toBeNull();
+    expect(host.textContent).not.toContain('تقدمك في هذا الدرس');
+  } finally { localStorage.removeItem('lms_lang'); }
+});
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   mocks.request.mockReset();

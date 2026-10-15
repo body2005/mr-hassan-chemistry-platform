@@ -1,5 +1,6 @@
 import { ArrowRight, ChevronLeft } from 'lucide-react';
 import type { CSSProperties } from 'react';
+import { useTranslation } from '../utils/i18n';
 
 type Props = {
   courseTitle: string;
@@ -16,6 +17,7 @@ const navigationButton: CSSProperties = {
 
 /** Navigation owns layout/keyboard semantics, not playback or auth state. */
 export function VideoLessonNavigation({ courseTitle, lessonTitle, isTeacher, onClose }: Props) {
+  const { t } = useTranslation();
   return <div style={{
     background: 'var(--bg-surface, #ffffff)', borderBottom: '1px solid var(--border-color, #e2e8f0)',
     padding: '9px 24px', position: 'sticky', top: '-4px', zIndex: 40,
@@ -28,7 +30,7 @@ export function VideoLessonNavigation({ courseTitle, lessonTitle, isTeacher, onC
         display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px',
         flexWrap: 'wrap', minWidth: 0, maxWidth: '100%',
       }}>
-        <button type="button" onClick={onClose} style={navigationButton}>الرئيسية</button>
+        <button type="button" onClick={onClose} style={navigationButton}>{t('lesson.home')}</button>
         <ChevronLeft size={14} aria-hidden="true" style={{ color: 'var(--text-muted, #64748b)', flexShrink: 0 }} />
         <button type="button" onClick={onClose} style={navigationButton}>{courseTitle}</button>
         <ChevronLeft size={14} aria-hidden="true" style={{ color: 'var(--text-muted, #64748b)', flexShrink: 0 }} />
@@ -44,7 +46,7 @@ export function VideoLessonNavigation({ courseTitle, lessonTitle, isTeacher, onC
         color: 'var(--text-main, #0f172a)', cursor: 'pointer', transition: 'background 0.2s ease',
       }}>
         <ArrowRight size={15} aria-hidden="true" />
-        <span>{isTeacher ? 'رجوع لإدارة الدروس' : 'رجوع للمقرر'}</span>
+        <span>{t(isTeacher ? 'lesson.backTeacher' : 'lesson.backCourse')}</span>
       </button>
     </div>
   </div>;

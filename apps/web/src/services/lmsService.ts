@@ -4,6 +4,7 @@ import {
   uploadWithProgress,
   ApiClientError,
   markBrowserSessionActive,
+  prepareBootstrapSession,
   isSessionKnownInvalid,
   setApiAuthScope,
   getApiAuthGeneration,
@@ -546,6 +547,7 @@ async function fetchBootstrap(): Promise<BootstrapData> {
       };
     }
     try {
+      await prepareBootstrapSession();
       const res = await apiRequest<{
         authenticated: boolean;
         user: ApiUser | null;

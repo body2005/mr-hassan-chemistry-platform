@@ -1,5 +1,31 @@
 import { afterEach, expect, it, vi } from 'vitest';
-afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetModules(); localStorage.clear(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetModules(); localStorage.clear(); document.cookie = 'matgar_csrf=; Max-Age=0; path=/'; });
+
+it('renews once before reload bootstrap rather than probing with an expired cookie', async () => {
+  document.cookie = 'matgar_csrf=hint; path=/';
+  const fetch = vi.fn<(url: string) => Promise<Response>>(async () => new Response('{}', { status: 200 }));
+  vi.stubGlobal('fetch', fetch);
+  const api = await import('./apiClient');
+  await Promise.all([api.prepareBootstrapSession(), api.prepareBootstrapSession()]);
+  await api.apiRequest('/bootstrap');
+  expect(fetch.mock.calls.map(call => call[0])).toEqual(['/api/v1/auth/refresh', '/api/v1/bootstrap']);
+  expect(api.hasBrowserSession()).toBe(true);
+  await api.prepareBootstrapSession();
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+it('makes no proactive renewal request for a guest without a CSRF hint', async () => {
+  const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+  const api = await import('./apiClient');
+  await api.prepareBootstrapSession(); expect(fetch).not.toHaveBeenCalled();
+});
+it('an invalid refresh never grants bootstrap access from a CSRF cookie', async () => {
+  document.cookie = 'matgar_csrf=hint; path=/';
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 401 })));
+  const api = await import('./apiClient');
+  await expect(api.prepareBootstrapSession()).rejects.toMatchObject({ status: 401 });
+  expect(api.isSessionKnownInvalid()).toBe(true);
+  expect(api.hasBrowserSession()).toBe(false);
+});
 
 it.each(['network', '503', '429', '403'])('preserves account and draft after temporary refresh failure: %s', async failure => {
   localStorage.setItem('lms_cached_user', '{"id":"student"}');

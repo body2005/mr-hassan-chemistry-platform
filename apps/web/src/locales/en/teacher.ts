@@ -1,7 +1,7 @@
 export const teacherEn = {
   navLessonManagement: "Lesson Management & Upload",
   navLessonManagementSub: "Content & Difficulty Forecast",
-  navQuizGen: "Quiz & Assignment Studio",
+  navQuizGen: "Exam & Assignment Studio",
   navQuizGenSub: "Smart Assessment & Homework Authoring",
   navSubmissions: "Student Tracking",
   navSubmissionsSub: "Cohort progress, attendance & grading",
@@ -28,7 +28,7 @@ export const teacherEn = {
   flaggedConceptsTitle: "Flagged Concepts Requiring Extra Instructor Focus:",
 
   // Quiz & Assignment Generator
-  quizGenTitle: "Smart Quiz & Assignment Studio",
+  quizGenTitle: "Smart Exam & Assignment Studio",
   quizGenSubtitle: "Author question banks and assessments with manual rubrics and reviewed model answers",
   saveDraft: "Save Draft",
   publishQuiz: "Publish Assessment",
@@ -44,7 +44,7 @@ export const teacherEn = {
   // Student Analytics & Submissions
   studentAttendanceRatio: "Personal Attendance %",
   homeworkSuccessRatio: "Homework Success %",
-  quizSuccessRatio: "Quiz Success %",
+  quizSuccessRatio: "Exam Success %",
   studentTableDetails: "Viewing Timeline & Details",
   timelineVisualizerTitle: "Video Watching Timeline & Engagement Visualizer",
   groupPassingRate: "Group Passing Rate:",

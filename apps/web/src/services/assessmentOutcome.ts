@@ -5,7 +5,15 @@ export function assessmentPercent(score: number | null | undefined, total: numbe
   return Math.round(score / total * 1000) / 10;
 }
 
-export function assessmentBand(percent: number | null): string {
+export function assessmentBand(percent: number | null, lang: 'ar' | 'en' = 'ar'): string {
+  if (lang === 'en') {
+    if (percent == null) return 'Result cannot be calculated — review required';
+    if (percent >= 90) return 'Excellent';
+    if (percent >= 80) return 'Very good';
+    if (percent >= 70) return 'Good';
+    if (percent >= 60) return 'Pass';
+    return 'Needs improvement — review the lesson';
+  }
   if (percent == null) return 'النتيجة غير قابلة للحساب — تحتاج مراجعة';
   if (percent >= 90) return 'ممتاز';
   if (percent >= 80) return 'جيد جداً';

@@ -300,6 +300,22 @@ function isAuthPath(path: string): boolean {
 
 let lastFailedRefreshAt = 0;
 
+/** On a document reload, renew the HttpOnly session before the private
+ * bootstrap probe. CSRF is only a renewal hint, never proof of identity.
+ * Existing tabs keep their normal lazy renewal; guests make no extra request.
+ */
+export async function prepareBootstrapSession(): Promise<void> {
+  if (browserSessionActive || sessionKnownInvalid || !csrfToken()) return;
+  const epoch = authScopeEpoch;
+  const result = await refreshSession();
+  if (epoch !== authScopeEpoch) throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
+  checkRefreshFailure(result);
+  if (result === 'invalid') {
+    clearStaleSession('/bootstrap');
+    throw new ApiClientError('SESSION_EXPIRED', 'انتهت جلسة الدخول. سجّل الدخول مجددًا للمتابعة.', 401);
+  }
+}
+
 function checkRefreshFailure(result: RefreshResult): void {
   if (result === 'cancelled') throw new ApiClientError('REQUEST_CANCELLED', 'Account changed', 0);
   if (result === 'transient') throw new ApiClientError('SESSION_REFRESH_UNAVAILABLE',

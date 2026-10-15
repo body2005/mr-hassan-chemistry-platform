@@ -39,7 +39,7 @@ import {
   Moon,
 } from "lucide-react";
 import { Course, CourseAssessmentRef, CurrentUser, NotificationItem, StudentProfile, VideoLesson } from "../types/lms";
-import { Language, translations } from "../utils/i18n";
+import { Language, translations, useTranslation } from "../utils/i18n";
 import { EducationalBookItem, RevisionPackageItem } from "./GeneralHomeView";
 import { courseService } from "../services/lmsService";
 import { apiRequest, fetchApiBlob, uploadWithProgress } from "../services/apiClient";
@@ -187,6 +187,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   onNavigateHome,
 }) => {
   const t = translations[lang];
+  const { t: tr } = useTranslation();
   const toast = useToast();
   void notifications;
   void onMarkNotificationRead;
@@ -207,8 +208,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   const [selectedCourseId, setSelectedCourseId] = useState(() => initialCourseId || '');
   const [catalogOpen, setCatalogOpen] = useState(false);
   const quizAvailability = (quiz: CourseAssessmentRef) =>
-    quiz.availabilityState === 'scheduled' ? 'لم يبدأ موعد الاختبار بعد'
-    : quiz.availabilityState === 'closed' ? 'انتهى موعد الاختبار' : '';
+    quiz.availabilityState === 'scheduled' ? tr("lesson.examNotStarted")
+    : quiz.availabilityState === 'closed' ? tr("lesson.examEnded") : '';
   const freeCatalog = onEnrollCourse && <FreeCourseCatalog year={studentYear} enrolledIds={enrolledCourses.map(c => c.id)}
     onEnroll={async id => { await onEnrollCourse(id); setSelectedCourseId(id); }} />;
 
@@ -255,7 +256,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           next.delete(unlockedId);
           return next;
         });
-        toast({ message: "تمت إتاحة الدرس بنجاح من المعلم!", tone: "success" });
+        toast({ message: tr("lesson.accessGranted"), tone: "success" });
       }
     };
 
@@ -269,12 +270,12 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       await lessonAccessService.requestAccess(lesson.id);
       setPendingRequestLessonIds((prev) => new Set([...prev, lesson.id]));
       toast({
-        message: "تم إرسال طلب إتاحة الدرس للمعلم بنجاح. سيتم تفعيل الدرس تلقائياً فور موافقة المعلم.",
+        message: tr("lesson.accessRequested"),
         tone: "success",
       });
     } catch (err) {
       toast({
-        message: err instanceof Error ? err.message : "تعذر إرسال طلب الإتاحة",
+        message: err instanceof Error ? err.message : tr("lesson.requestError"),
         tone: "danger",
       });
     } finally {
@@ -322,16 +323,16 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     let cancelled = false;
     const sharedLesson = sharedCourse.lessons.find(item => item.id === initialLessonId);
     if (!sharedLesson) {
-      toast({ message: 'الدرس غير متاح الآن أو لم يحن موعد نشره.', tone: 'warning' });
+      toast({ message: tr("lesson.lessonUnavailable"), tone: 'warning' });
     } else {
       setSelectedCourseId(sharedCourse.id);
       void courseService.getCourseAssessments(sharedCourse.id, { skipCache: true }).then(data => {
         if (cancelled) return;
         if (data.lessons.some(item => item.id === sharedLesson.id && item.accessible)) setActiveLessonModal(sharedLesson);
-        else toast({ message: 'هذا الدرس يحتاج اشتراكًا أو إتاحة من المدرس.', tone: 'info' });
+        else toast({ message: tr("lesson.lessonNeedsAccess"), tone: 'info' });
         onInitialLessonHandled?.();
       }).catch(() => {
-        if (!cancelled) { toast({ message: 'تعذر التحقق من إتاحة الدرس. أعد فتح الرابط للمحاولة مجددًا.', tone: 'danger' }); onInitialLessonHandled?.(); }
+        if (!cancelled) { toast({ message: tr("lesson.verifyAccessError"), tone: 'danger' }); onInitialLessonHandled?.(); }
       });
       return () => { cancelled = true; };
     }
@@ -353,7 +354,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       link.click();
       link.remove();
       URL.revokeObjectURL(objectUrl);
-      toast(`تم تنزيل ملف: ${filename}`, "success");
+      toast(tr('lesson.downloadedFile', { name: filename }), "success");
     } catch (error) {
       toast(materialFailureMessage(error), "danger");
     }
@@ -618,7 +619,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       const data = await apiRequest<QuizResultPage>(url);
       setQuizResultPage(data);
     } catch (err) {
-      setQuizResultError(err instanceof Error ? err.message : "لا توجد نتيجة متاحة بعد");
+      setQuizResultError(err instanceof Error ? err.message : tr("lesson.noResult"));
     } finally {
       setQuizResultLoading(false);
     }
@@ -691,7 +692,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         setServerQuizDeadline(data.attempt.expires_at ? new Date(data.attempt.expires_at).getTime() : null);
       }
     } catch (err) {
-      setServerQuizError(err instanceof Error ? err.message : "تعذر فتح الاختبار");
+      setServerQuizError(err instanceof Error ? err.message : tr("lesson.examOpenError"));
     } finally {
       setServerQuizLoading(false);
     }
@@ -724,9 +725,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           if (!active) return;
           synchronizeServerTime(data.server_time);
           setServerQuizDeadline(data.expires_at ? Date.parse(data.expires_at) : null);
-          if (!data.can_submit) setServerQuizError('التقييم غير متاح للتسليم حاليًا؛ راجع موعد الإتاحة.');
+          if (!data.can_submit) setServerQuizError(tr("lesson.cannotSubmit"));
           else { setServerQuizError(null); serverQuizAutoSubmitted.current = false; }
-        }).catch(() => { if (active) setServerQuizError('تعذر تحديث موعد الاختبار.'); });
+        }).catch(() => { if (active) setServerQuizError(tr("lesson.scheduleError")); });
       }, 300);
     };
     window.addEventListener('lms_assessments_updated', changed);
@@ -769,7 +770,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     } catch (err) {
       const expired = serverQuizRemaining !== null && serverQuizRemaining <= 0;
       toast({
-        message: expired ? "انتهى وقت الاختبار وأُغلق التسليم" : err instanceof Error ? err.message : "تعذر تسليم الاختبار",
+        message: expired ? tr("lesson.examExpired") : err instanceof Error ? err.message : tr("lesson.examSubmitError"),
         tone: expired ? "warning" : "danger",
       });
     } finally {
@@ -781,7 +782,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   useEffect(() => {
     if (serverQuizRemaining !== null && serverQuizRemaining <= 0 && serverQuiz && !serverQuizResult && !serverQuizSubmitting && !serverQuizAutoSubmitted.current) {
       serverQuizAutoSubmitted.current = true;
-      toast({ message: "انتهى وقت الاختبار — جاري التسليم التلقائي", tone: "warning" });
+      toast({ message: tr("lesson.autoSubmit"), tone: "warning" });
       void submitServerQuiz(true);
     }
   }, [serverQuizRemaining, serverQuiz, serverQuizResult, serverQuizSubmitting, submitServerQuiz, toast]);
@@ -819,7 +820,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           : null,
       });
     } catch (err) {
-      setServerAssignmentError(err instanceof Error ? err.message : "تعذر فتح الواجب");
+      setServerAssignmentError(err instanceof Error ? err.message : tr("lesson.assignmentOpenError"));
     } finally {
       setServerAssignmentLoading(false);
     }
@@ -829,9 +830,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     if (!serverAssignment?.id) return;
     const row = selectedAssessments.items.find(item => item.id === serverAssignment.id && item.kind === 'assignment');
     if (selectedAssessments.loading) return;
-    if (!row) { setServerAssignmentError('الواجب غير متاح حاليًا.'); return; }
+    if (!row) { setServerAssignmentError(tr("lesson.assignmentUnavailable")); return; }
     setServerAssignment(previous => previous ? { ...previous, dueAt: row.dueLabel ?? null } : previous);
-    setServerAssignmentError(row.accessible ? null : 'انتهى موعد تسليم الواجب أو لم يعد متاحًا.');
+    setServerAssignmentError(row.accessible ? null : tr("lesson.assignmentClosed"));
   }, [serverAssignment?.id, selectedAssessments.items, selectedAssessments.loading]);
 
   /** Download the printable assignment sheet (server-rendered Arabic PDF). */
@@ -847,9 +848,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       link.click();
       link.remove();
       URL.revokeObjectURL(objectUrl);
-      toast({ message: "تم تحميل ورقة الواجب", tone: "success" });
+      toast({ message: tr("lesson.sheetDownloaded"), tone: "success" });
     } catch {
-      toast({ message: "تعذر تحميل ورقة الواجب", tone: "danger" });
+      toast({ message: tr("lesson.sheetError"), tone: "danger" });
     }
   }
 
@@ -867,9 +868,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       setAssignmentUploadDone({ version: result.version, submittedAt: result.submitted_at });
       setAssignmentFile(null);
       reloadSelectedAssessments();
-      toast({ message: "تم تسليم حل الواجب بنجاح", tone: "success" });
+      toast({ message: tr("lesson.assignmentSubmitted"), tone: "success" });
     } catch (err) {
-      toast({ message: err instanceof Error ? err.message : "تعذر رفع ملف الحل", tone: "danger" });
+      toast({ message: err instanceof Error ? err.message : tr("lesson.answerUploadError"), tone: "danger" });
     } finally {
       setAssignmentUploading(false);
     }
@@ -917,14 +918,14 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           title: cleanTitle || mat.title,
           academicYear: course.academicYear || "1st_secondary",
           author: course.teacherName || "مستر حسن شعبان",
-          authorTitle: course.teacherTitle || "معلم خبير الكيمياء",
+          authorTitle: course.teacherTitle || tr("lesson.expertTeacher"),
           pagesCount: mat.fileSize ? Math.max(1, Math.round(parseInt(mat.fileSize) / 35)) : 20,
           fileSize: mat.fileSize || "",
           fileUrl: mat.fileUrl,
           price: "0",
-          description: `مذكرة وكتاب تعليمي مرفق مع شرح: ${lesson.title}`,
+          description: tr('lesson.attachedNotes', { title: lesson.title }),
           gradient: "linear-gradient(135deg, #065f46 0%, #047857 100%)",
-          sampleTopics: [lesson.title, isPdf ? "ملف PDF" : "مستند تعليمي", course.title].filter(Boolean),
+          sampleTopics: [lesson.title, isPdf ? tr("lesson.pdfFile") : tr("lesson.educationalDocument"), course.title].filter(Boolean),
           lessonTitle: lesson.title,
           lessonId: lesson.id,
           isLessonMaterial: true,
@@ -986,7 +987,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     if (isSubmitted) {
       return {
         status: "submitted" as const,
-        label: "تم التسليم والتقييم",
+        label: tr("lesson.submittedGraded"),
         bg: "#dcfce7",
         color: "#166534",
         border: "#86efac",
@@ -1022,7 +1023,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     if (now < start) {
       return {
         status: "locked" as const,
-        label: `يفتح في: ${availableFromStr}`,
+        label: tr('lesson.opensDate', { date: availableFromStr }),
         bg: "#fef3c7",
         color: "#92400e",
         border: "#fde68a",
@@ -1033,7 +1034,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     if (now > end) {
       return {
         status: "expired" as const,
-        label: `انتهى موعد التسليم - ${dueDateStr}`,
+        label: tr('lesson.closedDate', { date: dueDateStr }),
         bg: "#fee2e2",
         color: "#991b1b",
         border: "#fca5a5",
@@ -1043,7 +1044,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
     return {
       status: "open" as const,
-      label: `متاح الآن للحل - الموعد النهائي: ${dueDateStr}`,
+      label: tr('lesson.availableDue', { date: dueDateStr }),
       bg: "var(--bg-accent, #ecfdf5)",
       color: "#059669",
       border: "var(--border-accent, #a7f3d0)",
@@ -1055,7 +1056,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     if (completedLessonIds.includes(lessonId)) return;
     void courseService.completeLesson(lessonId)
       .then(() => setCompletedLessonIds((previous) => [...new Set([...previous, lessonId])]))
-      .catch((error) => toast({ message: error instanceof Error ? error.message : "تعذر حفظ تقدم الدرس", tone: "danger" }));
+      .catch((error) => toast({ message: error instanceof Error ? error.message : tr("lesson.progressError"), tone: "danger" }));
   }
 
   // Handle Quiz Submission
@@ -1103,11 +1104,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   if (validEnrolledCourses.length === 0) {
     return (
       <div className="page-container">
-        {initialLessonId && <p role="status">رابط الدرس محفوظ. اشترك في مقرره أولًا لفتح المحتوى المسموح لحسابك.</p>}
+        {initialLessonId && <p role="status">{tr("lesson.sharedSaved")}</p>}
         {freeCatalog}
         <div style={{ textAlign: "center", padding: "80px 20px", background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "16px" }}>
           <BookOpen size={48} style={{ color: "var(--text-light)", margin: "0 auto 16px" }} />
-          <h2 style={{ margin: "0 0 8px", fontSize: "20px", color: "var(--text-main)" }}>فارغ</h2>
+          <h2 style={{ margin: "0 0 8px", fontSize: "20px", color: "var(--text-main)" }}>{tr("lesson.empty")}</h2>
           <p style={{ margin: "0 0 20px", color: "var(--text-muted)", fontSize: "14px" }}>
             {t.noCoursesEnrolledDesc}
           </p>
@@ -1121,7 +1122,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   if (activeLessonModal && currentCourse) {
     return (
-      <Suspense fallback={<PageLoadingScreen message="جاري تحميل مشغّل الفيديو..." />}>
+      <Suspense fallback={<PageLoadingScreen message={tr("lesson.loadingPlayer")} />}>
         <VideoLessonPage
           lesson={activeLessonModal}
           course={currentCourse}
@@ -1193,20 +1194,20 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   return (
     <div className="page-container">
-      <ToastRegion label="رسائل المقرر" />
-      {initialLessonId && !validEnrolledCourses.some(item => item.id === initialCourseId) && <p role="status">لفتح الدرس المشارَك، اشترك في مقرره أولًا من المقررات المتاحة. المشاركة لا تمنح اشتراكًا.</p>}
-      <button className="btn-secondary" onClick={() => setCatalogOpen(prev => !prev)}>{catalogOpen ? 'إغلاق المقررات المتاحة' : 'استعراض المقررات المجانية'}</button>
+      <ToastRegion label={tr("lesson.courseMessages")} />
+      {initialLessonId && !validEnrolledCourses.some(item => item.id === initialCourseId) && <p role="status">{tr("lesson.sharedEnrollment")}</p>}
+      <button className="btn-secondary" onClick={() => setCatalogOpen(prev => !prev)}>{catalogOpen ? tr("lesson.closeCatalog") : tr("lesson.browseCatalog")}</button>
       {catalogOpen && freeCatalog}
       {/* Top Urgent Counter */}
       <div className="urgency-banner" style={{ marginBottom: "20px" }}>
         <div className="urgency-counter">
           <div className="urgency-badge">
             <Flame size={24} />
-            <span>متبقي {Math.max(0, courseLessons.length - completedLessonsCount)} دروس</span>
+            <span>{tr('lesson.remainingLessons', { count: Math.max(0, courseLessons.length - completedLessonsCount) })}</span>
           </div>
           <div>
             <strong style={{ display: "block", fontSize: "16px", color: "var(--urgency-text)" }}>
-              مقرر {currentCourse.title}
+              {tr('lesson.courseName', { title: currentCourse.title })}
             </strong>
           </div>
         </div>
@@ -1218,7 +1219,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "18px", padding: "24px", marginBottom: "24px", boxShadow: "var(--card-shadow)" }}>
         {validEnrolledCourses.length > 1 && (
           <div style={{ marginBottom: "18px" }}>
-            <label htmlFor="course-selector" style={{ display: "block", marginBottom: "7px", fontWeight: 800, color: "var(--text-main)" }}>اختر المقرر</label>
+            <label htmlFor="course-selector" style={{ display: "block", marginBottom: "7px", fontWeight: 800, color: "var(--text-main)" }}>{tr("lesson.chooseCourse")}</label>
             <select
               id="course-selector"
               value={currentCourse.id}
@@ -1236,7 +1237,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "16px" }}>
           <div>
             <span style={{ fontSize: "11px", fontWeight: 800, color: "#059669", background: "var(--bg-accent)", padding: "4px 10px", borderRadius: "6px", border: "1px solid var(--border-accent)" }}>
-              {currentCourse.subject || "الكيمياء"}
+              {currentCourse.subject || tr("lesson.chemistry")}
             </span>
             <h1 style={{ margin: "8px 0 4px", fontSize: "24px", color: "var(--text-main)" }}>
               {currentCourse.title}
@@ -1285,7 +1286,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               }}
             >
               <Video size={16} />
-              <span>الدروس وشروحات الفيديو</span>
+              <span>{tr('lesson.lessons')}</span>
             </button>
 
             <button
@@ -1306,7 +1307,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               }}
             >
               <Zap size={16} />
-              <span>المراجعات والورش المفعلة</span>
+              <span>{tr("lesson.revisions")}</span>
             </button>
 
             <button
@@ -1327,7 +1328,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               }}
             >
               <FileText size={16} />
-              <span>الواجبات والتكليفات</span>
+              <span>{tr("lesson.assignments")}</span>
             </button>
 
             <button
@@ -1348,7 +1349,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               }}
             >
               <Zap size={16} />
-              <span>الاختبارات والكويزات</span>
+              <span>{tr('lesson.exams')}</span>
             </button>
 
             <button
@@ -1369,7 +1370,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               }}
             >
               <Book size={16} />
-              <span>كتبي والمذكرات المشتراة</span>
+              <span>{tr('lesson.books')}</span>
             </button>
           </div>
 
@@ -1390,11 +1391,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 value={courseSearchQuery}
                 onChange={(e) => setCourseSearchQuery(e.target.value)}
                 placeholder={
-                  activeContentTab === "lessons" ? "بحث في شروحات ودروس المقرر…" :
-                  activeContentTab === "revisions" ? "بحث في ورش ومراجعات المقرر…" :
-                  activeContentTab === "assignments" ? "بحث في الواجبات والتكليفات…" :
-                  activeContentTab === "quizzes" ? "بحث في الاختبارات والكويزات…" :
-                  "بحث في الكتب والمذكرات المشتراة…"
+                  tr(activeContentTab === "lessons" ? 'lesson.searchLessons' :
+                  activeContentTab === "revisions" ? 'lesson.searchRevisions' :
+                  activeContentTab === "assignments" ? 'lesson.searchAssignments' :
+                  activeContentTab === "quizzes" ? 'lesson.searchExams' : 'lesson.searchBooks')
                 }
                 style={{
                   width: "100%",
@@ -1425,7 +1425,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     display: "flex",
                     alignItems: "center",
                   }}
-                  title="مسح البحث"
+                  title={tr("lesson.clearSearch")}
                 >
                   <X size={14} />
                 </button>
@@ -1443,9 +1443,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           {courseLessons.length === 0 ? (
             <div style={{ background: "var(--bg-surface)", border: "1.5px dashed var(--border-color)", borderRadius: "18px", padding: "60px 20px", textAlign: "center" }}>
               <VideoOff size={40} style={{ color: "var(--text-muted)", margin: "0 auto 12px" }} />
-              <h3 style={{ margin: "0 0 6px", fontSize: "18px", fontWeight: 800, color: "var(--text-main)" }}>غير متوفر الآن</h3>
+              <h3 style={{ margin: "0 0 6px", fontSize: "18px", fontWeight: 800, color: "var(--text-main)" }}>{tr("lesson.unavailable")}</h3>
               <p style={{ margin: "0 0 16px", color: "var(--text-muted)", fontSize: "13.5px" }}>
-                لا توجد فيديوهات أو دروس مرفوعة في هذا المقرر حالياً.
+                {tr("lesson.noVideos")}
               </p>
               <div
                 style={{
@@ -1462,14 +1462,14 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   fontSize: "13.5px",
                 }}
               >
-                غير متوفر الآن
+                {tr("lesson.unavailable")}
               </div>
             </div>
           ) : filteredLessons.length === 0 ? (
             <div style={{ background: "var(--bg-surface)", border: "1.5px dashed var(--border-color)", borderRadius: "18px", padding: "50px 20px", textAlign: "center" }}>
               <Search size={36} style={{ color: "var(--text-muted)", margin: "0 auto 10px" }} />
               <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)" }}>
-                لا توجد شروحات أو دروس تطابق «{courseSearchQuery}»
+                {tr('lesson.noMatchingLessons', { query: courseSearchQuery })}
               </h3>
               <button
                 type="button"
@@ -1477,7 +1477,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 className="btn-secondary"
                 style={{ marginTop: "10px", padding: "8px 16px", borderRadius: "8px", fontSize: "12.5px", fontWeight: 700 }}
               >
-                مسح البحث
+                {tr("lesson.clearSearch")}
               </button>
             </div>
           ) : (
@@ -1515,7 +1515,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         isPurchased
                           ? setActiveLessonModal(lesson)
                           : isPending
-                          ? toast({ message: "طلب إتاحة هذا الدرس قيد المراجعة لدى المعلم", tone: "info" })
+                          ? toast({ message: tr("lesson.reviewRequest"), tone: "info" })
                           : handleRequestAccess(lesson)
                       }
                       style={{
@@ -1531,7 +1531,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     >
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                         <span style={{ fontSize: "11px", fontWeight: 800, background: "rgba(255,255,255,0.2)", color: "#ffffff", padding: "3px 8px", borderRadius: "6px", backdropFilter: "blur(4px)" }}>
-                          الدرس {idx + 1}
+                          {tr('lesson.lessonNumber', { number: idx + 1 })}
                         </span>
                         <span style={{ fontSize: "11px", fontWeight: 800, background: "rgba(0,0,0,0.4)", color: "#ffffff", padding: "3px 8px", borderRadius: "6px" }}>
                           {lesson.durationFormatted}
@@ -1550,11 +1550,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                         <span style={{ fontSize: "11px", color: isPurchased ? "#a7f3d0" : "#fbbf24", fontWeight: 700 }}>
-                          {isPurchased ? "فيديو شرح تفاعلي" : `درس مدفوع: ${price} ج.م`}
+                          {isPurchased ? tr("lesson.interactiveVideo") : tr('lesson.paidLesson', { price })}
                         </span>
                         {isCompleted && (
                           <span style={{ fontSize: "11px", fontWeight: 800, color: "#10b981", background: "rgba(0,0,0,0.5)", padding: "2px 8px", borderRadius: "4px" }}>
-                            تم الإنجاز
+                            {tr("lesson.achieved")}
                           </span>
                         )}
                       </div>
@@ -1569,19 +1569,19 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                           </h3>
                           {price > 0 && (
                             <span style={{ fontSize: "12px", fontWeight: 800, color: isPurchased ? "#059669" : "#d97706", background: isPurchased ? "var(--bg-accent)" : "rgba(217,119,6,0.1)", padding: "2px 8px", borderRadius: "6px", whiteSpace: "nowrap" }}>
-                              {isPurchased ? "مشترك" : `${price} ج.م`}
+                              {isPurchased ? tr("lesson.subscribed") : tr('lesson.price', { price })}
                             </span>
                           )}
                         </div>
                         <p style={{ margin: "0 0 12px", fontSize: "12.5px", color: "var(--text-muted)", lineHeight: "1.5" }}>
-                          {lesson.description || "شرح مبسط وتطبيقات عملية على مخرجات التعلم مع مذكرات وتلخيصات PDF."}
+                          {lesson.description || tr("lesson.defaultDescription")}
                         </p>
                       </div>
 
                       {/* Footer Actions */}
                       <div style={{ borderTop: "1px solid var(--border-color)", paddingTop: "12px", marginTop: "12px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
                         <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                          ملفات ومذكرات: {lesson.materials?.length || 1}
+                          {tr('lesson.filesCount', { count: lesson.materials?.length || 1 })}
                         </span>
 
                         {isPurchased ? (
@@ -1592,7 +1592,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                             style={{ fontSize: "12px", padding: "7px 14px", gap: "6px" }}
                           >
                             <Play size={13} fill="currentColor" />
-                            <span>مشاهدة الدرس</span>
+                            <span>{tr("lesson.watchLesson")}</span>
                           </button><LessonDiscussionBell lessonId={lesson.id} unread={lesson.discussionUnreadCount} onOpen={() => setActiveLessonModal(lesson)} /></div>
                         ) : isPending ? (
                           <div
@@ -1610,7 +1610,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                             }}
                           >
                             <Clock size={14} />
-                            <span>قيد مراجعة المعلم</span>
+                            <span>{tr("lesson.teacherReview")}</span>
                           </div>
                         ) : (
                           <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
@@ -1633,7 +1633,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                               }}
                             >
                               <BookOpen size={13} />
-                              <span>{isRequesting ? "جاري الطلب..." : "طلب إتاحة الدرس"}</span>
+                              <span>{isRequesting ? tr("lesson.requestingLesson") : tr("lesson.requestLesson")}</span>
                             </button>
 
                             <button
@@ -1643,7 +1643,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                               style={{ fontSize: "12px", padding: "7px 12px", gap: "6px", background: "#059669" }}
                             >
                               <ShoppingCart size={13} />
-                              <span>شراء — {price} ج.م</span>
+                              <span>{tr("lesson.buyPrice")}</span>
                             </button>
                           </div>
                         )}
@@ -1666,10 +1666,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             <div style={{ background: "var(--bg-surface)", border: "1.5px dashed var(--border-color)", borderRadius: "18px", padding: "60px 20px", textAlign: "center" }}>
               <Zap size={48} style={{ color: "#059669", margin: "0 auto 12px" }} />
               <h3 style={{ margin: "0 0 6px", fontSize: "18px", fontWeight: 800, color: "var(--text-main)" }}>
-                لا توجد فيديوهات مراجعة أو معسكرات مفعلة حالياً
+                {tr("lesson.noRevisions")}
               </h3>
               <p style={{ margin: "0 0 18px", color: "var(--text-muted)", fontSize: "13.5px", maxWidth: "480px", marginInline: "auto" }}>
-                يمكنك متابعة شروحات المراجعات الدورية المنشورة من قبل المعلم أو تصفح ورش المراجعة ومعسكرات نصف العام والامتحانات من متجر المنصة.
+                {tr("lesson.revisionHint")}
               </p>
               <div
                 style={{
@@ -1686,7 +1686,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   fontSize: "13.5px",
                 }}
               >
-                غير متوفر الآن
+                {tr("lesson.unavailable")}
               </div>
             </div>
           ) : (
@@ -1697,7 +1697,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px" }}>
                     <Video size={20} style={{ color: "#059669" }} />
                     <h3 style={{ margin: 0, fontSize: "16.5px", fontWeight: 800, color: "var(--text-main)" }}>
-                      فيديوهات المراجعة الشاملة ({filteredRevisionVideoLessons.length})
+                      {tr('lesson.revisionVideos', { count: filteredRevisionVideoLessons.length })}
                     </h3>
                   </div>
 
@@ -1720,10 +1720,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         <div style={{ background: "#0f392b", padding: "18px 20px", color: "white" }}>
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
                             <span style={{ background: "#059669", padding: "3px 10px", borderRadius: "6px", fontSize: "11px", fontWeight: 800 }}>
-                              {lesson.unitTitle || "الوحدة الدراسية"}
+                              {lesson.unitTitle || tr("lesson.unit")}
                             </span>
                             <span style={{ fontSize: "11px", background: "rgba(255,255,255,0.18)", padding: "3px 8px", borderRadius: "6px", fontWeight: 700 }}>
-                              فيديو مراجعة
+                              {tr("lesson.revisionVideo")}
                             </span>
                           </div>
                           <h3 style={{ margin: "4px 0 2px", fontSize: "15.5px", fontWeight: 800, lineHeight: 1.35 }}>
@@ -1743,11 +1743,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
                             <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px", fontSize: "12px", color: "var(--text-muted)" }}>
                               <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                                <Clock size={14} style={{ color: "#059669" }} /> {lesson.durationFormatted || `${lesson.durationMinutes} دقيقة`}
+                                <Clock size={14} style={{ color: "#059669" }} /> {lesson.durationFormatted || tr('lesson.minutes', { count: lesson.durationMinutes })}
                               </span>
                               {lesson.materials && lesson.materials.length > 0 && (
                                 <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                                  <BookOpen size={14} style={{ color: "#059669" }} /> {lesson.materials.length} مذكرات مرفقة
+                                  <BookOpen size={14} style={{ color: "#059669" }} /> {tr('lesson.attachedNotesCount', { count: lesson.materials.length })}
                                 </span>
                               )}
                             </div>
@@ -1769,7 +1769,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                             }}
                           >
                             <Play size={15} fill="white" />
-                            <span>مشاهدة فيديو المراجعة الآن</span>
+                            <span>{tr("lesson.watchRevision")}</span>
                           </button>
                         </div>
                       </div>
@@ -1798,14 +1798,14 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     <div style={{ background: "#0f392b", padding: "20px", color: "white" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
                         <span style={{ background: "#059669", padding: "3px 10px", borderRadius: "6px", fontSize: "11px", fontWeight: 800 }}>
-                          ورشة مراجعة مفعلة
+                          {tr("lesson.activeWorkshop")}
                         </span>
-                        <span style={{ fontSize: "12px", opacity: 0.9 }}>{rev.workshopsCount} ورش عمل</span>
+                        <span style={{ fontSize: "12px", opacity: 0.9 }}>{tr('lesson.workshopsCount', { count: rev.workshopsCount })}</span>
                       </div>
                       <h3 style={{ margin: "6px 0 2px", fontSize: "16px", fontWeight: 800, lineHeight: 1.35 }}>
                         {rev.title}
                       </h3>
-                      <span style={{ fontSize: "11.5px", opacity: 0.85 }}>إشراف: {rev.teacherName}</span>
+                      <span style={{ fontSize: "11.5px", opacity: 0.85 }}>{tr('lesson.supervisedBy', { name: rev.teacherName })}</span>
                     </div>
 
                     {/* Content */}
@@ -1820,7 +1820,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                             <Clock size={14} style={{ color: "#059669" }} /> {rev.durationFormatted}
                           </span>
                           <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                            <Award size={14} style={{ color: "#059669" }} /> {rev.workshopsCount} ورش عمل
+                            <Award size={14} style={{ color: "#059669" }} /> {tr('lesson.workshopsCount', { count: rev.workshopsCount })}
                           </span>
                         </div>
 
@@ -1835,7 +1835,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       </div>
 
                       <button
-                        onClick={() => toast({ message: `جاري فتح ورش ومحاضرات "${rev.title}"!`, tone: "info" })}
+                        onClick={() => toast({ message: tr('lesson.openingWorkshop', { title: rev.title }), tone: "info" })}
                         className="btn-primary"
                         style={{
                           width: "100%",
@@ -1849,7 +1849,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         }}
                       >
                         <Zap size={15} />
-                        <span>فتح ورش المراجعة والبدء الآن</span>
+                        <span>{tr("lesson.openWorkshop")}</span>
                       </button>
                     </div>
                   </div>
@@ -1868,15 +1868,15 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           {filteredServerAssignments.map((asg) => (
             <div key={asg.id} style={{ background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "16px", padding: "20px", boxShadow: "var(--card-shadow)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-                <span style={{ fontSize: "11px", fontWeight: 800, color: "#92400e", background: "#fef3c7", padding: "3px 8px", borderRadius: "6px" }}>واجب منشور</span>
+                <span style={{ fontSize: "11px", fontWeight: 800, color: "#92400e", background: "#fef3c7", padding: "3px 8px", borderRadius: "6px" }}>{tr("lesson.publishedAssignment")}</span>
                 {asg.maxScore != null && (
-                  <span style={{ fontSize: "12px", fontWeight: 800, color: "#059669", background: "var(--bg-accent)", padding: "3px 8px", borderRadius: "6px" }}>{asg.maxScore} درجة</span>
+                  <span style={{ fontSize: "12px", fontWeight: 800, color: "#059669", background: "var(--bg-accent)", padding: "3px 8px", borderRadius: "6px" }}>{tr('lesson.points', { count: asg.maxScore })}</span>
                 )}
               </div>
               <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)" }}>{asg.title}</h3>
               <p style={{ margin: "0 0 14px", fontSize: "12.5px", color: "var(--text-muted)" }}>
-                تابع للدرس: {asg.lessonId ? lessonTitleById.get(asg.lessonId) || "—" : "مقرر كامل"}
-                {asg.dueLabel ? ` • آخر موعد: ${new Date(asg.dueLabel).toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })}` : ""}
+                {tr('lesson.linkedLesson', { title: asg.lessonId ? lessonTitleById.get(asg.lessonId) || "—" : tr("lesson.wholeCourse") })}
+                {asg.dueLabel ? ` • ${tr('lesson.due', { date: new Date(asg.dueLabel).toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-GB', { timeZone: "Africa/Cairo" }) })}` : ""}
               </p>
               {asg.accessible ? (
                 <button
@@ -1884,11 +1884,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   style={{ width: "100%", justifyContent: "center", gap: 6 }}
                   onClick={() => void openServerAssignment(asg)}
                 >
-                  <FileCheck size={14} /> فتح الواجب وتسليم الحل
+                  <FileCheck size={14} /> {tr("lesson.openAssignment")}
                 </button>
               ) : (
                 <button className="btn-primary" style={{ width: "100%", justifyContent: "center", gap: 6 }} onClick={() => { const lesson = (currentCourse?.lessons || []).find((l) => l.id === asg.lessonId); if (lesson) handleBuyLesson(lesson); }}>
-                  <Lock size={14} /> اشترِ الدرس لحل الواجب
+                  <Lock size={14} /> {tr("lesson.buyAssignmentSolve")}
                 </button>
               )}
             </div>
@@ -1901,35 +1901,35 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           <div style={{ background: "var(--bg-surface)", border: "1.5px dashed var(--border-color)", borderRadius: "18px", padding: "60px 20px", textAlign: "center" }}>
             <FileText size={48} style={{ color: "#059669", margin: "0 auto 12px" }} />
             <h3 style={{ margin: "0 0 6px", fontSize: "18px", fontWeight: 800, color: "var(--text-main)" }}>
-              لا توجد واجبات أو تكليفات مطلوبة حالياً
+              {tr("lesson.noAssignments")}
             </h3>
             <p style={{ margin: "0 0 18px", color: "var(--text-muted)", fontSize: "13.5px", maxWidth: "480px", marginInline: "auto" }}>
-              سيتم إدراج الواجبات والتكليفات المنزلية هنا فور تعيينها ونشرها من قبل المعلم.
+              {tr('lesson.assignmentsHint')}
             </p>
             {isTeacher && (
               <>
                 <button className="btn-primary" onClick={() => setShowManualAssignmentForm(true)}>
                   <Plus size={16} />
-                  <span>إنشاء واجب يدوياً</span>
+                  <span>{tr("lesson.createAssignment")}</span>
                 </button>
                 {showManualAssignmentForm && (
                   <div style={{ marginTop: 18, background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: 16, padding: 18, textAlign: "right", maxWidth: 520, marginInline: "auto" }}>
-                    <h4 style={{ margin: "0 0 10px", fontSize: 15, fontWeight: 800 }}>إنشاء واجب جديد</h4>
-                    <input placeholder="عنوان الواجب" value={manualAssignmentTitle} onChange={(e) => setManualAssignmentTitle(e.target.value)} style={{ width: "100%", marginBottom: 8, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--border-color)", background: "var(--bg-surface)" }} />
-                    <textarea placeholder="تعليمات الواجب والمواد المطلوبة" value={manualAssignmentPrompt} onChange={(e) => setManualAssignmentPrompt(e.target.value)} rows={4} style={{ width: "100%", marginBottom: 10, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--border-color)", background: "var(--bg-surface)" }} />
+                    <h4 style={{ margin: "0 0 10px", fontSize: 15, fontWeight: 800 }}>{tr("lesson.newAssignment")}</h4>
+                    <input placeholder={tr("lesson.assignmentTitle")} value={manualAssignmentTitle} onChange={(e) => setManualAssignmentTitle(e.target.value)} style={{ width: "100%", marginBottom: 8, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--border-color)", background: "var(--bg-surface)" }} />
+                    <textarea placeholder={tr("lesson.assignmentInstructions")} value={manualAssignmentPrompt} onChange={(e) => setManualAssignmentPrompt(e.target.value)} rows={4} style={{ width: "100%", marginBottom: 10, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--border-color)", background: "var(--bg-surface)" }} />
                     <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-                      <button className="btn-secondary" onClick={() => setShowManualAssignmentForm(false)}>إلغاء</button>
+                      <button className="btn-secondary" onClick={() => setShowManualAssignmentForm(false)}>{tr("lesson.cancel")}</button>
                       <button className="btn-primary" disabled={manualCreationLoading || !manualAssignmentTitle.trim() || !manualAssignmentPrompt.trim()} onClick={async () => {
                         setManualCreationLoading(true);
                         try {
                           const data = await apiRequest<{ message?: string }>("/manual/assignments", { method: "POST", body: JSON.stringify({ course_id: currentCourse.id, title: manualAssignmentTitle, prompt: manualAssignmentPrompt, max_score: 100 }) });
-                          toast({ message: data.message || "تم إنشاء الواجب", tone: "success" });
+                          toast({ message: data.message || tr("lesson.assignmentCreated"), tone: "success" });
                           setShowManualAssignmentForm(false);
                           setManualAssignmentTitle("");
                           setManualAssignmentPrompt("");
-                        } catch { toast({ message: "تعذر إنشاء الواجب", tone: "danger" }); }
+                        } catch { toast({ message: tr("lesson.assignmentCreateError"), tone: "danger" }); }
                         setManualCreationLoading(false);
-                      }}>حفظ</button>
+                      }}>{tr("lesson.save")}</button>
                     </div>
                   </div>
                 )}
@@ -1961,10 +1961,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     {/* Top Badge & Points */}
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
                       <span style={{ fontSize: "11px", fontWeight: 800, color: "#1e3a8a", background: "#dbeafe", padding: "3px 8px", borderRadius: "6px" }}>
-                        واجب وتكليف منزلي
+                        {tr("lesson.homework")}
                       </span>
                       <span style={{ fontSize: "12px", fontWeight: 800, color: "#059669", background: "var(--bg-accent)", padding: "3px 8px", borderRadius: "6px", border: "1px solid var(--border-accent)" }}>
-                        {asg.maxScore} درجة
+                        {tr('lesson.points', { count: asg.maxScore })}
                       </span>
                     </div>
 
@@ -2000,7 +2000,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   {/* Footer Action */}
                   <div style={{ borderTop: "1px solid var(--border-color)", paddingTop: "14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <span style={{ fontSize: "11.5px", color: "var(--text-muted)" }}>
-                      {asg.attachments?.length ? `مرفق: ${asg.attachments[0].name}` : "نموذج إلكتروني"}
+                      {asg.attachments?.length ? tr('lesson.attachmentName', { name: asg.attachments[0].name }) : tr("lesson.onlineForm")}
                     </span>
 
                     <button
@@ -2029,17 +2029,17 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       {isSubmitted ? (
                         <>
                           <CheckCircle2 size={14} />
-                          <span>عرض الإجابة والدرجة</span>
+                          <span>{tr("lesson.answerGrade")}</span>
                         </>
                       ) : timeInfo.status === "open" ? (
                         <>
                           <FileCheck size={14} />
-                          <span>حل وتسليم الواجب</span>
+                          <span>{tr("lesson.answerAssignment")}</span>
                         </>
                       ) : (
                         <>
                           <Lock size={14} />
-                          <span>مغلق</span>
+                          <span>{tr("lesson.closed")}</span>
                         </>
                       )}
                     </button>
@@ -2060,7 +2060,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
       {(activeContentTab === 'quizzes' || activeContentTab === 'assignments') && selectedAssessments.error && (
         <div role="alert" className="course-hydration-warning">
           <span>{lang === 'ar' ? 'تعذر تحميل تقييمات هذا المقرر. يمكنك إعادة المحاولة.' : 'This course’s assessments could not load. You can retry.'}</span>
-          <button type="button" onClick={selectedAssessments.retry}>{lang === 'ar' ? 'إعادة تحميل التقييمات' : 'Retry assessments'}</button>
+          <button type="button" onClick={selectedAssessments.retry}>{lang === 'ar' ? tr("lesson.retryAssessments") : 'Retry assessments'}</button>
         </div>
       )}
       {activeContentTab === "quizzes" && filteredServerQuizzes.length > 0 && (
@@ -2069,26 +2069,26 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             <div key={qz.id} style={{ background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "16px", padding: "20px", boxShadow: "var(--card-shadow)", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
               <div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-                  <span style={{ fontSize: "11px", fontWeight: 800, color: "#831843", background: "#fce7f3", padding: "3px 8px", borderRadius: "6px" }}>كويز تقييمي تفاعلي</span>
+                  <span style={{ fontSize: "11px", fontWeight: 800, color: "#831843", background: "#fce7f3", padding: "3px 8px", borderRadius: "6px" }}>{tr("lesson.interactiveExam")}</span>
                   {qz.durationMinutes != null && (
-                    <span style={{ fontSize: "12px", fontWeight: 800, color: "#059669", background: "var(--bg-accent)", padding: "3px 8px", borderRadius: "6px" }}>{qz.durationMinutes} دقيقة</span>
+                    <span style={{ fontSize: "12px", fontWeight: 800, color: "#059669", background: "var(--bg-accent)", padding: "3px 8px", borderRadius: "6px" }}>{tr('lesson.minutes', { count: qz.durationMinutes })}</span>
                   )}
                 </div>
                 <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)", lineHeight: 1.4 }}>{qz.title}</h3>
                 <p style={{ margin: "0 0 14px", fontSize: "12.5px", color: "var(--text-muted)", lineHeight: 1.5 }}>
-                  الدروس: {(qz.lessonIds?.length ? qz.lessonIds : qz.lessonId ? [qz.lessonId] : []).map(id => lessonTitleById.get(id) || 'درس مرتبط').join('، ') || (qz.moduleIds?.length ? `${qz.moduleIds.length} وحدات كاملة` : 'الصف الدراسي')}
-                  {qz.startsAt ? ` • يبدأ ${new Date(qz.startsAt).toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })}` : ""}
-                  {qz.dueLabel ? ` • يُغلق ${new Date(qz.dueLabel).toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })}` : ""}
+                  {tr('lesson.relatedLessons', { titles: (qz.lessonIds?.length ? qz.lessonIds : qz.lessonId ? [qz.lessonId] : []).map(id => lessonTitleById.get(id) || tr("lesson.relatedLesson")).join(lang === 'ar' ? '، ' : ', ') || (qz.moduleIds?.length ? tr('lesson.wholeUnits', { count: qz.moduleIds.length }) : tr("lesson.academicYear")) })}
+                  {qz.startsAt ? ` • ${tr('lesson.opens', { date: new Date(qz.startsAt).toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-GB', { timeZone: "Africa/Cairo" }) })}` : ""}
+                  {qz.dueLabel ? ` • ${tr('lesson.closes', { date: new Date(qz.dueLabel).toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-GB', { timeZone: "Africa/Cairo" }) })}` : ""}
                 </p>
               </div>
               {quizAvailability(qz) ? <div>
                 <p role="status">{quizAvailability(qz)}</p>
-                {(qz.attemptsUsed ?? 0) > 0 && <button type="button" className="btn-secondary" onClick={() => void openQuizResultPage(qz.id)}>عرض النتيجة والتصحيح</button>}
+                {(qz.attemptsUsed ?? 0) > 0 && <button type="button" className="btn-secondary" onClick={() => void openQuizResultPage(qz.id)}>{tr("lesson.result")}</button>}
               </div> : qz.accessible && (qz.attemptsAllowed == null || (qz.attemptsUsed ?? 0) < qz.attemptsAllowed) ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: "8px", position: "relative" }}>
                   {(qz.attemptsUsed ?? 0) > 0 && (
                     <span
-                      title="تم حل هذا الاختبار"
+                      title={tr("lesson.solvedExam")}
                       style={{
                         position: "absolute", top: "-10px", insetInlineEnd: "-8px", zIndex: 2,
                         width: "22px", height: "22px", borderRadius: "50%",
@@ -2105,7 +2105,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     style={{ width: "100%", justifyContent: "center", gap: 6 }}
                     onClick={() => void openServerQuiz(qz)}
                   >
-                    <Play size={14} /> بدء حل الاختبار
+                    <Play size={14} /> {tr("lesson.startTest")}
                   </button>
                   {(qz.attemptsUsed ?? 0) > 0 && (
                     (qz.attemptsUsed ?? 0) > 1 ? (
@@ -2115,19 +2115,19 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                           className="btn-secondary"
                           style={{ flex: 1, justifyContent: "center", gap: 6, borderColor: "#059669", color: "#059669" }}
                           onClick={() => void openQuizResultPage(qz.id)}
-                          title="عرض تصحيح أحدث محاولة"
+                          title={tr("lesson.latestResult")}
                         >
-                          <Award size={14} /> عرض النتيجة والتصحيح
+                          <Award size={14} /> {tr("lesson.result")}
                         </button>
                         <button
                           type="button"
                           className="btn-secondary"
                           style={{ padding: "0 11px", justifyContent: "center", gap: 5, borderColor: "#059669", color: "#059669", fontWeight: 800, fontSize: "12px", flexShrink: 0 }}
                           onClick={() => void openQuizHistoryModal(qz)}
-                          title="سجل كل المرات التي امتحنت فيها لاختيار أي محاولة ورؤية غلطاتك فيها"
+                          title={tr("lesson.historyHint")}
                         >
                           <History size={14} />
-                          <span>السجل ({qz.attemptsUsed})</span>
+                          <span>{tr('lesson.history', { count: qz.attemptsUsed ?? 0 })}</span>
                         </button>
                       </div>
                     ) : (
@@ -2137,7 +2137,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         style={{ width: "100%", justifyContent: "center", gap: 6, borderColor: "#059669", color: "#059669" }}
                         onClick={() => void openQuizResultPage(qz.id)}
                       >
-                        <Award size={14} /> عرض النتيجة والتصحيح
+                        <Award size={14} /> {tr("lesson.result")}
                       </button>
                     )
                   )}
@@ -2145,7 +2145,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               ) : qz.accessible && qz.attemptsAllowed != null && (qz.attemptsUsed ?? 0) >= qz.attemptsAllowed ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: "8px", position: "relative" }}>
                   <span
-                    title="تم حل هذا الاختبار"
+                    title={tr("lesson.solvedExam")}
                     style={{
                       position: "absolute", top: "-10px", insetInlineEnd: "-8px", zIndex: 2,
                       width: "22px", height: "22px", borderRadius: "50%",
@@ -2161,9 +2161,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     className="btn-secondary"
                     style={{ width: "100%", justifyContent: "center", gap: 6, borderColor: "#059669", color: "#059669" }}
                     onClick={() => void openServerQuiz(qz)}
-                    title="محاولات تدريبية إضافية تُصحح لك فوراً لكن لا تصل للمعلم ولا تُحسب في الدرجات"
+                    title={tr("lesson.practiceHint")}
                   >
-                    <BookOpen size={14} /> امتحن نفسك (تدريب — لا يُرسل للمعلم)
+                    <BookOpen size={14} /> {tr("lesson.practice")}
                   </button>
                   {(qz.attemptsUsed ?? 0) > 1 ? (
                     <div style={{ display: "flex", gap: "8px" }}>
@@ -2172,19 +2172,19 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         className="btn-primary"
                         style={{ flex: 1, justifyContent: "center", gap: 6 }}
                         onClick={() => void openQuizResultPage(qz.id)}
-                        title="عرض تصحيح أحدث محاولة"
+                        title={tr("lesson.latestResult")}
                       >
-                        <Award size={14} /> عرض النتيجة والتصحيح
+                        <Award size={14} /> {tr("lesson.result")}
                       </button>
                       <button
                         type="button"
                         className="btn-secondary"
                         style={{ padding: "0 11px", justifyContent: "center", gap: 5, borderColor: "#059669", color: "#059669", fontWeight: 800, fontSize: "12px", flexShrink: 0 }}
                         onClick={() => void openQuizHistoryModal(qz)}
-                        title="سجل كل المرات التي امتحنت فيها لاختيار أي محاولة ورؤية غلطاتك فيها"
+                        title={tr("lesson.historyHint")}
                       >
                         <History size={14} />
-                        <span>السجل ({qz.attemptsUsed})</span>
+                        <span>{tr('lesson.history', { count: qz.attemptsUsed ?? 0 })}</span>
                       </button>
                     </div>
                   ) : (
@@ -2194,13 +2194,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       style={{ width: "100%", justifyContent: "center", gap: 6 }}
                       onClick={() => void openQuizResultPage(qz.id)}
                     >
-                      <Award size={14} /> عرض النتيجة والتصحيح
+                      <Award size={14} /> {tr("lesson.result")}
                     </button>
                   )}
                 </div>
               ) : (
                 <button className="btn-primary" style={{ width: "100%", justifyContent: "center", gap: 6 }} onClick={() => { const lesson = (currentCourse?.lessons || []).find((l) => l.id === qz.lessonId); if (lesson) handleBuyLesson(lesson); }}>
-                  <Lock size={14} /> اشترِ الدرس لفتح الكويز
+                  <Lock size={14} /> {tr("lesson.buyExam")}
                 </button>
               )}
             </div>
@@ -2213,35 +2213,35 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           <div style={{ background: "var(--bg-surface)", border: "1.5px dashed var(--border-color)", borderRadius: "18px", padding: "60px 20px", textAlign: "center" }}>
             <HelpCircle size={48} style={{ color: "#059669", margin: "0 auto 12px" }} />
             <h3 style={{ margin: "0 0 6px", fontSize: "18px", fontWeight: 800, color: "var(--text-main)" }}>
-              لا توجد اختبارات أو كويزات تقييمية حالياً
+              {tr('lesson.noExams')}
             </h3>
             <p style={{ margin: "0 0 18px", color: "var(--text-muted)", fontSize: "13.5px", maxWidth: "480px", marginInline: "auto" }}>
-              سيتم إتاحة الاختبارات التقييمية الإلكترونية هنا فور جدولتها ونشرها من قبل المعلم.
+              {tr('lesson.examsHint')}
             </p>
             {isTeacher && (
               <>
                 <button className="btn-primary" onClick={() => setShowManualQuizForm(true)}>
                   <Plus size={16} />
-                  <span>إنشاء كويز يدوياً</span>
+                  <span>{tr("lesson.createExam")}</span>
                 </button>
                 {showManualQuizForm && (
                   <div style={{ marginTop: 18, background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: 16, padding: 18, textAlign: "right", maxWidth: 520, marginInline: "auto" }}>
-                    <h4 style={{ margin: "0 0 10px", fontSize: 15, fontWeight: 800 }}>إنشاء كويز جديد</h4>
-                    <input placeholder="عنوان الكويز" value={manualQuizTitle} onChange={(e) => setManualQuizTitle(e.target.value)} style={{ width: "100%", marginBottom: 8, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--border-color)", background: "var(--bg-surface)" }} />
-                    <textarea placeholder="السؤال الرئيسي أو موضوع الكويز" value={manualQuizQuestion} onChange={(e) => setManualQuizQuestion(e.target.value)} rows={4} style={{ width: "100%", marginBottom: 10, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--border-color)", background: "var(--bg-surface)" }} />
+                    <h4 style={{ margin: "0 0 10px", fontSize: 15, fontWeight: 800 }}>{tr("lesson.newExam")}</h4>
+                    <input placeholder={tr("lesson.examTitle")} value={manualQuizTitle} onChange={(e) => setManualQuizTitle(e.target.value)} style={{ width: "100%", marginBottom: 8, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--border-color)", background: "var(--bg-surface)" }} />
+                    <textarea placeholder={tr("lesson.examQuestion")} value={manualQuizQuestion} onChange={(e) => setManualQuizQuestion(e.target.value)} rows={4} style={{ width: "100%", marginBottom: 10, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--border-color)", background: "var(--bg-surface)" }} />
                     <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-                      <button className="btn-secondary" onClick={() => setShowManualQuizForm(false)}>إلغاء</button>
+                      <button className="btn-secondary" onClick={() => setShowManualQuizForm(false)}>{tr("lesson.cancel")}</button>
                       <button className="btn-primary" disabled={manualCreationLoading || !manualQuizTitle.trim() || !manualQuizQuestion.trim()} onClick={async () => {
                         setManualCreationLoading(true);
                         try {
                           const data = await apiRequest<{ message?: string }>("/manual/quizzes", { method: "POST", body: JSON.stringify({ course_id: currentCourse.id, title: manualQuizTitle, question_text: manualQuizQuestion, max_score: 10 }) });
-                          toast({ message: data.message || "تم إنشاء الكويز", tone: "success" });
+                          toast({ message: data.message || tr("lesson.examCreated"), tone: "success" });
                           setShowManualQuizForm(false);
                           setManualQuizTitle("");
                           setManualQuizQuestion("");
-                        } catch { toast({ message: "تعذر إنشاء الكويز", tone: "danger" }); }
+                        } catch { toast({ message: tr("lesson.examCreateError"), tone: "danger" }); }
                         setManualCreationLoading(false);
-                      }}>حفظ</button>
+                      }}>{tr("lesson.save")}</button>
                     </div>
                   </div>
                 )}
@@ -2274,10 +2274,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     {/* Top Badge & Duration */}
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
                       <span style={{ fontSize: "11px", fontWeight: 800, color: "#831843", background: "#fce7f3", padding: "3px 8px", borderRadius: "6px" }}>
-                        كويز تقييمي تفاعلي
+                        {tr("lesson.interactiveExam")}
                       </span>
                       <span style={{ fontSize: "12px", fontWeight: 800, color: "#059669", background: "var(--bg-accent)", padding: "3px 8px", borderRadius: "6px", border: "1px solid var(--border-accent)" }}>
-                        {quiz.maxScore} درجات • {quiz.durationMinutes} دقيقة
+                        {tr('lesson.points', { count: quiz.maxScore })} • {tr('lesson.minutes', { count: quiz.durationMinutes })}
                       </span>
                     </div>
 
@@ -2313,14 +2313,14 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   {/* Footer Action */}
                   <div style={{ borderTop: "1px solid var(--border-color)", paddingTop: "14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <span style={{ fontSize: "11.5px", color: "var(--text-muted)" }}>
-                      {quiz.questions.length} أسئلة اختيارية ومقالية
+                      {tr('lesson.examQuestionTypes', { count: quiz.questions.length })}
                     </span>
 
                     <button
                       type="button"
                       onClick={() => {
                         if (!timeInfo.canOpen) {
-                          toast({ message: `تنبيه: هذا الكويز ${timeInfo.status === "locked" ? `لم يبدأ بعد، موعد البدء هو: ${quiz.availableFrom}` : `انتهى موعده في: ${quiz.dueDate}`}`, tone: "warning" });
+                          toast({ message: `تنبيه: هذا الامتحان ${timeInfo.status === "locked" ? `لم يبدأ بعد، موعد البدء هو: ${quiz.availableFrom}` : `انتهى موعده في: ${quiz.dueDate}`}`, tone: "warning" });
                           return;
                         }
                         setActiveQuizModal(quiz);
@@ -2345,17 +2345,17 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       {isCompleted ? (
                         <>
                           <CheckCircle2 size={14} />
-                          <span>مراجعة النتيجة: {userScore}/{quiz.maxScore}</span>
+                          <span>{tr('lesson.reviewGrade', { score: userScore ?? 0, total: quiz.maxScore })}</span>
                         </>
                       ) : timeInfo.status === "open" ? (
                         <>
                           <Zap size={14} />
-                          <span>ابدأ الاختبار الآن</span>
+                          <span>{tr("lesson.startTestNow")}</span>
                         </>
                       ) : (
                         <>
                           <Lock size={14} />
-                          <span>مغلق</span>
+                          <span>{tr("lesson.closed")}</span>
                         </>
                       )}
                     </button>
@@ -2376,10 +2376,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             <div style={{ background: "var(--bg-surface)", border: "1.5px dashed var(--border-color)", borderRadius: "18px", padding: "60px 20px", textAlign: "center" }}>
               <Book size={48} style={{ color: "#059669", margin: "0 auto 12px" }} />
               <h3 style={{ margin: "0 0 6px", fontSize: "18px", fontWeight: 800, color: "var(--text-main)" }}>
-                لا توجد كتب أو مذكرات مشتراة حتى الآن
+                {tr("lesson.noBooks")}
               </h3>
               <p style={{ margin: "0 0 18px", color: "var(--text-muted)", fontSize: "13.5px", maxWidth: "480px", marginInline: "auto" }}>
-                يمكنك تصفح وشراء كتب الشرح المعتمدة، بنوك الأسئلة، ومذكرات ليلة الامتحان من متجر المنصة، كما تظهر هنا المذكرات والملفات المرفقة مع الفيديوهات المشتراة تلقائياً.
+                {tr("lesson.booksHint")}
               </p>
               <div
                 style={{
@@ -2396,14 +2396,14 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   fontSize: "13.5px",
                 }}
               >
-                غير متوفر الآن
+                {tr("lesson.unavailable")}
               </div>
             </div>
           ) : filteredBooks.length === 0 ? (
             <div style={{ background: "var(--bg-surface)", border: "1.5px dashed var(--border-color)", borderRadius: "18px", padding: "50px 20px", textAlign: "center" }}>
               <Search size={36} style={{ color: "var(--text-muted)", margin: "0 auto 10px" }} />
               <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)" }}>
-                لا توجد كتب أو مذكرات تطابق «{courseSearchQuery}»
+                {tr('lesson.noMatchingBooks', { query: courseSearchQuery })}
               </h3>
               <button
                 type="button"
@@ -2411,7 +2411,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 className="btn-secondary"
                 style={{ marginTop: "10px", padding: "8px 16px", borderRadius: "8px", fontSize: "12.5px", fontWeight: 700 }}
               >
-                مسح البحث
+                {tr("lesson.clearSearch")}
               </button>
             </div>
           ) : (
@@ -2434,16 +2434,16 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   <div style={{ background: book.gradient, padding: "20px", color: "#ffffff" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
                       <span style={{ background: "rgba(255,255,255,0.2)", color: "#ffffff", padding: "3px 8px", borderRadius: "6px", fontSize: "11px", fontWeight: 700 }}>
-                        {book.isLessonMaterial ? "مذكرة درس مرفقة" : "نسخة مملوكة ومفعلة"}
+                        {book.isLessonMaterial ? tr("lesson.lessonNotes") : tr("lesson.ownedCopy")}
                       </span>
                       <span style={{ fontSize: "12px", opacity: 0.95, color: "#ffffff" }}>
-                        {book.fileSize ? book.fileSize : `${book.pagesCount} صفحة`}
+                        {book.fileSize ? book.fileSize : tr('lesson.pages', { count: book.pagesCount })}
                       </span>
                     </div>
                     <h3 style={{ margin: "4px 0", fontSize: "16px", fontWeight: 800, lineHeight: 1.3, color: "#ffffff" }}>
                       {book.title}
                     </h3>
-                    <span style={{ fontSize: "11.5px", opacity: 0.9, color: "#ffffff" }}>إعداد: {book.author}</span>
+                    <span style={{ fontSize: "11.5px", opacity: 0.9, color: "#ffffff" }}>{tr('lesson.author', { name: book.author })}</span>
                   </div>
 
                   {/* Content */}
@@ -2483,7 +2483,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       }}
                     >
                       <Download size={15} />
-                      <span>{book.fileUrl ? "تحميل المذكرة - PDF" : "فتح وتحميل الكتاب - PDF"}</span>
+                      <span>{book.fileUrl ? tr("lesson.downloadNotes") : tr("lesson.downloadBook")}</span>
                     </button>
                   </div>
                 </div>
@@ -2567,13 +2567,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               </div>
 
               <h2 style={{ margin: 0, fontSize: "16px", fontWeight: 900, color: "var(--text-main)", whiteSpace: "nowrap" }}>
-                {serverQuiz?.title || (serverQuizLoading ? "جاري التحميل…" : "اختبار")}
+                {serverQuiz?.title || (serverQuizLoading ? tr("lesson.genericLoading") : tr("lesson.exam"))}
               </h2>
 
               {serverQuiz && !serverQuizResult && (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11.5px", fontWeight: 900, color: "#059669", background: "var(--bg-accent)", border: "1px solid var(--border-accent)", padding: "4px 11px", borderRadius: "999px", flexShrink: 0 }}>
                   <CheckCircle2 size={12} />
-                  {Number(serverQuiz.totalPoints || 0)} درجة • {serverQuiz.questions.length} أسئلة
+                  {tr('lesson.points', { count: Number(serverQuiz.totalPoints || 0) })} • {tr('lesson.questionsCount', { count: serverQuiz.questions.length })}
                 </span>
               )}
             </div>
@@ -2584,7 +2584,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 type="button"
                 className="icon-btn"
                 onClick={onToggleTheme}
-                title={theme === "dark" ? "تفعيل الوضع النهاري" : "تفعيل الوضع الليلي"}
+                title={theme === "dark" ? tr("lesson.lightMode") : tr("lesson.darkMode")}
                 aria-label="Toggle Theme"
               >
                 {theme === "dark" ? <Sun size={18} style={{ color: "#f59e0b" }} /> : <Moon size={18} />}
@@ -2602,13 +2602,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
               {serverQuizAttempt?.isPractice && (
                 <span style={{ fontSize: "11px", fontWeight: 800, color: "#92400e", background: "#fef3c7", padding: "4px 10px", borderRadius: "8px" }}>
-                  محاولة تدريبية — لن تصل للمعلم
+                  {tr("lesson.practiceAttemptHint")}
                 </span>
               )}
 
               {serverQuiz && !serverQuizResult && (
                 <span style={{ fontSize: "13px", fontWeight: 800, color: "var(--text-main)", display: "inline-flex", alignItems: "center", gap: "6px" }}>
-                  <Timer size={15} style={{ color: "var(--text-main)" }} /> السؤال {Math.min(serverQuizQuestionIndex + 1, serverQuiz.questions.length)} من {serverQuiz.questions.length}
+                  <Timer size={15} style={{ color: "var(--text-main)" }} /> {tr('lesson.questionPosition', { number: Math.min(serverQuizQuestionIndex + 1, serverQuiz.questions.length), total: serverQuiz.questions.length })}
                 </span>
               )}
 
@@ -2646,7 +2646,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 }}
               >
                 <X size={15} />
-                <span>خروج</span>
+                <span>{tr("lesson.exit")}</span>
               </button>
             </div>
           </header>
@@ -2666,7 +2666,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             {/* Sidebar: question map + submit */}
             <div style={{ width: "280px", flexShrink: 0, display: "flex", flexDirection: "column", gap: "16px", position: "sticky", top: "84px" }}>
               <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "16px", padding: "20px 18px" }}>
-                <h3 style={{ margin: "0 0 16px", fontSize: "15px", fontWeight: 900, color: "var(--text-main)", textAlign: "center" }}>خريطة أسئلة الاختبار</h3>
+                <h3 style={{ margin: "0 0 16px", fontSize: "15px", fontWeight: 900, color: "var(--text-main)", textAlign: "center" }}>{tr("lesson.examMap")}</h3>
                 <div style={{ display: "flex", justifyContent: "center", gap: "14px", flexWrap: "wrap", direction: "rtl", marginBottom: "16px" }}>
                   {serverQuiz?.questions.map((q, qIdx) => {
                     const answered = Boolean(serverQuizAnswers[q.id]);
@@ -2677,7 +2677,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         key={q.id}
                         type="button"
                         onClick={() => setServerQuizQuestionIndex(qIdx)}
-                        title={answered ? "مُجاب" : flagged ? "مُعلّم للمراجعة" : "لم يُجاب بعد"}
+                        title={answered ? tr("lesson.answered") : flagged ? tr("lesson.flagged") : tr("lesson.notAnswered")}
                         style={{
                           width: "44px",
                           height: "44px",
@@ -2710,9 +2710,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   })}
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px", paddingTop: "14px", borderTop: "1px solid var(--border-color)", fontSize: "12px", color: "var(--text-main)", fontWeight: 700 }}>
-                  <span style={{ display: "flex", alignItems: "center", gap: "8px" }}><span style={{ width: "11px", height: "11px", borderRadius: "50%", background: "#059669", display: "inline-block" }} /> تم الإجابة</span>
-                  <span style={{ display: "flex", alignItems: "center", gap: "8px" }}><span style={{ width: "11px", height: "11px", borderRadius: "50%", border: "2px solid #059669", background: "transparent", display: "inline-block" }} /> الحالي</span>
-                  <span style={{ display: "flex", alignItems: "center", gap: "8px" }}><span style={{ width: "11px", height: "11px", borderRadius: "50%", border: "1px solid var(--border-color)", background: "transparent", display: "inline-block" }} /> لم يتم الإجابة</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: "8px" }}><span style={{ width: "11px", height: "11px", borderRadius: "50%", background: "#059669", display: "inline-block" }} /> {tr("lesson.answeredLegend")}</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: "8px" }}><span style={{ width: "11px", height: "11px", borderRadius: "50%", border: "2px solid #059669", background: "transparent", display: "inline-block" }} /> {tr("lesson.currentQuestion")}</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: "8px" }}><span style={{ width: "11px", height: "11px", borderRadius: "50%", border: "1px solid var(--border-color)", background: "transparent", display: "inline-block" }} /> {tr("lesson.notAnsweredLegend")}</span>
                 </div>
               </div>
 
@@ -2726,11 +2726,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     style={{ width: "100%", justifyContent: "center", gap: "7px", padding: "13px" }}
                   >
                     <CheckCircle2 size={17} />
-                    <span>{serverQuizRemaining === 0 ? "انتهى الوقت" : serverQuizSubmitting ? "جاري التسليم…" : "تسليم الاختبار"}</span>
+                    <span>{serverQuizRemaining === 0 ? tr("lesson.timeUp") : serverQuizSubmitting ? tr("lesson.submitting") : tr("lesson.submitExam")}</span>
                   </button>
                   {serverQuiz && Object.keys(serverQuizAnswers).length < serverQuiz.questions.length && (
                     <p style={{ margin: 0, fontSize: "11.5px", color: "var(--text-muted)", textAlign: "center" }}>
-                      متبقي {serverQuiz.questions.length - Object.keys(serverQuizAnswers).length} أسئلة دون إجابة (يمكنك التسليم أو الإكمال)
+                      {tr('lesson.unansweredRemaining', { count: serverQuiz.questions.length - Object.keys(serverQuizAnswers).length })}
                     </p>
                   )}
                 </>
@@ -2739,8 +2739,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
             {/* Main card: the current question only */}
             <div style={{ flex: 1, minWidth: 0 }}>
-              <ToastRegion label="رسائل حل الاختبار" />
-              {serverQuizLoading && <div style={{ padding: "60px", textAlign: "center", color: "var(--text-muted)" }}>جاري تحميل أسئلة الاختبار…</div>}
+              <ToastRegion label={tr("lesson.examMessages")} />
+              {serverQuizLoading && <div style={{ padding: "60px", textAlign: "center", color: "var(--text-muted)" }}>{tr("lesson.loadingQuestions")}</div>}
 
               {serverQuizError && (
                 <div style={{ padding: "16px", background: "#fee2e2", color: "#b91c1c", borderRadius: "10px", fontWeight: 800, fontSize: "13.5px" }}>
@@ -2754,16 +2754,16 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
                       <Sparkles size={28} style={{ color: "#059669" }} />
                       <div>
-                          <strong style={{ fontSize: "16px", color: "var(--text-main)", display: "block" }}>{serverQuizResult.score === null ? "تم تسليم الاختبار، والنتيجة في انتظار اعتماد المدرس" : "تم تسليم الاختبار"}</strong>
+                          <strong style={{ fontSize: "16px", color: "var(--text-main)", display: "block" }}>{serverQuizResult.score === null ? tr("lesson.pendingResult") : tr("lesson.examSubmitted")}</strong>
                         <span style={{ fontSize: "12.5px", color: "var(--text-muted)" }}>
                           {serverQuizAttempt?.isPractice
-                            ? `المحاولة رقم ${serverQuizResult.attemptNumber} — تدريبية: ظهرت لك فقط ولن تصل للمعلم أو كشف الدرجات.`
-                            : `المحاولة رقم ${serverQuizResult.attemptNumber}`}
+                            ? tr('lesson.practiceAttemptNumber', { number: serverQuizResult.attemptNumber })
+                            : tr('lesson.attemptNumber', { number: serverQuizResult.attemptNumber })}
                         </span>
                       </div>
                     </div>
                     <div style={{ fontSize: "26px", fontWeight: 900, color: "#059669" }}>
-                      {serverQuizResult.score === null ? "بانتظار اعتماد المدرس" : `${serverQuizResult.score} / ${serverQuizResult.total} درجة`}
+                      {serverQuizResult.score === null ? tr("lesson.pendingTeacher") : tr('lesson.scoreOf', { score: serverQuizResult.score ?? 0, total: serverQuizResult.total })}
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", marginTop: "16px" }}>
@@ -2782,7 +2782,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       }}
                     >
                       <Eye size={17} />
-                      <span>{serverQuizResult.score === null ? "عرض حالة هذه المحاولة" : "عرض تصحيح هذه المحاولة والأخطاء"}</span>
+                      <span>{serverQuizResult.score === null ? tr("lesson.attemptStatus") : tr("lesson.attemptFeedback")}</span>
                     </button>
                     <button
                       type="button"
@@ -2795,7 +2795,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         });
                       }}
                     >
-                      العودة إلى المقرر
+                      {tr("lesson.returnCourse")}
                     </button>
                   </div>
                 </div>
@@ -2810,7 +2810,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   <div style={{ background: "var(--bg-surface, #ffffff)", border: "1px solid var(--border-color)", borderRadius: "16px", padding: "26px", boxShadow: "var(--card-shadow)" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
                       <span style={{ fontSize: "12px", fontWeight: 900, color: "#059669", background: "var(--bg-accent)", padding: "4px 12px", borderRadius: "8px" }}>
-                        السؤال {ORDINAL_AR[serverQuizQuestionIndex] || serverQuizQuestionIndex + 1}
+                        {tr('lesson.questionNumber', { number: lang === 'ar' ? ORDINAL_AR[serverQuizQuestionIndex] || serverQuizQuestionIndex + 1 : serverQuizQuestionIndex + 1 })}
                       </span>
                       <button
                         type="button"
@@ -2821,15 +2821,15 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                           border: "none", cursor: "pointer", fontSize: "12px", fontWeight: 800,
                           color: flagged ? "#92400e" : "var(--text-muted)", borderRadius: "8px", padding: "5px 10px",
                         }}
-                        title="تعليم السؤال للمراجعة لاحقاً"
+                        title={tr("lesson.flagQuestion")}
                       >
-                        <Flag size={14} /> {flagged ? "مُعلّم للمراجعة" : "تعليم السؤال للمراجعة لاحقاً"}
+                        <Flag size={14} /> {flagged ? tr("lesson.flagged") : tr("lesson.flagQuestion")}
                       </button>
                     </div>
 
                     <div style={{ fontSize: "15.5px", color: "var(--text-main)", lineHeight: "1.8", fontWeight: 700, marginBottom: "20px" }}>
                       <FormulaRenderer text={q.prompt} />
-                      <span style={{ marginInlineStart: "10px", fontSize: "11.5px", fontWeight: 800, color: "var(--text-muted)" }}>({q.points} درجة)</span>
+                      <span style={{ marginInlineStart: "10px", fontSize: "11.5px", fontWeight: 800, color: "var(--text-muted)" }}>({tr('lesson.points', { count: q.points })})</span>
                     </div>
 
                     {isMcq ? (
@@ -2860,7 +2860,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                                 <FormulaRenderer inline text={opt.text} />
                               </div>
                               <span style={{ fontSize: "12px", fontWeight: 900, color: chosen ? "#059669" : "var(--text-muted)", flexShrink: 0 }}>
-                                {OPTION_LETTERS_AR[optIdx] || ""}
+                                {lang === 'ar' ? OPTION_LETTERS_AR[optIdx] || "" : String.fromCharCode(65 + optIdx)}
                               </span>
                             </label>
                           );
@@ -2871,7 +2871,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         rows={5}
                         value={serverQuizAnswers[q.id] || ""}
                         onChange={(e) => setServerQuizAnswers({ ...serverQuizAnswers, [q.id]: e.target.value })}
-                        placeholder="اكتب إجابتك هنا…"
+                        placeholder={tr("lesson.answerPlaceholder")}
                         style={{ width: "100%", padding: "12px 14px", borderRadius: "10px", border: "1px solid var(--border-color)", background: "var(--bg-surface)", color: "var(--text-main)", fontSize: "16px", lineHeight: 1.6, fontFamily: "inherit", boxSizing: "border-box" }}
                       />
                     )}
@@ -2884,7 +2884,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         disabled={serverQuizQuestionIndex === 0}
                         style={{ gap: "6px" }}
                       >
-                        <ArrowRight size={15} /> السؤال السابق
+                        <ArrowRight size={15} /> {tr("lesson.previousQuestion")}
                       </button>
                       {serverQuizQuestionIndex < serverQuiz.questions.length - 1 ? (
                         <button
@@ -2893,7 +2893,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                           onClick={() => setServerQuizQuestionIndex((i) => Math.min(serverQuiz!.questions.length - 1, i + 1))}
                           style={{ gap: "6px" }}
                         >
-                          السؤال التالي <ArrowLeft size={15} />
+                          {tr("lesson.nextQuestion")} <ArrowLeft size={15} />
                         </button>
                       ) : !serverQuizResult ? (
                         <button
@@ -2903,7 +2903,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                           disabled={serverQuizSubmitting || serverQuizRemaining === 0}
                           style={{ gap: "6px" }}
                         >
-                          <Zap size={15} /> {serverQuizRemaining === 0 ? "انتهى الوقت" : "تسليم الاختبار"}
+                          <Zap size={15} /> {serverQuizRemaining === 0 ? tr("lesson.timeUp") : tr("lesson.submitExam")}
                         </button>
                       ) : null}
                     </div>
@@ -2973,10 +2973,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <h3 style={{ margin: "0 0 6px", fontSize: "19px", fontWeight: 900, color: "var(--text-main)" }}>
-                    تأكيد تسليم الاختبار
+                    {tr("lesson.confirmExam")}
                   </h3>
                   <p style={{ margin: 0, fontSize: "13px", color: "var(--text-muted)", lineHeight: 1.5 }}>
-                    هل أنت متأكد من رغبتك في إنهاء وتسليم الاختبار؟ سيتم حفظ إجاباتك وتسليمها للمراجعة.
+                    {tr("lesson.confirmExamHint")}
                   </p>
                 </div>
                 <button
@@ -3016,7 +3016,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               >
                 <div style={{ textAlign: "center" }}>
                   <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 700, display: "block" }}>
-                    إجمالي الأسئلة
+                    {tr("lesson.totalQuestions")}
                   </span>
                   <strong style={{ fontSize: "20px", fontWeight: 900, color: "var(--text-main)" }}>
                     {totalCount}
@@ -3024,7 +3024,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 </div>
                 <div style={{ textAlign: "center" }}>
                   <span style={{ fontSize: "11px", color: "#059669", fontWeight: 700, display: "block" }}>
-                    تمت الإجابة
+                    {tr("lesson.answeredCount")}
                   </span>
                   <strong style={{ fontSize: "20px", fontWeight: 900, color: "#059669" }}>
                     {answeredCount}
@@ -3032,7 +3032,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 </div>
                 <div style={{ textAlign: "center" }}>
                   <span style={{ fontSize: "11px", color: unansweredCount > 0 ? "#dc2626" : "var(--text-muted)", fontWeight: 700, display: "block" }}>
-                    متبقية دون إجابة
+                    {tr("lesson.unansweredCount")}
                   </span>
                   <strong style={{ fontSize: "20px", fontWeight: 900, color: unansweredCount > 0 ? "#dc2626" : "var(--text-muted)" }}>
                     {unansweredCount}
@@ -3055,14 +3055,14 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               >
                 {flaggedCount > 0 ? (
                   <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", color: "#d97706" }}>
-                    <Flag size={14} /> لديك {flaggedCount} سؤال مُعلّم للمراجعة
+                    <Flag size={14} /> {tr('lesson.flaggedCount', { count: flaggedCount })}
                   </span>
                 ) : (
                   <span />
                 )}
                 {serverQuizRemaining !== null && (
                   <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
-                    <Clock size={14} /> الوقت المتبقي: {Math.floor(serverQuizRemaining / 60)}:{String(serverQuizRemaining % 60).padStart(2, "0")} دقيقة
+                    <Clock size={14} /> {tr('lesson.timeRemaining', { time: `${Math.floor(serverQuizRemaining / 60)}:${String(serverQuizRemaining % 60).padStart(2, '0')}` })}
                   </span>
                 )}
               </div>
@@ -3086,7 +3086,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 >
                   <AlertTriangle size={18} style={{ flexShrink: 0 }} />
                   <span>
-                    تنبيه: لم تقم بالإجابة على <strong>{unansweredCount}</strong> سؤال! إذا سلّمت الآن فلن تتمكن من تعديلها وستُحسب درجاتها صفر.
+                    {tr('lesson.unansweredWarning', { count: unansweredCount })}
                   </span>
                 </div>
               ) : (
@@ -3107,13 +3107,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 >
                   <CheckCircle2 size={18} style={{ flexShrink: 0 }} />
                   <span>
-                    ممتاز! قمت بالإجابة على جميع الأسئلة ({totalCount} من {totalCount}). يمكنك تأكيد التسليم الآن.
+                    {tr('lesson.allAnswered', { count: totalCount })}
                   </span>
                 </div>
               )}
 
               {/* Actions */}
-              <ToastRegion label="رسائل تسليم الاختبار" />
+              <ToastRegion label={tr("lesson.submissionMessages")} />
               <div style={{ display: "flex", gap: "10px" }}>
                 <button
                   type="button"
@@ -3132,7 +3132,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   }}
                 >
                   <Zap size={16} />
-                  <span>{serverQuizSubmitting ? "جاري التسليم…" : "نعم، تأكيد وتسليم الآن"}</span>
+                  <span>{serverQuizSubmitting ? tr("lesson.submitting") : tr("lesson.confirmSubmit")}</span>
                 </button>
                 <button
                   type="button"
@@ -3151,7 +3151,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     textAlign: "center",
                   }}
                 >
-                  متابعة ومراجعة الأسئلة
+                  {tr("lesson.continueReview")}
                 </button>
               </div>
             </div>
@@ -3165,11 +3165,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
          ========================================================================= */}
       {(quizResultPage || quizResultLoading || quizResultError) && (() => {
         const percent = quizResultPage ? assessmentPercent(quizResultPage.score, quizResultPage.total_points) : null;
-        const rankLabel = assessmentBand(percent);
+        const rankLabel = assessmentBand(percent, lang);
         const filtered = quizResultPage
           ? quizResultPage.questions.filter((q) => quizResultFilter === "all" || q.state === quizResultFilter)
           : [];
-        const stateLabel: Record<string, string> = { correct: "إجابة صحيحة", wrong: "إجابة خاطئة", skipped: "لم تُجب", pending: "بانتظار التصحيح" };
+        const stateLabel: Record<string, string> = { correct: tr("lesson.correctAnswer"), wrong: tr("lesson.wrongAnswer"), skipped: tr("lesson.unanswered"), pending: tr("lesson.pendingGrading") };
         const stateColor: Record<string, { bg: string; fg: string; border: string }> = {
           correct: { bg: "rgba(5, 150, 105, 0.15)", fg: "#10b981", border: "rgba(5, 150, 105, 0.35)" },
           wrong: { bg: "rgba(220, 38, 38, 0.15)", fg: "#f87171", border: "rgba(220, 38, 38, 0.35)" },
@@ -3177,7 +3177,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           pending: { bg: "var(--bg-surface-secondary)", fg: "var(--text-main)", border: "var(--border-color)" },
         };
         return (
-          <div dir="rtl" style={{ position: "fixed", inset: 0, backgroundColor: "var(--bg-primary, #f8fafc)", zIndex: 100000, overflowY: "auto" }}>
+          <div dir={lang === "ar" ? "rtl" : "ltr"} style={{ position: "fixed", inset: 0, backgroundColor: "var(--bg-primary, #f8fafc)", zIndex: 100000, overflowY: "auto" }}>
             {/* Unified Quiz Result Header (Single bar matching Image 3 with Sidebar, Logo, Theme, Lang, and Exit) */}
             <header
               style={{
@@ -3237,7 +3237,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 </div>
 
                 <h2 style={{ margin: 0, fontSize: "16px", fontWeight: 900, color: "var(--text-main)" }}>
-                  نتيجة اختبار: {quizResultPage?.quiz.title || ""}
+                  {tr('lesson.examResult', { title: quizResultPage?.quiz.title || '' })}
                 </h2>
               </div>
 
@@ -3246,7 +3246,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   type="button"
                   className="icon-btn"
                   onClick={onToggleTheme}
-                  title={theme === "dark" ? "تفعيل الوضع النهاري" : "تفعيل الوضع الليلي"}
+                  title={theme === "dark" ? tr("lesson.lightMode") : tr("lesson.darkMode")}
                   aria-label="Toggle Theme"
                 >
                   {theme === "dark" ? <Sun size={18} style={{ color: "#f59e0b" }} /> : <Moon size={18} />}
@@ -3271,13 +3271,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   }}
                   style={{ display: "inline-flex", alignItems: "center", gap: "6px", background: "rgb(118, 40, 40)", border: "none", borderRadius: "8px", padding: "7px 14px", fontSize: "12.5px", fontWeight: 800, color: "#ffffff", cursor: "pointer", flexShrink: 0 }}
                 >
-                  <X size={16} /> <span>خروج</span>
+                  <X size={16} /> <span>{tr("lesson.exit")}</span>
                 </button>
               </div>
             </header>
 
             <div style={{ maxWidth: "1200px", margin: "0 auto", padding: "24px 20px 70px" }}>
-              {quizResultLoading && <div style={{ padding: "70px", textAlign: "center", color: "var(--text-muted)", fontSize: "14px" }}>جاري تحميل النتيجة…</div>}
+              {quizResultLoading && <div style={{ padding: "70px", textAlign: "center", color: "var(--text-muted)", fontSize: "14px" }}>{tr("lesson.loadingResult")}</div>}
 
               {quizResultError && (
                 <div style={{ padding: "18px", background: "#fee2e2", color: "#b91c1c", borderRadius: "12px", fontWeight: 800, fontSize: "13.5px" }}>{quizResultError}</div>
@@ -3287,8 +3287,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 if (quizResultPage.approval_status === 'pending' || quizResultPage.score === null) {
                   return <div role="status" className="quiz-result-pending">
                     <Clock size={28} aria-hidden="true" />
-                    <h2>{quizResultPage.message || 'تم تسليم الاختبار، والنتيجة في انتظار اعتماد المدرس'}</h2>
-                    <p>ستظهر الدرجة ومراجعة الإجابات بعد اعتماد النتيجة.</p>
+                    <h2>{quizResultPage.message || tr("lesson.pendingResult")}</h2>
+                    <p>{tr("lesson.resultApprovalHint")}</p>
                   </div>;
                 }
                 const dur = quizResultPage.attempt.duration_seconds;
@@ -3331,10 +3331,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                           </span>
                           <div>
                             <strong style={{ fontSize: "14px", color: "var(--text-main)", display: "block" }}>
-                              سجل المحاولات ({quizResultPage.attempts_history.length} {quizResultPage.attempts_history.length === 1 ? "محاولة" : "محاولات"})
+                              {tr('lesson.attemptCount', { count: quizResultPage.attempts_history.length })}
                             </strong>
                             <span style={{ fontSize: "11.5px", color: "var(--text-muted)" }}>
-                              اختر أي محاولة لرؤية درجاتك، أخطائك، والإجابات الصحيحة فيها
+                              {tr("lesson.selectAttempt")}
                             </span>
                           </div>
                         </div>
@@ -3347,7 +3347,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                                 key={att.id}
                                 type="button"
                                 onClick={() => void openQuizResultPage(quizResultPage.quiz.id, att.id)}
-                                title={att.is_practice ? "محاولة تدريبية" : "محاولة رسمية"}
+                                title={att.is_practice ? tr("lesson.practiceAttempt") : tr("lesson.officialAttempt")}
                                 style={{
                                   display: "inline-flex",
                                   alignItems: "center",
@@ -3364,18 +3364,18 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                                   transition: "all 0.15s ease",
                                 }}
                               >
-                                <span>المحاولة {att.attempt_number}</span>
+                                <span>{tr('lesson.attemptNumber', { number: att.attempt_number })}</span>
                                 {att.is_practice || att.attempt_number > 1 ? (
                                   <span style={{ fontSize: "10px", padding: "2px 6px", borderRadius: "5px", background: isCurrent ? "rgba(255,255,255,0.25)" : "rgba(245,158,11,0.15)", color: isCurrent ? "#ffffff" : "#d97706" }}>
-                                    تدريب
+                                    {tr("lesson.practiceLabel")}
                                   </span>
                                 ) : (
                                   <span style={{ fontSize: "10px", padding: "2px 6px", borderRadius: "5px", background: isCurrent ? "rgba(255,255,255,0.25)" : "rgba(5,150,105,0.15)", color: isCurrent ? "#ffffff" : "#059669" }}>
-                                    رسمية
+                                    {tr("lesson.officialLabel")}
                                   </span>
                                 )}
                                 <span style={{ fontWeight: 900, fontSize: "12px" }}>
-                                  {att.score === null ? 'بانتظار اعتماد المدرس' : `(${att.score}/${att.total_points})`}
+                                  {att.score === null ? tr("lesson.pendingTeacher") : `(${att.score}/${att.total_points})`}
                                 </span>
                               </button>
                             );
@@ -3399,25 +3399,25 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                             />
                           </svg>
                           <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-                            <strong style={{ fontSize: "24px", fontWeight: 900, color: "var(--text-main)" }}>{quizResultPage.grading_status === "pending" ? "بانتظار التصحيح" : percent == null ? '—' : `${percent}%`}</strong>
+                            <strong style={{ fontSize: "24px", fontWeight: 900, color: "var(--text-main)" }}>{quizResultPage.grading_status === "pending" ? tr("lesson.pendingGrading") : percent == null ? '—' : `${percent}%`}</strong>
                             <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>
-                              {quizResultPage.score.toLocaleString("ar-EG")} / {quizResultPage.total_points?.toLocaleString("ar-EG") ?? 'غير موثق'} درجة
+                              {tr('lesson.scoreOf', { score: quizResultPage.score.toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-GB'), total: quizResultPage.total_points?.toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-GB') ?? tr('lesson.unverified') })}
                             </span>
                           </div>
                         </div>
-                        <span style={{ fontSize: "12.5px", fontWeight: 900, color: "#059669", background: "var(--bg-accent)", border: "1px solid var(--border-accent)", padding: "5px 14px", borderRadius: "999px" }}>{quizResultPage.grading_status === "pending" ? "الدرجة الحالية غير نهائية" : rankLabel}</span>
+                        <span style={{ fontSize: "12.5px", fontWeight: 900, color: "#059669", background: "var(--bg-accent)", border: "1px solid var(--border-accent)", padding: "5px 14px", borderRadius: "999px" }}>{quizResultPage.grading_status === "pending" ? tr("lesson.provisionalGrade") : rankLabel}</span>
                         {quizResultPage.attempt.is_practice && (
-                          <span style={{ fontSize: "11px", fontWeight: 800, color: "#92400e", background: "#fef3c7", padding: "3px 10px", borderRadius: "8px" }}>محاولة تدريبية — لن تصل للمعلم</span>
+                          <span style={{ fontSize: "11px", fontWeight: 800, color: "#92400e", background: "#fef3c7", padding: "3px 10px", borderRadius: "8px" }}>{tr("lesson.practiceAttemptHint")}</span>
                         )}
                       </div>
 
                       {/* Stats row */}
                       <div style={{ flex: 1, minWidth: "280px", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "12px" }}>
                         {[
-                          { label: "الإجابات الصحيحة", value: `${quizResultPage.summary.correct} من ${quizResultPage.summary.total}`, color: "#059669", icon: <CheckCircle2 size={17} /> },
-                          { label: "أسئلة دون الدرجة الكاملة", value: `${quizResultPage.summary.wrong} من ${quizResultPage.summary.total}`, color: "#dc2626", icon: <XCircle size={17} /> },
-                          { label: "الوقت المستغرق", value: durLabel, color: "var(--text-main)", icon: <Clock size={17} /> },
-                          { label: "الترتيب بالصف", value: "—", color: "var(--text-main)", icon: <Award size={17} /> },
+                          { label: tr("lesson.correctAnswers"), value: tr('lesson.countOf', { count: quizResultPage.summary.correct, total: quizResultPage.summary.total }), color: "#059669", icon: <CheckCircle2 size={17} /> },
+                          { label: tr("lesson.partialAnswers"), value: tr('lesson.countOf', { count: quizResultPage.summary.wrong, total: quizResultPage.summary.total }), color: "#dc2626", icon: <XCircle size={17} /> },
+                          { label: tr("lesson.timeSpent"), value: durLabel, color: "var(--text-main)", icon: <Clock size={17} /> },
+                          { label: tr("lesson.classRank"), value: "—", color: "var(--text-main)", icon: <Award size={17} /> },
                         ].map((s) => (
                           <div key={s.label} style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "14px", padding: "14px 16px" }}>
                             <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11.5px", color: "var(--text-muted)", fontWeight: 800, marginBottom: "6px" }}>
@@ -3436,8 +3436,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       <div style={{ width: "270px", flexShrink: 0, position: "sticky", top: "84px", display: "flex", flexDirection: "column", gap: "12px" }}>
                         <div style={{ ...assignmentPageCard, padding: "18px" }}>
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-                            <h3 style={{ margin: 0, fontSize: "13.5px", fontWeight: 900, color: "var(--text-main)" }}>خريطة تصحيح الأسئلة</h3>
-                            <span style={{ fontSize: "11px", fontWeight: 800, color: "var(--text-muted)" }}>{quizResultPage.summary.total} سؤال</span>
+                            <h3 style={{ margin: 0, fontSize: "13.5px", fontWeight: 900, color: "var(--text-main)" }}>{tr("lesson.gradingMap")}</h3>
+                            <span style={{ fontSize: "11px", fontWeight: 800, color: "var(--text-muted)" }}>{tr('lesson.questionsCount', { count: quizResultPage.summary.total })}</span>
                           </div>
                           <div style={{ display: "flex", flexWrap: "wrap", gap: "7px", direction: "rtl" }}>
                             {quizResultPage.questions.map((q, qIdx) => {
@@ -3462,9 +3462,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                             })}
                           </div>
                           <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "14px", paddingTop: "12px", borderTop: "1px solid var(--border-color)", fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>
-                            <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "3px", background: "#059669", border: "1.5px solid #059669" }} /> صحيح ({quizResultPage.summary.correct})</span>
-                            <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "3px", background: "#dc2626", border: "1.5px solid #dc2626" }} /> دون الدرجة الكاملة ({quizResultPage.summary.wrong})</span>
-                            <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "3px", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)" }} /> متروك ({quizResultPage.summary.skipped})</span>
+                            <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "3px", background: "#059669", border: "1.5px solid #059669" }} /> {tr('lesson.correctCount', { count: quizResultPage.summary.correct })}</span>
+                            <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "3px", background: "#dc2626", border: "1.5px solid #dc2626" }} /> {tr('lesson.partialCount', { count: quizResultPage.summary.wrong })}</span>
+                            <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ width: "11px", height: "11px", borderRadius: "3px", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)" }} /> {tr('lesson.skippedCount', { count: quizResultPage.summary.skipped })}</span>
                           </div>
                         </div>
                       </div>
@@ -3485,7 +3485,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                                 color: quizResultFilter === f ? "#ffffff" : "var(--text-main)",
                               }}
                             >
-                              {f === "all" ? `جميع الأسئلة (${quizResultPage.questions.length})` : f === "correct" ? `الأسئلة الصحيحة (${quizResultPage.summary.correct})` : `دون الدرجة الكاملة (${quizResultPage.summary.wrong})`}
+                              {f === "all" ? tr('lesson.allQuestions', { count: quizResultPage.questions.length }) : f === "correct" ? tr('lesson.correctQuestions', { count: quizResultPage.summary.correct }) : tr('lesson.partialCount', { count: quizResultPage.summary.wrong })}
                             </button>
                           ))}
                         </div>
@@ -3497,13 +3497,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                             <div key={q.id} id={`qr-q-${q.id}`} style={{ ...assignmentPageCard, padding: "22px" }}>
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px", marginBottom: "12px", flexWrap: "wrap" }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-                                  <span style={{ fontSize: "13.5px", fontWeight: 900, color: "var(--text-main)" }}>السؤال {ORDINAL_AR[qIdx] || qIdx + 1}</span>
+                                  <span style={{ fontSize: "13.5px", fontWeight: 900, color: "var(--text-main)" }}>{tr('lesson.questionNumber', { number: lang === 'ar' ? ORDINAL_AR[qIdx] || qIdx + 1 : qIdx + 1 })}</span>
                                   <span style={{ fontSize: "11.5px", fontWeight: 800, color: c.fg, background: c.bg, border: `1px solid ${c.border}`, padding: "3px 10px", borderRadius: "8px" }}>
-                                    {q.state === "wrong" && q.awarded > 0 ? "◐ درجة جزئية" : <>{q.state === "correct" ? "✓ " : q.state === "wrong" ? "✕ " : ""}{stateLabel[q.state]}</>}
+                                    {q.state === "wrong" && q.awarded > 0 ? tr("lesson.partialGrade") : <>{q.state === "correct" ? "✓ " : q.state === "wrong" ? "✕ " : ""}{stateLabel[q.state]}</>}
                                   </span>
                                 </div>
                                 <span style={{ fontSize: "11.5px", fontWeight: 800, color: "var(--text-muted)" }}>
-                                  الدرجة: {q.awarded.toLocaleString("ar-EG")} / {q.points.toLocaleString("ar-EG")}
+                                  {tr('lesson.gradeOf', { score: q.awarded.toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-GB'), total: q.points.toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-GB') })}
                                 </span>
                               </div>
 
@@ -3535,13 +3535,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                                           background: isCorrect || revealWrong ? "rgba(255, 255, 255, 0.2)" : "var(--bg-surface)",
                                           color: isCorrect || revealWrong ? "#ffffff" : "var(--text-main)", fontSize: "12px", fontWeight: 900,
                                         }}>
-                                          {OPTION_LETTERS_AR[oIdx] || oIdx + 1}
+                                          {lang === 'ar' ? OPTION_LETTERS_AR[oIdx] || oIdx + 1 : String.fromCharCode(65 + oIdx)}
                                         </span>
                                         <div style={{ flex: 1, fontSize: "14px", color: isCorrect || revealWrong ? "#ffffff" : "var(--text-main)", fontWeight: isStudentChoice || isCorrect ? 800 : 600 }}>
                                           <FormulaRenderer inline text={opt} />
                                         </div>
-                                        {isStudentChoice && q.state === "wrong" && <span style={{ fontSize: "11px", fontWeight: 800, background: "rgba(0,0,0,0.25)", color: "#ffffff", padding: "2px 8px", borderRadius: "6px", flexShrink: 0 }}>إجابتك (خاطئة)</span>}
-                                        {isStudentChoice && q.state === "correct" && <span style={{ fontSize: "11px", fontWeight: 800, background: "rgba(255,255,255,0.25)", color: "#ffffff", padding: "2px 8px", borderRadius: "6px", flexShrink: 0 }}>إجابتك (صحيحة)</span>}
+                                        {isStudentChoice && q.state === "wrong" && <span style={{ fontSize: "11px", fontWeight: 800, background: "rgba(0,0,0,0.25)", color: "#ffffff", padding: "2px 8px", borderRadius: "6px", flexShrink: 0 }}>{tr("lesson.yourWrongAnswer")}</span>}
+                                        {isStudentChoice && q.state === "correct" && <span style={{ fontSize: "11px", fontWeight: 800, background: "rgba(255,255,255,0.25)", color: "#ffffff", padding: "2px 8px", borderRadius: "6px", flexShrink: 0 }}>{tr("lesson.yourCorrectAnswer")}</span>}
                                       </div>
                                     );
                                   })}
@@ -3549,21 +3549,21 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                               ) : (
                                 <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: q.learning_objective ? "12px" : 0 }}>
                                   <div style={{ padding: "12px 14px", borderRadius: "11px", background: c.bg, border: `1px solid ${c.border}` }}>
-                                    <small style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "4px" }}>إجابتك:</small>
-                                    <span style={{ fontSize: "13.5px", color: "var(--text-main)", fontWeight: 700 }}>{q.student_answer || "— لم تُجب —"}</span>
+                                    <small style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "4px" }}>{tr("lesson.yourAnswer")}</small>
+                                    <span style={{ fontSize: "13.5px", color: "var(--text-main)", fontWeight: 700 }}>{q.student_answer || tr("lesson.blankAnswer")}</span>
                                   </div>
                                   <div style={{ padding: "12px 14px", borderRadius: "11px", background: "rgba(5, 150, 105, 0.12)", border: "1px solid rgba(5, 150, 105, 0.3)" }}>
-                                    <small style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "#059669", marginBottom: "4px" }}>الإجابة النموذجية:</small>
+                                    <small style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "#059669", marginBottom: "4px" }}>{tr("lesson.modelAnswer")}</small>
                                     <span style={{ fontSize: "13.5px", color: "var(--text-main)", fontWeight: 700 }}>{q.correct_answer || "—"}</span>
                                   </div>
                                 </div>
                               )}
 
-                              {q.feedback && <p style={{ color: "var(--text-main)" }}>تعليق المدرس: {q.feedback}</p>}
+                              {q.feedback && <p style={{ color: "var(--text-main)" }}>{tr('lesson.teacherFeedback', { text: q.feedback })}</p>}
                               {q.learning_objective && (
                                 <div style={{ padding: "11px 14px", borderRadius: "11px", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text-muted)", fontWeight: 700 }}>
                                   <HelpCircle size={14} style={{ color: "#059669", flexShrink: 0 }} />
-                                  <span>الموضوع: {q.learning_objective}</span>
+                                  <span>{tr('lesson.topic', { text: q.learning_objective })}</span>
                                 </div>
                               )}
                             </div>
@@ -3572,7 +3572,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
                         {filtered.length === 0 && (
                           <div style={{ ...assignmentPageCard, padding: "34px", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>
-                            لا توجد أسئلة في هذا التصنيف
+                            {tr("lesson.noCategoryQuestions")}
                           </div>
                         )}
                       </div>
@@ -3589,7 +3589,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         }}
                         style={{ padding: "11px 28px", fontSize: "14px", fontWeight: 800 }}
                       >
-                        العودة إلى المقرر
+                        {tr("lesson.returnCourse")}
                       </button>
                     </div>
                   </>
@@ -3606,7 +3606,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
          ========================================================================= */}
       {(serverAssignment || serverAssignmentLoading || serverAssignmentError) && (
         <div
-          dir="rtl"
+          dir={lang === "ar" ? "rtl" : "ltr"}
           style={{
             position: "fixed",
             inset: 0,
@@ -3674,7 +3674,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               </div>
 
               <h2 style={{ margin: 0, fontSize: "16px", fontWeight: 900, color: "var(--text-main)" }}>
-                {serverAssignment?.title || "واجب"}
+                {serverAssignment?.title || tr("lesson.assignment")}
               </h2>
             </div>
 
@@ -3683,7 +3683,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 type="button"
                 className="icon-btn"
                 onClick={onToggleTheme}
-                title={theme === "dark" ? "تفعيل الوضع النهاري" : "تفعيل الوضع الليلي"}
+                title={theme === "dark" ? tr("lesson.lightMode") : tr("lesson.darkMode")}
                 aria-label="Toggle Theme"
               >
                 {theme === "dark" ? <Sun size={18} style={{ color: "#f59e0b" }} /> : <Moon size={18} />}
@@ -3708,26 +3708,26 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 }}
                 style={{ display: "inline-flex", alignItems: "center", gap: "6px", background: "rgb(118, 40, 40)", border: "none", borderRadius: "8px", padding: "7px 14px", fontSize: "12.5px", fontWeight: 800, color: "#ffffff", cursor: "pointer", flexShrink: 0 }}
               >
-                <X size={16} /> <span>خروج</span>
+                <X size={16} /> <span>{tr("lesson.exit")}</span>
               </button>
             </div>
           </header>
 
           <div style={{ maxWidth: "760px", margin: "0 auto", padding: "26px 20px 70px" }}>
-            <ToastRegion label="رسائل الواجب" />
+            <ToastRegion label={tr("lesson.assignmentMessages")} />
             {/* ── Breadcrumb lesson context + centered title + countdown chip ── */}
             <div style={{ textAlign: "center", marginBottom: "22px" }}>
               <div style={{ fontSize: "12px", fontWeight: 800, color: "#059669", marginBottom: "6px", display: "inline-flex", alignItems: "center", gap: "6px" }}>
                 <FileText size={14} />
-                {currentCourse?.title || "المقرر الدراسي"}
+                {currentCourse?.title || tr("lesson.curriculum")}
               </div>
               <h1 style={{ margin: "0 0 10px", fontSize: "25px", fontWeight: 900, color: "var(--text-main)" }}>
-                {serverAssignment?.title || "واجب"}
+                {serverAssignment?.title || tr("lesson.assignment")}
               </h1>
               {serverAssignment?.dueAt && (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", fontWeight: 800, color: "var(--text-muted)", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", padding: "5px 14px", borderRadius: "999px" }}>
                   <Clock size={13} />
-                  متبقٍ: {formatDueCountdown(serverAssignment.dueAt)}
+                  {tr('lesson.remaining', { time: formatDueCountdown(serverAssignment.dueAt, lang) })}
                 </span>
               )}
             </div>
@@ -3741,10 +3741,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   </div>
                   <div style={{ minWidth: 0 }}>
                     <strong style={{ display: "block", fontSize: "13.5px", fontWeight: 900, color: "var(--text-main)" }}>
-                      ملف أسئلة الواجب — ورقة الأسئلة
+                      {tr("lesson.questionSheet")}
                     </strong>
                     <small style={{ display: "block", fontSize: "11.5px", color: "var(--text-muted)", marginTop: "2px" }}>
-                      ملف PDF • حمّله وحلّه على الورق ثم صوّر إجابتك
+                      {tr("lesson.questionSheetHint")}
                     </small>
                   </div>
                 </div>
@@ -3760,7 +3760,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     }}
                   >
                     <Download size={15} />
-                    <span>تحميل PDF</span>
+                    <span>{tr("lesson.downloadPdf")}</span>
                   </button>
                   <button
                     type="button"
@@ -3774,7 +3774,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     }}
                   >
                     <BookOpen size={15} />
-                    <span>معاينة</span>
+                    <span>{tr("lesson.preview")}</span>
                   </button>
                 </div>
               </div>
@@ -3784,9 +3784,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             <div style={{ ...assignmentPageCard, padding: "24px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px", fontSize: "13.5px", fontWeight: 900, color: "var(--text-main)" }}>
                 <FileCheck size={17} style={{ color: "#059669" }} />
-                <span>رفع ملف إجابتك</span>
+                <span>{tr("lesson.uploadAnswer")}</span>
                 <small style={{ fontSize: "11.5px", fontWeight: 600, color: "var(--text-muted)", marginInlineStart: "auto" }}>
-                  PDF أو صور (PNG, JPG)
+                  {tr("lesson.answerFormats")}
                 </small>
               </div>
 
@@ -3794,15 +3794,15 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 <div style={{ padding: "18px", background: "#dcfce7", border: "1.5px solid #86efac", borderRadius: "14px", display: "flex", alignItems: "center", gap: "12px" }}>
                   <CheckCircle2 size={24} style={{ color: "#059669", flexShrink: 0 }} />
                   <div>
-                    <strong style={{ display: "block", fontSize: "14px", color: "#166534" }}>تم إرسال حل الواجب للمعلم بنجاح</strong>
+                    <strong style={{ display: "block", fontSize: "14px", color: "#166534" }}>{tr("lesson.answerSent")}</strong>
                     <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                      نسخة رقم {assignmentUploadDone.version} • {new Date(assignmentUploadDone.submittedAt).toLocaleString("ar-EG")}
+                      {tr('lesson.version', { number: assignmentUploadDone.version })} • {new Date(assignmentUploadDone.submittedAt).toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-GB', { timeZone: 'Africa/Cairo' })}
                     </span>
                   </div>
                 </div>
               ) : (
                 <>
-                  {serverAssignmentLoading && <div style={{ padding: "30px", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>جاري تحميل الواجب…</div>}
+                  {serverAssignmentLoading && <div style={{ padding: "30px", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>{tr("lesson.loadingAssignment")}</div>}
 
                   {serverAssignmentError && (
                     <div style={{ padding: "16px", background: "#fee2e2", color: "#b91c1c", borderRadius: "12px", fontWeight: 800, fontSize: "13.5px", marginBottom: "14px" }}>
@@ -3814,7 +3814,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     <>
                       {serverAssignment.latestSubmission?.hasFile && (
                         <div style={{ padding: "12px 14px", background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: "10px", fontSize: "12.5px", color: "#065f46", fontWeight: 700, marginBottom: "14px" }}>
-                          ✓ سبق أن سلّمت نسخة رقم {serverAssignment.latestSubmission.version} — يمكنك رفع نسخة أحدث إن لزم.
+                          {tr('lesson.previousVersion', { number: serverAssignment.latestSubmission.version })}
                         </div>
                       )}
 
@@ -3830,10 +3830,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       >
                         {assignmentFile ? <CheckCircle2 size={28} style={{ color: "#059669" }} /> : <Upload size={28} style={{ color: "#059669" }} />}
                         <strong style={{ fontSize: "13.5px", fontWeight: 900, color: "var(--text-main)" }}>
-                          {assignmentFile ? assignmentFile.name : "اضغط لاختيار ملف الحل أو اسحبه هنا"}
+                          {assignmentFile ? assignmentFile.name : tr("lesson.chooseAnswerFile")}
                         </strong>
                         <small style={{ fontSize: "11.5px", color: "var(--text-muted)" }}>
-                          يمكنك رفع صور شاشوئية أو ملف PDF مجمع (حتى 50 ميجابايت)
+                          {tr("lesson.answerFileHint")}
                         </small>
                         <input
                           type="file"
@@ -3861,7 +3861,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         }}
                       >
                         <FileCheck size={17} />
-                        <span>{assignmentUploading ? "جاري الرفع…" : "إرسال الحل للمعلم"}</span>
+                        <span>{assignmentUploading ? tr("lesson.uploading") : tr("lesson.sendAnswer")}</span>
                       </button>
                     </>
                   )}
@@ -3887,7 +3887,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 }}
               >
                 <ArrowRight size={15} />
-                <span>رجوع للمقرر</span>
+                <span>{tr("lesson.backCourse")}</span>
               </button>
             </div>
           </div>
@@ -3929,13 +3929,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px" }}>
               <div>
                 <span style={{ fontSize: "11.5px", color: "#059669", background: "var(--bg-accent)", padding: "3px 8px", borderRadius: "6px", fontWeight: 800 }}>
-                  قارئ الكتب والمذكرات الإلكتروني
+                  {tr("lesson.bookReader")}
                 </span>
                 <h2 style={{ margin: "6px 0 2px", fontSize: "18px", fontWeight: 800, color: "var(--text-main)" }}>
                   {activeBookModal.title}
                 </h2>
                 <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                  {activeBookModal.author} • {activeBookModal.pagesCount} صفحة
+                  {activeBookModal.author} • {tr('lesson.pages', { count: activeBookModal.pagesCount })}
                 </span>
               </div>
               <button
@@ -3951,10 +3951,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             <div style={{ background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "12px", padding: "30px 20px", textAlign: "center", marginBottom: "20px" }}>
               <BookOpen size={48} style={{ color: "#059669", margin: "0 auto 12px" }} />
               <strong style={{ display: "block", fontSize: "15px", color: "var(--text-main)", marginBottom: "6px" }}>
-                نسخة إلكترونية تفاعلية عالية الجودة
+                {tr("lesson.digitalCopy")}
               </strong>
               <p style={{ margin: 0, fontSize: "13px", color: "var(--text-muted)" }}>
-                تم فك تشفير النسخة الخاصة بحسابك ومتاحة للقراءة الفورية والتنزيل المباشر على جهازك.
+                {tr("lesson.copyAvailable")}
               </p>
             </div>
 
@@ -3964,7 +3964,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   if (activeBookModal.fileUrl) {
                     void downloadLessonMaterial(activeBookModal.fileUrl, activeBookModal.title);
                   } else {
-                    toast(`تم بدء تنزيل "${activeBookModal.title}" بنجاح!`, "success");
+                    toast(tr('lesson.downloadStarted', { title: activeBookModal.title }), "success");
                   }
                   closeOverlay("activeBookModal", () => setActiveBookModal(null));
                 }}
@@ -3972,7 +3972,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 style={{ flex: 1, justifyContent: "center", padding: "12px", borderRadius: "10px", fontWeight: 800, fontSize: "13.5px", gap: "6px" }}
               >
                 <Download size={16} />
-                <span>تحميل النسخة الكاملة على الجهاز</span>
+                <span>{tr("lesson.downloadFullCopy")}</span>
               </button>
             </div>
           </div>
@@ -4009,13 +4009,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px", borderBottom: "1px solid var(--border-color)", paddingBottom: "14px" }}>
               <div>
                 <span style={{ fontSize: "11px", fontWeight: 800, color: "#1e3a8a", background: "#dbeafe", padding: "3px 8px", borderRadius: "6px" }}>
-                  تسليم الواجب المنزلي • الدرجة: {activeAssignmentModal.maxScore}
+                  {tr('lesson.assignmentScore', { score: activeAssignmentModal.maxScore })}
                 </span>
                 <h2 style={{ margin: "6px 0 2px", fontSize: "18px", color: "var(--text-main)" }}>
                   {activeAssignmentModal.title}
                 </h2>
                 <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                  الموعد النهائي للتسليم: <strong>{activeAssignmentModal.dueDate}</strong>
+                  {tr("lesson.dueDate")} <strong>{activeAssignmentModal.dueDate}</strong>
                 </span>
               </div>
               <button
@@ -4035,7 +4035,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 }}
               >
                 <X size={16} />
-                <span>رجوع للمقرر</span>
+                <span>{tr("lesson.backCourse")}</span>
               </button>
             </div>
 
@@ -4043,34 +4043,34 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             {assignmentSuccessMsg && (
               <div style={{ padding: "12px", background: "#dcfce7", color: "#166534", borderRadius: "8px", fontSize: "13px", fontWeight: 800, marginBottom: "16px", display: "flex", alignItems: "center", gap: "8px" }}>
                 <CheckCircle2 size={18} />
-                <span>تم إرسال وتسليم إجابة الواجب للمعلم بنجاح!</span>
+                <span>{tr("lesson.legacyAnswerSent")}</span>
               </div>
             )}
 
             {/* Assignment Prompt */}
             <div style={{ background: "var(--bg-surface-secondary)", padding: "16px", borderRadius: "12px", border: "1px solid var(--border-color)", marginBottom: "18px" }}>
               <strong style={{ display: "block", fontSize: "13.5px", color: "var(--text-main)", marginBottom: "6px" }}>
-                تعليمات ونص الأسئلة:
+                {tr("lesson.assignmentQuestions")}
               </strong>
               <p style={{ margin: "0 0 10px", fontSize: "13px", color: "var(--text-muted)", lineHeight: "1.6", whiteSpace: "pre-line" }}>
                 {activeAssignmentModal.questionsPrompt}
               </p>
               <small style={{ color: "#059669", fontWeight: 700 }}>
-                تنبيه: تأكد من مراجعة إجابتك قبل الضغط على تسليم الواجب.
+                {tr("lesson.reviewBeforeSubmit")}
               </small>
             </div>
 
             {/* Answer Input */}
             <div style={{ marginBottom: "16px" }}>
               <label style={{ display: "block", fontSize: "13px", fontWeight: 800, color: "var(--text-main)", marginBottom: "6px" }}>
-                اكتب إجابتك النموذجية هنا:
+                {tr("lesson.writeAnswer")}
               </label>
               <textarea
                 rows={5}
                 value={submittedAssignmentIds[activeAssignmentModal.id]?.answer || assignmentAnswerText}
                 onChange={(e) => setAssignmentAnswerText(e.target.value)}
                 disabled={!!submittedAssignmentIds[activeAssignmentModal.id]}
-                placeholder="اكتب خطوات الحل بالتفصيل هنا..."
+                placeholder={tr("lesson.answerSteps")}
                 style={{
                   width: "100%",
                   padding: "12px",
@@ -4097,7 +4097,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   style={{ gap: "6px" }}
                 >
                   <FileCheck size={16} />
-                  <span>تسليم الواجب الآن</span>
+                  <span>{tr("lesson.submitAssignment")}</span>
                 </button>
               </div>
             )}
@@ -4135,7 +4135,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border-color)", paddingBottom: "14px", marginBottom: "20px" }}>
               <div>
                 <span style={{ fontSize: "11px", fontWeight: 800, color: "#831843", background: "#fce7f3", padding: "3px 8px", borderRadius: "6px" }}>
-                  اختبار تقييمي إلكتروني • {activeQuizModal.durationMinutes} دقيقة
+                  {tr('lesson.timedExam', { minutes: activeQuizModal.durationMinutes })}
                 </span>
                 <h2 style={{ margin: "6px 0 2px", fontSize: "18px", color: "var(--text-main)" }}>
                   {activeQuizModal.title}
@@ -4158,7 +4158,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 }}
               >
                 <X size={16} />
-                <span>خروج</span>
+                <span>{tr("lesson.exit")}</span>
               </button>
             </div>
 
@@ -4182,15 +4182,15 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   <Sparkles size={24} style={{ color: "#059669" }} />
                   <div>
                     <strong style={{ fontSize: "15px", color: "var(--text-main)", display: "block" }}>
-                      {quizScoreResult.score >= 7 ? "أحسنت! تم اجتياز الكويز بنجاح" : "تم تسليم الاختبار - مراجعة الأخطاء مطلوبة"}
+                      {quizScoreResult.score >= 7 ? tr("lesson.examPassed") : tr("lesson.reviewMistakes")}
                     </strong>
                     <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                      تم تسجيل نتيجتك في كشف درجات الطالب بالمنصة.
+                      {tr("lesson.gradeRecorded")}
                     </span>
                   </div>
                 </div>
                 <div style={{ fontSize: "20px", fontWeight: 900, color: "#059669" }}>
-                  {quizScoreResult.score} / {quizScoreResult.maxScore} درجة
+                  {tr('lesson.scoreOf', { score: quizScoreResult.score, total: quizScoreResult.maxScore })}
                 </div>
               </div>
             )}
@@ -4258,7 +4258,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                             </div>
                             {quizSubmitted && isRightAnswer && (
                               <span style={{ fontSize: "11px", color: "#166534", fontWeight: 800, marginInlineStart: "auto" }}>
-                                الإجابة الصحيحة
+                                {tr("lesson.correct")}
                               </span>
                             )}
                           </label>
@@ -4269,7 +4269,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     {/* AI Explanation after submit */}
                     {quizSubmitted && (
                       <div style={{ marginTop: "12px", padding: "10px", background: "var(--bg-surface)", border: "1px dashed var(--border-color)", borderRadius: "8px", fontSize: "12px", color: "var(--text-muted)" }}>
-                        <strong style={{ display: "block", marginBottom: "4px" }}>تفسير الإجابة:</strong>
+                        <strong style={{ display: "block", marginBottom: "4px" }}>{tr("lesson.explanation")}</strong>
                         <FormulaRenderer text={q.explanation} />
                       </div>
                     )}
@@ -4285,7 +4285,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 className="btn-secondary"
                 onClick={() => closeOverlay("activeQuizModal", () => setActiveQuizModal(null))}
               >
-                {quizSubmitted ? "تم والعودة للمقرر" : "إلغاء"}
+                {quizSubmitted ? tr("lesson.doneReturn") : tr("lesson.cancel")}
               </button>
 
               {!quizSubmitted && (
@@ -4297,7 +4297,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   style={{ gap: "6px" }}
                 >
                   <Zap size={16} />
-                  <span>إنهاء وتسليم الاختبار</span>
+                  <span>{tr("lesson.finishSubmit")}</span>
                 </button>
               )}
             </div>
@@ -4310,7 +4310,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
          ========================================================================= */}
       {activeQuizHistoryModal && (
         <div
-          dir="rtl"
+          dir={lang === "ar" ? "rtl" : "ltr"}
           className="modal-overlay"
           style={{
             position: "fixed",
@@ -4345,7 +4345,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 </span>
                 <div>
                   <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 900, color: "var(--text-main)" }}>
-                    سجل محاولات الاختبار
+                    {tr("lesson.examHistory")}
                   </h3>
                   <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
                     {activeQuizHistoryModal.title}
@@ -4374,16 +4374,16 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             </div>
 
             <p style={{ margin: "0 0 16px", fontSize: "12.5px", color: "var(--text-muted)", lineHeight: 1.6 }}>
-              اختر أي محاولة امتحنت فيها لعرض تصحيحها بالكامل ومعرفة إجاباتك، أخطائك، والإجابة النموذجية:
+              {tr("lesson.chooseHistory")}
             </p>
 
             {quizHistoryLoading ? (
               <div style={{ padding: "40px", textAlign: "center", color: "var(--text-muted)", fontSize: "13.5px" }}>
-                جاري تحميل سجل المحاولات…
+                {tr("lesson.loadingHistory")}
               </div>
             ) : !quizHistoryAttempts || quizHistoryAttempts.length === 0 ? (
               <div style={{ padding: "30px", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>
-                لا توجد محاولات مسجلة بعد لهذا الاختبار.
+                {tr("lesson.noHistory")}
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
@@ -4405,26 +4405,26 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                         <strong style={{ fontSize: "14px", fontWeight: 900, color: "var(--text-main)" }}>
-                          المحاولة رقم {att.attempt_number}
+                          {tr('lesson.attemptNumber', { number: att.attempt_number })}
                         </strong>
                         {att.is_practice || att.attempt_number > 1 ? (
                           <span style={{ fontSize: "10.5px", fontWeight: 800, color: "#92400e", background: "#fef3c7", padding: "2px 8px", borderRadius: "6px" }}>
-                            تدريبية
+                            {tr("lesson.practiceShort")}
                           </span>
                         ) : (
                           <span style={{ fontSize: "10.5px", fontWeight: 800, color: "#065f46", background: "#d1fae5", padding: "2px 8px", borderRadius: "6px" }}>
-                            رسمية
+                            {tr("lesson.officialLabel")}
                           </span>
                         )}
                       </div>
                       <span style={{ fontSize: "11.5px", color: "var(--text-muted)" }}>
-                        {att.submitted_at ? new Date(att.submitted_at).toLocaleString("ar-EG") : "—"}
+                        {att.submitted_at ? new Date(att.submitted_at).toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-GB', { timeZone: 'Africa/Cairo' }) : "—"}
                       </span>
                     </div>
 
                     <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
                       <span style={{ fontSize: "15px", fontWeight: 900, color: "#059669" }}>
-                        {att.score === null ? 'بانتظار اعتماد المدرس' : `${att.score} / ${att.total_points}`}
+                        {att.score === null ? tr("lesson.pendingTeacher") : `${att.score} / ${att.total_points}`}
                       </span>
                       <button
                         type="button"
@@ -4439,7 +4439,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         }}
                       >
                         <Eye size={14} />
-                        <span>عرض الأخطاء والتصحيح</span>
+                        <span>{tr("lesson.showMistakes")}</span>
                       </button>
                     </div>
                   </div>
@@ -4463,20 +4463,21 @@ const assignmentPageCard: React.CSSProperties = {
   boxShadow: "0 2px 12px rgba(0,0,0,0.04)",
 };
 
-/** Human Arabic countdown to the assignment due date. */
-function formatDueCountdown(dueAt: string): string {
+/** Display-only countdown; scheduling remains server-authoritative. */
+function formatDueCountdown(dueAt: string, lang: Language): string {
   const ms = new Date(dueAt).getTime() - Date.now();
   if (Number.isNaN(ms)) return "—";
-  if (ms <= 0) return "انتهى الموعد النهائي";
+  if (ms <= 0) return lang === 'ar' ? "انتهى الموعد النهائي" : 'Deadline passed';
+  const number = (value: number) => value.toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-GB');
   const minutes = Math.floor(ms / 60_000);
-  if (minutes < 60) return `${minutes.toLocaleString("ar-EG")} دقيقة`;
+  if (minutes < 60) return lang === 'ar' ? `${number(minutes)} دقيقة` : `${number(minutes)} min`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours.toLocaleString("ar-EG")} يوم و ${((minutes % 60) / 60 >= 0.5 ? 1 : 0).toLocaleString("ar-EG")} ساعات`.replace(" و 1 ساعات", " و نصف");
+  if (hours < 24) return lang === 'ar' ? `${number(hours)} ساعة و ${number(minutes % 60)} دقيقة` : `${number(hours)} h ${number(minutes % 60)} min`;
   const days = Math.floor(hours / 24);
   const remHours = hours % 24;
   return remHours > 0
-    ? `${days.toLocaleString("ar-EG")} يوم و ${remHours.toLocaleString("ar-EG")} ساعة`
-    : `${days.toLocaleString("ar-EG")} يوم`;
+    ? lang === 'ar' ? `${number(days)} يوم و ${number(remHours)} ساعة` : `${number(days)} d ${number(remHours)} h`
+    : lang === 'ar' ? `${number(days)} يوم` : `${number(days)} d`;
 }
 
 /* ── Quiz page Arabic ordinals and MCQ letter prefixes (per approved mock) ── */
