@@ -17,7 +17,8 @@ import {
 import { AssignmentSubmission, CustomColumn, StudentRecord } from "../types/lms";
 import { submissionService, userService } from "../services/lmsService";
 import type { ApiManagedUser } from "../services/lmsService";
-import { getCachedData, invalidateApiCache } from "../services/apiClient";
+import { getApiAuthGeneration, getApiAuthScope, getCachedData, invalidateApiCache } from "../services/apiClient";
+import { studentTrackingService, type TrackingValue, type TrackingValues } from "../services/studentTrackingService";
 import { AssignmentModal } from "../components/AssignmentModal";
 import { ExamGradingModal } from "../components/ExamGradingModal";
 import { CustomColumnModal } from "../components/CustomColumnModal";
@@ -91,12 +92,37 @@ export const SubmissionsView: React.FC = () => {
     const cached = getCachedData<AssignmentSubmission[]>("/submissions");
     return Array.isArray(cached) ? cached : [];
   });
-  const [students, setStudents] = useState<StudentRecord[]>(() => {
+  const [studentRows, setStudents] = useState<StudentRecord[]>(() => {
     const cached = getCachedData<ApiManagedUser[]>("/users?role=student");
     return Array.isArray(cached) ? cached.map(mapApiStudentToRecord) : [];
   });
-  const [loading, setLoading] = useState(() => students.length === 0 || submissions.length === 0);
+  const [loading, setLoading] = useState(() => studentRows.length === 0 || submissions.length === 0);
   const [customColumns, setCustomColumns] = useState<CustomColumn[]>([]);
+  const [trackingValues, setTrackingValues] = useState<TrackingValues>({});
+  const [trackingError, setTrackingError] = useState(false);
+  const [trackingReady, setTrackingReady] = useState(false);
+  const [trackingRetry, setTrackingRetry] = useState(0);
+  const [authGeneration, setAuthGeneration] = useState(getApiAuthGeneration);
+  const [drafts, setDrafts] = useState<Record<string, { value: TrackingValue; status: 'unsaved' | 'saving' | 'saved' | 'error' }>>({});
+  const [deletingColumn, setDeletingColumn] = useState<string | null>(null);
+  const mutationRevision = React.useRef(0);
+  const savingCells = React.useRef(new Set<string>());
+  const mounted = React.useRef(false);
+  const students = studentRows.map(student => ({ ...student, customFieldValues: trackingValues[student.id] ?? {} }));
+
+  React.useEffect(() => {
+    mounted.current = true;
+    const changed = () => {
+      ++mutationRevision.current;
+      savingCells.current.clear();
+      setAuthGeneration(getApiAuthGeneration());
+      setStudents([]); setSubmissions([]); setCustomColumns([]); setTrackingValues({}); setDrafts({});
+      setTrackingReady(false); setTrackingError(false); setDeletingColumn(null);
+      setActiveSubmission(null); setActiveExamStudent(null); setDetailWizardStudent(null); setIsCustomColModalOpen(false);
+    };
+    window.addEventListener('lms_auth_scope_updated', changed);
+    return () => { mounted.current = false; window.removeEventListener('lms_auth_scope_updated', changed); };
+  }, []);
 
   const [activeSubmission, setActiveSubmission] = useState<AssignmentSubmission | null>(null);
   const [activeExamStudent, setActiveExamStudent] = useState<StudentRecord | null>(null);
@@ -109,20 +135,30 @@ export const SubmissionsView: React.FC = () => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const refresh = async () => {
       const request = ++revision;
+      const mutation = mutationRevision.current;
+      if (getApiAuthScope() === 'anonymous') { setLoading(false); return; }
       invalidateApiCache("/users");
       invalidateApiCache("/submissions");
       try {
-        const [serverSubmissions, serverStudents] = await Promise.all([
+        const [serverSubmissions, serverStudents, tracking] = await Promise.all([
           submissionService.getTeacherSubmissions(), userService.getStudents(),
+          studentTrackingService.getSnapshot().catch(() => null),
         ]);
-        if (active && request === revision) {
+        if (active && request === revision && authGeneration === getApiAuthGeneration()) {
           setSubmissions(serverSubmissions);
           setStudents(serverStudents.map(mapApiStudentToRecord));
+          if (mutation === mutationRevision.current) {
+            if (tracking) {
+              setCustomColumns(tracking.columns); setTrackingValues(tracking.values);
+              setDrafts(previous => Object.fromEntries(Object.entries(previous).filter(([, draft]) => draft.status !== 'saved')));
+              setTrackingReady(true); setTrackingError(false);
+            } else { setTrackingError(true); setTrackingReady(false); }
+          }
         }
       } catch {
-        if (active && request === revision) toast({ message: "تعذر تحديث بيانات المتابعة؛ أعد المحاولة.", tone: "danger" });
+        if (active && request === revision && authGeneration === getApiAuthGeneration()) toast({ message: "تعذر تحديث بيانات المتابعة؛ أعد المحاولة.", tone: "danger" });
       } finally {
-        if (active && request === revision) setLoading(false);
+        if (active && request === revision && authGeneration === getApiAuthGeneration()) setLoading(false);
       }
     };
     void refresh();
@@ -133,7 +169,7 @@ export const SubmissionsView: React.FC = () => {
       active = false; ++revision; clearTimeout(timer);
       for (const event of events) window.removeEventListener(event, changed);
     };
-  }, [toast]);
+  }, [toast, authGeneration, trackingRetry]);
 
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [detailWizardStudent, setDetailWizardStudent] = useState<StudentRecord | null>(null);
@@ -175,29 +211,64 @@ export const SubmissionsView: React.FC = () => {
         )
       : 0;
 
-  function handleAddCustomColumn(col: CustomColumn) {
-    setCustomColumns([...customColumns, col]);
+  async function handleAddCustomColumn(col: CustomColumn) {
+    const generation = getApiAuthGeneration();
+    ++mutationRevision.current;
+    const saved = await studentTrackingService.addColumn(col);
+    if (!mounted.current || generation !== getApiAuthGeneration()) throw new Error('تغير الحساب؛ أعد فتح المتابعة.');
+    ++mutationRevision.current;
+    setCustomColumns(previous => [...previous, saved]);
+    toast({ message: "تم حفظ العمود المخصص", tone: "success" });
   }
 
-  function handleDeleteCustomColumn(colId: string) {
-    setCustomColumns(customColumns.filter((c) => c.id !== colId));
+  async function handleDeleteCustomColumn(colId: string) {
+    const generation = getApiAuthGeneration();
+    ++mutationRevision.current; setDeletingColumn(colId);
+    try {
+      await studentTrackingService.deleteColumn(colId);
+      if (!mounted.current || generation !== getApiAuthGeneration()) return;
+      ++mutationRevision.current;
+      setCustomColumns(previous => previous.filter(c => c.id !== colId));
+      toast({ message: "تم حذف العمود المخصص", tone: "success" });
+    } catch {
+      if (mounted.current && generation === getApiAuthGeneration()) toast({ message: "تعذر حذف العمود؛ أعد المحاولة.", tone: "danger" });
+    } finally {
+      if (mounted.current && generation === getApiAuthGeneration()) setDeletingColumn(null);
+    }
   }
 
   function handleUpdateCustomValue(studentId: string, colId: string, value: string | number | boolean) {
-    setStudents((prev) =>
-      prev.map((s) => {
-        if (s.id === studentId) {
-          return {
-            ...s,
-            customFieldValues: {
-              ...s.customFieldValues,
-              [colId]: value,
-            },
-          };
-        }
-        return s;
-      })
-    );
+    setDrafts(previous => ({ ...previous, [`${studentId}:${colId}`]: { value, status: 'unsaved' } }));
+  }
+
+  async function handleSaveCustomValue(studentId: string, col: CustomColumn, directValue?: TrackingValue) {
+    const key = `${studentId}:${col.id}`;
+    if (savingCells.current.has(key)) return;
+    const draft = drafts[key];
+    if (directValue === undefined && (!draft || draft.status === 'saving' || draft.status === 'saved')) return;
+    let value = directValue ?? draft!.value;
+    if (col.dataType === 'number' || col.dataType === 'percentage') {
+      if (String(value).trim() === '' || !Number.isFinite(Number(value))) {
+        setDrafts(previous => ({ ...previous, [key]: { value, status: 'error' } })); return;
+      }
+      value = Number(value);
+    }
+    const generation = getApiAuthGeneration();
+    savingCells.current.add(key);
+    ++mutationRevision.current;
+    setDrafts(previous => ({ ...previous, [key]: { value, status: 'saving' } }));
+    try {
+      const saved = await studentTrackingService.saveValue(studentId, col.id, value);
+      if (!mounted.current || generation !== getApiAuthGeneration()) return;
+      ++mutationRevision.current;
+      setTrackingValues(previous => ({ ...previous, [studentId]: { ...previous[studentId], [col.id]: saved } }));
+      setDrafts(previous => ({ ...previous, [key]: { value: saved, status: 'saved' } }));
+    } catch {
+      if (!mounted.current || generation !== getApiAuthGeneration()) return;
+      setDrafts(previous => ({ ...previous, [key]: { value, status: 'error' } }));
+    } finally {
+      if (generation === getApiAuthGeneration()) savingCells.current.delete(key);
+    }
   }
 
   async function handleApproveGrade(subId: string, updatedScore: number, teacherNotes: string) {
@@ -333,6 +404,7 @@ export const SubmissionsView: React.FC = () => {
         <div style={{ display: "flex", gap: "10px", alignItems: "center", position: "relative", flexWrap: "wrap" }}>
           <button
             className="btn-secondary"
+            disabled={!trackingReady}
             onClick={() => setIsCustomColModalOpen(true)}
             style={{ fontSize: "12px", gap: "6px" }}
           >
@@ -401,6 +473,9 @@ export const SubmissionsView: React.FC = () => {
         </div>
       </div>
 
+      {trackingError && <div role="alert" style={{ marginBottom: 12 }}>
+        تعذر تحميل الأعمدة المخصصة. <button type="button" onClick={() => setTrackingRetry(value => value + 1)}>إعادة تحميل المتابعة</button>
+      </div>}
       {/* Year Selection Tree & Minimum Progress Setting */}
       <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "14px", padding: "14px 16px", marginBottom: "20px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
         <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
@@ -721,6 +796,7 @@ export const SubmissionsView: React.FC = () => {
                     <span>{col.name}</span>
                     <button
                       onClick={() => handleDeleteCustomColumn(col.id)}
+                      disabled={deletingColumn !== null || !trackingReady}
                       style={{ background: "none", border: "none", color: "rgb(118, 40, 40)", cursor: "pointer", padding: 0 }}
                       title="حذف هذا العمود المخصص"
                     >
@@ -859,26 +935,42 @@ export const SubmissionsView: React.FC = () => {
                     </td>
 
                     {/* Custom Columns Editable Cells */}
-                    {yearCustomCols.map((col) => (
+                    {yearCustomCols.map((col) => {
+                      const draft = drafts[`${student.id}:${col.id}`];
+                      const value = draft?.value ?? student.customFieldValues[col.id];
+                      return (
                       <td key={col.id} style={{ textAlign: "center" }}>
                         {col.dataType === "checkbox" ? (
                           <input
                             type="checkbox"
-                            checked={!!student.customFieldValues[col.id]}
-                            onChange={(e) => handleUpdateCustomValue(student.id, col.id, e.target.checked)}
+                            aria-label={`${col.name} — ${student.name}`}
+                            disabled={!trackingReady || draft?.status === 'saving' || deletingColumn === col.id}
+                            checked={!!value}
+                            onChange={(e) => void handleSaveCustomValue(student.id, col, e.target.checked)}
                             style={{ width: "16px", height: "16px", accentColor: "#059669" }}
                           />
                         ) : (
                           <input
-                            type="text"
-                            value={String(student.customFieldValues[col.id] ?? "")}
+                            type={col.dataType === 'text' ? 'text' : 'number'}
+                            aria-label={`${col.name} — ${student.name}`}
+                            maxLength={2000}
+                            disabled={!trackingReady || draft?.status === 'saving' || deletingColumn === col.id}
+                            value={String(value ?? "")}
                             onChange={(e) => handleUpdateCustomValue(student.id, col.id, e.target.value)}
+                            onBlur={() => void handleSaveCustomValue(student.id, col)}
                             placeholder="—"
                             style={{ width: "120px", padding: "4px 8px", border: "1px solid var(--border-color)", borderRadius: "6px", fontSize: "12px", textAlign: "center", background: "var(--bg-surface)", color: "var(--text-main)" }}
                           />
                         )}
+                        {draft && <div aria-live="polite" style={{ fontSize: 11, marginTop: 4 }}>
+                          {draft.status === 'saving' ? 'جارٍ الحفظ…' : draft.status === 'saved' ? 'تم الحفظ' : draft.status === 'error' ? 'تعذر الحفظ؛ القيمة غير محفوظة.' : 'تعديل غير محفوظ'}
+                          {(draft.status === 'error' || draft.status === 'unsaved') && <button type="button"
+                            onClick={() => void handleSaveCustomValue(student.id, col)}>
+                            {draft.status === 'error' ? 'إعادة محاولة الحفظ' : 'حفظ القيمة'}
+                          </button>}
+                        </div>}
                       </td>
-                    ))}
+                    ); })}
 
                     {/* Assignment Modal Trigger */}
                     <td style={{ textAlign: "center" }}>
@@ -942,6 +1034,7 @@ export const SubmissionsView: React.FC = () => {
 
       {/* Custom Column Modal */}
       <CustomColumnModal
+        key={authGeneration}
         isOpen={isCustomColModalOpen}
         onClose={() => setIsCustomColModalOpen(false)}
         tableContext="submissions"

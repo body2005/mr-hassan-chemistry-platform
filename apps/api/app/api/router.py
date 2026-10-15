@@ -13,9 +13,11 @@ from app.api.routes import (
     telemetry,
     quiz_extraction,
     video_uploads,
+    teacher_tracking,
 )
 
 api_router = APIRouter()
+api_router.include_router(teacher_tracking.router, tags=["teacher-tracking"])
 api_router.include_router(health.router, tags=["system"])
 api_router.include_router(auth.router, tags=["auth"])
 api_router.include_router(courses.router, tags=["courses"])

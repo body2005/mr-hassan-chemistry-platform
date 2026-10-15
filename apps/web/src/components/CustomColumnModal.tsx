@@ -7,7 +7,7 @@ interface CustomColumnModalProps {
   onClose: () => void;
   tableContext: "submissions" | "students";
   academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary";
-  onAddColumn: (col: CustomColumn) => void;
+  onAddColumn: (col: CustomColumn) => void | Promise<void>;
 }
 
 export const CustomColumnModal: React.FC<CustomColumnModalProps> = ({
@@ -19,12 +19,14 @@ export const CustomColumnModal: React.FC<CustomColumnModalProps> = ({
 }) => {
   const [colName, setColName] = useState("");
   const [dataType, setDataType] = useState<"text" | "number" | "percentage" | "checkbox">("text");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!colName.trim()) return;
+    if (!colName.trim() || saving) return;
 
     const newCol: CustomColumn = {
       id: `col_${Date.now()}`,
@@ -35,9 +37,13 @@ export const CustomColumnModal: React.FC<CustomColumnModalProps> = ({
       createdAt: new Date().toISOString().split("T")[0],
     };
 
-    onAddColumn(newCol);
-    setColName("");
-    onClose();
+    setSaving(true); setSaveError(null);
+    try {
+      await onAddColumn(newCol);
+      setColName(""); onClose();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "تعذر حفظ العمود؛ أعد المحاولة.");
+    } finally { setSaving(false); }
   }
 
   return (
@@ -109,6 +115,7 @@ export const CustomColumnModal: React.FC<CustomColumnModalProps> = ({
 
           <button
             onClick={onClose}
+            disabled={saving}
             className="modal-close-btn"
             style={{
               background: "var(--modal-close-bg)",
@@ -134,6 +141,8 @@ export const CustomColumnModal: React.FC<CustomColumnModalProps> = ({
             </label>
             <input
               type="text"
+              maxLength={120}
+              disabled={saving}
               required
               value={colName}
               onChange={(e) => setColName(e.target.value)}
@@ -165,6 +174,7 @@ export const CustomColumnModal: React.FC<CustomColumnModalProps> = ({
               ].map((type) => (
                 <button
                   type="button"
+                  disabled={saving}
                   key={type.id}
                   onClick={() => setDataType(type.id)}
                   style={{
@@ -186,12 +196,13 @@ export const CustomColumnModal: React.FC<CustomColumnModalProps> = ({
             </div>
           </div>
 
+          {saveError && <div role="alert">تعذر حفظ العمود؛ أعد المحاولة. {saveError}</div>}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "8px", paddingTop: "14px", borderTop: "1px solid var(--border-color, #e2e8f0)" }}>
-            <button type="button" className="btn-secondary" onClick={onClose} style={{ padding: "8px 18px", fontSize: "12px" }}>
+            <button type="button" disabled={saving} className="btn-secondary" onClick={onClose} style={{ padding: "8px 18px", fontSize: "12px" }}>
               إلغاء
             </button>
-            <button type="submit" className="btn-primary" style={{ padding: "8px 22px", fontSize: "13px", fontWeight: 800, gap: "6px" }}>
-              <Plus size={16} /> حفظ وإضافة العمود
+            <button type="submit" disabled={saving} className="btn-primary" style={{ padding: "8px 22px", fontSize: "13px", fontWeight: 800, gap: "6px" }}>
+              <Plus size={16} /> {saving ? 'جارٍ حفظ العمود…' : 'حفظ وإضافة العمود'}
             </button>
           </div>
         </form>
