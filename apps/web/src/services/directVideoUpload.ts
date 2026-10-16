@@ -26,20 +26,112 @@ export async function videoFingerprint(file: File): Promise<string> {
   return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(v => v.toString(16).padStart(2, "0")).join("");
 }
 
-export function putVideoPart(url: string, part: Blob, progress: (bytes: number) => void, onXhr: (xhr: XMLHttpRequest) => void): Promise<void> {
+export function putVideoPart(url: string, part: Blob, progress: (bytes: number) => void, onXhr: (xhr: XMLHttpRequest) => void | boolean): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      xhr.upload.onprogress = null;
+      xhr.onload = xhr.onerror = xhr.ontimeout = xhr.onabort = null;
+      if (error) reject(error); else resolve();
+    };
     xhr.open("PUT", url);
     xhr.withCredentials = false; // Never leak app cookies/Bearer to the store.
     xhr.timeout = 180_000;
     xhr.upload.onprogress = e => progress(e.loaded);
-    xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`تعذر رفع الجزء (${xhr.status}). أعد المحاولة لاستئناف الرفع.`));
-    xhr.onerror = () => reject(new Error("انقطع الاتصال؛ الأجزاء المكتملة محفوظة. أعد المحاولة."));
-    xhr.ontimeout = () => reject(new Error("انتهت مهلة رفع الجزء؛ يمكنك الاستئناف."));
-    xhr.onabort = () => reject(new Error("تم إيقاف نقل الجزء."));
-    onXhr(xhr);
-    xhr.send(part);
+    xhr.onload = () => finish(xhr.status >= 200 && xhr.status < 300 ? undefined : new Error(`تعذر رفع الجزء (${xhr.status}). أعد المحاولة لاستئناف الرفع.`));
+    xhr.onerror = () => finish(new Error("انقطع الاتصال؛ الأجزاء المكتملة محفوظة. أعد المحاولة."));
+    xhr.ontimeout = () => finish(new Error("انتهت مهلة رفع الجزء؛ يمكنك الاستئناف."));
+    xhr.onabort = () => finish(new Error("تم إيقاف نقل الجزء."));
+    try {
+      if (onXhr(xhr) === false) {
+        finish(new Error("تم إيقاف نقل الجزء."));
+        xhr.abort();
+      }
+      if (!settled) xhr.send(part);
+    } catch (error) {
+      finish(error instanceof Error ? error : new Error("تعذر بدء رفع الجزء."));
+    }
   });
+}
+
+/** Three signed PUTs per file (at most six across the manager's two tasks).
+ * Completed server parts are skipped; only in-flight slices are retained.
+ * Drain cancelled siblings before allowing the caller to retry or complete. */
+export async function uploadVideoParts(session: VideoUploadSession, file: File, options: {
+  active: () => boolean;
+  signal: AbortSignal;
+  progress: (bytes: number) => void;
+  partComplete: () => void;
+}): Promise<void> {
+  const completed = new Set(session.uploaded_parts.map(part => part.number));
+  const totalParts = Math.ceil(session.size_bytes / session.part_bytes);
+  let completedBytes = session.uploaded_parts.reduce((sum, part) => sum + part.size_bytes, 0);
+  let reportedBytes = completedBytes;
+  let nextNumber = 1;
+  let failed = false;
+  let failure: unknown;
+  const pendingBytes = new Map<number, number>();
+  const transfers = new Set<XMLHttpRequest>();
+  const stopped = () => failed || options.signal.aborted || !options.active();
+  const stop = (error: unknown) => {
+    if (failed) return;
+    failed = true; failure = error;
+    for (const xhr of transfers) xhr.abort();
+  };
+  const cancel = () => stop(new Error("تم إيقاف نقل أجزاء الفيديو؛ يمكنك استئناف الأجزاء المحفوظة."));
+  const report = () => {
+    if (stopped()) { cancel(); return; }
+    const bytes = completedBytes + [...pendingBytes.values()].reduce((sum, loaded) => sum + loaded, 0);
+    reportedBytes = Math.max(reportedBytes, Math.min(session.size_bytes, bytes));
+    options.progress(reportedBytes);
+  };
+  const worker = async () => {
+    try {
+      while (!stopped()) {
+        while (completed.has(nextNumber)) nextNumber++;
+        if (nextNumber > totalParts) return;
+        const number = nextNumber++;
+        const signed = await apiRequest<{ url: string; size_bytes: number }>(`/video-uploads/${session.id}/parts/${number}`, { method: "POST" });
+        if (stopped()) { cancel(); return; }
+        const start = (number - 1) * session.part_bytes;
+        const size = Math.min(session.part_bytes, session.size_bytes - start);
+        if (signed.size_bytes !== size) throw new Error("تعذر التحقق من حجم جزء الفيديو. أعد المحاولة.");
+        const part = file.slice(start, start + size);
+        let transfer: XMLHttpRequest | undefined;
+        pendingBytes.set(number, 0);
+        try {
+          await putVideoPart(signed.url, part, bytes => {
+            pendingBytes.set(number, Math.max(pendingBytes.get(number) ?? 0, Math.min(size, bytes)));
+            report();
+          }, xhr => {
+            transfer = xhr;
+            transfers.add(xhr);
+            return !stopped();
+          });
+        } finally {
+          if (transfer) transfers.delete(transfer);
+          pendingBytes.delete(number);
+        }
+        if (stopped()) { cancel(); return; }
+        completedBytes += size;
+        report();
+        options.partComplete();
+      }
+      cancel();
+    } catch (error) { stop(error); }
+  };
+  options.signal.addEventListener("abort", cancel);
+  try {
+    if (stopped()) cancel();
+    report();
+    await Promise.all(Array.from({ length: Math.min(3, totalParts - completed.size) }, worker));
+    if (stopped()) { cancel(); throw failure; }
+  } finally {
+    options.signal.removeEventListener("abort", cancel);
+  }
 }
 
 export async function waitForVideo(id: string, active: () => boolean, update: (session: VideoUploadSession) => void): Promise<void> {

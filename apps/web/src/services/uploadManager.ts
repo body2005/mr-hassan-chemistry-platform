@@ -13,7 +13,7 @@ import { courseService } from "./lmsService";
 import { ApiClientError, apiRequest, uploadWithProgress, getApiAuthScope, getApiAuthGeneration,
   invalidateApiCache, isSessionKnownInvalid } from "./apiClient";
 import { validateLessonUpload } from "./uploadLimits";
-import { putVideoPart, videoFingerprint, waitForVideo, videoOverallProgress, videoUploadFailure, VIDEO_UPLOAD_LABEL, type VideoUploadSession } from "./directVideoUpload";
+import { uploadVideoParts, videoFingerprint, waitForVideo, videoOverallProgress, videoUploadFailure, VIDEO_UPLOAD_LABEL, type VideoUploadSession } from "./directVideoUpload";
 
 export type UploadType = "lesson_video" | "lesson_material";
 export type UploadStatus = "queued" | "uploading" | "processing" | "completed" | "error" | "cancelled";
@@ -70,6 +70,7 @@ export class UploadManager {
   private maxConcurrent = 2;
   private isProcessingQueue = false;
   private running = new Set<string>();
+  private videoTransfers = new Map<string, AbortController>();
 
   public async prepareVideo(lessonId: string, title: string, courseId: string): Promise<void> {
     const ownerScope = getApiAuthScope();
@@ -92,6 +93,7 @@ export class UploadManager {
   public pauseOtherAccounts(): void {
     for (const task of this.tasks) {
       if (this.owns(task) || !['uploading', 'queued', 'processing'].includes(task.status)) continue;
+      this.videoTransfers.get(task.id)?.abort();
       task.xhr?.abort();
       task.status = 'error';
       task.error = 'توقفت المتابعة لتغيير جلسة الدخول؛ الملف المحفوظ على السيرفر لا يُحذف.';
@@ -509,27 +511,22 @@ export class UploadManager {
     if (["creating", "uploading"].includes(session.status)) {
       if (!task.file) throw new Error('توقف رفع الفيديو قبل اكتماله. أعد المحاولة لاستكمال الرفع.');
       if (session.fingerprint !== await videoFingerprint(task.file)) throw new Error("الملف المختار مختلف عن الفيديو الأصلي.");
-      let loaded = session.uploaded_parts.reduce((sum, part) => sum + part.size_bytes, 0);
-      task.loadedBytes = loaded;
-      task.uploadPercent = loaded / session.size_bytes * 100;
-      this.updateVideoProgress(task);
-      this.notify();
-      const completed = new Set(session.uploaded_parts.map(part => part.number));
-      for (let number = 1; number <= Math.ceil(session.size_bytes / session.part_bytes); number++) {
-        if (!active()) return;
-        if (completed.has(number)) continue;
-        const signed = await apiRequest<{ url: string; size_bytes: number }>(`/video-uploads/${session.id}/parts/${number}`, { method: "POST" });
-        if (!active()) return;
-        const part = task.file.slice((number - 1) * session.part_bytes, (number - 1) * session.part_bytes + signed.size_bytes);
-        await putVideoPart(signed.url, part, bytes => {
-          task.loadedBytes = loaded + bytes;
-          task.uploadPercent = Math.min(100, task.loadedBytes / session.size_bytes * 100);
-          if (!active()) return;
-          this.updateVideoProgress(task);
-          this.notify();
-        }, xhr => { task.xhr = xhr; });
-        loaded += part.size;
-        this.persistTasks();
+      const controller = new AbortController();
+      this.videoTransfers.set(task.id, controller);
+      try {
+        await uploadVideoParts(session, task.file, {
+          active, signal: controller.signal,
+          progress: bytes => {
+            if (!active()) return;
+            task.loadedBytes = bytes;
+            task.uploadPercent = Math.min(100, bytes / session.size_bytes * 100);
+            this.updateVideoProgress(task);
+            this.notify();
+          },
+          partComplete: () => this.persistTasks(),
+        });
+      } finally {
+        if (this.videoTransfers.get(task.id) === controller) this.videoTransfers.delete(task.id);
       }
       if (!active()) return;
       session = await apiRequest<VideoUploadSession>(`/video-uploads/${session.id}/complete`, { method: "POST" });
@@ -647,6 +644,7 @@ export class UploadManager {
     const task = this.tasks.find((t) => t.id === taskId);
     if (!task || !this.owns(task)) return;
     task.status = "cancelled";
+    this.videoTransfers.get(task.id)?.abort();
     if (task.videoUploadId) {
       void apiRequest(`/video-uploads/${task.videoUploadId}`, { method: "DELETE" }).catch(() => {
         window.dispatchEvent(new CustomEvent("lms_toast_notification", { detail: {
@@ -751,6 +749,8 @@ export class UploadManager {
   }
 
   public clearTask(taskId: string) {
+    const task = this.tasks.find(t => t.id === taskId && this.owns(t));
+    if (task) this.videoTransfers.get(taskId)?.abort();
     this.tasks = this.tasks.filter((t) => t.id !== taskId || !this.owns(t));
     this.notify();
     this.persistTasks();

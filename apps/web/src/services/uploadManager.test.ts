@@ -1,5 +1,9 @@
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 vi.mock('./lmsService', () => ({ courseService: { uploadLessonVideo: vi.fn() } }));
+vi.mock('./directVideoUpload', async importOriginal => ({
+  ...await importOriginal<typeof import('./directVideoUpload')>(),
+  videoFingerprint: vi.fn(async () => 'a'.repeat(64)),
+}));
 const stored = (ownerScope?: string) => ({ id: 'task', title: 'QA video', type: 'lesson_video', fileName: 'qa.webm',
   fileSizeBytes: 100, formattedSize: '100 B', progress: 99, uploadPercent: 100, status: 'processing',
   lessonId: 'lesson', videoUploadId: 'job', createdAt: Date.now(), ownerScope });
@@ -123,4 +127,58 @@ it('preserves unified progress across processing and completes only when the wor
   finish(response('ready'));
   await vi.waitFor(() => expect(manager.getTasks()[0].status).toBe('completed'));
   expect(manager.getTasks()[0].progress).toBe(100);
+});
+
+it.each(['finish', 'cancel', 'switch account'] as const)('coordinates all parallel transfers when asked to %s', async action => {
+  const requests: Array<{ abort: ReturnType<typeof vi.fn>; succeed: () => void }> = [];
+  class ParallelXHR {
+    status = 0; timeout = 0; withCredentials = false;
+    upload = { onprogress: null };
+    onload: (() => void) | null = null;
+    onabort: (() => void) | null = null;
+    open() {}
+    send() {}
+    abort = vi.fn(() => this.onabort?.());
+    constructor() { requests.push({ abort: this.abort, succeed: () => { this.status = 200; this.onload?.(); } }); }
+  }
+  vi.stubGlobal('XMLHttpRequest', ParallelXHR);
+  const complete = vi.fn(); let ready!: (response: Response) => void;
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith('/auth/me')) return new Response('{}', { status: 200 });
+    if (url.endsWith('/video-upload-capabilities')) return new Response('{"direct_upload":true}', { status: 200 });
+    if (url.endsWith('/lessons/lesson/video-uploads')) return new Response(JSON.stringify({
+      id: 'job', status: 'uploading', size_bytes: 30, part_bytes: 10, fingerprint: 'a'.repeat(64), uploaded_parts: [],
+    }), { status: 201 });
+    if (/\/parts\/[123]$/.test(url)) return new Response(JSON.stringify({ url: 'https://store.test/part', size_bytes: 10 }), { status: 200 });
+    if (url.endsWith('/complete')) { complete(); return response('queued'); }
+    if (url.endsWith('/video-uploads/job') && init?.method === 'DELETE') return new Response(null, { status: 204 });
+    if (url.endsWith('/video-uploads/job')) return new Promise<Response>(resolve => { ready = resolve; });
+    throw new Error(`Unexpected request: ${url}`);
+  }));
+  const api = await import('./apiClient'); api.setApiAuthScope('teacher-a');
+  const { UploadManager } = await import('./uploadManager'); const manager = new UploadManager();
+  const onSuccess = vi.fn();
+  manager.enqueueVideoUpload({ lessonId: 'lesson', lessonTitle: 'Parallel video', file: new File([new Uint8Array(30)], 'lesson.mp4', { type: 'video/mp4' }), onSuccess });
+  await vi.waitFor(() => expect(requests).toHaveLength(3));
+  requests[1].succeed(); requests[2].succeed();
+  await Promise.resolve();
+  expect(complete).not.toHaveBeenCalled();
+  if (action === 'finish') {
+    requests[0].succeed();
+    await vi.waitFor(() => expect(ready).toBeTypeOf('function'));
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(manager.getTasks()[0].progress).toBeLessThan(100);
+    expect(onSuccess).not.toHaveBeenCalled();
+    ready(response('ready'));
+    await vi.waitFor(() => expect(manager.getTasks()[0].status).toBe('completed'));
+    expect(manager.getTasks()[0].progress).toBe(100);
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+  } else {
+    if (action === 'cancel') manager.cancelUpload(manager.getTasks()[0].id);
+    else { api.setApiAuthScope('teacher-b'); manager.pauseOtherAccounts(); }
+    await vi.waitFor(() => expect(requests[0].abort).toHaveBeenCalledTimes(1));
+    expect(complete).not.toHaveBeenCalled();
+    expect(onSuccess).not.toHaveBeenCalled();
+  }
 });
