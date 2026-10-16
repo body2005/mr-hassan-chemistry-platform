@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import hashlib
 import mimetypes
+import re
 import shutil
 import tempfile
 import time
@@ -29,6 +30,14 @@ from app.services.video_uploads import enqueue_source_cleanup, RETRYABLE_PROCESS
 from app.services.video_worker_status import WorkerHeartbeat
 
 logger = logging.getLogger("video-worker")
+
+
+def failure_diagnostic(error):
+    """Finite error identifiers only: never log SDK URLs, SQL or parameters."""
+    code = getattr(error, 'sqlstate', None)
+    if isinstance(error, ClientError):
+        code = error.response.get('Error', {}).get('Code')
+    return type(error).__name__, code if isinstance(code, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', code) else 'unknown'
 
 
 def process(identity, heartbeat=None):
@@ -143,10 +152,10 @@ def process(identity, heartbeat=None):
                         db.commit()
                         def save_output(name):
                             path = output_root / name
+                            size = path.stat().st_size
                             media = ('application/vnd.apple.mpegurl' if name.endswith('.m3u8') else
                                 'audio/mp4' if name.startswith('audio/') else 'video/mp4' if use_drm else 'video/mp2t')
                             storage.save_file(str(path), f"{prefix}/{name}", media)
-                            size = path.stat().st_size
                             if storage.get_size(f'{prefix}/{name}') != size:
                                 raise RuntimeError('VIDEO_REMOTE_OUTPUT_INCOMPLETE')
                             return size
@@ -167,16 +176,16 @@ def process(identity, heartbeat=None):
                                 name = next(remaining, None)
                                 if name is not None:
                                     pending.add(uploads.submit(save_output, name))
-                        original = f"video-originals/{identity}/{prefix.rsplit('/', 1)[-1]}/source.{job.filename.rsplit('.', 1)[-1].lower()}"
-                        # Record a generation-unique original before remote copy.
-                        # Previous-attempt cleanup must not delete a new attempt.
-                        job.outputs = [*job.outputs, original]
-                        db.commit()
-                        storage._get_client().copy_object(Bucket=storage.bucket_name, Key=original,
-                            CopySource={"Bucket": storage.bucket_name, "Key": job.object_key})
+                        # The completed source is already durable, private and
+                        # SHA-256 verified above. Retain it in place instead of
+                        # copying the full video again after encoding. A slow
+                        # CopyObject response used to discard all renditions and
+                        # restart the entire job near its completion milestone.
+                        original = job.object_key
+                        original_keys = {original, f's3://{storage.bucket_name}/{original}'}
+                        report(99, 'finalizing')
                         if storage.get_size(original) != job.size_bytes:
                             raise RuntimeError('VIDEO_REMOTE_ORIGINAL_INCOMPLETE')
-                        quarantine = job.object_key
                         lesson = db.scalar(select(Lesson).where(Lesson.id == job.lesson_id).with_for_update().execution_options(populate_existing=True))
                         if lesson is None:
                             raise InvalidVideo("VIDEO_LESSON_REMOVED")
@@ -187,10 +196,17 @@ def process(identity, heartbeat=None):
                         old_key = lesson.video_asset_key
                         for previous in db.scalars(select(VideoUpload).where(VideoUpload.lesson_id == lesson.id, VideoUpload.id != job.id, VideoUpload.status == "ready")):
                             for name in previous.outputs:
-                                enqueue_cleanup(db, name)
+                                # DRM/reprocessing can share this same private
+                                # source. Retiring the old outputs must keep it.
+                                if name not in original_keys:
+                                    enqueue_cleanup(db, name)
                             previous.status = "superseded"
-                        enqueue_cleanup(db, old_key)
+                        if old_key not in original_keys:
+                            enqueue_cleanup(db, old_key)
                         job.object_key = original
+                        # Add the source only in the ready transaction. Failed
+                        # output cleanup must never retire a retry's source.
+                        job.outputs = [*job.outputs, original]
                         job.sha256 = digest.hexdigest()
                         job.manifest_key = f"{prefix}/master.m3u8"
                         lesson.video_asset_key = f"s3://{storage.bucket_name}/{job.manifest_key}"
@@ -199,10 +215,12 @@ def process(identity, heartbeat=None):
                         job.duration_seconds = lesson.video_duration_seconds = int(info["duration"])
                         job.status, job.error_code = "ready", None
                         job.processing_percent, job.processing_stage = 100, "ready"
-                        enqueue_cleanup(db, quarantine)
                         db.commit()
                         logger.info("video_id=%s state=ready renditions=%s", job.id, len([n for n in files if n.endswith('index.m3u8')]))
                 except Exception as exc:
+                    error_type, provider_code = failure_diagnostic(exc)
+                    logger.warning('video_id=%s phase=%s error_type=%s provider_code=%s',
+                                   identity, job.__dict__.get('processing_stage', 'unknown'), error_type, provider_code)
                     db.rollback()
                     job = db.get(VideoUpload, identity)
                     # Infrastructure errors retry, invalid media fails explicitly.

@@ -46,3 +46,34 @@ encoding speedup is claimed without a comparable measurement.
 Validation: 39 focused frontend tests, 29 API rate-limiter tests, production
 TypeScript/Vite build and targeted ESLint passed. Render had no `RATE_LIMIT_*`
 environment overrides when checked, so the API deployment uses these defaults.
+
+## Separate finalization failure in a new upload
+
+The subsequent upload was a different job, started with Docker and connectivity
+available. Its first attempt failed near finalization and the next attempt
+repeated encoding while the stored high-water progress remained near 97%.
+The old logs retained only a generic infrastructure error; they do not prove
+the exception type of that original attempt.
+
+A controlled private copy of the same approximately 405 MB source reproduced
+a `ReadTimeoutError` in about 62 seconds. The probe destination was cleaned up.
+The worker previously performed this full CopyObject after uploading every HLS
+output; failure then discarded that generation and retried the whole pipeline.
+
+The worker now retains the already durable, SHA-256-verified private source in
+place and verifies its size before the atomic ready transaction. It no longer
+copies or deletes that source at finalization. Cleanup of superseded renditions
+preserves a shared original, including legacy s3:// pointers. Failed output
+cleanup never includes the retained retry source. Error logging records phase,
+exception class and a bounded provider code without SDK URLs or SQL parameters.
+Playback authorization, scheduling, rendition selection and readiness gates
+are unchanged. The bucket remains private; its lifecycle UI showed only the
+default rule aborting unfinished multipart uploads after seven days, with no
+completed-object expiration rule.
+
+Validation: 36 focused API tests passed, the finalization test file passed Ruff,
+and the replacement worker image built successfully. The idle worker was
+recreated with the fix and reports healthy, with four CPUs and 2560 MiB RAM.
+The user deleted the affected lesson and requested the worker fix only; no
+lesson was restored or republished. A new long-video end-to-end success has
+not been verified, and no measured speedup or constant processing rate is claimed.
