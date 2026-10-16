@@ -127,7 +127,7 @@ def _run(argv: list[str], timeout: int, capture=False, workspace: Path | None = 
 
 def probe(source: Path) -> dict:
     data = _run(["ffprobe", "-v", "error", "-protocol_whitelist", "file", "-format_whitelist", "mov,matroska,webm",
-        "-show_entries", "format=duration:stream=codec_type,width,height,r_frame_rate:stream_side_data=rotation", "-of", "json", str(source)], 30, True)
+        "-show_entries", "format=duration:stream=codec_type,codec_name,width,height,r_frame_rate:stream_side_data=rotation", "-of", "json", str(source)], 30, True)
     info = json.loads(data.stdout)
     videos = [s for s in info.get("streams", []) if s.get("codec_type") == "video"]
     try:
@@ -147,7 +147,7 @@ def probe(source: Path) -> dict:
     # FFmpeg autorotates before filtering (phone recordings can be portrait).
     if round(rotation) % 180 == 90:
         width, height = height, width
-    return {"duration": duration, "width": width, "height": height,
+    return {"duration": duration, "width": width, "height": height, "codec": video.get('codec_name'),
         "has_audio": any(s.get("codec_type") == "audio" for s in info.get("streams", []))}
 
 
@@ -179,7 +179,12 @@ def encode(source: Path, output: Path, progress=None) -> tuple[dict, list[str]]:
     args = ["ffmpeg", "-v", "error", "-nostdin", "-y", "-xerror", "-progress", str(progress_file), "-stats_period", "2",
         "-filter_complex_threads", str(auxiliary_threads), "-filter_threads", str(auxiliary_threads),
         "-err_detect", "explode", "-protocol_whitelist", "file", "-format_whitelist", "mov,matroska,webm",
-        "-threads", str(auxiliary_threads), "-i", str(source), "-filter_complex", ";".join(filters)]
+        "-threads", str(auxiliary_threads)]
+    if info.get('codec') == 'av1':
+        # The native AV1 decoder requires unavailable hardware on this worker.
+        # Explicit software decoding still shares one bounded input decode.
+        args += ['-c:v', 'libdav1d']
+    args += ["-i", str(source), "-filter_complex", ";".join(filters)]
     for index, (height, bitrate) in enumerate(ladder):
         directory = output / f"{height}p"
         args += ["-t", "14401", "-map", f"[v{index}]", "-map", "0:a:0?", "-sn", "-dn", "-map_metadata", "-1",

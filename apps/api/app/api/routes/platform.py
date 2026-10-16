@@ -807,6 +807,10 @@ def update_lesson_publication(lesson_id: uuid.UUID, payload: "LessonPublicationR
         platform_service.ensure_course_manager(user, course)
     except PermissionError as exc:
         raise HTTPException(404, "Lesson not found") from exc
+    from app.services.scheduling import require_upcoming_time
+    require_upcoming_time(payload.publish_at, existing=lesson.publish_at)
+    if 'available_until' in payload.model_fields_set:
+        require_upcoming_time(payload.available_until, existing=lesson.available_until)
     lesson.publication_status = payload.publication_status
     lesson.publish_at = platform_service._as_utc(payload.publish_at)
     if 'available_until' in payload.model_fields_set:
@@ -1048,6 +1052,9 @@ def _update_assessment_publication(db, user, model, assessment_id, payload, requ
     except PermissionError as exc:
         raise HTTPException(404, "Assessment not found") from exc
     end = assessment.ends_at if model is Quiz else assessment.due_at
+    from app.services.scheduling import require_upcoming_time
+    require_upcoming_time(payload.starts_at, existing=assessment.starts_at)
+    require_upcoming_time(payload.ends_at, existing=end)
     record_audit(db, request, action='assessment_publication_changed', resource_type=model.__tablename__,
         actor=user, resource_id=str(assessment.id),
         before={'status': assessment.status, 'starts_at': assessment.starts_at.isoformat() if assessment.starts_at else None,
@@ -1523,6 +1530,9 @@ def update_calendar(
             platform_service.ensure_course_manager(user, platform_service.course_for_user(db, user, payload.course_id))
         except (LookupError, PermissionError) as exc:
             raise HTTPException(404, "Course not found") from exc
+    from app.services.scheduling import require_upcoming_time
+    require_upcoming_time(payload.starts_at, existing=event.starts_at)
+    require_upcoming_time(payload.ends_at, existing=event.ends_at)
     event.course_id = payload.course_id
     event.title = payload.title.strip()
     event.description = payload.description

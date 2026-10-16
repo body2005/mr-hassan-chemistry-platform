@@ -27,7 +27,7 @@ import { fetchApiBlob, getApiAuthScope } from "../services/apiClient";
 import { useConfirm } from "../components/ConfirmWizard";
 import { useTranslation } from "../utils/i18nContext";
 import { useToast } from '../components/ToastProvider';
-import { cairoLocalValue, cairoToUtc } from '../utils/cairoTime';
+import { cairoLocalValue, cairoToUtc, requireUpcomingTime } from '../utils/cairoTime';
 import { useLessonNavigation } from '../services/useLessonNavigation';
 import { LessonScheduleFields } from '../components/LessonScheduleFields';
 import { materialFailureMessage } from '../services/playbackFailure';
@@ -416,8 +416,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     try { validateLessonTitle(lessonTitle, lang); }
     catch (error) { notify((error as Error).message, 'danger'); return; }
 
-    try { cairoToUtc(publishDateTime); }
-    catch { notify('حدد تاريخ ووقت بداية إتاحة الدرس بتوقيت مصر.', 'danger'); return; }
+    try { requireUpcomingTime(cairoToUtc(publishDateTime)); }
+    catch (error) { notify((error as Error).message, 'danger'); return; }
 
     const hasVideo = Boolean(selectedVideo);
     if (!hasVideo && attachedFiles.length === 0) {
@@ -451,6 +451,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     try {
       const publishAt = cairoToUtc(publishDateTime);
       const endsAt = availableUntil ? cairoToUtc(availableUntil) : null;
+      requireUpcomingTime(publishAt);
+      requireUpcomingTime(endsAt);
       if (publishAt && endsAt && endsAt <= publishAt) throw new Error('موعد انتهاء الإتاحة يجب أن يكون بعد موعد البداية.');
       if (selectedModuleId === 'new' && !newModuleTitle.trim()) throw new Error('اكتب اسم الوحدة الجديدة أو اختَر بدون وحدة.');
       // A reload can show the form before the parent's course fetch finishes.
@@ -625,6 +627,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
           try {
             const due = cairoToUtc(editPublishTime);
             const end = editAvailableUntil ? cairoToUtc(editAvailableUntil) : null;
+            requireUpcomingTime(due, editingPublication.publishAt);
+            requireUpcomingTime(end, editingPublication.availableUntil);
             if (due && end && end <= due) throw new Error('موعد انتهاء الإتاحة يجب أن يكون بعد موعد البداية.');
             await courseService.updateLessonPublication(editingPublication.id, 'published', due,
               { available_until: end, announce_to_students: editAnnounceStudents });
@@ -636,6 +640,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
         }}>
           <h2 id="lesson-publication-heading">نشر الدرس: {editingPublication.title}</h2>
           <LessonScheduleFields start={editPublishTime} end={editAvailableUntil} announce={editAnnounceStudents}
+            originalStart={editingPublication.publishAt ? cairoLocalValue(editingPublication.publishAt) : ''}
+            originalEnd={editingPublication.availableUntil ? cairoLocalValue(editingPublication.availableUntil) : ''}
             onStart={setEditPublishTime} onEnd={setEditAvailableUntil}
             onAnnounce={setEditAnnounceStudents} />
           <p>تغيير موعد البداية أو إلغاء موعد النهاية يحافظ على الفيديو والمرفقات.</p>
@@ -1320,6 +1326,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                 return (
                   <div
                     key={lesson.id}
+                    className="teacher-lesson-upload-card"
                     style={{
                       background: "var(--bg-surface, #ffffff)",
                       border: isDeleteMode ? "1.5px solid rgb(118, 40, 40)" : "1px solid var(--border-color, #e2e8f0)",
@@ -1327,6 +1334,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                       overflow: "hidden",
                       boxShadow: isDeleteMode ? "0 2px 10px rgba(118, 40, 40, 0.25)" : "0 1px 4px rgba(0,0,0,0.04)",
                       display: "flex",
+                      height: "500px",
+                      minWidth: 0,
                       flexDirection: "column",
                       justifyContent: "space-between",
                       transition: "transform 0.15s ease, box-shadow 0.15s ease",
@@ -1337,6 +1346,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                       onClick={() => { if (hasLessonVideo) setActiveLessonModal(lesson); }}
                       style={{
                         height: "150px",
+                        flexShrink: 0,
                         background: "#0f392b",
                         padding: "16px",
                         display: "flex",
@@ -1432,9 +1442,9 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                     </div>
 
                     {/* Lesson Card Body (Matches Image 1) */}
-                    <div style={{ padding: "18px", flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-                      <div>
-                        <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)", lineHeight: "1.4" }}>
+                    <div style={{ padding: "18px", flex: 1, minHeight: 0, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', scrollbarWidth: 'thin' }}>
+                        <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)", lineHeight: "1.4", overflowWrap: 'anywhere' }}>
                           {lesson.title}
                         </h3>
                         <p style={{ margin: "0 0 12px", fontSize: "12.5px", color: "var(--text-muted)", lineHeight: "1.5" }}>
@@ -1442,7 +1452,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                         </p>
                       </div>
 
-                      <div>
+                      <div style={{ flexShrink: 0 }}>
                         {/* Footer Action Bar (Matches Image 1) */}
                         <div
                           style={{

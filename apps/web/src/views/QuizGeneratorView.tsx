@@ -1,6 +1,7 @@
 import { QuestionPointsTable } from "../components/QuestionPointsTable";
 import { sharedAssessmentUrl } from '../utils/sharedAssessment';
 import { assessmentTimestamp } from "../services/assessmentSchedule";
+import { cairoLocalValue } from '../utils/cairoTime';
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   AlertCircle,
@@ -2239,6 +2240,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                 <input
                   type="date"
                   aria-label="تاريخ بداية الإتاحة"
+                  min={cairoLocalValue(new Date().toISOString()).slice(0, 10)}
                   required
                   value={publishStartDate}
                   onChange={(e) => setPublishStartDate(e.target.value)}
@@ -2278,6 +2280,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                 <input
                   type="date"
                   aria-label="تاريخ انتهاء الإتاحة"
+                  min={cairoLocalValue(new Date().toISOString()).slice(0, 10)}
                   required
                   value={closeDeadlineDate}
                   onChange={(e) => setCloseDeadlineDate(e.target.value)}

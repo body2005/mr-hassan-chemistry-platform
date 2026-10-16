@@ -1,9 +1,11 @@
 from pathlib import Path
+import pytest
 from app.services import video_processing as encoder
 
 
-def test_encoder_uses_one_shared_graph_and_reports_actual_progress(tmp_path, monkeypatch):
-    monkeypatch.setattr(encoder, "probe", lambda source: {"duration": 1800, "width": 1920, "height": 1080, "has_audio": True})
+@pytest.mark.parametrize('codec', ['h264', 'av1'])
+def test_encoder_uses_one_shared_graph_and_reports_actual_progress(tmp_path, monkeypatch, codec):
+    monkeypatch.setattr(encoder, "probe", lambda source: {"duration": 1800, "width": 1920, "height": 1080, "has_audio": True, "codec": codec})
     monkeypatch.setattr(encoder, "cpu_budget", lambda: 2)
     events = []
     calls = []
@@ -24,7 +26,8 @@ def test_encoder_uses_one_shared_graph_and_reports_actual_progress(tmp_path, mon
     argv, timeout = calls[0]
     assert argv.count("-i") == 1
     assert "split=4" in argv[argv.index("-filter_complex") + 1]
-    assert argv.count("-c:v") == 4
+    assert argv.count("-c:v") == (5 if codec == 'av1' else 4)
+    assert ('libdav1d' in argv[:argv.index('-i')]) == (codec == 'av1')
     assert argv.count("0:a:0?") == 4
     assert timeout == 10800
     assert all(argv[i + 1] == "1" for i, arg in enumerate(argv) if arg == "-threads:v")

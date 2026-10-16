@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { apiRequest, getApiAuthGeneration } from '../services/apiClient';
 import { courseService } from '../services/lmsService';
 import { assessmentWindow } from '../services/assessmentSchedule';
-import { cairoLocalValue } from '../utils/cairoTime';
+import { cairoLocalValue, requireUpcomingTime } from '../utils/cairoTime';
 import { useToast } from './ToastProvider';
 
 type Assessment = { id: string; title: string; status: string; starts_at: string | null; ends_at?: string | null; due_at?: string | null; kind: 'quiz' | 'assignment' };
@@ -54,7 +54,9 @@ export function AssessmentScheduleManager() {
     if (!item || busy) return;
     setError('');
     try {
-      assessmentWindow(cancelSchedule ? null : start, cancelSchedule ? null : end);
+      const schedule = assessmentWindow(cancelSchedule ? null : start, cancelSchedule ? null : end);
+      requireUpcomingTime(schedule.startsAt, item.starts_at);
+      requireUpcomingTime(schedule.endsAt, item.kind === 'quiz' ? item.ends_at : item.due_at);
       setBusy(true);
       await courseService.updateAssessmentPublication(item.kind, item.id, cancelSchedule ? null : start, cancelSchedule ? null : end, status);
       toast({ message: 'تم حفظ إعدادات الإتاحة.', tone: 'success' });

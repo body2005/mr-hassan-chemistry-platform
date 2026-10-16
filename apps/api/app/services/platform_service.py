@@ -20,6 +20,7 @@ from app.core.events import event_broker
 from app.services.content_access import require_assessment_access
 from app.services.assessment_events import assessment_changed
 from app.services.storage_cleanup import enqueue_cleanup
+from app.services.scheduling import require_upcoming_time
 from app.models.course import Course, CourseModule, Enrollment, EnrollmentStatus, Lesson
 from app.models.platform import (
     Assignment,
@@ -124,6 +125,8 @@ def add_lesson(db: Session, user: User, module_id: uuid.UUID | None, payload: Le
     ensure_course_manager(user, course)
     from app.models.course import Lesson
 
+    require_upcoming_time(payload.publish_at)
+    require_upcoming_time(payload.available_until)
     lesson = Lesson(
         module_id=module.id if module else None,
         course_id=course.id,
@@ -321,6 +324,8 @@ def publish_quiz_atomic(db: Session, user: User, payload: QuizPublishRequest) ->
         if existing.publication_hash != digest:
             raise ValueError("Publication key already used for a different draft")
         return existing
+    require_upcoming_time(payload.starts_at)
+    require_upcoming_time(payload.ends_at)
     quiz = Quiz(institution_id=course.institution_id, course_id=course.id, creator_id=user.id,
                 title=payload.title.strip(), duration_seconds=payload.duration_seconds,
                 starts_at=_as_utc(payload.starts_at), ends_at=_as_utc(payload.ends_at), module_id=module_id, lesson_id=lesson_id,
@@ -354,6 +359,8 @@ def publish_quiz_atomic(db: Session, user: User, payload: QuizPublishRequest) ->
 def create_quiz(db: Session, user: User, payload: QuizCreateRequest) -> Quiz:
     course = course_for_user(db, user, payload.course_id)
     ensure_course_manager(user, course)
+    require_upcoming_time(payload.starts_at)
+    require_upcoming_time(payload.ends_at)
     module_id, lesson_id = _validate_assessment_scope(db, course, payload.module_id, payload.lesson_id)
     quiz = Quiz(
         institution_id=course.institution_id,
@@ -411,6 +418,9 @@ def publish_quiz(db: Session, user: User, quiz_id: uuid.UUID) -> Quiz:
     if course is None:
         raise LookupError("Course not found")
     ensure_course_manager(user, course)
+    if quiz.status != QuizStatus.PUBLISHED:
+        require_upcoming_time(quiz.starts_at)
+        require_upcoming_time(quiz.ends_at)
     if len(quiz.title.strip()) < 2:
         raise ValueError('Quiz title is invalid')
     _validate_assessment_scope(db, course, quiz.module_id, quiz.lesson_id)
@@ -618,6 +628,8 @@ def _validate_assignment_content(assignment) -> None:
 def create_assignment(db: Session, user: User, payload: AssignmentCreateRequest) -> Assignment:
     course = course_for_user(db, user, payload.course_id)
     ensure_course_manager(user, course)
+    require_upcoming_time(payload.starts_at)
+    require_upcoming_time(payload.due_at)
     _validate_assignment_content(payload)
     module_id, lesson_id = _validate_assessment_scope(db, course, payload.module_id, payload.lesson_id)
     assignment = Assignment(
@@ -652,6 +664,9 @@ def publish_assignment(db: Session, user: User, assignment_id: uuid.UUID) -> Ass
         raise LookupError("Course not found")
     ensure_course_manager(user, course)
     _validate_assignment_content(assignment)
+    if assignment.status != AssignmentStatus.PUBLISHED:
+        require_upcoming_time(assignment.starts_at)
+        require_upcoming_time(assignment.due_at)
     module_id, lesson_id = _validate_assessment_scope(db, course, assignment.module_id, assignment.lesson_id)
     for value in assignment.lesson_ids:
         _validate_assessment_scope(db, course, None, value)
@@ -1008,6 +1023,7 @@ def create_notification(
         )
         if existing:
             return existing
+    require_upcoming_time(payload.scheduled_for)
     notification = Notification(
         institution_id=user.institution_id,
         recipient_id=recipient.id,
@@ -1064,6 +1080,7 @@ def broadcast_notification(
         if existing:
             notifications.append(existing)
             continue
+        require_upcoming_time(payload.scheduled_for)
         notification = Notification(
             institution_id=user.institution_id,
             recipient_id=recipient.id,
@@ -1115,6 +1132,8 @@ def create_calendar_event(
             if existing.request_hash != digest:
                 raise ValueError("Calendar key already used for another event")
             return existing
+    require_upcoming_time(payload.starts_at)
+    require_upcoming_time(payload.ends_at)
     event = CalendarEvent(
         institution_id=user.institution_id,
         creator_id=user.id,

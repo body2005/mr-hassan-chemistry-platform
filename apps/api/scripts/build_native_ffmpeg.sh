@@ -19,12 +19,13 @@ tar -xf ffmpeg.tar.xz
 cd ffmpeg-9.0.2
 ./configure --prefix=/usr --disable-autodetect --disable-network --disable-devices --enable-indev=lavfi \
   --disable-doc --disable-debug --disable-ffplay --disable-shared --enable-static \
-  --disable-decoder=rasc --enable-gpl --enable-libx264
+  --disable-decoder=rasc --enable-gpl --enable-libx264 --enable-libdav1d
 make -j2
 # CVE-2026-58049 has no verified fix-content proof for RASC here. Remove that
 # unused legacy decoder, not the scanner record. Normal MP4/MOV/WebM codecs
 # stay enabled; a RASC-encoded file must fail validation, never be decoded.
 ./ffmpeg -v quiet -decoders > /build/runtime-decoders.txt
+grep -Eq '(^|[[:space:]])libdav1d([[:space:]]|$)' /build/runtime-decoders.txt
 if grep -E '(^|[[:space:]])rasc([[:space:]]|$)' /build/runtime-decoders.txt; then
   echo 'RASC decoder unexpectedly enabled' >&2
   exit 1
@@ -48,9 +49,9 @@ printf '%s\n' \
   'Local package, not an official Debian binary.' \
   > "$package/usr/share/doc/ffmpeg/chemistry-source.txt"
 printf '%s\n' 'Package: ffmpeg' 'Source: ffmpeg' \
-  'Version: 7:9.0.2-0chemistry1' "Architecture: $(dpkg --print-architecture)" \
+  'Version: 7:9.0.2-0chemistry2' "Architecture: $(dpkg --print-architecture)" \
   'Section: video' 'Priority: optional' 'Maintainer: Chemistry Platform maintainers' \
-  'Depends: libc6 (>= 2.41), libx264-164' \
+  'Depends: libc6 (>= 2.41), libx264-164, libdav1d7' \
   'Description: Restricted stable FFmpeg build for Chemistry Platform encoder' \
   > "$package/DEBIAN/control"
 dpkg-deb --root-owner-group --build "$package" /build/ffmpeg.deb

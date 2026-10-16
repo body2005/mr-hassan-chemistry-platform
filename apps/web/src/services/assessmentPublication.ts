@@ -1,4 +1,5 @@
 import { assessmentWindow } from "./assessmentSchedule";
+import { requireUpcomingTime } from '../utils/cairoTime';
 import type { GeneratedQuestion } from '../types/quiz';
 import { canonicalQuestionType } from './questionType';
 import { hasContentReview } from './quizContentReview';
@@ -44,7 +45,9 @@ export function validateAssessmentPublication(input: PublicationInput, stage?: E
   if (!input.startDate || !input.startTime.trim()) return failure('يرجى تحديد موعد النشر وبدء الإتاحة (يلزم ادخاله).', 'publish');
   if (!input.endDate || !input.endTime.trim()) return failure(`يرجى تحديد موعد انتهاء الإتاحة وإغلاق ${noun} (يلزم ادخاله).`, 'publish');
   try {
-    assessmentWindow(`${input.startDate}T${input.startTime}:00`, `${input.endDate}T${input.endTime}:00`);
+    const window = assessmentWindow(`${input.startDate}T${input.startTime}:00`, `${input.endDate}T${input.endTime}:00`);
+    requireUpcomingTime(window.startsAt);
+    requireUpcomingTime(window.endsAt);
   } catch (error) {
     return failure(error instanceof Error ? error.message : 'راجع مواعيد الإتاحة.', 'publish');
   }

@@ -101,3 +101,33 @@ Deleted or inaccessible jobs still correctly return 404 on the server.
 Validation: 26 focused frontend tests, production web build, targeted ESLint and
 the PostgreSQL migration probe passed. The migration probe used a private QA
 schema and rolled back its entire transaction, including the schema and data.
+
+## AV1 compatibility and schedule/card consistency
+
+A separate 3,115,020-byte, 59.07-second portrait MP4 failed immediately at
+`encoding:shared` with `VIDEO_DECODE_FAILED`. Reproducing the supplied local file
+under the same limits showed AV1 input; the restricted FFmpeg build had no
+software AV1 decoder and its native decoder required unavailable acceleration.
+The worker now includes Debian's libdav1d development/runtime packages, enables
+that decoder explicitly in the signed FFmpeg build, and selects it for AV1 input
+after probing the codec. Decoder threads still follow the existing CPU budget;
+there is one input decode and the existing shared four-output graph.
+
+The complete supplied file encoded successfully in a network-disabled candidate
+container with the production limits (4 CPUs, 2560 MiB, 128 PIDs). It produced
+360p/480p/720p/1080p HLS; every rendition decoded completely and contained audio.
+This verifies local processing of this file, not a new production upload or
+long-video speed benchmark. Deleted lessons were not recreated.
+
+Teacher lesson cards now have a consistent 500px height across upload states;
+the responsive grid keeps equal widths per row. Long titles/descriptions remain
+available through a scrolling text area, while the progress/actions stay fixed.
+Newly selected past scheduling minutes are rejected in lesson, assessment,
+calendar and notification writes. Existing unchanged historical timestamps and
+idempotent retry responses remain valid. The current minute is allowed to match
+minute-resolution Cairo form inputs. Browser minimum dates/times and submission
+validation complement authoritative server checks; processing completion never
+retroactively rejects a valid lesson schedule that elapsed while encoding.
+
+Validation: 63 focused API tests, 31 frontend tests, targeted ESLint, frontend
+production build, worker image build and the real-file AV1 check passed.
