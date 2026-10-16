@@ -181,7 +181,7 @@ def _get_category_defaults(category: str) -> tuple[int, int]:
     if "pdf" in cat_lower or "render" in cat_lower:
         return settings.rate_limit_pdf_render, window
     if "heavy" in cat_lower or "analytics" in cat_lower or "submission" in cat_lower:
-        return getattr(settings, "rate_limit_heavy_query", 60), window
+        return getattr(settings, "rate_limit_heavy_query", 20), window
     return settings.rate_limit_api_default, window
 
 

@@ -122,7 +122,7 @@ it('preserves unified progress across processing and completes only when the wor
   const { UploadManager } = await import('./uploadManager'); const manager = new UploadManager();
   await manager.reconcileVideos();
   await vi.waitFor(() => expect(statusReads).toBe(3));
-  expect(manager.getTasks()[0]).toMatchObject({ status: 'processing', progress: 98, uploadPercent: 100 });
+  expect(manager.getTasks()[0]).toMatchObject({ status: 'processing', progress: 99, uploadPercent: 100 });
   expect(manager.getTasks()[0].progress).toBeLessThan(100);
   finish(response('ready'));
   await vi.waitFor(() => expect(manager.getTasks()[0].status).toBe('completed'));

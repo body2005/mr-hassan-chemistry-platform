@@ -96,14 +96,14 @@ class Settings(BaseSettings):
     allow_local_ingestion: bool = False
     payment_receipt_max_mb: int = Field(default=10, ge=1, le=25)
     trusted_proxies: str = "127.0.0.1,::1"
-    rate_limit_login: int = Field(default=15, ge=1, le=1000)
-    rate_limit_read: int = Field(default=600, ge=1, le=10000)
+    rate_limit_login: int = Field(default=10, ge=1, le=1000)
+    rate_limit_read: int = Field(default=300, ge=1, le=10000)
     rate_limit_video_stream: int = Field(default=600, ge=1, le=10000)
-    rate_limit_upload: int = Field(default=60, ge=1, le=1000)
-    rate_limit_quiz_extraction: int = Field(default=30, ge=1, le=1000)
-    rate_limit_pdf_render: int = Field(default=240, ge=1, le=10000)
-    rate_limit_heavy_query: int = Field(default=60, ge=1, le=1000)
-    rate_limit_api_default: int = Field(default=600, ge=1, le=10000)
+    rate_limit_upload: int = Field(default=20, ge=1, le=1000)
+    rate_limit_quiz_extraction: int = Field(default=10, ge=1, le=1000)
+    rate_limit_pdf_render: int = Field(default=30, ge=1, le=10000)
+    rate_limit_heavy_query: int = Field(default=20, ge=1, le=1000)
+    rate_limit_api_default: int = Field(default=300, ge=1, le=10000)
     rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
     # Max simultaneous video playback sessions per (account, lesson) pair.
     video_max_concurrent_sessions: int = Field(default=2, ge=1, le=10)

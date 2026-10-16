@@ -33,7 +33,7 @@ export function lessonVideoState(lesson: VideoLesson, tasks: UploadTask[], owner
   }
   if (local?.status === 'error') return { phase: 'error', label: local.error || 'تعذر إكمال رفع الفيديو؛ أعد المحاولة' };
   if (server && ['creating', 'uploading', 'completing'].includes(server.status)) {
-    return { phase: 'uploading', label: VIDEO_UPLOAD_LABEL, percent: server.status === 'completing' ? 40 : undefined };
+    return { phase: 'uploading', label: VIDEO_UPLOAD_LABEL, percent: server.status === 'completing' ? videoOverallProgress(100) : undefined };
   }
   if (server && ['queued', 'processing'].includes(server.status)) {
     return { phase: 'processing', label: VIDEO_UPLOAD_LABEL, percent: videoOverallProgress(100, server.processing_percent ?? 0) };

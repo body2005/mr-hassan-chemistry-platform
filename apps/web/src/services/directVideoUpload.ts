@@ -150,14 +150,17 @@ export async function waitForVideo(id: string, active: () => boolean, update: (s
 
 export const VIDEO_UPLOAD_LABEL = 'جاري رفع الفيديو…';
 
-/** Weighted completed work, NOT elapsed time or an ETA. Transfer owns 0–40;
- * server work (source bytes, encoded timeline, durable output bytes) owns 40–99.
+/** Weighted completed work, NOT elapsed time or an ETA. Transfer owns 0–10;
+ * worker source transfer 10–15, encoded timeline 15–75, durable outputs 75–99.
+ * Leave meaningful room for the slower server stages, without a timer or ETA.
  * Only the authoritative ready acknowledgement is allowed to set 100. */
 export function videoOverallProgress(uploadPercent: number, processingPercent?: number | null): number {
   const bounded = (value: number) => Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
-  return Math.min(99, Math.floor(processingPercent == null
-    ? bounded(uploadPercent) * 0.4
-    : 40 + bounded(processingPercent) * 0.59));
+  if (processingPercent == null) return Math.floor(bounded(uploadPercent) * 0.1);
+  const processing = bounded(processingPercent);
+  return Math.min(99, Math.floor(processing <= 5 ? 10 + processing
+    : processing <= 85 ? 15 + (processing - 5) * 0.75
+    : 75 + (processing - 85) * 24 / 14));
 }
 
 export function videoUploadFailure(code?: string | null): string {

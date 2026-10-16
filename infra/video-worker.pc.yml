@@ -19,7 +19,7 @@ services:
       DB_POOL_SIZE: "2"
       DB_MAX_OVERFLOW: "1"
       # One shared FFmpeg graph; threads also respect cgroup quota/affinity.
-      VIDEO_ENCODING_CPU_BUDGET: "2"
+      VIDEO_ENCODING_CPU_BUDGET: "4"
     command: ["python", "-m", "scripts.video_worker"]
     restart: unless-stopped
     init: true
@@ -28,7 +28,7 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    cpus: 2
+    cpus: 4
     mem_limit: 2560m
     pids_limit: 128
     healthcheck:

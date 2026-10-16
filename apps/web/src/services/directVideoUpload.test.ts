@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { uploadVideoParts, putVideoPart, type VideoUploadSession } from './directVideoUpload';
+import { uploadVideoParts, putVideoPart, videoOverallProgress, type VideoUploadSession } from './directVideoUpload';
 import { apiRequest } from './apiClient';
 
 vi.mock('./apiClient', () => ({ apiRequest: vi.fn() }));
@@ -131,4 +131,23 @@ it('does no work when already cancelled, or when all parts are stored', async ()
 it('does not send an XHR cancelled before its send call', async () => {
   await expect(putVideoPart('https://store.test/part', new Blob(['a']), vi.fn(), () => false)).rejects.toThrow('تم إيقاف');
   expect(PartRequest.instances[0].send).not.toHaveBeenCalled();
+});
+
+it('leaves room for real encoding and storage work instead of spending 40 percent on the first transfer', () => {
+  expect(videoOverallProgress(50)).toBe(5);
+  expect(videoOverallProgress(100)).toBe(10);
+  expect(videoOverallProgress(100, 0)).toBe(10);
+  expect(videoOverallProgress(100, 5)).toBe(15);
+  expect(videoOverallProgress(100, 45)).toBe(45);
+  expect(videoOverallProgress(100, 85)).toBe(75);
+  expect(videoOverallProgress(100, 92)).toBe(87);
+});
+
+it('never reports 100 before readiness, stays monotonic across stage boundaries, and ignores invalid measurements', () => {
+  const values = [videoOverallProgress(0), videoOverallProgress(50), videoOverallProgress(100),
+    ...Array.from({ length: 101 }, (_, processing) => videoOverallProgress(100, processing))];
+  expect(values).toEqual([...values].sort((a, b) => a - b));
+  expect(Math.max(...values)).toBe(99);
+  expect(videoOverallProgress(Number.NaN)).toBe(0);
+  expect(videoOverallProgress(100, Number.NaN)).toBe(10);
 });
