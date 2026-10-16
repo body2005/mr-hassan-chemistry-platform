@@ -121,7 +121,7 @@ class Lesson(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     release_announced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     release_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     required_material_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
-    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    title: Mapped[str] = mapped_column(String(1000), nullable=False)
     kind: Mapped[LessonKind] = mapped_column(
         Enum(LessonKind, name="lesson_kind", native_enum=False, values_callable=enum_values),
         nullable=False,

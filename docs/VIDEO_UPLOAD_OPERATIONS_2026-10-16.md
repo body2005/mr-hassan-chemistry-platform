@@ -77,3 +77,27 @@ recreated with the fix and reports healthy, with four CPUs and 2560 MiB RAM.
 The user deleted the affected lesson and requested the worker fix only; no
 lesson was restored or republished. A new long-video end-to-end success has
 not been verified, and no measured speedup or constant processing rate is claimed.
+
+## Long names and upload history controls
+
+The teacher's rejected lesson title contained 220 Unicode characters; the API
+and database previously allowed only 200. Lesson titles and original video
+filenames now allow 1000 characters without silently truncating the text.
+The additive migration also widens titles in scheduled events and notifications
+that carry lesson names. A downgrade refuses to shorten columns containing long
+values. Client validation uses Unicode character counts and keeps the entered
+text when it reports the limit.
+
+The preview's cancel action no longer shrinks or wraps vertically beside a long
+filename. Upload history reserves space for retry and dismiss controls, wraps
+the full title, and offers clearing completed/failed history even if no upload
+completed. Clearing history does not delete lessons or stored videos.
+
+An owner-scoped 404 marks a saved upload unavailable and stops automatic polling
+of that ID, including after reload. Explicit retry remains available; temporary
+errors and other accounts' tasks keep the existing ownership/resume behavior.
+Deleted or inaccessible jobs still correctly return 404 on the server.
+
+Validation: 26 focused frontend tests, production web build, targeted ESLint and
+the PostgreSQL migration probe passed. The migration probe used a private QA
+schema and rolled back its entire transaction, including the schema and data.

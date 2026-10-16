@@ -38,7 +38,7 @@ def bounded_quality_manifest(manifest: str) -> str:
 
 
 class CreateUpload(BaseModel):
-    filename: str = Field(min_length=1, max_length=200)
+    filename: str = Field(min_length=1, max_length=1000)
     size_bytes: int = Field(gt=0)
     content_type: str = Field(max_length=80)
     fingerprint: str = Field(min_length=64, max_length=64)

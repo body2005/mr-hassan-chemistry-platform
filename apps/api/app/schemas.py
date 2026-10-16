@@ -250,7 +250,7 @@ class LessonCreateRequest(BaseModel):
         if self.publish_at and self.available_until and self.available_until <= self.publish_at:
             raise ValueError('Lesson closing time must be after publication time')
         return self
-    title: str = Field(min_length=2, max_length=200)
+    title: str = Field(min_length=2, max_length=1000)
     kind: LessonKind
     position: int = Field(ge=1, le=10_000)
     content: str | None = Field(default=None, max_length=100_000)

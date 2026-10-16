@@ -132,7 +132,7 @@ class Notification(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )
     kind: Mapped[str] = mapped_column(String(40), nullable=False)
-    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    title: Mapped[str] = mapped_column(String(1200), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     action_url: Mapped[str | None] = mapped_column(String(512))
     dedup_key: Mapped[str | None] = mapped_column(String(160))
@@ -160,7 +160,7 @@ class CalendarEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     course_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("courses.id", ondelete="CASCADE"), index=True
     )
-    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    title: Mapped[str] = mapped_column(String(1000), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     event_type: Mapped[str] = mapped_column(String(40), nullable=False)
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)

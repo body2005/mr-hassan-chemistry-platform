@@ -346,7 +346,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                   }}
                 >
                   <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "8px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
+                    <div style={{ display: "flex", flex: 1, alignItems: "center", gap: "8px", minWidth: 0 }}>
                       <div
                         style={{
                           width: "28px",
@@ -369,9 +369,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                             fontSize: "12px",
                             fontWeight: 700,
                             color: "var(--text-main, #0f172a)",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
+                            overflowWrap: "anywhere",
                           }}
                           title={task.title}
                         >
@@ -384,7 +382,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                     </div>
 
                     {/* Actions */}
-                    <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                    <div style={{ display: "flex", flexShrink: 0, alignItems: "center", gap: "4px" }}>
                       {(isUploading || isProcessing || isQueued) && (
                         <button
                           type="button"
@@ -401,6 +399,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                             justifyContent: "center",
                           }}
                           title="إلغاء الرفع"
+                          aria-label="إلغاء الرفع"
                         >
                           <X size={15} />
                         </button>
@@ -421,6 +420,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                             minHeight: 44,
                           }}
                           title="إعادة المحاولة"
+                          aria-label="إعادة المحاولة"
                         >
                           <RefreshCw size={14} />
                         </button>
@@ -432,11 +432,17 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                           style={{
                             background: "transparent",
                             border: "none",
-                            color: "rgb(118, 40, 40)",
+                            color: "#f87171",
                             cursor: "pointer",
                             padding: "4px",
+                            minWidth: 44,
+                            minHeight: 44,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
                           }}
                           title="حذف من السجل"
+                          aria-label="حذف من السجل"
                         >
                           <X size={13} />
                         </button>
@@ -537,7 +543,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
           </div>
 
           {/* Footer */}
-          {completedTasks.length > 0 && (
+          {completedTasks.length + failedTasks.length > 0 && (
             <div
               style={{
                 padding: "8px 14px",
@@ -549,7 +555,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
               }}
             >
               <span style={{ fontSize: "11px", color: "var(--text-muted, #64748b)" }}>
-                {completedTasks.length} ملف مكتمل
+                {completedTasks.length} مكتمل • {failedTasks.length} تعذر رفعه
               </span>
               <button
                 type="button"
@@ -563,7 +569,7 @@ export const GlobalUploadWidget: React.FC<GlobalUploadWidgetProps> = ({ currentU
                   cursor: "pointer",
                 }}
               >
-                مسح المكتمل
+                مسح السجل
               </button>
             </div>
           )}

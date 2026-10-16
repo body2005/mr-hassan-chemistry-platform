@@ -32,6 +32,7 @@ import { useLessonNavigation } from '../services/useLessonNavigation';
 import { LessonScheduleFields } from '../components/LessonScheduleFields';
 import { materialFailureMessage } from '../services/playbackFailure';
 import { newestLessonsFirst } from '../services/lessonOrder';
+import { MAX_LESSON_TITLE_LENGTH, validateLessonTitle } from '../services/uploadLimits';
 
 /** Tracks the app-wide light/dark theme by watching the `data-theme`
  * attribute on <html>, so inline styles can pick theme-aware colors. */
@@ -412,10 +413,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   // Handle Form Submission: Create and Upload Lesson
   async function handleUploadLesson(e: React.FormEvent) {
     e.preventDefault();
-    if (!lessonTitle.trim()) {
-      notify("يرجى كتابة عنوان الدرس أولاً.", 'danger');
-      return;
-    }
+    try { validateLessonTitle(lessonTitle, lang); }
+    catch (error) { notify((error as Error).message, 'danger'); return; }
 
     try { cairoToUtc(publishDateTime); }
     catch { notify('حدد تاريخ ووقت بداية إتاحة الدرس بتوقيت مصر.', 'danger'); return; }
@@ -869,8 +868,10 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
             </div>
 
             <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>عنوان الدرس:</label>
+              <label htmlFor="lesson-title" style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>عنوان الدرس:</label>
               <input
+                id="lesson-title"
+                aria-describedby="lesson-title-limit"
                 type="text"
                 required
                 value={lessonTitle}
@@ -878,6 +879,9 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                 placeholder="مثال: الدرس 5: كمية التحرك وقانون نيوتن الثاني"
                 style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong, #cbd5e1)", borderRadius: "8px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)", boxSizing: "border-box" }}
               />
+              <small id="lesson-title-limit" style={{ color: [...lessonTitle.trim()].length > MAX_LESSON_TITLE_LENGTH ? '#f87171' : 'var(--text-muted)' }}>
+                {lang === 'ar' ? 'حروف العنوان' : 'Title characters'}: {[...lessonTitle.trim()].length} / {MAX_LESSON_TITLE_LENGTH}
+              </small>
             </div>
 
             <div>
@@ -925,10 +929,10 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
 
                   {videoPreviewUrl ? (
                     <div style={{ border: "1.5px solid #059669", borderRadius: "12px", overflow: "hidden", background: "#000" }}>
-                      <div style={{ padding: "8px 12px", background: "#0f392b", color: "#ffffff", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11.5px" }}>
-                        <span style={{ fontWeight: 700, display: "flex", alignItems: "center", gap: "6px" }}>
-                          <Film size={14} style={{ color: "#34d399" }} />
-                          معاينة وتشغيل الفيديو قبل الرفع — {selectedVideo?.name}
+                      <div style={{ padding: "8px 12px", background: "#0f392b", color: "#ffffff", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", fontSize: "11.5px" }}>
+                        <span style={{ fontWeight: 700, display: "flex", flex: 1, minWidth: 0, alignItems: "center", gap: "6px" }}>
+                          <Film size={14} style={{ color: "#34d399", flexShrink: 0 }} />
+                          <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>معاينة وتشغيل الفيديو قبل الرفع — {selectedVideo?.name}</span>
                         </span>
                         <button
                           type="button"
@@ -937,7 +941,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                             setSelectedVideoFile(null);
                             setVideoPreviewUrl(null);
                           }}
-                          style={{ background: "none", border: "none", color: "#fca5a5", cursor: "pointer", fontSize: "11px", fontWeight: 700 }}
+                          style={{ background: "none", border: "none", color: "#fca5a5", cursor: "pointer", fontSize: "11px", fontWeight: 700, flexShrink: 0, whiteSpace: 'nowrap', minWidth: 44, minHeight: 44 }}
                         >
                           إلغاء
                         </button>

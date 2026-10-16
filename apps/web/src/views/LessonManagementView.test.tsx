@@ -55,16 +55,16 @@ it('lists newest lessons first across courses and units', async () => {
 it('shows one unified progress bar and restores watch only after processing completes', async () => {
   mocks.tasks = [task]; await render();
   expect(host.textContent).toContain('جاري رفع الفيديو…');
-  expect(host.textContent).toContain('16٪');
+  expect(host.textContent).toContain('4٪');
   expect(host.textContent).not.toContain('مشاهدة الدرس');
   expect(host.textContent).not.toContain('تجهيز الجودات');
   expect(host.querySelectorAll('[role="progressbar"]')).toHaveLength(1);
-  expect(host.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('16');
+  expect(host.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('4');
   await act(async () => host.querySelector<HTMLElement>('[title="جاري رفع الفيديو…"]')!.click());
   expect(mocks.open).not.toHaveBeenCalled();
   await act(async () => mocks.listener!([{ ...task, status: 'processing', uploadPercent: 100 }]));
   expect(host.querySelectorAll('[role="progressbar"]')).toHaveLength(1);
-  expect(host.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('40');
+  expect(host.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('10');
   expect(host.textContent).not.toContain('مشاهدة الدرس');
   await act(async () => mocks.listener!([{ ...task, status: 'completed', uploadPercent: 100 }]));
   const watch = [...host.querySelectorAll('button')].find(button => button.textContent === 'مشاهدة الدرس')!;

@@ -42,6 +42,8 @@ export interface UploadTask {
   xhr?: XMLHttpRequest;
   onSuccess?: () => void;
   videoUploadId?: string;
+  // A definitive owner-scoped 404 is terminal for automatic reconciliation.
+  videoUnavailable?: boolean;
   videoRequestKey?: string;
   videoFingerprint?: string;
   ownerScope?: string;
@@ -108,7 +110,7 @@ export class UploadManager {
     const generation = getApiAuthGeneration();
     if (scope === 'anonymous' || isSessionKnownInvalid()) return;
     for (const task of this.tasks) {
-      if (!task.videoUploadId || task.status === 'completed' || task.status === 'cancelled' || this.running.has(task.id)
+      if (!task.videoUploadId || task.videoUnavailable || task.status === 'completed' || task.status === 'cancelled' || this.running.has(task.id)
         || (task.ownerScope && task.ownerScope !== scope)) continue;
       if (generation !== getApiAuthGeneration() || isSessionKnownInvalid()) return;
       this.running.add(task.id);
@@ -132,6 +134,7 @@ export class UploadManager {
       } catch (error) {
         if (generation !== getApiAuthGeneration() || isSessionKnownInvalid()) return;
         if (this.owns(task)) {
+          if (error instanceof ApiClientError && error.status === 404) task.videoUnavailable = true;
           task.status = 'error'; task.error = this.videoError(error);
           this.notify(); this.persistTasks();
         }
@@ -449,6 +452,7 @@ export class UploadManager {
     } catch (err: unknown) {
       if (active()) {
         task.status = "error";
+        if (err instanceof ApiClientError && err.status === 404) task.videoUnavailable = true;
         task.error = this.videoError(err);
         this.notify();
         this.persistTasks();
@@ -695,6 +699,7 @@ export class UploadManager {
             // Explicit retry only: an absent intent cannot be resumed. Preserve
             // the key on all other errors so a lost response never duplicates it.
             task.videoUploadId = undefined;
+            task.videoUnavailable = false;
             task.videoRequestKey = undefined;
             task.uploadPercent = 0;
             task.loadedBytes = 0;
@@ -719,6 +724,7 @@ export class UploadManager {
       } finally { this.running.delete(task.id); }
       if (generation !== getApiAuthGeneration() || !this.owns(task) || !this.tasks.includes(task)) return;
       task.status = 'queued'; task.error = undefined;
+      task.videoUnavailable = false;
       this.updateVideoProgress(task);
       this.notify(); this.persistTasks(); this.processQueue();
       return;

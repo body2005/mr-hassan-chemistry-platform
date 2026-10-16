@@ -95,6 +95,21 @@ it('stops on 429 rather than creating a retry loop', async () => {
   expect(manager.getTasks()[0].status).toBe('error'); expect(fetcher).toHaveBeenCalledTimes(1);
 });
 
+it('persists a missing upload as unavailable, stops automatic 404 requests and can dismiss it', async () => {
+  localStorage.setItem('lms_global_upload_tasks_v3', JSON.stringify([stored('teacher-a')]));
+  const fetcher = vi.fn(async () => new Response('{}', { status: 404 })); vi.stubGlobal('fetch', fetcher);
+  const api = await import('./apiClient'); api.setApiAuthScope('teacher-a');
+  const { UploadManager } = await import('./uploadManager'); const manager = new UploadManager();
+  await manager.reconcileVideos();
+  expect(manager.getTasks()[0]).toMatchObject({ status: 'error', videoUnavailable: true });
+  await manager.reconcileVideos();
+  const reloaded = new UploadManager(); await reloaded.reconcileVideos();
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  reloaded.clearTask('task');
+  expect(reloaded.getTasks()).toHaveLength(0);
+  expect(new UploadManager().getTasks()).toHaveLength(0);
+});
+
 it('prepares an existing stored video without a file transfer and completes from the server job', async () => {
   const calls: Array<{ url: string; method: string }> = [];
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {

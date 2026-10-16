@@ -15,7 +15,7 @@ class VideoUpload(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
     # Retry key is scoped by owner AND lesson in the service; never a storage URL.
     request_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    filename: Mapped[str] = mapped_column(String(200), nullable=False)
+    filename: Mapped[str] = mapped_column(String(1000), nullable=False)
     content_type: Mapped[str] = mapped_column(String(80), nullable=False)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)

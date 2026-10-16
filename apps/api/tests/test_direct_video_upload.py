@@ -30,6 +30,36 @@ def payload(size=service.PART_BYTES + 20):
     return SimpleNamespace(filename="lecture.mp4", content_type="video/mp4", size_bytes=size, fingerprint="a" * 64, request_key=uuid.uuid4().hex)
 
 
+def test_long_lesson_title_and_video_filename_round_trip(db, world):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.models.course import Lesson
+    from app.models.platform import CalendarEvent
+    from sqlalchemy import select
+
+    inst, teacher, _, _, existing, _, _ = world
+    browser = TestClient(app)
+    _login(browser, teacher, inst.slug)
+    title = ("عنوان درس طويل " * 20).strip()
+    response = browser.post(f"/api/v1/courses/{existing.course_id}/lessons", headers=_csrf(browser),
+        json={"title": title, "kind": "video", "position": 2, "publication_status": "published"})
+    assert response.status_code == 201, response.text
+    lesson = db.get(Lesson, uuid.UUID(response.json()["id"]))
+    assert lesson.title == title
+    event = db.scalar(select(CalendarEvent).where(CalendarEvent.request_key == f"lesson-release:{lesson.id}"))
+    assert event.title == title
+    filename = f"{title}.mp4"
+    data = payload()
+    response = browser.post(f"/api/v1/lessons/{lesson.id}/video-uploads", headers=_csrf(browser),
+        json={**vars(data), "filename": filename})
+    assert response.status_code == 201, response.text
+    upload = db.get(VideoUpload, uuid.UUID(response.json()["id"]))
+    assert upload.filename == filename
+    rejected = browser.post(f"/api/v1/courses/{existing.course_id}/lessons", headers=_csrf(browser),
+        json={"title": "أ" * 1001, "kind": "video", "position": 3})
+    assert rejected.status_code == 422
+
+
 def test_upload_retry_ownership_and_quota(db, world):
     _, teacher, student, _, lesson, _, client = world
     data = payload()
