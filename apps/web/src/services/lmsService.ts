@@ -1039,8 +1039,8 @@ export const courseService = {
     });
     return { courses: result.items.map(mapApiCourse), pages: result.pagination.pages, total: result.pagination.total };
   },
-  async getCatalogPage(page: number): Promise<{ courses: Course[]; pages: number }> {
-    const result = await apiRequest<{ items: ApiCourse[]; pagination: { pages: number } }>(`/courses?page=${page}&page_size=100`);
+  async getCatalogPage(page: number, options?: { skipCache?: boolean }): Promise<{ courses: Course[]; pages: number }> {
+    const result = await apiRequest<{ items: ApiCourse[]; pagination: { pages: number } }>(`/courses?page=${page}&page_size=100`, options);
     return { courses: result.items.map(mapApiCourse), pages: result.pagination.pages };
   },
   async getEnrolledCatalogPage(page: number): Promise<{ courses: Course[]; pages: number }> {

@@ -42,7 +42,7 @@ import {
   Moon,
 } from "lucide-react";
 import { Course, CourseAssessmentRef, CurrentUser, NotificationItem, StudentProfile, VideoLesson } from "../types/lms";
-import { Language, translations, useTranslation } from "../utils/i18n";
+import { Language, useTranslation } from "../utils/i18n";
 import { EducationalBookItem, RevisionPackageItem } from "./GeneralHomeView";
 import { courseService } from "../services/lmsService";
 import { apiRequest, fetchApiBlob, uploadWithProgress, getApiAuthGeneration } from "../services/apiClient";
@@ -57,6 +57,7 @@ import { assessmentBand, assessmentPercent } from '../services/assessmentOutcome
 import { useCourseAssessments } from '../services/useCourseAssessments';
 import { compareNewestLessons, newestLessonsFirst } from '../services/lessonOrder';
 import { LessonWatchProgress } from '../components/LessonWatchProgress';
+import { LessonPurchaseCatalog } from '../components/LessonPurchaseCatalog';
 
 const VideoLessonPage = lazy(() => import('../components/VideoLessonPage')
   .then(module => ({ default: module.VideoLessonPage })));
@@ -151,6 +152,7 @@ interface MyCoursesViewProps {
   onInitialAssessmentHandled?: () => void;
   onInitialLessonHandled?: () => void;
   enrolledCourses: Course[];
+  catalogCourses?: Course[];
   onEnrollCourse?: (courseId: string) => Promise<void>;
   onNavigateToCatalog: () => void;
   lang: Language;
@@ -177,6 +179,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   onInitialAssessmentHandled,
   onInitialLessonHandled,
   enrolledCourses,
+  catalogCourses = [],
   onNavigateToCatalog,
   lang,
   currentUser,
@@ -194,7 +197,6 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   onToggleLang,
   onNavigateHome,
 }) => {
-  const t = translations[lang];
   const { t: tr } = useTranslation();
   const toast = useToast();
   void notifications;
@@ -1235,16 +1237,17 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     return (
       <div className="page-container">
         {initialLessonId && <p role="status">{tr("lesson.sharedSaved")}</p>}
+        <LessonPurchaseCatalog courses={catalogCourses} year={studentYear} enrolledIds={enrolledCourses.map(course => course.id)} lang={lang} onCheckout={onCheckout} fallback={
         <div style={{ textAlign: "center", padding: "80px 20px", background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "16px" }}>
           <BookOpen size={48} style={{ color: "var(--text-light)", margin: "0 auto 16px" }} />
-          <h2 style={{ margin: "0 0 8px", fontSize: "20px", color: "var(--text-main)" }}>{tr("lesson.empty")}</h2>
+          <h2 style={{ margin: "0 0 8px", fontSize: "20px", color: "var(--text-main)" }}>{lang === 'ar' ? 'لا توجد دروس مفعلة لحسابك' : 'No activated lessons yet'}</h2>
           <p style={{ margin: "0 0 20px", color: "var(--text-muted)", fontSize: "14px" }}>
-            {t.noCoursesEnrolledDesc}
+            {lang === 'ar' ? 'بعد اعتماد شراء الدرس، يظهر هنا مع المحتوى المتاح لك حسب مواعيد النشر.' : 'After your lesson purchase is approved, it appears here with content available according to its release schedule.'}
           </p>
           <button className="btn-primary" onClick={onNavigateToCatalog}>
-            {t.browseCatalogBtn}
+            {lang === 'ar' ? 'الدفع والاشتراكات' : 'Payments and subscriptions'}
           </button>
-        </div>
+        </div>} />
       </div>
     );
   }
@@ -1324,6 +1327,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   return (
     <div className="page-container">
       <ToastRegion label={tr("lesson.courseMessages")} />
+      <LessonPurchaseCatalog courses={catalogCourses} year={studentYear} enrolledIds={enrolledCourses.map(course => course.id)} lang={lang} onCheckout={onCheckout} />
       {checkingAssessment && <p role="status">{tr('lesson.sharedAssessmentLoading')}</p>}
       {assessmentPreview?.userId === currentUser?.id && assessmentPreview?.courseId === activeCourse?.id && assessmentPreview && (
         <section role="region" aria-label={assessmentPreview.item.title} className="card" style={{ padding: 18, marginBottom: 18 }}>

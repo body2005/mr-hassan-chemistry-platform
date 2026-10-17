@@ -215,18 +215,19 @@ function App() {
     async function handleCoursesSync() {
       try {
         if (authService.getCachedUser()?.role === 'student') {
-          // Keep older enrolled courses when a local update arrives; the
-          // general public catalog's first page is not this student's list.
+          // Keep the authenticated sales catalogue as well as owned courses.
+          // An enrolled-only refresh used to erase every purchasable lesson
+          // for a new account when the realtime connection opened.
           const requestId = authSyncId.current;
           let pages = 1;
-          const enrolled: Course[] = [];
+          const catalog: Course[] = [];
           for (let page = 1; page <= pages; page++) {
-            const result = await courseService.getEnrolledCatalogPage(page);
+            const result = await courseService.getCatalogPage(page, { skipCache: true });
             if (requestId !== authSyncId.current) return;
             pages = result.pages;
-            enrolled.push(...result.courses);
+            catalog.push(...result.courses);
           }
-          setCourses(enrolled);
+          setCourses(catalog);
           setCourseHydrationIssue(false);
           return;
         }
@@ -810,6 +811,7 @@ function App() {
             }}
             onInitialLessonHandled={() => { clearSharedLesson(); setSharedLessonTarget(null); }}
             enrolledCourses={enrolledCoursesList}
+            catalogCourses={courses}
             onEnrollCourse={handleEnrollCourse}
             onNavigateToCatalog={() => navigateToTab("Payments")}
             lang={lang}
