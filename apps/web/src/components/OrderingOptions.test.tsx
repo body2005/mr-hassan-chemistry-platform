@@ -33,19 +33,24 @@ it('moves choices by keyboard while retaining item identities and boundaries', a
 it.each(['touch', 'mouse'])('drags a choice to another position using %s pointer events', async pointerType => {
   await render();
   const handle = host.querySelector<HTMLButtonElement>('button[aria-label^="اسحب الاختيار 1"]')!;
-  handle.setPointerCapture = vi.fn(); handle.hasPointerCapture = () => true; handle.releasePointerCapture = vi.fn();
-  Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => host.querySelectorAll('li')[2] });
+  const list = host.querySelector('ol')!;
+  list.setPointerCapture = vi.fn(); list.hasPointerCapture = () => true; list.releasePointerCapture = vi.fn();
+  let targetIndex = 1;
+  Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => host.querySelectorAll('li')[targetIndex] });
   const pointer = (name: string) => {
     const event = new MouseEvent(name, { bubbles: true, button: 0, clientX: 10, clientY: 120 });
     Object.defineProperties(event, { pointerId: { value: 1 }, pointerType: { value: pointerType } });
     return event;
   };
   await act(async () => handle.dispatchEvent(pointer('pointerdown')));
-  await act(async () => handle.dispatchEvent(pointer('pointermove')));
-  await act(async () => handle.dispatchEvent(pointer('pointerup')));
+  await act(async () => list.dispatchEvent(pointer('pointermove')));
+  expect(latest.map(item => item.key)).toEqual(['y', 'x', 'z']);
+  targetIndex = 2;
+  await act(async () => list.dispatchEvent(pointer('pointermove')));
+  await act(async () => list.dispatchEvent(pointer('pointerup')));
   expect(latest.map(item => item.key)).toEqual(['y', 'z', 'x']);
-  expect(handle.setPointerCapture).toHaveBeenCalledWith(1);
-  expect(handle.releasePointerCapture).toHaveBeenCalledWith(1);
+  expect(list.setPointerCapture).toHaveBeenCalledWith(1);
+  expect(list.releasePointerCapture).toHaveBeenCalledWith(1);
 });
 it('adds and removes teacher choices without inventing text or changing surviving identities', async () => {
   await render(true);

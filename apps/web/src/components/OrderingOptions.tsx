@@ -25,7 +25,21 @@ export function OrderingOptions({ items, editable = false, disabled = false, onC
     border: '1px solid var(--border-color-strong)', background: 'var(--bg-surface)', color: 'var(--text-main)', cursor: 'pointer' };
   return <div>
     <p>{t(editable ? 'lesson.orderTeacherHint' : 'lesson.orderStudentHint')}</p>
-    <ol ref={list} aria-label={t('lesson.orderItems')} style={{ padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <ol ref={list} aria-label={t('lesson.orderItems')}
+      onPointerMove={event => {
+        const key = dragging.current;
+        if (!key) return;
+        const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-order-key]');
+        if (target && list.current?.contains(target)) {
+          move(key, items.findIndex(candidate => candidate.key === target.dataset.orderKey));
+        }
+      }}
+      onPointerUp={event => {
+        dragging.current = null;
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      }}
+      onPointerCancel={() => { dragging.current = null; }} onLostPointerCapture={() => { dragging.current = null; }}
+      style={{ padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 8 }}>
       {items.map((item, index) => <li key={item.key} data-order-key={item.key}
         style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, padding: 8, borderRadius: 9, border: '1px solid var(--border-color)', background: 'var(--bg-surface-secondary)' }}>
         <button type="button" disabled={disabled} aria-label={t('lesson.orderDrag', { number: index + 1 })}
@@ -33,21 +47,9 @@ export function OrderingOptions({ items, editable = false, disabled = false, onC
           onPointerDown={event => {
             if (event.button !== 0) return;
             dragging.current = item.key;
-            event.currentTarget.setPointerCapture(event.pointerId);
+            // Keep capture on the stationary list when React moves an item.
+            list.current?.setPointerCapture(event.pointerId);
           }}
-          onPointerMove={event => {
-            if (dragging.current !== item.key) return;
-            const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-order-key]');
-            if (target && list.current?.contains(target)) {
-              const to = items.findIndex(candidate => candidate.key === target.dataset.orderKey);
-              move(item.key, to);
-            }
-          }}
-          onPointerUp={event => {
-            dragging.current = null;
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-          }}
-          onPointerCancel={() => { dragging.current = null; }} onLostPointerCapture={() => { dragging.current = null; }}
           onKeyDown={event => {
             if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
               event.preventDefault(); move(item.key, index + (event.key === 'ArrowUp' ? -1 : 1));
