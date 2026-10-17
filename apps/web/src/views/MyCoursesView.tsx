@@ -52,7 +52,6 @@ import { OrderingOptions } from '../components/OrderingOptions';
 import { displayOrderingAnswer, orderingAnswer, resolveOrderingItems, validOrderingItems } from '../services/orderingQuestion';
 import { PaymentTarget, lessonAccessService } from "../services/paymentService";
 import { PageLoadingScreen } from "../components/PageLoadingScreen";
-import { FreeCourseCatalog } from "../components/FreeCourseCatalog";
 import { FloatingProgressFab } from '../components/FloatingProgressFab';
 import { assessmentBand, assessmentPercent } from '../services/assessmentOutcome';
 import { useCourseAssessments } from '../services/useCourseAssessments';
@@ -178,7 +177,6 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   onInitialAssessmentHandled,
   onInitialLessonHandled,
   enrolledCourses,
-  onEnrollCourse,
   onNavigateToCatalog,
   lang,
   currentUser,
@@ -216,12 +214,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   }), [enrolledCourses, studentYear]);
 
   const [selectedCourseId, setSelectedCourseId] = useState(() => initialCourseId || '');
-  const [catalogOpen, setCatalogOpen] = useState(false);
   const quizAvailability = (quiz: CourseAssessmentRef) =>
     quiz.availabilityState === 'scheduled' ? tr("lesson.examNotStarted")
     : quiz.availabilityState === 'closed' ? tr("lesson.examEnded") : '';
-  const freeCatalog = onEnrollCourse && <FreeCourseCatalog year={studentYear} enrolledIds={enrolledCourses.map(c => c.id)}
-    onEnroll={async id => { await onEnrollCourse(id); setSelectedCourseId(id); }} />;
 
   const activeCourse =
     validEnrolledCourses.find((c) => c.id === selectedCourseId) || validEnrolledCourses[0];
@@ -1240,7 +1235,6 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     return (
       <div className="page-container">
         {initialLessonId && <p role="status">{tr("lesson.sharedSaved")}</p>}
-        {freeCatalog}
         <div style={{ textAlign: "center", padding: "80px 20px", background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "16px" }}>
           <BookOpen size={48} style={{ color: "var(--text-light)", margin: "0 auto 16px" }} />
           <h2 style={{ margin: "0 0 8px", fontSize: "20px", color: "var(--text-main)" }}>{tr("lesson.empty")}</h2>
@@ -1345,8 +1339,6 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         </section>
       )}
       {initialLessonId && !validEnrolledCourses.some(item => item.id === initialCourseId) && <p role="status">{tr("lesson.sharedEnrollment")}</p>}
-      <button className="btn-secondary" onClick={() => setCatalogOpen(prev => !prev)}>{catalogOpen ? tr("lesson.closeCatalog") : tr("lesson.browseCatalog")}</button>
-      {catalogOpen && freeCatalog}
       {/* Top Urgent Counter */}
       <div className="urgency-banner" style={{ marginBottom: "20px" }}>
         <div className="urgency-counter">
