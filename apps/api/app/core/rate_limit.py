@@ -16,6 +16,7 @@ import redis
 
 from app.core.config import get_settings
 from app.core.security import decode_session_token
+from app.core.rate_limit_proof import observe_policy
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +249,8 @@ def enforce_rate_limit(
             member = f"{now_ms}:{uuid.uuid4().hex[:8]}"
             result = _redis_script(keys=[key], args=[now_ms, window_ms, final_limit, member])
             allowed = bool(result[0])
+            observe_policy(request, category=effective_category, key=key, limit=final_limit,
+                           window=final_window, backend='redis', allowed=allowed)
             if not allowed:
                 retry_after = int(result[2])
                 raise HTTPException(
@@ -265,6 +268,8 @@ def enforce_rate_limit(
             logger.warning("Redis rate limiting query failed")
 
     if settings.redis_required or settings.deployment_environment:
+        observe_policy(request, category=effective_category, key=key, limit=final_limit,
+                       window=final_window, backend='unavailable', allowed=False)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Rate limiting is temporarily unavailable.",
@@ -272,7 +277,14 @@ def enforce_rate_limit(
         )
 
     # Per-process fallback is deliberately restricted to development/testing.
-    _in_memory_enforce(key, final_limit, final_window)
+    try:
+        _in_memory_enforce(key, final_limit, final_window)
+    except HTTPException:
+        observe_policy(request, category=effective_category, key=key, limit=final_limit,
+                       window=final_window, backend='memory', allowed=False)
+        raise
+    observe_policy(request, category=effective_category, key=key, limit=final_limit,
+                   window=final_window, backend='memory', allowed=True)
 
 
 def reset_rate_limits() -> None:

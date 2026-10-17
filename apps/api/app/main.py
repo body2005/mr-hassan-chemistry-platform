@@ -22,6 +22,7 @@ from app.core.upload_limits import UploadBudgetMiddleware
 from app.core.upload_auth import UploadAuthenticationMiddleware
 from app.core.rate_limit import enforce_rate_limit
 from app.core.response_security import ResponseSecurityHeadersMiddleware
+from app.core.rate_limit_proof import RateLimitProofMiddleware
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -278,6 +279,9 @@ app.add_middleware(
 # including CORS preflights and upload/admission failures. It never grants
 # identity, overrides CORS or buffers the streaming body.
 app.add_middleware(ResponseSecurityHeadersMiddleware, secure=settings.secure_cookies)
+# A short-lived operator signature permits observations only. This wrapper
+# cannot authenticate, rewrite a limiter identity, or bypass another middleware.
+app.add_middleware(RateLimitProofMiddleware)
 
 
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploads")
