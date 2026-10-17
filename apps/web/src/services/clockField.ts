@@ -6,7 +6,7 @@ export function clockParts(value: string): ClockParts {
   const match = normalized.match(/^(\d{0,2}):(\d{0,2})\s*(ص|م|am|pm)?$/i);
   if (!match) return { hour: '', minute: '', period: 'م', invalid: true };
   let hour = match[1];
-  const minute = match[2];
+  const minute = match[2] || (hour ? '00' : '');
   const marker = match[3]?.toLowerCase();
   let period: 'ص' | 'م' = marker === 'ص' || marker === 'am' ? 'ص' : 'م';
   if (!marker && hour && minute && +hour <= 23 && +minute <= 59) {
@@ -17,7 +17,7 @@ export function clockParts(value: string): ClockParts {
   return { hour, minute, period, invalid };
 }
 export function clockValue(parts: Pick<ClockParts, 'hour' | 'minute' | 'period'>): string {
-  return `${parts.hour}:${parts.minute} ${parts.period}`;
+  return `${parts.hour}:${parts.minute || (parts.hour ? '00' : '')} ${parts.period}`;
 }
 export function clockLabel(value: string): string {
   const parts = clockParts(value);

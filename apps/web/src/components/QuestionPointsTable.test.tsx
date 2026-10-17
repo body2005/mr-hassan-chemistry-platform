@@ -25,6 +25,8 @@ it('counts aliases and applies a shared score only to the selected type, preserv
       canonicalQuestionType(question.question_type) === type ? { ...question, points } : question))} />;
   }
   await act(async () => root.render(<Probe />));
+  expect(host.textContent).not.toContain('إجابة قصيرة');
+  expect(host.querySelector('input[aria-label*="إجابة قصيرة"]')).toBeNull();
   const row = host.querySelector('tbody tr')!;
   expect(row.querySelector('td')?.textContent).toBe('2');
   const input = row.querySelector('input')!;

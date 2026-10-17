@@ -2,7 +2,7 @@ import type { GeneratedQuestion } from '../types/quiz';
 import { canonicalQuestionType, type QuestionType } from '../services/questionType';
 import { useTranslation } from '../utils/i18n';
 
-const types: QuestionType[] = ['multiple_choice', 'true_false', 'essay', 'short_answer', 'fill_in_blank', 'ordering', 'matching'];
+const types: QuestionType[] = ['multiple_choice', 'true_false', 'essay', 'fill_in_blank', 'ordering', 'matching'];
 
 export function QuestionPointsTable({ questions, disabled, onChange }: {
   questions: GeneratedQuestion[]; disabled: boolean;
