@@ -1833,7 +1833,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                               style={{ fontSize: "12px", padding: "7px 12px", gap: "6px", background: "#059669" }}
                             >
                               <ShoppingCart size={13} />
-                              <span>{tr("lesson.buyPrice")}</span>
+                              <span>{tr("lesson.buyPrice", { price })}</span>
                             </button>
                           </div>
                         )}
