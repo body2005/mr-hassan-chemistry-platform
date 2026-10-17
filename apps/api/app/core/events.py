@@ -8,6 +8,7 @@ import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Any, AsyncGenerator
 from contextlib import suppress
 
@@ -21,6 +22,10 @@ from app.core.rate_limit import _get_redis_client
 logger = logging.getLogger("uvicorn.error.realtime")
 
 UTC = timezone.utc
+# Proxies may retain an upstream stream after its browser has gone away.
+# Recycle streams so those reservations cannot renew indefinitely. Clients
+# reconnect and reload durable state; the existing per-user budgets still apply.
+SSE_MAX_CONNECTION_SECONDS = 120
 
 
 @dataclass
@@ -253,6 +258,7 @@ async def sse_event_generator(
     lease = event_broker._leases.get(sub.id)
     if lease:
         lease.owner = asyncio.current_task()
+    deadline = monotonic() + SSE_MAX_CONNECTION_SECONDS
     try:
         # Even a disconnect immediately after headers must release admission.
         yield (
@@ -260,9 +266,14 @@ async def sse_event_generator(
             f"data: {json.dumps({'status': 'connected', 'sub_id': str(sub.id), 'user_id': str(sub.user_id)})}\n\n"
         )
         while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                break
             try:
                 # Wait for next event or send ping every 15 seconds
-                msg = await asyncio.wait_for(sub.queue.get(), timeout=15.0)
+                msg = await asyncio.wait_for(sub.queue.get(), timeout=min(15.0, remaining))
+                if monotonic() >= deadline:
+                    break
                 if authorized and not await asyncio.to_thread(authorized):
                     break
                 if msg is None:
@@ -273,6 +284,8 @@ async def sse_event_generator(
                 payload_str = json.dumps(msg.get("data", {}), ensure_ascii=False)
                 yield f"id: {event_id}\nevent: {event_type}\ndata: {payload_str}\n\n"
             except asyncio.TimeoutError:
+                if monotonic() >= deadline:
+                    break
                 if authorized and not await asyncio.to_thread(authorized):
                     break
                 # Keep-alive comment line (standard SSE heartbeat)

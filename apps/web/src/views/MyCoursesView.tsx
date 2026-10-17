@@ -1283,9 +1283,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         {initialLessonId && <p role="status">{tr("lesson.sharedSaved")}</p>}
         <div style={{ textAlign: "center", padding: "80px 20px", background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "16px" }}>
           <BookOpen size={48} style={{ color: "var(--text-light)", margin: "0 auto 16px" }} />
-          <h2 style={{ margin: "0 0 8px", fontSize: "20px", color: "var(--text-main)" }}>{lang === 'ar' ? 'لا توجد دروس مفعلة لحسابك' : 'No activated lessons yet'}</h2>
+          <h2 style={{ margin: "0 0 8px", fontSize: "20px", color: "var(--text-main)" }}>{lang === 'ar' ? 'لا توجد مقررات منشورة لصفك حاليًا' : 'No published courses for your grade yet'}</h2>
           <p style={{ margin: "0 0 20px", color: "var(--text-muted)", fontSize: "14px" }}>
-            {lang === 'ar' ? 'بعد اعتماد شراء الدرس، يظهر هنا مع المحتوى المتاح لك حسب مواعيد النشر.' : 'After your lesson purchase is approved, it appears here with content available according to its release schedule.'}
+            {lang === 'ar'
+              ? `صفك المسجل: ${(currentUser as StudentProfile)?.academicYearLabel || (studentYear === '2nd_secondary' ? 'الصف الثاني الثانوي' : studentYear === '3rd_secondary' ? 'الصف الثالث الثانوي' : 'الصف الأول الثانوي')}. تظهر دروس صفك هنا عند نشرها، حتى قبل الشراء. يلزم شراء الدرس المدفوع لفتحه.`
+              : `Registered grade: ${studentYear === '2nd_secondary' ? 'Secondary 2' : studentYear === '3rd_secondary' ? 'Secondary 3' : 'Secondary 1'}. Your grade's lessons appear here when published, even before purchase. Paid lessons require purchase to open.`}
           </p>
           <button className="btn-primary" onClick={onNavigateToCatalog}>
             {lang === 'ar' ? 'الدفع والاشتراكات' : 'Payments and subscriptions'}

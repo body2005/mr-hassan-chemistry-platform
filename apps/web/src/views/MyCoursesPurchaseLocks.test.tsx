@@ -26,9 +26,9 @@ beforeEach(() => {
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
-async function render() {
+async function render(profile = student, lang: 'ar' | 'en' = 'ar') {
   await act(async () => root.render(<ToastProvider><MyCoursesView enrolledCourses={[course]} enrolledCourseIds={[]}
-    currentUser={student} lang="ar" onCheckout={mocks.checkout} onNavigateToCatalog={vi.fn()} /></ToastProvider>));
+    currentUser={profile} lang={lang} onCheckout={mocks.checkout} onNavigateToCatalog={vi.fn()} /></ToastProvider>));
 }
 async function tab(text: string) {
   const button = [...host.querySelectorAll('button')].find(button => button.textContent?.includes(text));
@@ -53,4 +53,20 @@ it('shows linked homework with the same paid-content lock', async () => {
   expect(host.textContent).toContain('Linked homework');
   await tab('اشترِ الدرس');
   expect(mocks.checkout).toHaveBeenCalledWith({ productType: 'lesson', productId: 'paid' });
+});
+
+it.each(['2nd_secondary', '3rd_secondary'] as const)('explains the empty catalogue for %s without requiring purchase to see lessons', async (academicYear) => {
+  await render({ ...student, academicYear });
+  expect(host.textContent).toContain('لا توجد مقررات منشورة لصفك حاليًا');
+  expect(host.textContent).toContain(academicYear === '2nd_secondary' ? 'الصف الثاني الثانوي' : 'الصف الثالث الثانوي');
+  expect(host.textContent).toContain('حتى قبل الشراء');
+  expect(host.textContent).not.toContain('Paid lecture');
+  expect(host.textContent).not.toContain('بعد اعتماد شراء الدرس');
+  expect(mocks.refs).not.toHaveBeenCalled();
+});
+
+it('explains the grade-specific empty catalogue in English', async () => {
+  await render({ ...student, academicYear: '2nd_secondary' }, 'en');
+  expect(host.textContent).toContain('Registered grade: Secondary 2');
+  expect(host.textContent).toContain('even before purchase');
 });
