@@ -58,3 +58,14 @@ it('preserves OCR review binding on revalidation after opening a confirmation', 
   question.question_text = 'نص جديد';
   expect(validateAssessmentPublication(value)?.stage).toBe('review');
 });
+
+it('requires complete ordering choices and a permutation before publication', () => {
+  const value = input();
+  value.questions[0] = { ...value.questions[0], question_type: 'ordering', options: [
+    { key: 'one', text: 'Heat', is_correct: false }, { key: 'two', text: 'Cool', is_correct: false }], correct_answer: 'one,two' };
+  expect(validateAssessmentPublication(value, 'review')).toBeNull();
+  value.questions[0].correct_answer = 'one,one';
+  expect(validateAssessmentPublication(value, 'review')?.message).toContain('ترتيبها الصحيح');
+  value.questions[0].correct_answer = 'one,two'; value.questions[0].options![0].text = '';
+  expect(validateAssessmentPublication(value, 'review')?.message).toContain('غير فارغة');
+});

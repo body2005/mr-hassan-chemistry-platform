@@ -1,0 +1,64 @@
+import { act, useState } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { OrderingOptions } from './OrderingOptions';
+import type { CourseOption } from '../types/quiz';
+
+let host: HTMLDivElement, root: Root, latest: CourseOption[];
+const initial = [{ key: 'x', text: 'First', is_correct: false }, { key: 'y', text: 'Second', is_correct: false }, { key: 'z', text: 'Third', is_correct: false }];
+beforeEach(() => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); localStorage.clear();
+  host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+});
+afterEach(async () => {
+  await act(async () => root.unmount()); host.remove(); localStorage.clear(); vi.unstubAllGlobals();
+  Reflect.deleteProperty(document, 'elementFromPoint');
+});
+async function render(editable = false, disabled = false) {
+  function Probe() {
+    const [items, setItems] = useState(initial); latest = items;
+    return <OrderingOptions items={items} editable={editable} disabled={disabled} onChange={setItems} />;
+  }
+  await act(async () => root.render(<Probe />));
+}
+it('moves choices by keyboard while retaining item identities and boundaries', async () => {
+  await render();
+  const handle = host.querySelector<HTMLButtonElement>('button[aria-label^="اسحب الاختيار 1"]')!;
+  await act(async () => handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })));
+  expect(latest.map(item => item.key)).toEqual(['y', 'x', 'z']);
+  expect(host.querySelector('[role="status"]')?.textContent).toContain('2');
+  const up = host.querySelector<HTMLButtonElement>('button[aria-label="تحريك الاختيار 1 لأعلى"]')!;
+  expect(up.disabled).toBe(true);
+});
+it.each(['touch', 'mouse'])('drags a choice to another position using %s pointer events', async pointerType => {
+  await render();
+  const handle = host.querySelector<HTMLButtonElement>('button[aria-label^="اسحب الاختيار 1"]')!;
+  handle.setPointerCapture = vi.fn(); handle.hasPointerCapture = () => true; handle.releasePointerCapture = vi.fn();
+  Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => host.querySelectorAll('li')[2] });
+  const pointer = (name: string) => {
+    const event = new MouseEvent(name, { bubbles: true, button: 0, clientX: 10, clientY: 120 });
+    Object.defineProperties(event, { pointerId: { value: 1 }, pointerType: { value: pointerType } });
+    return event;
+  };
+  await act(async () => handle.dispatchEvent(pointer('pointerdown')));
+  await act(async () => handle.dispatchEvent(pointer('pointermove')));
+  await act(async () => handle.dispatchEvent(pointer('pointerup')));
+  expect(latest.map(item => item.key)).toEqual(['y', 'z', 'x']);
+  expect(handle.setPointerCapture).toHaveBeenCalledWith(1);
+  expect(handle.releasePointerCapture).toHaveBeenCalledWith(1);
+});
+it('adds and removes teacher choices without inventing text or changing surviving identities', async () => {
+  await render(true);
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'إضافة اختيار')!.click());
+  expect(latest).toHaveLength(4); expect(latest[3].text).toBe('');
+  expect(latest[3].key).not.toBe('z');
+  await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="حذف الاختيار 2"]')!.click());
+  expect(latest.slice(0, 2).map(item => item.key)).toEqual(['x', 'z']);
+});
+it('localizes controls and does not allow moves while disabled', async () => {
+  localStorage.setItem('lms_lang', 'en'); await render(false, true);
+  expect(host.querySelector('ol')?.getAttribute('aria-label')).toBe('Ordering question choices');
+  const move = host.querySelector<HTMLButtonElement>('button[aria-label="Move choice 1 down"]')!;
+  expect(move.disabled).toBe(true); await act(async () => move.click());
+  expect(latest.map(item => item.key)).toEqual(['x', 'y', 'z']);
+});

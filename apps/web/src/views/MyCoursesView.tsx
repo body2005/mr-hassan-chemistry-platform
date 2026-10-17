@@ -48,6 +48,8 @@ import { courseService } from "../services/lmsService";
 import { apiRequest, fetchApiBlob, uploadWithProgress, getApiAuthGeneration } from "../services/apiClient";
 import { useToast, ToastRegion } from "../components/ToastProvider";
 import { FormulaRenderer } from "../components/FormulaRenderer";
+import { OrderingOptions } from '../components/OrderingOptions';
+import { displayOrderingAnswer, orderingAnswer, resolveOrderingItems, validOrderingItems } from '../services/orderingQuestion';
 import { PaymentTarget, lessonAccessService } from "../services/paymentService";
 import { PageLoadingScreen } from "../components/PageLoadingScreen";
 import { FreeCourseCatalog } from "../components/FreeCourseCatalog";
@@ -2960,6 +2962,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                 const q = serverQuiz.questions[serverQuizQuestionIndex];
                 const opts = q.options || [];
                 const structuredType = ['ordering', 'matching'].includes(q.question_type) ? q.question_type : null;
+                const orderingItems = q.question_type === 'ordering' && validOrderingItems(opts)
+                  ? opts.map(option => ({ key: option.key!, text: option.text, is_correct: false })) : null;
+                const orderedItems = orderingItems && (resolveOrderingItems(orderingItems, serverQuizAnswers[q.id]) ?? orderingItems);
                 const isMcq = !structuredType && Array.isArray(opts) && opts.length > 0;
                 const flagged = Boolean(serverQuizFlagged[q.id]);
                 return (
@@ -2988,8 +2993,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       <span style={{ marginInlineStart: "10px", fontSize: "11.5px", fontWeight: 800, color: "var(--text-muted)" }}>({tr('lesson.points', { count: q.points })})</span>
                     </div>
 
-                    {structuredType && <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>{tr(`lesson.${structuredType}AnswerHint`)}</p>}
-                    {isMcq ? (
+                    {structuredType && !orderedItems && <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>{tr(`lesson.${structuredType}AnswerHint`)}</p>}
+                    {orderedItems ? <OrderingOptions items={orderedItems}
+                      disabled={serverQuizSubmitting || serverQuizRemaining === 0}
+                      onChange={items => setServerQuizAnswers(prev => ({ ...prev, [q.id]: orderingAnswer(items) }))}
+                      onConfirm={() => setServerQuizAnswers(prev => ({ ...prev, [q.id]: orderingAnswer(orderedItems) }))} /> : isMcq ? (
                       <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                         {opts.map((opt, optIdx) => {
                           const chosen = serverQuizAnswers[q.id] === opt.text;
@@ -3669,7 +3677,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                               </div>
 
                               {/* Options review */}
-                              {q.options.length > 0 ? (
+                              {q.options.length > 0 && q.question_type !== 'ordering' ? (
                                 <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: q.learning_objective ? "12px" : 0 }}>
                                   {q.options.map((opt, oIdx) => {
                                     const isStudentChoice = q.student_answer_letter === oIdx;
@@ -3707,11 +3715,11 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                                 <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: q.learning_objective ? "12px" : 0 }}>
                                   <div style={{ padding: "12px 14px", borderRadius: "11px", background: c.bg, border: `1px solid ${c.border}` }}>
                                     <small style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "var(--text-muted)", marginBottom: "4px" }}>{tr("lesson.yourAnswer")}</small>
-                                    <span style={{ fontSize: "13.5px", color: "var(--text-main)", fontWeight: 700 }}>{q.student_answer || tr("lesson.blankAnswer")}</span>
+                                    <span style={{ fontSize: "13.5px", color: "var(--text-main)", fontWeight: 700, whiteSpace: 'pre-line' }}>{(q.question_type === 'ordering' ? displayOrderingAnswer(q.student_answer) : q.student_answer) || tr("lesson.blankAnswer")}</span>
                                   </div>
                                   <div style={{ padding: "12px 14px", borderRadius: "11px", background: "rgba(5, 150, 105, 0.12)", border: "1px solid rgba(5, 150, 105, 0.3)" }}>
                                     <small style={{ display: "block", fontSize: "11px", fontWeight: 800, color: "#059669", marginBottom: "4px" }}>{tr("lesson.modelAnswer")}</small>
-                                    <span style={{ fontSize: "13.5px", color: "var(--text-main)", fontWeight: 700 }}>{q.correct_answer || "—"}</span>
+                                    <span style={{ fontSize: "13.5px", color: "var(--text-main)", fontWeight: 700, whiteSpace: 'pre-line' }}>{(q.question_type === 'ordering' ? displayOrderingAnswer(q.correct_answer) : q.correct_answer) || "—"}</span>
                                   </div>
                                 </div>
                               )}

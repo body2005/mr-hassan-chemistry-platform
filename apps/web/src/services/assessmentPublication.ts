@@ -4,6 +4,7 @@ import type { GeneratedQuestion } from '../types/quiz';
 import { canonicalQuestionType } from './questionType';
 import { hasContentReview } from './quizContentReview';
 import { canonicalEditorOptionKey } from './mcqOptions';
+import { resolveOrderingItems, validOrderingItems } from './orderingQuestion';
 
 export type EditorStage = 'setup' | 'review' | 'publish';
 export interface PublicationInput {
@@ -28,6 +29,9 @@ export function validateAssessmentPublication(input: PublicationInput, stage?: E
       if (question.question_text.trim().length < 2 || question.question_text.length > 10000) return failure(prefix + 'أدخل نص السؤال كاملاً، في حدود 10000 حرف.', 'review');
       if (!Number.isFinite(question.points) || Number(question.points) <= 0 || Number(question.points) > 1000) return failure(prefix + 'حدد درجة موجبة لا تتجاوز 1000.', 'review');
       if (!hasContentReview(question)) return failure(prefix + 'يلزم مراجعة النص والاختيارات مع الملف الأصلي قبل النشر.', 'review');
+      if (type === 'ordering' && (!validOrderingItems(question.options ?? []) || !resolveOrderingItems(question.options ?? [], question.correct_answer))) {
+        return failure(prefix + 'أدخل من عنصرين إلى 26 عنصرًا بنصوص غير فارغة، وحدد ترتيبها الصحيح.', 'review');
+      }
       if (type === 'multiple_choice') {
         const options = question.options ?? [];
         const keys = options.map(option => canonicalEditorOptionKey(option.key));

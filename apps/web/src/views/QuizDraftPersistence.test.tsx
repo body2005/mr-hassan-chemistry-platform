@@ -182,31 +182,30 @@ it('restores the full original extraction filename inside the upload area', asyn
   expect(uploader.textContent).toContain('source-fingerpri');
 });
 
-it.each(['ordering', 'matching'] as const)('edits and restores %s with its own answer and score', async type => {
+it('edits and restores ordering choices and their correct sequence, without offering matching', async () => {
   localStorage.setItem(key, JSON.stringify({ title: 'Typed question', questions: [{ id: 1,
     question_type: 'multiple_choice', question_text: 'Labelled question items', points: 5,
     difficulty: 'medium', topic: '', explanation: '', correct_answer: 'Old answer',
     options: [{ key: 'A', text: 'Old answer', is_correct: true }, { key: 'B', text: 'Other', is_correct: false }] }] }));
   await render([course]);
   const selector = host.querySelector<HTMLSelectElement>('select[aria-label="نوع السؤال 1"]')!;
-  expect([...selector.options].map(option => option.value)).toEqual(expect.arrayContaining(['ordering', 'matching']));
-  await act(async () => { selector.value = type; selector.dispatchEvent(new Event('change', { bubbles: true })); });
+  expect([...selector.options].map(option => option.value)).toContain('ordering');
+  expect([...selector.options].map(option => option.value)).not.toContain('matching');
+  await act(async () => { selector.value = 'ordering'; selector.dispatchEvent(new Event('change', { bubbles: true })); });
   let saved = JSON.parse(localStorage.getItem(key)!);
-  expect(saved.questions[0]).toMatchObject({ question_type: type, correct_answer: null, needs_answer_review: true });
-  expect(saved.questions[0].options).toBeUndefined();
+  expect(saved.questions[0]).toMatchObject({ question_type: 'ordering', needs_answer_review: false });
+  expect(saved.questions[0].options.map((option: {text: string}) => option.text)).toEqual(['Old answer', 'Other']);
+  expect(saved.questions[0].options[0].key).not.toBe('A');
   const publication = { title: 'Exam', lessonId: 'lesson', isQuiz: true, duration: 30,
     startDate: '2099-01-01', startTime: '03:00 م', endDate: '2099-01-02', endTime: '03:00 م', questions: saved.questions };
-  expect(validateAssessmentPublication(publication, 'review')?.message).toContain('الإجابة الصحيحة');
-  const answer = type === 'ordering' ? '2,1,3' : '1-B,2-A';
-  const input = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="الإجابة الصحيحة"]')!;
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, answer);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  });
+  expect(validateAssessmentPublication(publication, 'review')).toBeNull();
+  expect(host.querySelector('textarea[aria-label="الإجابة الصحيحة"]')).toBeNull();
+  await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="تحريك الاختيار 1 لأسفل"]')!.click());
   saved = JSON.parse(localStorage.getItem(key)!);
-  expect(saved.questions[0]).toMatchObject({ correct_answer: answer, needs_answer_review: false, points: 5 });
+  expect(saved.questions[0].options.map((option: {text: string}) => option.text)).toEqual(['Other', 'Old answer']);
+  expect(saved.questions[0].correct_answer.split(',')).toEqual(saved.questions[0].options.map((option: {key: string}) => option.key));
   expect(validateAssessmentPublication({ ...publication, questions: saved.questions }, 'review')).toBeNull();
-  const row = [...host.querySelectorAll('.question-points-panel tbody tr')].find(row => row.querySelector('th')?.textContent === (type === 'ordering' ? 'ترتيب' : 'توصيل'))!;
+  const row = [...host.querySelectorAll('.question-points-panel tbody tr')].find(row => row.querySelector('th')?.textContent === 'ترتيب')!;
   expect(row.querySelector('td')?.textContent).toBe('1');
   const score = row.querySelector('input')!;
   await act(async () => {
@@ -214,7 +213,8 @@ it.each(['ordering', 'matching'] as const)('edits and restores %s with its own a
     score.dispatchEvent(new Event('input', { bubbles: true }));
   });
   await act(async () => root.unmount()); root = createRoot(host); await render([course]);
-  expect(host.querySelector<HTMLSelectElement>('select[aria-label="نوع السؤال 1"]')?.value).toBe(type);
-  expect(host.textContent).toContain(answer);
+  expect(host.querySelector<HTMLSelectElement>('select[aria-label="نوع السؤال 1"]')?.value).toBe('ordering');
+  expect(host.textContent).toContain('الترتيب الصحيح للاختيارات');
+  expect(JSON.parse(localStorage.getItem(key)!).questions[0].options.map((option: {text: string}) => option.text)).toEqual(['Other', 'Old answer']);
   expect(JSON.parse(localStorage.getItem(key)!).questions[0].points).toBe(7);
 });

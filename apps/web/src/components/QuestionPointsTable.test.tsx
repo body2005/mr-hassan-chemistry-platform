@@ -26,6 +26,7 @@ it('counts aliases and applies a shared score only to the selected type, preserv
   }
   await act(async () => root.render(<Probe />));
   expect(host.textContent).not.toContain('إجابة قصيرة');
+  expect(host.textContent).not.toContain('توصيل');
   expect(host.querySelector('input[aria-label*="إجابة قصيرة"]')).toBeNull();
   const row = host.querySelector('tbody tr')!;
   expect(row.querySelector('td')?.textContent).toBe('2');

@@ -52,7 +52,7 @@ it('serializes Arabic manual-editor labels to valid API keys without changing th
   expect(options.map(option => option.key)).toEqual(['أ', 'ب']);
 });
 
-it.each(['ordering', 'matching'])('publishes %s with the explicit answer and rejects an absent answer', async type => {
+it.each(['matching'])('publishes legacy %s with the explicit answer and rejects an absent answer', async type => {
   const fetcher = vi.fn<(input: string, init?: RequestInit) => Promise<Response>>(async () => new Response('{"id":"quiz"}', {status:201}));
   vi.stubGlobal('fetch', fetcher);
   const { courseService } = await import('./lmsService');
@@ -65,5 +65,23 @@ it.each(['ordering', 'matching'])('publishes %s with the explicit answer and rej
   fetcher.mockClear();
   await expect(courseService.publishQuizToServer({ ...payload, questions: [{ ...payload.questions[0], correct_answer: '' }] }))
     .rejects.toThrow('الإجابة الصحيحة');
+  expect(fetcher).not.toHaveBeenCalled();
+});
+
+it('publishes ordering choices independently of the correct sequence and preserves retry payloads', async () => {
+  const fetcher = vi.fn<(input: string, init?: RequestInit) => Promise<Response>>(async () => new Response('{"id":"quiz"}', {status:201}));
+  vi.stubGlobal('fetch', fetcher);
+  const { courseService } = await import('./lmsService');
+  const question = { question_type: 'ordering', question_text: 'Arrange these steps', points: 7,
+    options: [{ key: 'key-z', text: 'تسخين', is_correct: true }, { key: 'key-a', text: 'تبريد', is_correct: false }], correct_answer: 'key-z,key-a' };
+  const payload = { course_id: 'course', title: 'Ordering', idempotency_key: 'qa', questions: [question] };
+  await courseService.publishQuizToServer(payload);
+  await courseService.publishQuizToServer(payload);
+  const first = JSON.parse(fetcher.mock.calls[0][1]!.body as string);
+  expect(first).toEqual(JSON.parse(fetcher.mock.calls[1][1]!.body as string));
+  expect(first.questions[0].correct_answer).toBe(JSON.stringify(['تسخين', 'تبريد']));
+  expect(first.questions[0].options).toEqual([{ key: 'key-a', text: 'تبريد', is_correct: false }, { key: 'key-z', text: 'تسخين', is_correct: false }]);
+  fetcher.mockClear();
+  await expect(courseService.publishQuizToServer({ ...payload, questions: [{ ...question, correct_answer: 'key-z,key-z' }] })).rejects.toThrow('الترتيب');
   expect(fetcher).not.toHaveBeenCalled();
 });

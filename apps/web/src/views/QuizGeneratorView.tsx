@@ -38,6 +38,8 @@ import { TimeField } from "../components/TimeField";
 import { QuizPublishConfirmation } from "../components/QuizPublishConfirmation";
 import { appendMcqOption, removeMcqOption } from "../services/mcqOptions";
 import { McqOptionsEditor } from "../components/McqOptionsEditor";
+import { OrderingOptions } from '../components/OrderingOptions';
+import { newOrderingItem, resolveOrderingItems, validOrderingItems } from '../services/orderingQuestion';
 import { QuestionSourceReview } from "../components/QuestionSourceReview";
 import { AssessmentScopePicker } from "../components/AssessmentScopePicker";
 import { validateAssessmentPublication, type EditorStage } from "../services/assessmentPublication";
@@ -81,7 +83,7 @@ async function computeFileFingerprint(file: File): Promise<string> {
 // Start a manual assessment empty; the teacher adds the first real question.
 // This keeps sample/example content out of production screens.
 const DEFAULT_MANUAL_QUESTIONS: GeneratedQuestion[] = [];
-type EditableQuestionType = Exclude<ReturnType<typeof canonicalQuestionType>, 'short_answer' | 'unknown'>;
+type EditableQuestionType = Exclude<ReturnType<typeof canonicalQuestionType>, 'short_answer' | 'unknown' | 'matching'>;
 
 interface QuizGeneratorViewProps {
   courses: Course[];
@@ -192,7 +194,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   const [sendScheduledNotification, setSendScheduledNotification] = useState<boolean>(() => initialDraft?.sendScheduledNotification ?? false);
 
 
-  function normalizeQuestionType(t?: string): EditableQuestionType | "unknown" {
+  function normalizeQuestionType(t?: string): Exclude<ReturnType<typeof canonicalQuestionType>, 'short_answer'> {
     const type = canonicalQuestionType(t);
     return type === 'short_answer' ? 'unknown' : type;
   }
@@ -633,10 +635,13 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
             { key: "ب", text: "خطأ", is_correct: isCorrectFalse },
           ];
           needsAnswerReview = !isCorrectTrue && !isCorrectFalse;
-        } else if (newType === "ordering" || newType === "matching") {
-          newOptions = undefined;
-          if (normalizeQuestionType(q.question_type) !== newType) newCorrectAnswer = null;
-          needsAnswerReview = !newCorrectAnswer?.trim();
+        } else if (newType === "ordering") {
+          if (normalizeQuestionType(q.question_type) !== newType || !newOptions?.length) {
+            newOptions = (newOptions && newOptions.length >= 2 ? newOptions : [{ text: '' }, { text: '' }])
+              .map(option => newOrderingItem(option.text));
+            newCorrectAnswer = newOptions.map(option => option.key).join(',');
+          }
+          needsAnswerReview = !validOrderingItems(newOptions ?? []);
         } else if (newType === "essay" || newType === "fill_in_blank") {
           newOptions = undefined;
           needsAnswerReview = !newCorrectAnswer || !newCorrectAnswer.trim();
@@ -650,7 +655,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
         };
       })
     );
-    if (newType === "ordering" || newType === "matching") setEditingQuestionId(qId);
+    if (newType === "ordering") setEditingQuestionId(qId);
   }
 
   function updateOptionText(qId: number, optKey: string, newText: string) {
@@ -1511,7 +1516,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                               <option value="essay">سؤال مقالي</option>
                               <option value="fill_in_blank">أكمل الفراغات</option>
                               <option value="ordering">{tr('lesson.type_ordering')}</option>
-                              <option value="matching">{tr('lesson.type_matching')}</option>
+                              {normalizeQuestionType(q.question_type) === 'matching' && <option value="matching" disabled>{tr('lesson.type_matching')}</option>}
                               {normalizeQuestionType(q.question_type) === "unknown" && (
                                 <option value="unknown">غير محدد (يحتاج مراجعة)</option>
                               )}
@@ -1851,7 +1856,19 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                           onInitialize={() => updateQuestionType(q.id, "multiple_choice")} />
                       )}
 
-                      {(normalizeQuestionType(q.question_type) === 'ordering' || normalizeQuestionType(q.question_type) === 'matching') && (
+                      {normalizeQuestionType(q.question_type) === 'ordering' && (
+                        <div style={{ marginTop: 12 }}>
+                          {isEditing ? <OrderingOptions editable
+                            items={resolveOrderingItems(q.options ?? [], q.correct_answer) ?? q.options ?? []}
+                            onChange={options => setActiveQuestionsList(prev => prev.map(question => question.id === q.id ? {
+                              ...question, options, correct_answer: options.map(option => option.key).join(','), needs_answer_review: !validOrderingItems(options),
+                            } : question))} /> : <div>
+                            <strong>{tr('lesson.orderCorrectSequence')}</strong>
+                            <ol>{(resolveOrderingItems(q.options ?? [], q.correct_answer) ?? q.options ?? []).map(option => <li key={option.key}><FormulaRenderer text={option.text} /></li>)}</ol>
+                          </div>}
+                        </div>
+                      )}
+                      {normalizeQuestionType(q.question_type) === 'matching' && (
                         <div style={{ marginTop: 12, padding: 14, border: '1px solid var(--border-color)', borderRadius: 10, background: 'var(--bg-surface-secondary)' }}>
                           <strong>{tr(`lesson.type_${normalizeQuestionType(q.question_type)}`)}</strong>
                           <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>{tr(`lesson.${normalizeQuestionType(q.question_type)}AnswerHint`)}</p>

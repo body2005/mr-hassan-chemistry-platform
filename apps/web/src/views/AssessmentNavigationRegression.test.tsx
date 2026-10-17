@@ -149,3 +149,24 @@ it.each(['ordering', 'matching'])('offers a text response with format guidance f
   });
   expect(input.value).toBe(answer);
 });
+
+it('lets a student move ordering choices without typing an answer', async () => {
+  mocks.request.mockImplementation(async (path: string) => {
+    if (path.endsWith('/attempts')) return { id: 'ordering-attempt' };
+    if (path.endsWith('/submit')) return { score: 7, total_points: 7, attempt_number: 1, grading_status: 'complete' };
+    return { ...quizResponse('Ordering exam'), questions: [{ id: 'order', question_type: 'ordering',
+      prompt: 'Arrange the steps', points: 7, options: [{ key: 'random-a', text: 'Cool' }, { key: 'random-b', text: 'Heat' }] }] };
+  });
+  await render(); await click('الامتحانات'); await click('بدء حل الاختبار');
+  expect(host.querySelector('textarea')).toBeNull();
+  expect(host.querySelector('input[type="radio"]')).toBeNull();
+  const choices = () => [...host.querySelectorAll('ol[aria-label="اختيارات سؤال الترتيب"] li')].map(item => item.textContent);
+  expect(choices()[0]).toContain('Cool');
+  await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="تحريك الاختيار 1 لأسفل"]')!.click());
+  expect(choices()[0]).toContain('Heat');
+  await click('اعتماد الترتيب الحالي');
+  expect(choices()[1]).toContain('Cool');
+  await click('تسليم الاختبار'); await click('نعم، تأكيد وتسليم الآن');
+  const submitted = mocks.request.mock.calls.find(call => call[0] === '/quiz-attempts/ordering-attempt/submit')!;
+  expect(JSON.parse(submitted[1].body).answers).toEqual([{ question_id: 'order', answer: '["Heat","Cool"]' }]);
+});

@@ -21,6 +21,7 @@ import { armAvailabilityRefresh, assessmentsChanged } from "./availabilityRefres
 import { assessmentTimestamp, assessmentWindow } from "./assessmentSchedule";
 import { canonicalQuestionType } from "./questionType";
 import { canonicalEditorOptionKey } from "./mcqOptions";
+import { orderingAnswer, resolveOrderingItems, validOrderingItems } from './orderingQuestion';
 /**
  * ============================================================================
  * MATGAR LMS - UNIFIED DATA ACCESS LAYER (DAL)
@@ -1252,7 +1253,16 @@ export const courseService = {
       if (!['essay', 'short_answer'].includes(type) && !answer?.trim()) {
         throw new Error('يلزم تحديد الإجابة الصحيحة للأسئلة ذات التصحيح التلقائي قبل النشر.');
       }
-      const options = type === 'multiple_choice'
+      if (type === 'ordering') {
+        const ordered = resolveOrderingItems(q.options ?? [], answer);
+        if (!validOrderingItems(q.options ?? []) || !ordered) throw new Error('راجع عناصر سؤال الترتيب وترتيبها الصحيح قبل النشر.');
+        answer = orderingAnswer(ordered);
+      }
+      const options = type === 'ordering'
+        // Random item identities make this stable order independent of the answer;
+        // retries retain the same payload and no correct-order flags are exposed.
+        ? [...q.options!].sort((a, b) => a.key.localeCompare(b.key)).map(option => ({ key: option.key, text: option.text, is_correct: false }))
+        : type === 'multiple_choice'
         ? q.options?.map(option => ({ ...option, key: canonicalEditorOptionKey(option.key) })) : q.options;
       return { question_type: type, prompt: q.question_text, options: options ?? null,
         correct_answer: answer ?? null, points: q.points ?? 1 };
