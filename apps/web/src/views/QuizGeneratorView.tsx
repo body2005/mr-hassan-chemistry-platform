@@ -298,6 +298,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     }
     return DEFAULT_MANUAL_QUESTIONS;
   });
+  const [editingQuestionId, setEditingQuestionId] = useState<number | null>(() =>
+    typeof initialDraft?.editingQuestionId === 'number' && questions.some(question => question.id === initialDraft.editingQuestionId)
+      ? initialDraft.editingQuestionId : null);
 
   const [error, setErrorState] = useState<string | null>(null);
   function setError(message: string | null) {
@@ -355,6 +358,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       publicationKey,
       title: quizTitle,
       questions,
+      editingQuestionId: questions.some(question => question.id === editingQuestionId) ? editingQuestionId : null,
       selectedAcademicYear,
       selectedCourseId: currentCourse?.id,
       selectedLessonIds,
@@ -394,6 +398,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     extractingFile,
     quizTitle,
     questions,
+    editingQuestionId,
     selectedAcademicYear,
     currentCourse?.id,
     selectedLessonIds,
@@ -442,9 +447,6 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
       });
     }
   }
-
-  // Editing state for teacher modification (Part 11)
-  const [editingQuestionId, setEditingQuestionId] = useState<number | null>(null);
 
   // ================= EXTRACT QUIZ DIRECTLY FROM UPLOADED FILE =================
   async function handleExtractFromFile(file: File) {
@@ -1858,14 +1860,12 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
 
                       {normalizeQuestionType(q.question_type) === 'ordering' && (
                         <div style={{ marginTop: 12 }}>
-                          {isEditing ? <OrderingOptions editable
+                          <strong>{tr('lesson.orderCorrectSequence')}</strong>
+                          <OrderingOptions teacher editable={isEditing} disabled={approved || extractingFile || isPublishing}
                             items={resolveOrderingItems(q.options ?? [], q.correct_answer) ?? q.options ?? []}
                             onChange={options => setActiveQuestionsList(prev => prev.map(question => question.id === q.id ? {
                               ...question, options, correct_answer: options.map(option => option.key).join(','), needs_answer_review: !validOrderingItems(options),
-                            } : question))} /> : <div>
-                            <strong>{tr('lesson.orderCorrectSequence')}</strong>
-                            <ol>{(resolveOrderingItems(q.options ?? [], q.correct_answer) ?? q.options ?? []).map(option => <li key={option.key}><FormulaRenderer text={option.text} /></li>)}</ol>
-                          </div>}
+                            } : question))} />
                         </div>
                       )}
                       {normalizeQuestionType(q.question_type) === 'matching' && (

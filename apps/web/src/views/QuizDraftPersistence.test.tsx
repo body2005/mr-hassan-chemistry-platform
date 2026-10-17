@@ -217,4 +217,26 @@ it('edits and restores ordering choices and their correct sequence, without offe
   expect(host.textContent).toContain('الترتيب الصحيح للاختيارات');
   expect(JSON.parse(localStorage.getItem(key)!).questions[0].options.map((option: {text: string}) => option.text)).toEqual(['Other', 'Old answer']);
   expect(JSON.parse(localStorage.getItem(key)!).questions[0].points).toBe(7);
+  expect(host.querySelector<HTMLInputElement>('input[aria-label="نص اختيار الترتيب 1"]')?.value).toBe('Other');
+  expect(JSON.parse(localStorage.getItem(key)!).editingQuestionId).toBe(1);
+  await click('حفظ التعديل');
+  expect(host.querySelector('input[aria-label="نص اختيار الترتيب 1"]')).toBeNull();
+  await act(async () => root.unmount()); root = createRoot(host); await render([course]);
+  expect(host.querySelector('input[aria-label="نص اختيار الترتيب 1"]')).toBeNull();
+  expect(host.querySelector('button[aria-label="تحريك الاختيار 1 لأسفل"]')).not.toBeNull();
+  await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="تحريك الاختيار 1 لأسفل"]')!.click());
+  expect(JSON.parse(localStorage.getItem(key)!).questions[0].options.map((option: {text: string}) => option.text)).toEqual(['Old answer', 'Other']);
+  expect(JSON.parse(localStorage.getItem(key)!).questions[0].points).toBe(7);
+});
+
+it('keeps ordering controls on older drafts that have no saved edit mode', async () => {
+  localStorage.setItem(key, JSON.stringify({ title: 'Older draft', questions: [{ id: 1, question_type: 'ordering',
+    question_text: 'Arrange these choices', points: 5, correct_answer: 'second,first',
+    options: [{ key: 'first', text: 'First', is_correct: false }, { key: 'second', text: 'Second', is_correct: false }] }] }));
+  await render([course]);
+  const list = host.querySelector('ol[aria-label="اختيارات سؤال الترتيب"]')!;
+  expect(list.querySelectorAll('[data-order-key]')).toHaveLength(2);
+  expect(list.querySelector('li')?.textContent).toContain('Second');
+  expect(host.querySelector('button[aria-label="تحريك الاختيار 1 لأسفل"]')).not.toBeNull();
+  expect(host.textContent).not.toContain('اعتماد الترتيب الحالي');
 });

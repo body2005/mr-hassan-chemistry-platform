@@ -10,8 +10,8 @@ import './OrderingOptions.css';
 type Drag = { key: string; pointerId: number; x: number; y: number; rect: DOMRect; item: CourseOption; number: number; moved: boolean };
 const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 
-export function OrderingOptions({ items, editable = false, disabled = false, onChange, onConfirm }: {
-  items: CourseOption[]; editable?: boolean; disabled?: boolean;
+export function OrderingOptions({ items, editable = false, teacher = false, disabled = false, onChange, onConfirm }: {
+  items: CourseOption[]; editable?: boolean; teacher?: boolean; disabled?: boolean;
   onChange: (items: CourseOption[]) => void; onConfirm?: () => void;
 }) {
   const { t } = useTranslation();
@@ -115,7 +115,7 @@ export function OrderingOptions({ items, editable = false, disabled = false, onC
   const control = { minWidth: 44, minHeight: 44, padding: 8, borderRadius: 8,
     border: '1px solid var(--border-color-strong)', background: 'var(--bg-surface)', color: 'var(--text-main)', cursor: 'pointer' };
   return <div>
-    <p>{t(editable ? 'lesson.orderTeacherHint' : 'lesson.orderStudentHint')}</p>
+    <p>{t(editable || teacher ? 'lesson.orderTeacherHint' : 'lesson.orderStudentHint')}</p>
     <ol ref={list} tabIndex={-1} aria-label={t('lesson.orderItems')} className={`ordering-list${lifted ? ' ordering-list--dragging' : ''}`}
       onKeyDown={event => { if (event.key === 'Escape' && dragging.current) { event.preventDefault(); finishDrag(false); } }}
       onPointerMove={event => {
