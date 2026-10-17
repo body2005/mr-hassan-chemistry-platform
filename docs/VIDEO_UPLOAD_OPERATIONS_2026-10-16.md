@@ -153,3 +153,20 @@ revision selection, details retained after Back/Next, final scheduling, delayed
 confirmation, and duplicate-click prevention. Focused tests, targeted ESLint
 and the production web build passed. This change requires no database migration
 or worker replacement.
+
+## Clickable steps and compact cards (2026-10-17)
+
+Step headings are now buttons. Returning to an earlier step retains the form;
+forward jumps validate the preceding required data and focus the invalid step.
+The private-storage explanatory sentence was removed from the upload form.
+Superseding the earlier fixed 500px card layout, cards now grow with their
+content with a 340px minimum, avoiding the large blank space below short titles.
+
+The current upload stalled at 10% because the file transfer had completed but
+the processing job was queued: Docker was stopped and the last worker heartbeat
+was from the previous day. Starting the already configured Docker worker resumed
+that same job without another upload. The job advanced into shared encoding
+with no recorded error; no artificial progress increment was introduced.
+
+Validation: seven focused frontend tests, targeted ESLint and the production
+web build passed. No worker replacement or database migration is needed.

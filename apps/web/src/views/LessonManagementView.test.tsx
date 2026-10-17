@@ -56,8 +56,9 @@ it('keeps files and lesson details through all three steps and uploads only afte
     const prototype = field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     await act(async () => { Object.getOwnPropertyDescriptor(prototype, 'value')!.set!.call(field, value); field.dispatchEvent(new Event('input', { bubbles: true })); });
   };
-  await click('التالي');
+  await click('3. موعد الإتاحة');
   expect(form.querySelector('[role="alert"]')?.textContent).toContain('اختر فيديو');
+  expect(activeStep().getAttribute('aria-label')).toBe('الملفات والوحدة');
   const video = new File(['video'], 'lecture.mp4', { type: 'video/mp4' });
   const note = new File(['note'], 'lesson-notes.pdf', { type: 'application/pdf' });
   for (const [input, file] of [
@@ -67,12 +68,17 @@ it('keeps files and lesson details through all three steps and uploads only afte
     await act(async () => { Object.defineProperty(input, 'files', { value: [file], configurable: true }); input.dispatchEvent(new Event('change', { bubbles: true })); });
   }
   await act(async () => form.querySelector<HTMLInputElement>('#isRevisionCheckbox')!.click());
-  await click('التالي');
+  await click('2. بيانات الدرس');
   expect(activeStep().getAttribute('aria-label')).toBe('بيانات الدرس');
+  await type(form.querySelector<HTMLInputElement>('#lesson-title')!, 'أ');
+  await click('1. الملفات والوحدة');
+  await click('3. موعد الإتاحة');
+  expect(activeStep().getAttribute('aria-label')).toBe('بيانات الدرس');
+  expect(form.querySelector('[role="alert"]')?.textContent).toContain('عنوان الدرس');
   await type(form.querySelector<HTMLInputElement>('#lesson-title')!, 'عنوان الدرس المحفوظ');
   await type(form.querySelector('textarea')!, 'ملخص الدرس');
   await type(form.querySelector<HTMLInputElement>('input[type="number"]')!, '75');
-  await click('التالي');
+  await click('3. موعد الإتاحة');
   expect(activeStep().getAttribute('aria-label')).toBe('موعد الإتاحة');
   expect(mocks.addLesson).not.toHaveBeenCalled(); expect(mocks.enqueueVideo).not.toHaveBeenCalled();
   await click('السابق'); await click('السابق');

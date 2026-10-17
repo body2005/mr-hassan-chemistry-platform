@@ -423,21 +423,37 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   }
 
   // Handle Form Submission: Create and Upload Lesson
-  function advanceUploadStep() {
+  function goToUploadStep(target: 1 | 2 | 3) {
+    if (isUploading || uploadSubmitPending.current) return;
     setUploadStepError('');
+    if (target <= uploadStep) {
+      previewVideoRef.current?.pause();
+      setUploadStep(target);
+      return;
+    }
     if (!uploadFormRef.current?.reportValidity()) return;
+    let errorStep = uploadStep;
     try {
-      if (uploadStep === 1) {
+      if (uploadStep <= 1) {
         if (!selectedVideoFile && attachedFiles.length === 0) throw new Error(lang === 'ar' ? 'اختر فيديو أو مذكرة للدرس أولًا.' : 'Choose a lesson video or material first.');
         if (selectedModuleId === 'new' && !newModuleTitle.trim()) throw new Error(lang === 'ar' ? 'اكتب اسم الوحدة الجديدة.' : 'Enter the new unit name.');
         if (selectedModuleId === 'new' && ([...newModuleTitle.trim()].length < 2 || [...newModuleTitle.trim()].length > 200)) throw new Error(lang === 'ar' ? 'اسم الوحدة يجب أن يكون من حرفين إلى 200 حرف.' : 'Unit names must contain 2–200 characters.');
-      } else if (uploadStep === 2) {
+      }
+      if (target === 3) {
+        errorStep = 2;
         validateLessonTitle(lessonTitle, lang);
         if (!Number.isFinite(lessonPrice) || lessonPrice < 0 || lessonPrice > 1_000_000) throw new Error(lang === 'ar' ? 'أدخل سعرًا من 0 إلى 1,000,000 ج.م.' : 'Enter a price between 0 and 1,000,000 EGP.');
       }
       previewVideoRef.current?.pause();
-      setUploadStep(step => step === 1 ? 2 : 3);
-    } catch (error) { setUploadStepError((error as Error).message); }
+      setUploadStep(target);
+    } catch (error) {
+      setUploadStep(errorStep);
+      setUploadStepError((error as Error).message);
+    }
+  }
+
+  function advanceUploadStep() {
+    goToUploadStep(uploadStep === 1 ? 2 : 3);
   }
 
   async function handleUploadLesson(e: React.FormEvent) {
@@ -823,10 +839,13 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
             }
           }} style={{ display: "flex", flexDirection: "column", gap: "14px", minWidth: 0 }}>
             <ol aria-label={lang === 'ar' ? 'خطوات رفع الدرس' : 'Lesson upload steps'} style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6, listStyle: 'none', padding: 0, margin: 0 }}>
-              {uploadStepLabels.map((label, index) => <li key={index} aria-current={uploadStep === index + 1 ? 'step' : undefined}
-                style={{ padding: '10px 6px', borderRadius: 8, fontSize: 12, fontWeight: 700, textAlign: 'center', overflowWrap: 'anywhere',
+              {uploadStepLabels.map((label, index) => <li key={index}>
+                <button type="button" aria-current={uploadStep === index + 1 ? 'step' : undefined}
+                  disabled={isUploading} onClick={() => goToUploadStep((index + 1) as 1 | 2 | 3)}
+                  style={{ width: '100%', minHeight: 44, cursor: isUploading ? 'not-allowed' : 'pointer', border: 0, padding: '10px 6px', borderRadius: 8, fontSize: 12, fontWeight: 700, textAlign: 'center', overflowWrap: 'anywhere',
                   background: uploadStep === index + 1 ? '#0f392b' : 'var(--bg-surface-secondary)', color: uploadStep === index + 1 ? '#a7f3d0' : 'var(--text-muted)' }}>
                 {index + 1}. {label}
+                </button>
               </li>)}
             </ol>
             <h4 ref={uploadStepHeadingRef} tabIndex={-1} style={{ margin: 0, color: 'var(--text-main)' }}>
@@ -841,7 +860,6 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                 <label style={{ fontSize: "12px", fontWeight: 700, color: "var(--text-main)" }}>
                   فيديو الشرح للمقرر:
                 </label>
-                <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>الرفع إلى التخزين الخاص فقط؛ الروابط الخارجية غير محمية.</span>
               </div>
 
               <>
@@ -1128,7 +1146,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
             </fieldset>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               {uploadStep > 1 && <button type="button" className="btn-secondary" disabled={isUploading} onClick={() => {
-                setUploadStepError(''); setUploadStep(step => step === 3 ? 2 : 1);
+                goToUploadStep(uploadStep === 3 ? 2 : 1);
               }}>{lang === 'ar' ? 'السابق' : 'Back'}</button>}
               {uploadStep < 3 ? <button type="submit" className="btn-primary" disabled={isUploading} style={{ flex: 1, minHeight: 44 }}>
                 {lang === 'ar' ? 'التالي' : 'Next'}
@@ -1399,10 +1417,9 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                       overflow: "hidden",
                       boxShadow: isDeleteMode ? "0 2px 10px rgba(118, 40, 40, 0.25)" : "0 1px 4px rgba(0,0,0,0.04)",
                       display: "flex",
-                      height: "500px",
+                      minHeight: "340px",
                       minWidth: 0,
                       flexDirection: "column",
-                      justifyContent: "space-between",
                       transition: "transform 0.15s ease, box-shadow 0.15s ease",
                     }}
                   >
@@ -1494,8 +1511,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                     </div>
 
                     {/* Lesson Card Body (Matches Image 1) */}
-                    <div style={{ padding: "18px", flex: 1, minHeight: 0, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-                      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', scrollbarWidth: 'thin' }}>
+                    <div style={{ padding: "18px", display: "flex", flexDirection: "column", gap: 8 }}>
+                      <div>
                         <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)", lineHeight: "1.4", overflowWrap: 'anywhere' }}>
                           {lesson.title}
                         </h3>
