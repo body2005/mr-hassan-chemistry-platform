@@ -132,3 +132,20 @@ it('rejects a target outside the account catalog without any assessment request'
   expect(host.textContent).not.toContain('جارٍ التحقق من إتاحة التقييم');
   expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ tone: 'warning' }));
 });
+
+it.each(['ordering', 'matching'])('offers a text response with format guidance for %s', async type => {
+  mocks.request.mockResolvedValue({ ...quizResponse('Typed exam'), questions: [{ id: 'typed-question',
+    question_type: type, prompt: 'Labelled items', points: 7,
+    options: [{ key: 'A', text: 'Legacy option' }] }] });
+  await render(); await click('الامتحانات'); await click('بدء حل الاختبار');
+  expect(host.querySelector('input[type="radio"]')).toBeNull();
+  const input = host.querySelector('textarea')!;
+  expect(input).not.toBeNull();
+  const answer = type === 'ordering' ? '2,1,3' : '1-B,2-A';
+  expect(host.textContent).toContain(answer);
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, answer);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  expect(input.value).toBe(answer);
+});

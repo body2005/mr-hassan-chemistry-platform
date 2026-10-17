@@ -51,3 +51,19 @@ it('serializes Arabic manual-editor labels to valid API keys without changing th
   expect(sent.correct_answer).toBe('kg');
   expect(options.map(option => option.key)).toEqual(['أ', 'ب']);
 });
+
+it.each(['ordering', 'matching'])('publishes %s with the explicit answer and rejects an absent answer', async type => {
+  const fetcher = vi.fn<(input: string, init?: RequestInit) => Promise<Response>>(async () => new Response('{"id":"quiz"}', {status:201}));
+  vi.stubGlobal('fetch', fetcher);
+  const { courseService } = await import('./lmsService');
+  const answer = type === 'ordering' ? '2,1,3' : '1-B,2-A';
+  const payload = { course_id: 'course', title: 'Typed question', idempotency_key: 'qa',
+    questions: [{ question_type: type, question_text: 'Labelled items', correct_answer: answer, points: 7 }] };
+  await courseService.publishQuizToServer(payload);
+  expect(JSON.parse(fetcher.mock.calls[0][1]!.body as string).questions[0])
+    .toEqual({ question_type: type, prompt: 'Labelled items', correct_answer: answer, options: null, points: 7 });
+  fetcher.mockClear();
+  await expect(courseService.publishQuizToServer({ ...payload, questions: [{ ...payload.questions[0], correct_answer: '' }] }))
+    .rejects.toThrow('الإجابة الصحيحة');
+  expect(fetcher).not.toHaveBeenCalled();
+});

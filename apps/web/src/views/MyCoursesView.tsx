@@ -2959,7 +2959,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               {serverQuiz && !serverQuizResult && serverQuiz.questions[serverQuizQuestionIndex] && (() => {
                 const q = serverQuiz.questions[serverQuizQuestionIndex];
                 const opts = q.options || [];
-                const isMcq = Array.isArray(opts) && opts.length > 0;
+                const structuredType = ['ordering', 'matching'].includes(q.question_type) ? q.question_type : null;
+                const isMcq = !structuredType && Array.isArray(opts) && opts.length > 0;
                 const flagged = Boolean(serverQuizFlagged[q.id]);
                 return (
                   <div style={{ background: "var(--bg-surface, #ffffff)", border: "1px solid var(--border-color)", borderRadius: "16px", padding: "26px", boxShadow: "var(--card-shadow)" }}>
@@ -2987,6 +2988,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       <span style={{ marginInlineStart: "10px", fontSize: "11.5px", fontWeight: 800, color: "var(--text-muted)" }}>({tr('lesson.points', { count: q.points })})</span>
                     </div>
 
+                    {structuredType && <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>{tr(`lesson.${structuredType}AnswerHint`)}</p>}
                     {isMcq ? (
                       <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                         {opts.map((opt, optIdx) => {

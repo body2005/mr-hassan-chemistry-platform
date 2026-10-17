@@ -23,6 +23,8 @@ export type QuestionType =
   | "fill_in_blank"
   | "essay"
   | "short_answer"
+  | "ordering"
+  | "matching"
   | "coding"
   | "fill_in_the_blank";
 

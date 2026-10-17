@@ -81,6 +81,7 @@ async function computeFileFingerprint(file: File): Promise<string> {
 // Start a manual assessment empty; the teacher adds the first real question.
 // This keeps sample/example content out of production screens.
 const DEFAULT_MANUAL_QUESTIONS: GeneratedQuestion[] = [];
+type EditableQuestionType = Exclude<ReturnType<typeof canonicalQuestionType>, 'short_answer' | 'unknown'>;
 
 interface QuizGeneratorViewProps {
   courses: Course[];
@@ -191,9 +192,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
   const [sendScheduledNotification, setSendScheduledNotification] = useState<boolean>(() => initialDraft?.sendScheduledNotification ?? false);
 
 
-  function normalizeQuestionType(t?: string): "multiple_choice" | "true_false" | "essay" | "fill_in_blank" | "unknown" {
+  function normalizeQuestionType(t?: string): EditableQuestionType | "unknown" {
     const type = canonicalQuestionType(t);
-    return type === 'short_answer' || type === 'ordering' || type === 'matching' ? 'unknown' : type;
+    return type === 'short_answer' ? 'unknown' : type;
   }
 
   function getQuestionTypeLabel(t?: string): { code: string; label: string; bg: string; color: string } {
@@ -207,6 +208,10 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
         return { code: "ESSAY", label: "سؤال مقالي (Essay)", bg: "rgba(245, 158, 11, 0.12)", color: "#92400e" };
       case "fill_in_blank":
         return { code: "FILL_BLANK", label: "أكمل الفراغ (Fill in blank)", bg: "rgba(139, 92, 246, 0.12)", color: "#5b21b6" };
+      case "ordering":
+        return { code: "ORDERING", label: tr('lesson.type_ordering'), bg: "rgba(139, 92, 246, 0.12)", color: "#5b21b6" };
+      case "matching":
+        return { code: "MATCHING", label: tr('lesson.type_matching'), bg: "rgba(59, 130, 246, 0.12)", color: "#1e40af" };
       case "unknown":
         return { code: "UNKNOWN", label: "بحاجة لمراجعة التصنيف (Unknown)", bg: "rgba(239, 68, 68, 0.12)", color: "#b91c1c" };
     }
@@ -602,13 +607,13 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
     );
   }
 
-  function updateQuestionType(qId: number, newType: "multiple_choice" | "essay" | "true_false" | "fill_in_blank") {
+  function updateQuestionType(qId: number, newType: EditableQuestionType) {
     setActiveQuestionsList((prev) =>
       prev.map((q) => {
         if (q.id !== qId) return q;
         let newOptions = q.options;
         let needsAnswerReview = q.needs_answer_review;
-        const newCorrectAnswer = q.correct_answer;
+        let newCorrectAnswer = q.correct_answer;
 
         if (newType === "multiple_choice") {
           if (!newOptions || newOptions.length < 2) {
@@ -628,6 +633,10 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
             { key: "ب", text: "خطأ", is_correct: isCorrectFalse },
           ];
           needsAnswerReview = !isCorrectTrue && !isCorrectFalse;
+        } else if (newType === "ordering" || newType === "matching") {
+          newOptions = undefined;
+          if (normalizeQuestionType(q.question_type) !== newType) newCorrectAnswer = null;
+          needsAnswerReview = !newCorrectAnswer?.trim();
         } else if (newType === "essay" || newType === "fill_in_blank") {
           newOptions = undefined;
           needsAnswerReview = !newCorrectAnswer || !newCorrectAnswer.trim();
@@ -636,10 +645,12 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
           ...q,
           question_type: newType,
           options: newOptions,
+          correct_answer: newCorrectAnswer,
           needs_answer_review: needsAnswerReview,
         };
       })
     );
+    if (newType === "ordering" || newType === "matching") setEditingQuestionId(qId);
   }
 
   function updateOptionText(qId: number, optKey: string, newText: string) {
@@ -1484,7 +1495,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                             <select
                               aria-label={`نوع السؤال ${qIdx + 1}`}
                               value={normalizeQuestionType(q.question_type)}
-                              onChange={(e) => updateQuestionType(q.id, e.target.value as "multiple_choice" | "essay" | "true_false" | "fill_in_blank")}
+                              onChange={(e) => updateQuestionType(q.id, e.target.value as EditableQuestionType)}
                               style={{
                                 padding: "3px 8px",
                                 borderRadius: "6px",
@@ -1499,6 +1510,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                               <option value="true_false">صح أو خطأ</option>
                               <option value="essay">سؤال مقالي</option>
                               <option value="fill_in_blank">أكمل الفراغات</option>
+                              <option value="ordering">{tr('lesson.type_ordering')}</option>
+                              <option value="matching">{tr('lesson.type_matching')}</option>
                               {normalizeQuestionType(q.question_type) === "unknown" && (
                                 <option value="unknown">غير محدد (يحتاج مراجعة)</option>
                               )}
@@ -1836,6 +1849,20 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({ courses, c
                         <McqOptionsEditor question={q} editing={isEditing} onText={updateOptionText}
                           onCorrect={setCorrectOption} onAdd={addOptionToQuestion} onRemove={removeOptionFromQuestion}
                           onInitialize={() => updateQuestionType(q.id, "multiple_choice")} />
+                      )}
+
+                      {(normalizeQuestionType(q.question_type) === 'ordering' || normalizeQuestionType(q.question_type) === 'matching') && (
+                        <div style={{ marginTop: 12, padding: 14, border: '1px solid var(--border-color)', borderRadius: 10, background: 'var(--bg-surface-secondary)' }}>
+                          <strong>{tr(`lesson.type_${normalizeQuestionType(q.question_type)}`)}</strong>
+                          <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>{tr(`lesson.${normalizeQuestionType(q.question_type)}AnswerHint`)}</p>
+                          {isEditing ? <label style={{ display: 'block', fontSize: 13, fontWeight: 700 }}>
+                            {tr('lesson.structuredCorrectAnswer')}
+                            <textarea rows={2} value={q.correct_answer || ''} aria-label={tr('lesson.structuredCorrectAnswer')}
+                              onChange={event => updateQuestionCorrectAnswer(q.id, event.target.value)}
+                              style={{ width: '100%', boxSizing: 'border-box', marginTop: 6, padding: 10, borderRadius: 6, border: '1px solid var(--border-color-strong)', background: 'var(--bg-surface)', color: 'var(--text-main)' }} />
+                          </label> : <p style={{ whiteSpace: 'pre-wrap' }}>{tr('lesson.structuredCorrectAnswer')}: {q.correct_answer || '—'}</p>}
+                          <small>{tr('lesson.structuredAuthorHint')}</small>
+                        </div>
                       )}
 
                       {/* Fill in the Blank Student Answer Box & Definition */}
