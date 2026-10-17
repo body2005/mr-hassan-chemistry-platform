@@ -30,27 +30,70 @@ it('moves choices by keyboard while retaining item identities and boundaries', a
   const up = host.querySelector<HTMLButtonElement>('button[aria-label="تحريك الاختيار 1 لأعلى"]')!;
   expect(up.disabled).toBe(true);
 });
-it.each(['touch', 'mouse'])('drags a choice to another position using %s pointer events', async pointerType => {
+it.each(['touch', 'mouse'])('lifts, previews and then drops a choice using %s pointer events', async pointerType => {
   await render();
   const handle = host.querySelector<HTMLButtonElement>('button[aria-label^="اسحب الاختيار 1"]')!;
   const list = host.querySelector('ol')!;
   list.setPointerCapture = vi.fn(); list.hasPointerCapture = () => true; list.releasePointerCapture = vi.fn();
   let targetIndex = 1;
   Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => host.querySelectorAll('li')[targetIndex] });
-  const pointer = (name: string) => {
-    const event = new MouseEvent(name, { bubbles: true, button: 0, clientX: 10, clientY: 120 });
+  const pointer = (name: string, y = 120) => {
+    const event = new MouseEvent(name, { bubbles: true, button: 0, clientX: 10, clientY: y });
     Object.defineProperties(event, { pointerId: { value: 1 }, pointerType: { value: pointerType } });
     return event;
   };
-  await act(async () => handle.dispatchEvent(pointer('pointerdown')));
+  await act(async () => handle.dispatchEvent(pointer('pointerdown', 20)));
+  expect(document.querySelector('.ordering-drag-ghost')?.textContent).toContain('First');
+  expect(host.querySelector('.ordering-item--placeholder')?.getAttribute('data-drop-label')).toBe('ضع الاختيار هنا');
+  // Replacing touch's implicit capture on the handle must not cancel the list capture.
+  await act(async () => handle.dispatchEvent(pointer('lostpointercapture')));
+  expect(document.querySelector('.ordering-drag-ghost')).not.toBeNull();
   await act(async () => list.dispatchEvent(pointer('pointermove')));
-  expect(latest.map(item => item.key)).toEqual(['y', 'x', 'z']);
+  expect(latest.map(item => item.key)).toEqual(['x', 'y', 'z']);
+  expect([...host.querySelectorAll('li')].map(row => row.dataset.orderKey)).toEqual(['y', 'x', 'z']);
   targetIndex = 2;
-  await act(async () => list.dispatchEvent(pointer('pointermove')));
+  await act(async () => list.dispatchEvent(pointer('pointermove', 190)));
   await act(async () => list.dispatchEvent(pointer('pointerup')));
   expect(latest.map(item => item.key)).toEqual(['y', 'z', 'x']);
   expect(list.setPointerCapture).toHaveBeenCalledWith(1);
   expect(list.releasePointerCapture).toHaveBeenCalledWith(1);
+  expect(document.querySelector('.ordering-drag-ghost')).toBeNull();
+  expect(host.querySelector('.ordering-item--placeholder')).toBeNull();
+});
+
+it.each(['pointercancel', 'escape', 'outside'])('restores the initial order when a drag ends through %s', async reason => {
+  await render();
+  const list = host.querySelector('ol')!;
+  list.setPointerCapture = vi.fn(); list.hasPointerCapture = () => true; list.releasePointerCapture = vi.fn();
+  Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => reason === 'outside' ? document.body : host.querySelectorAll('li')[2] });
+  const event = (name: string, y: number) => {
+    const result = new MouseEvent(name, { bubbles: true, button: 0, clientX: 10, clientY: y });
+    Object.defineProperty(result, 'pointerId', { value: 1 }); return result;
+  };
+  await act(async () => host.querySelector('button')!.dispatchEvent(event('pointerdown', 20)));
+  await act(async () => list.dispatchEvent(event('pointermove', 160)));
+  if (reason === 'escape') await act(async () => list.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  else await act(async () => list.dispatchEvent(event(reason === 'outside' ? 'pointerup' : 'pointercancel', 160)));
+  expect(latest.map(item => item.key)).toEqual(['x', 'y', 'z']);
+  expect([...host.querySelectorAll('li')].map(row => row.dataset.orderKey)).toEqual(['x', 'y', 'z']);
+  expect(document.querySelector('.ordering-drag-ghost')).toBeNull();
+});
+
+it('commits the last pointer position when movement and release occur before a React render', async () => {
+  await render();
+  const list = host.querySelector('ol')!;
+  list.setPointerCapture = vi.fn(); list.hasPointerCapture = () => true; list.releasePointerCapture = vi.fn();
+  Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => host.querySelectorAll('li')[2] });
+  const event = (name: string, y: number) => {
+    const result = new MouseEvent(name, { bubbles: true, button: 0, clientX: 10, clientY: y });
+    Object.defineProperty(result, 'pointerId', { value: 1 }); return result;
+  };
+  await act(async () => host.querySelector('button')!.dispatchEvent(event('pointerdown', 20)));
+  await act(async () => {
+    list.dispatchEvent(event('pointermove', 180));
+    list.dispatchEvent(event('pointerup', 180));
+  });
+  expect(latest.map(item => item.key)).toEqual(['y', 'z', 'x']);
 });
 it('adds and removes teacher choices without inventing text or changing surviving identities', async () => {
   await render(true);

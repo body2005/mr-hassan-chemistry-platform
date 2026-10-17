@@ -24,6 +24,7 @@ export const lessonEn = {
   orderConfirm: "Confirm current order",
   orderCorrectSequence: "Correct choice order",
   orderMoved: "Choice moved to position {number}",
+  orderDropHere: "Drop the choice here",
   type_matching: "Matching",
   orderingAnswerHint: "Enter the item labels in the required order, separated by commas without spaces, for example: 2,1,3.",
   matchingAnswerHint: "Enter pairs in the order of the first column, separated by commas without spaces, for example: 1-B,2-A.",

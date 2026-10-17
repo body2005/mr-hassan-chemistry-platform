@@ -24,6 +24,7 @@ export const lessonAr = {
   orderConfirm: "اعتماد الترتيب الحالي",
   orderCorrectSequence: "الترتيب الصحيح للاختيارات",
   orderMoved: "انتقل الاختيار إلى الموضع {number}",
+  orderDropHere: "ضع الاختيار هنا",
   type_matching: "توصيل",
   orderingAnswerHint: "اكتب رموز العناصر بالترتيب المطلوب، مفصولة بفواصل دون مسافات، مثل: 2,1,3.",
   matchingAnswerHint: "اكتب أزواج التوصيل بترتيب عناصر العمود الأول، مفصولة بفواصل دون مسافات، مثل: 1-B,2-A.",
