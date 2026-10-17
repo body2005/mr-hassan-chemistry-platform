@@ -32,7 +32,7 @@ import { useLessonNavigation } from '../services/useLessonNavigation';
 import { LessonScheduleFields } from '../components/LessonScheduleFields';
 import { materialFailureMessage } from '../services/playbackFailure';
 import { newestLessonsFirst } from '../services/lessonOrder';
-import { MAX_LESSON_TITLE_LENGTH, validateLessonTitle } from '../services/uploadLimits';
+import { validateLessonTitle } from '../services/uploadLimits';
 
 /** Tracks the app-wide light/dark theme by watching the `data-theme`
  * attribute on <html>, so inline styles can pick theme-aware colors. */
@@ -136,6 +136,18 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadStep, setUploadStep] = useState<1 | 2 | 3>(1);
+  const [uploadStepError, setUploadStepError] = useState('');
+  const uploadFormRef = useRef<HTMLFormElement>(null);
+  const uploadSubmitPending = useRef(false);
+  const uploadStepHeadingRef = useRef<HTMLHeadingElement>(null);
+  const previewVideoRef = useRef<HTMLVideoElement>(null);
+  const uploadStepLabels = lang === 'ar'
+    ? ['الملفات والوحدة', 'بيانات الدرس', 'موعد الإتاحة']
+    : ['Files and unit', 'Lesson details', 'Availability'];
+  useEffect(() => {
+    uploadStepHeadingRef.current?.focus({ preventScroll: true });
+  }, [uploadStep]);
   const [courseModules, setCourseModules] = useState<Array<{ id: string; title: string; courseId: string }>>([]);
   const [selectedModuleId, setSelectedModuleId] = useState<string>("");
   const [publishDateTime, setPublishDateTime] = useState('');
@@ -411,8 +423,26 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
   }
 
   // Handle Form Submission: Create and Upload Lesson
+  function advanceUploadStep() {
+    setUploadStepError('');
+    if (!uploadFormRef.current?.reportValidity()) return;
+    try {
+      if (uploadStep === 1) {
+        if (!selectedVideoFile && attachedFiles.length === 0) throw new Error(lang === 'ar' ? 'اختر فيديو أو مذكرة للدرس أولًا.' : 'Choose a lesson video or material first.');
+        if (selectedModuleId === 'new' && !newModuleTitle.trim()) throw new Error(lang === 'ar' ? 'اكتب اسم الوحدة الجديدة.' : 'Enter the new unit name.');
+        if (selectedModuleId === 'new' && ([...newModuleTitle.trim()].length < 2 || [...newModuleTitle.trim()].length > 200)) throw new Error(lang === 'ar' ? 'اسم الوحدة يجب أن يكون من حرفين إلى 200 حرف.' : 'Unit names must contain 2–200 characters.');
+      } else if (uploadStep === 2) {
+        validateLessonTitle(lessonTitle, lang);
+        if (!Number.isFinite(lessonPrice) || lessonPrice < 0 || lessonPrice > 1_000_000) throw new Error(lang === 'ar' ? 'أدخل سعرًا من 0 إلى 1,000,000 ج.م.' : 'Enter a price between 0 and 1,000,000 EGP.');
+      }
+      previewVideoRef.current?.pause();
+      setUploadStep(step => step === 1 ? 2 : 3);
+    } catch (error) { setUploadStepError((error as Error).message); }
+  }
+
   async function handleUploadLesson(e: React.FormEvent) {
     e.preventDefault();
+    if (isUploading) return;
     try { validateLessonTitle(lessonTitle, lang); }
     catch (error) { notify((error as Error).message, 'danger'); return; }
 
@@ -556,6 +586,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
     }
 
     setIsUploading(false);
+    setUploadStep(1);
+    setUploadStepError('');
     setLessonTitle("");
     setLessonDescription("");
     setSelectedVideo(null);
@@ -778,143 +810,31 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
 
           {uploadSuccess && (
             <div style={{ padding: "10px 12px", background: "#dcfce7", color: "#166534", borderRadius: "8px", fontSize: "12px", fontWeight: 700, marginBottom: "14px" }}>
-              تم رفع وحفظ الدرس والمرفقات بنجاح!
+              {lang === 'ar' ? 'تم حفظ بيانات الدرس؛ تابع اكتمال رفع الملفات من قائمة الرفع.' : 'Lesson details saved; follow file upload completion in the upload panel.'}
             </div>
           )}
 
-          <form onSubmit={handleUploadLesson} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-            {/* Unit / Module Selection */}
-            <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
-                الوحدة الدراسية التابع لها الفيديو (اختياري):
-              </label>
-              <select
-                value={selectedModuleId}
-                onChange={(e) => { setSelectedModuleId(e.target.value); const module = courseModules.find(module => module.id === e.target.value); if (module) setSelectedCourseId(module.courseId); }}
-                style={{
-                  width: "100%",
-                  padding: "9px 12px",
-                  border: "1px solid var(--border-color-strong, #cbd5e1)",
-                  borderRadius: "8px",
-                  fontSize: "12px",
-                  background: "var(--bg-surface)",
-                  color: "var(--text-main)",
-                  boxSizing: "border-box",
-                  outline: "none",
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-              >
-                <option value="">بدون وحدة</option>
-                {courseModules.map((m, idx) => (
-                  <option key={m.id} value={m.id}>
-                    {m.title || `الوحدة ${idx + 1}`}
-                  </option>
-                ))}
-                <option value="new">+ إضافة وحدة دراسية جديدة للمقرر...</option>
-              </select>
-
-              {selectedModuleId === "new" && (
-                <div style={{ marginTop: "8px" }}>
-                  <input
-                    type="text"
-                    required
-                    value={newModuleTitle}
-                    onChange={(e) => setNewModuleTitle(e.target.value)}
-                    placeholder="اكتب اسم الوحدة الجديدة (مثال: الوحدة الثالثة: الكيمياء العضوية)..."
-                    style={{
-                      width: "100%",
-                      padding: "8px 12px",
-                      border: "1.5px solid #059669",
-                      borderRadius: "8px",
-                      fontSize: "12px",
-                      background: "var(--bg-surface)",
-                      color: "var(--text-main)",
-                      boxSizing: "border-box",
-                    }}
-                  />
-                </div>
-              )}
-            </div>
-
-            {/* Revision Video Toggle */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "flex-start",
-                gap: "10px",
-                padding: "10px 14px",
-                background: isRevision ? "rgba(16, 185, 129, 0.12)" : "var(--bg-surface-secondary)",
-                borderRadius: "10px",
-                border: isRevision ? "1.5px solid #059669" : "1px solid var(--border-color)",
-                transition: "all 0.15s ease",
-              }}
-            >
-              <input
-                id="isRevisionCheckbox"
-                type="checkbox"
-                checked={isRevision}
-                onChange={(e) => setIsRevision(e.target.checked)}
-                style={{
-                  width: "18px",
-                  height: "18px",
-                  marginTop: "2px",
-                  cursor: "pointer",
-                  accentColor: "#059669",
-                }}
-              />
-              <label htmlFor="isRevisionCheckbox" style={{ cursor: "pointer", userSelect: "none" }}>
-                <strong style={{ display: "block", fontSize: "13px", color: isRevision ? "#059669" : "var(--text-main)", marginBottom: "2px" }}>
-                  فيديو مراجعة / ورشة عمل
-                </strong>
-                <span style={{ fontSize: "11.5px", color: "var(--text-muted)", lineHeight: 1.4 }}>
-                  عند تفعيل هذا الخيار، سيتم تصنيف الفيديو كمراجعة ووضعه تلقائياً في تبويب «المراجعات» لدى الطلاب.
-                </span>
-              </label>
-            </div>
-
-            <div>
-              <label htmlFor="lesson-title" style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>عنوان الدرس:</label>
-              <input
-                id="lesson-title"
-                aria-describedby="lesson-title-limit"
-                type="text"
-                required
-                value={lessonTitle}
-                onChange={(e) => setLessonTitle(e.target.value)}
-                placeholder="مثال: الدرس 5: كمية التحرك وقانون نيوتن الثاني"
-                style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong, #cbd5e1)", borderRadius: "8px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)", boxSizing: "border-box" }}
-              />
-              <small id="lesson-title-limit" style={{ color: [...lessonTitle.trim()].length > MAX_LESSON_TITLE_LENGTH ? '#f87171' : 'var(--text-muted)' }}>
-                {lang === 'ar' ? 'حروف العنوان' : 'Title characters'}: {[...lessonTitle.trim()].length} / {MAX_LESSON_TITLE_LENGTH}
-              </small>
-            </div>
-
-            <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>وصف وملخص الدرس:</label>
-              <textarea
-                rows={2}
-                value={lessonDescription}
-                onChange={(e) => setLessonDescription(e.target.value)}
-                placeholder="اكتب نبذة عن القوانين والنقاط المشروحة في هذا الفيديو..."
-                style={{ width: "100%", padding: "8px 12px", border: "1px solid var(--border-color-strong, #cbd5e1)", borderRadius: "8px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)", boxSizing: "border-box" }}
-              />
-            </div>
-
-            <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
-                سعر شراء هذا الدرس منفرداً (ج.م) — حدد السعر أو اكتب 0 إذا كان متاحاً مجاناً:
-              </label>
-              <input
-                type="number"
-                min={0}
-                value={lessonPrice}
-                onChange={(e) => setLessonPrice(Math.max(0, Number(e.target.value) || 0))}
-                placeholder="50"
-                style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong, #cbd5e1)", borderRadius: "8px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)", boxSizing: "border-box" }}
-              />
-            </div>
-
+          <form ref={uploadFormRef} aria-label={lang === 'ar' ? 'رفع درس جديد' : 'Upload a lesson'} onSubmit={event => {
+            if (uploadStep < 3) { event.preventDefault(); advanceUploadStep(); }
+            else {
+              if (uploadSubmitPending.current) { event.preventDefault(); return; }
+              uploadSubmitPending.current = true;
+              void handleUploadLesson(event).finally(() => { uploadSubmitPending.current = false; });
+            }
+          }} style={{ display: "flex", flexDirection: "column", gap: "14px", minWidth: 0 }}>
+            <ol aria-label={lang === 'ar' ? 'خطوات رفع الدرس' : 'Lesson upload steps'} style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6, listStyle: 'none', padding: 0, margin: 0 }}>
+              {uploadStepLabels.map((label, index) => <li key={index} aria-current={uploadStep === index + 1 ? 'step' : undefined}
+                style={{ padding: '10px 6px', borderRadius: 8, fontSize: 12, fontWeight: 700, textAlign: 'center', overflowWrap: 'anywhere',
+                  background: uploadStep === index + 1 ? '#0f392b' : 'var(--bg-surface-secondary)', color: uploadStep === index + 1 ? '#a7f3d0' : 'var(--text-muted)' }}>
+                {index + 1}. {label}
+              </li>)}
+            </ol>
+            <h4 ref={uploadStepHeadingRef} tabIndex={-1} style={{ margin: 0, color: 'var(--text-main)' }}>
+              {lang === 'ar' ? `الخطوة ${uploadStep} من 3: ` : `Step ${uploadStep} of 3: `}{uploadStepLabels[uploadStep - 1]}
+            </h4>
+            {uploadStepError && <p role="alert" style={{ margin: 0, color: '#f87171' }}>{uploadStepError}</p>}
+            <fieldset hidden={uploadStep !== 1} disabled={isUploading || uploadStep !== 1} aria-label={uploadStepLabels[0]}
+              style={{ display: uploadStep === 1 ? 'flex' : 'none', flexDirection: 'column', gap: 14, border: 0, padding: 0, margin: 0, minWidth: 0 }}>
             {/* Protected video uploads only: external URLs bypass access controls. */}
             <div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
@@ -953,6 +873,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                         </button>
                       </div>
                       <video
+                        ref={previewVideoRef}
                         src={videoPreviewUrl}
                         controls
                         playsInline
@@ -1066,10 +987,152 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
               )}
             </div>
 
+            {/* Unit / Module Selection */}
+            <div>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
+                الوحدة الدراسية التابع لها الفيديو (اختياري):
+              </label>
+              <select
+                value={selectedModuleId}
+                onChange={(e) => { setSelectedModuleId(e.target.value); const module = courseModules.find(module => module.id === e.target.value); if (module) setSelectedCourseId(module.courseId); }}
+                style={{
+                  width: "100%",
+                  padding: "9px 12px",
+                  border: "1px solid var(--border-color-strong, #cbd5e1)",
+                  borderRadius: "8px",
+                  fontSize: "12px",
+                  background: "var(--bg-surface)",
+                  color: "var(--text-main)",
+                  boxSizing: "border-box",
+                  outline: "none",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                <option value="">بدون وحدة</option>
+                {courseModules.map((m, idx) => (
+                  <option key={m.id} value={m.id}>
+                    {m.title || `الوحدة ${idx + 1}`}
+                  </option>
+                ))}
+                <option value="new">+ إضافة وحدة دراسية جديدة للمقرر...</option>
+              </select>
+
+              {selectedModuleId === "new" && (
+                <div style={{ marginTop: "8px" }}>
+                  <input
+                    type="text"
+                    required
+                    value={newModuleTitle}
+                    onChange={(e) => setNewModuleTitle(e.target.value)}
+                    placeholder="اكتب اسم الوحدة الجديدة (مثال: الوحدة الثالثة: الكيمياء العضوية)..."
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      border: "1.5px solid #059669",
+                      borderRadius: "8px",
+                      fontSize: "12px",
+                      background: "var(--bg-surface)",
+                      color: "var(--text-main)",
+                      boxSizing: "border-box",
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Revision Video Toggle */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: "10px",
+                padding: "10px 14px",
+                background: isRevision ? "rgba(16, 185, 129, 0.12)" : "var(--bg-surface-secondary)",
+                borderRadius: "10px",
+                border: isRevision ? "1.5px solid #059669" : "1px solid var(--border-color)",
+                transition: "all 0.15s ease",
+              }}
+            >
+              <input
+                id="isRevisionCheckbox"
+                type="checkbox"
+                checked={isRevision}
+                onChange={(e) => setIsRevision(e.target.checked)}
+                style={{
+                  width: "18px",
+                  height: "18px",
+                  marginTop: "2px",
+                  cursor: "pointer",
+                  accentColor: "#059669",
+                }}
+              />
+              <label htmlFor="isRevisionCheckbox" style={{ cursor: "pointer", userSelect: "none" }}>
+                <strong style={{ display: "block", fontSize: "13px", color: isRevision ? "#059669" : "var(--text-main)", marginBottom: "2px" }}>
+                  فيديو مراجعة / ورشة عمل
+                </strong>
+                <span style={{ fontSize: "11.5px", color: "var(--text-muted)", lineHeight: 1.4 }}>
+                  عند تفعيل هذا الخيار، سيتم تصنيف الفيديو كمراجعة ووضعه تلقائياً في تبويب «المراجعات» لدى الطلاب.
+                </span>
+              </label>
+            </div>
+
+            </fieldset>
+            <fieldset hidden={uploadStep !== 2} disabled={isUploading || uploadStep !== 2} aria-label={uploadStepLabels[1]}
+              style={{ display: uploadStep === 2 ? 'flex' : 'none', flexDirection: 'column', gap: 14, border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+            <div>
+              <label htmlFor="lesson-title" style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>عنوان الدرس:</label>
+              <input
+                id="lesson-title"
+                type="text"
+                required
+                value={lessonTitle}
+                onChange={(e) => setLessonTitle(e.target.value)}
+                placeholder="مثال: الدرس 5: كمية التحرك وقانون نيوتن الثاني"
+                style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong, #cbd5e1)", borderRadius: "8px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)", boxSizing: "border-box" }}
+              />
+            </div>
+
+            <div>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>وصف وملخص الدرس:</label>
+              <textarea
+                rows={2}
+                value={lessonDescription}
+                onChange={(e) => setLessonDescription(e.target.value)}
+                placeholder="اكتب نبذة عن القوانين والنقاط المشروحة في هذا الفيديو..."
+                style={{ width: "100%", padding: "8px 12px", border: "1px solid var(--border-color-strong, #cbd5e1)", borderRadius: "8px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)", boxSizing: "border-box" }}
+              />
+            </div>
+
+            <div>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px", color: "var(--text-main)" }}>
+                سعر شراء هذا الدرس منفرداً (ج.م) — حدد السعر أو اكتب 0 إذا كان متاحاً مجاناً:
+              </label>
+              <input
+                type="number"
+                min={0}
+                value={lessonPrice}
+                onChange={(e) => setLessonPrice(Math.max(0, Number(e.target.value) || 0))}
+                placeholder="50"
+                style={{ width: "100%", padding: "9px 12px", border: "1px solid var(--border-color-strong, #cbd5e1)", borderRadius: "8px", fontSize: "12px", background: "var(--bg-surface)", color: "var(--text-main)", boxSizing: "border-box" }}
+              />
+            </div>
+
+            </fieldset>
+            <fieldset hidden={uploadStep !== 3} disabled={isUploading || uploadStep !== 3} aria-label={uploadStepLabels[2]}
+              style={{ display: uploadStep === 3 ? 'flex' : 'none', flexDirection: 'column', gap: 14, border: 0, padding: 0, margin: 0, minWidth: 0 }}>
             <LessonScheduleFields start={publishDateTime} end={availableUntil} announce={announceStudents}
               onStart={setPublishDateTime} onEnd={setAvailableUntil}
               onAnnounce={setAnnounceStudents} />
 
+            </fieldset>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              {uploadStep > 1 && <button type="button" className="btn-secondary" disabled={isUploading} onClick={() => {
+                setUploadStepError(''); setUploadStep(step => step === 3 ? 2 : 1);
+              }}>{lang === 'ar' ? 'السابق' : 'Back'}</button>}
+              {uploadStep < 3 ? <button type="submit" className="btn-primary" disabled={isUploading} style={{ flex: 1, minHeight: 44 }}>
+                {lang === 'ar' ? 'التالي' : 'Next'}
+              </button> : (
             <button
               type="submit"
               disabled={isUploading}
@@ -1089,6 +1152,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
               <Upload size={16} />
               {isUploading ? "جاري رفع الدرس والفيديو..." : "رفع وحفظ الدرس في المنصة"}
             </button>
+              )}
+            </div>
           </form>
         </div>
 
@@ -1318,8 +1383,8 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
               </button>
             </div>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 310px), 1fr))", gap: "20px" }}>
-              {filteredLessons.map((lesson, idx) => {
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: "20px" }}>
+              {filteredLessons.map((lesson) => {
                 const videoState = lessonVideoState(lesson, uploadTasks, getApiAuthScope());
                 const hasLessonVideo = videoState.phase === 'ready';
 
@@ -1358,20 +1423,7 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                       title={hasLessonVideo ? 'انقر لمشاهدة الفيديو والرد على استفسارات وتعليقات الطلاب' : videoState.label}
                     >
                       {/* Top Badges */}
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <span
-                          style={{
-                            fontSize: "11px",
-                            fontWeight: 800,
-                            background: "rgba(255,255,255,0.2)",
-                            color: "#ffffff",
-                            padding: "3px 8px",
-                            borderRadius: "6px",
-                            backdropFilter: "blur(4px)",
-                          }}
-                        >
-                          الدرس {idx + 1}
-                        </span>
+                      <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
                         <span
                           style={{
                             fontSize: "11px",
@@ -1447,9 +1499,9 @@ export const LessonManagementView: React.FC<LessonManagementViewProps> = ({
                         <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)", lineHeight: "1.4", overflowWrap: 'anywhere' }}>
                           {lesson.title}
                         </h3>
-                        <p style={{ margin: "0 0 12px", fontSize: "12.5px", color: "var(--text-muted)", lineHeight: "1.5" }}>
-                          {lesson.description || "شرح مبسط وتطبيقات عملية على مخرجات التعلم مع مذكرات وتلخيصات PDF."}
-                        </p>
+                        {lesson.description?.trim() && <p style={{ margin: "0 0 12px", fontSize: "12.5px", color: "var(--text-muted)", lineHeight: "1.5" }}>
+                          {lesson.description}
+                        </p>}
                       </div>
 
                       <div style={{ flexShrink: 0 }}>

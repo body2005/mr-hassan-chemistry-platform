@@ -6,15 +6,18 @@ import type { Course, CurrentUser } from '../types/lms';
 import type { UploadTask } from '../services/uploadManager';
 
 const mocks = vi.hoisted(() => ({ tasks: [] as UploadTask[], listener: undefined as ((tasks: UploadTask[]) => void) | undefined,
-  getCourses: vi.fn(), open: vi.fn(), unsubscribe: vi.fn() }));
+  getCourses: vi.fn(), addLesson: vi.fn(), enqueueVideo: vi.fn(), enqueueMaterials: vi.fn(),
+  confirm: vi.fn(), notify: vi.fn(), open: vi.fn(), unsubscribe: vi.fn() }));
 vi.mock('../services/uploadManager', () => ({ uploadManager: {
   getTasks: () => mocks.tasks,
   subscribe: (listener: (tasks: UploadTask[]) => void) => { mocks.listener = listener; listener(mocks.tasks); return mocks.unsubscribe; },
+  enqueueVideoUpload: mocks.enqueueVideo,
+  enqueueKnowledgeBatchUpload: mocks.enqueueMaterials,
 } }));
 vi.mock('../services/apiClient', () => ({ getApiAuthScope: () => 'teacher', fetchApiBlob: vi.fn() }));
-vi.mock('../services/lmsService', () => ({ courseService: { getCourses: mocks.getCourses, getCourseContent: async () => ({ modules: [] }) } }));
-vi.mock('../components/ConfirmWizard', () => ({ useConfirm: () => vi.fn() }));
-vi.mock('../components/ToastProvider', () => ({ useToast: () => vi.fn() }));
+vi.mock('../services/lmsService', () => ({ courseService: { getCourses: mocks.getCourses, addLesson: mocks.addLesson, getCourseContent: async () => ({ modules: [] }) } }));
+vi.mock('../components/ConfirmWizard', () => ({ useConfirm: () => mocks.confirm }));
+vi.mock('../components/ToastProvider', () => ({ useToast: () => mocks.notify }));
 vi.mock('../utils/i18nContext', () => ({ useTranslation: () => ({ lang: 'ar' }) }));
 vi.mock('../utils/exportEngine', () => ({ exportToDocx: vi.fn(), exportToExcel: vi.fn(), exportToPrintPdf: vi.fn() }));
 vi.mock('../components/VideoLessonPage', () => ({ VideoLessonPage: () => { mocks.open(); return <div>مشغل اختبار</div>; } }));
@@ -35,7 +38,62 @@ beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   window.history.replaceState(null, '', '/');
   mocks.tasks = []; mocks.open.mockClear(); mocks.getCourses.mockReset(); mocks.unsubscribe.mockClear();
+  mocks.addLesson.mockReset(); mocks.enqueueVideo.mockReset(); mocks.enqueueMaterials.mockReset(); mocks.confirm.mockReset(); mocks.notify.mockReset();
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+});
+
+it('keeps files and lesson details through all three steps and uploads only after final submission', async () => {
+  vi.stubGlobal('URL', class extends URL { static createObjectURL = () => 'blob:preview'; static revokeObjectURL() {} });
+  const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+  mocks.getCourses.mockResolvedValue([course]); mocks.addLesson.mockResolvedValue({ id: 'created' });
+  let confirmUpload!: (confirmed: boolean) => void;
+  mocks.confirm.mockReturnValue(new Promise<boolean>(resolve => { confirmUpload = resolve; }));
+  await render();
+  const form = host.querySelector<HTMLFormElement>('form[aria-label="رفع درس جديد"]')!;
+  const activeStep = () => form.querySelector<HTMLFieldSetElement>('fieldset:not([hidden])')!;
+  const click = async (text: string) => { await act(async () => [...form.querySelectorAll('button')].find(b => b.textContent?.trim() === text)!.click()); };
+  const type = async (field: HTMLInputElement | HTMLTextAreaElement, value: string) => {
+    const prototype = field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    await act(async () => { Object.getOwnPropertyDescriptor(prototype, 'value')!.set!.call(field, value); field.dispatchEvent(new Event('input', { bubbles: true })); });
+  };
+  await click('التالي');
+  expect(form.querySelector('[role="alert"]')?.textContent).toContain('اختر فيديو');
+  const video = new File(['video'], 'lecture.mp4', { type: 'video/mp4' });
+  const note = new File(['note'], 'lesson-notes.pdf', { type: 'application/pdf' });
+  for (const [input, file] of [
+    [form.querySelector<HTMLInputElement>('input[accept="video/*"]')!, video],
+    [form.querySelector<HTMLInputElement>('input[multiple]')!, note],
+  ] as const) {
+    await act(async () => { Object.defineProperty(input, 'files', { value: [file], configurable: true }); input.dispatchEvent(new Event('change', { bubbles: true })); });
+  }
+  await act(async () => form.querySelector<HTMLInputElement>('#isRevisionCheckbox')!.click());
+  await click('التالي');
+  expect(activeStep().getAttribute('aria-label')).toBe('بيانات الدرس');
+  await type(form.querySelector<HTMLInputElement>('#lesson-title')!, 'عنوان الدرس المحفوظ');
+  await type(form.querySelector('textarea')!, 'ملخص الدرس');
+  await type(form.querySelector<HTMLInputElement>('input[type="number"]')!, '75');
+  await click('التالي');
+  expect(activeStep().getAttribute('aria-label')).toBe('موعد الإتاحة');
+  expect(mocks.addLesson).not.toHaveBeenCalled(); expect(mocks.enqueueVideo).not.toHaveBeenCalled();
+  await click('السابق'); await click('السابق');
+  expect(form.querySelector<HTMLInputElement>('#isRevisionCheckbox')?.checked).toBe(true);
+  expect(activeStep().textContent).toContain('lecture.mp4'); expect(activeStep().textContent).toContain('lesson-notes.pdf');
+  await click('التالي');
+  expect(form.querySelector<HTMLInputElement>('#lesson-title')!.value).toBe('عنوان الدرس المحفوظ');
+  await click('التالي');
+  await type(activeStep().querySelector<HTMLInputElement>('input[type="date"]')!, '2099-01-01');
+  await type(activeStep().querySelector<HTMLInputElement>('input[type="time"]')!, '12:00');
+  await click('رفع وحفظ الدرس في المنصة');
+  await click('رفع وحفظ الدرس في المنصة');
+  expect(mocks.confirm).toHaveBeenCalledTimes(1);
+  expect(mocks.enqueueVideo).not.toHaveBeenCalled();
+  await act(async () => confirmUpload(true));
+  expect(mocks.addLesson).toHaveBeenCalledTimes(1);
+  expect(mocks.addLesson.mock.calls[0][1]).toMatchObject({ title: 'عنوان الدرس المحفوظ', price_egp: 75, content: 'ملخص الدرس\n<!--is_revision:true-->' });
+  expect(mocks.enqueueVideo).toHaveBeenCalledWith(expect.objectContaining({ file: video, lessonId: 'created' }));
+  expect(mocks.enqueueMaterials).toHaveBeenCalledWith(expect.objectContaining({ files: [note], lessonId: 'created' }));
+  expect(activeStep().getAttribute('aria-label')).toBe('الملفات والوحدة');
+  pause.mockRestore();
 });
 afterEach(async () => {
   await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); vi.useRealTimers();

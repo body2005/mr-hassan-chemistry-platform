@@ -131,3 +131,25 @@ retroactively rejects a valid lesson schedule that elapsed while encoding.
 
 Validation: 63 focused API tests, 31 frontend tests, targeted ESLint, frontend
 production build, worker image build and the real-file AV1 check passed.
+
+## Three-step lesson upload (2026-10-17)
+
+The teacher form now groups file selection, optional materials, unit selection
+and revision classification in step one; title, description and price in step
+two; and availability scheduling in step three. Back/Next navigation retains
+the selected File objects and entered values. Leaving the preview pauses it.
+Only final confirmation creates the lesson and enqueues file transfers; a
+pending submission guard prevents duplicate confirmation/submission. Invalid
+fields block their step, and server errors keep the final form for correction.
+
+Lesson cards form one vertical column, retaining newest-upload-first sorting.
+The title-length counter, numbered lesson badge and canned description were
+removed. A teacher-authored description is still shown. The form's success
+banner describes saved details and points to upload progress rather than
+claiming that queued media is already complete.
+
+Validation: the wizard regression covers empty selection, video plus PDF,
+revision selection, details retained after Back/Next, final scheduling, delayed
+confirmation, and duplicate-click prevention. Focused tests, targeted ESLint
+and the production web build passed. This change requires no database migration
+or worker replacement.
