@@ -1762,7 +1762,7 @@ def delete_lesson_material(
 def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db, response: Response) -> dict:
     """Student-facing per-lesson/unit assessments with access gating.
 
-    Require a purchase before querying assessment metadata. Only return
+    Require enrollment plus purchase of every linked paid lesson. Only return
     authorized lesson/assessment scopes; `accessible` describes the current
     action window, never substitutes for authorization.
     """
@@ -1779,14 +1779,12 @@ def list_course_assessments(course_id: uuid.UUID, user: CurrentUser, db: Db, res
         raise HTTPException(status_code=404, detail="Course not found")
 
     from app.services.course_purchase_access import require_purchased_course_access
-    purchased_lesson_ids = require_purchased_course_access(db, user, course)
+    purchased_lesson_ids = require_purchased_course_access(db, user, course, allow_free_lessons=True)
     enrolled = user.role == UserRole.STUDENT
     lessons = list(db.scalars(select(Lesson).where(Lesson.course_id == course_id)
         .order_by(Lesson.position, Lesson.id)).all())
     from app.services.payment_service import accessible_course_lesson_ids
     accessible_lessons = accessible_course_lesson_ids(db, user, course, lessons, enrolled=enrolled)
-    if purchased_lesson_ids is not None:
-        accessible_lessons &= purchased_lesson_ids
     lesson_ids = [lesson.id for lesson in lessons]
     lesson_titles = {lesson.id: lesson.title for lesson in lessons}
     visible_lessons = accessible_lessons if user.role == UserRole.STUDENT else set(lesson_ids)

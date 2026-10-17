@@ -57,7 +57,6 @@ import { assessmentBand, assessmentPercent } from '../services/assessmentOutcome
 import { useCourseAssessments } from '../services/useCourseAssessments';
 import { compareNewestLessons, newestLessonsFirst } from '../services/lessonOrder';
 import { LessonWatchProgress } from '../components/LessonWatchProgress';
-import { LessonPurchaseCatalog } from '../components/LessonPurchaseCatalog';
 
 const VideoLessonPage = lazy(() => import('../components/VideoLessonPage')
   .then(module => ({ default: module.VideoLessonPage })));
@@ -152,7 +151,8 @@ interface MyCoursesViewProps {
   onInitialAssessmentHandled?: () => void;
   onInitialLessonHandled?: () => void;
   enrolledCourses: Course[];
-  catalogCourses?: Course[];
+  enrolledCourseIds?: string[];
+  purchasedCourseIds?: string[];
   onEnrollCourse?: (courseId: string) => Promise<void>;
   onNavigateToCatalog: () => void;
   lang: Language;
@@ -179,7 +179,9 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   onInitialAssessmentHandled,
   onInitialLessonHandled,
   enrolledCourses,
-  catalogCourses = [],
+  enrolledCourseIds = [],
+  purchasedCourseIds = [],
+  onEnrollCourse,
   onNavigateToCatalog,
   lang,
   currentUser,
@@ -222,7 +224,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   const activeCourse =
     validEnrolledCourses.find((c) => c.id === selectedCourseId) || validEnrolledCourses[0];
-  const selectedAssessments = useCourseAssessments(activeCourse?.id, isStudent ? currentUser?.id : undefined, accessRevision);
+  const selectedAssessments = useCourseAssessments(activeCourse?.id,
+    isStudent && enrolledCourseIds.includes(activeCourse?.id || '') ? currentUser?.id : undefined, accessRevision);
   const reloadSelectedAssessments = selectedAssessments.retry;
 
   // Sub-tabs: Lessons, Revisions, Assignments, Quizzes, Books
@@ -339,6 +342,44 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   function handleBuyLesson(lesson: VideoLesson) {
     onCheckout({ productType: "lesson", productId: lesson.id });
+  }
+
+  async function ensureCourseEnrollment() {
+    if (!currentCourse || !isStudent || enrolledCourseIds.includes(currentCourse.id)) return;
+    if (!onEnrollCourse) throw new Error(lang === 'ar' ? 'تعذر تأكيد التسجيل' : 'Could not confirm enrollment');
+    await onEnrollCourse(currentCourse.id);
+  }
+
+  async function openCatalogLesson(lesson: VideoLesson) {
+    try {
+      await ensureCourseEnrollment();
+      const fresh = await courseService.getCourses({ skipCache: true });
+      const updated = fresh.find(course => course.id === currentCourse?.id)?.lessons.find(item => item.id === lesson.id);
+      if (updated) setActiveLessonModal(updated);
+    } catch (error) {
+      toast({ message: error instanceof Error ? error.message : tr('lesson.verifyAccessError'), tone: 'danger' });
+    }
+  }
+
+  async function openCatalogAssessment(item: CourseAssessmentRef) {
+    if (!currentCourse) return;
+    if (item.requiresPurchase !== false) {
+      const required = new Set(item.lessonIds || (item.lessonId ? [item.lessonId] : []));
+      const missing = currentCourse.lessons.find(lesson => required.has(lesson.id)
+        && Number(lesson.price || 0) > 0 && !purchasedLessonIds.includes(lesson.id));
+      if (missing) handleBuyLesson(missing);
+      return;
+    }
+    try {
+      await ensureCourseEnrollment();
+      const refs = await courseService.getCourseAssessmentRefs(currentCourse.id, { skipCache: true });
+      const allowed = refs.find(row => row.id === item.id && row.kind === item.kind && row.accessible);
+      if (!allowed) throw new Error(lang === 'ar' ? 'النشاط غير متاح حاليًا. يلزم شراء كل الدروس المدفوعة المرتبطة به والالتزام بموعد الإتاحة.' : 'This activity requires every linked paid lesson and must be within its availability window.');
+      if (allowed.kind === 'quiz') await openServerQuiz(allowed);
+      else await openServerAssignment(allowed);
+    } catch (error) {
+      toast({ message: error instanceof Error ? error.message : tr('lesson.verifyAccessError'), tone: 'danger' });
+    }
   }
 
   const [activeBookModal, setActiveBookModal] = useState<DisplayBookItem | null>(null);
@@ -1105,7 +1146,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
   // Server-published assessments (real, scoped to lessons/units, payment-gated).
   // Do not wait for assessment hydration of every other enrolled course.
-  const serverAssessments: CourseAssessmentRef[] = isStudent ? selectedAssessments.items : currentCourse?.assessments || [];
+  const authorized = new Map(selectedAssessments.items.map(item => [`${item.kind}:${item.id}`, item]));
+  const serverAssessments: CourseAssessmentRef[] = isStudent
+    ? [...(currentCourse?.assessments || []).filter(item => !authorized.has(`${item.kind}:${item.id}`)), ...authorized.values()]
+    : currentCourse?.assessments || [];
   const serverQuizzes = serverAssessments.filter((a) => a.kind === "quiz");
   const serverAssignments = serverAssessments.filter((a) => a.kind === "assignment");
   const lessonTitleById = new Map((currentCourse?.lessons || []).map((l) => [l.id, l.title]));
@@ -1237,7 +1281,6 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
     return (
       <div className="page-container">
         {initialLessonId && <p role="status">{tr("lesson.sharedSaved")}</p>}
-        <LessonPurchaseCatalog courses={catalogCourses} year={studentYear} enrolledIds={enrolledCourses.map(course => course.id)} lang={lang} onCheckout={onCheckout} fallback={
         <div style={{ textAlign: "center", padding: "80px 20px", background: "var(--bg-surface)", border: "1px solid var(--border-color)", borderRadius: "16px" }}>
           <BookOpen size={48} style={{ color: "var(--text-light)", margin: "0 auto 16px" }} />
           <h2 style={{ margin: "0 0 8px", fontSize: "20px", color: "var(--text-main)" }}>{lang === 'ar' ? 'لا توجد دروس مفعلة لحسابك' : 'No activated lessons yet'}</h2>
@@ -1247,7 +1290,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           <button className="btn-primary" onClick={onNavigateToCatalog}>
             {lang === 'ar' ? 'الدفع والاشتراكات' : 'Payments and subscriptions'}
           </button>
-        </div>} />
+        </div>
       </div>
     );
   }
@@ -1327,7 +1370,6 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
   return (
     <div className="page-container">
       <ToastRegion label={tr("lesson.courseMessages")} />
-      <LessonPurchaseCatalog courses={catalogCourses} year={studentYear} enrolledIds={enrolledCourses.map(course => course.id)} lang={lang} onCheckout={onCheckout} />
       {checkingAssessment && <p role="status">{tr('lesson.sharedAssessmentLoading')}</p>}
       {assessmentPreview?.userId === currentUser?.id && assessmentPreview?.courseId === activeCourse?.id && assessmentPreview && (
         <section role="region" aria-label={assessmentPreview.item.title} className="card" style={{ padding: 18, marginBottom: 18 }}>
@@ -1627,13 +1669,13 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
             </div>
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 320px), 1fr))", gap: "20px" }}>
-              {filteredLessons.map((lesson, idx) => {
+              {filteredLessons.map((lesson) => {
                 const isCompleted = completedLessonIds.includes(lesson.id);
                 const price = Number(lesson.price || 0);
                 const isPurchased =
                   !isStudent ||
-                  Number(activeCourse?.price || 0) > 0 ||
-                  price === 0 ||
+                  purchasedCourseIds.includes(activeCourse?.id || '') ||
+                  (Number(activeCourse?.price || 0) === 0 && price === 0) ||
                   purchasedLessonIds.includes(lesson.id) ||
                   localPurchasedIds.has(lesson.id);
                 const isPending = pendingRequestLessonIds.has(lesson.id);
@@ -1658,10 +1700,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                     <div
                       onClick={() =>
                         isPurchased
-                          ? setActiveLessonModal(lesson)
+                          ? void openCatalogLesson(lesson)
                           : isPending
                           ? toast({ message: tr("lesson.reviewRequest"), tone: "info" })
-                          : handleRequestAccess(lesson)
+                          : handleBuyLesson(lesson)
                       }
                       style={{
                         height: "150px",
@@ -1675,9 +1717,6 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       }}
                     >
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <span style={{ fontSize: "11px", fontWeight: 800, background: "rgba(255,255,255,0.2)", color: "#ffffff", padding: "3px 8px", borderRadius: "6px", backdropFilter: "blur(4px)" }}>
-                          {tr('lesson.lessonNumber', { number: idx + 1 })}
-                        </span>
                         <span style={{ fontSize: "11px", fontWeight: 800, background: "rgba(0,0,0,0.4)", color: "#ffffff", padding: "3px 8px", borderRadius: "6px" }}>
                           {lesson.durationFormatted}
                         </span>
@@ -1725,7 +1764,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                       unavailable={watchProgress?.userId === currentUser?.id && watchProgress.error} />}
                         {isStudent && <ScheduleBadges startsAt={lesson.publishAt} endsAt={lesson.availableUntil} />}
                         <p style={{ margin: "0 0 12px", fontSize: "12.5px", color: "var(--text-muted)", lineHeight: "1.5" }}>
-                          {lesson.description || tr("lesson.defaultDescription")}
+                          {lesson.description}
                         </p>
                       </div>
 
@@ -1738,7 +1777,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                         {isPurchased ? (
                           <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}><button
                             type="button"
-                            onClick={() => setActiveLessonModal(lesson)}
+                            onClick={() => void openCatalogLesson(lesson)}
                             className="btn-primary"
                             style={{ fontSize: "12px", padding: "7px 14px", gap: "6px" }}
                           >
@@ -2033,9 +2072,10 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
               <h3 style={{ margin: "0 0 6px", fontSize: "16px", fontWeight: 800, color: "var(--text-main)" }}>{asg.title}</h3>
               <ScheduleBadges startsAt={asg.startsAt} endsAt={asg.dueLabel} />
               <p style={{ margin: "0 0 14px", fontSize: "12.5px", color: "var(--text-muted)" }}>
-                {tr('lesson.linkedLesson', { title: asg.lessonId ? lessonTitleById.get(asg.lessonId) || "—" : tr("lesson.wholeCourse") })}
+                {tr('lesson.relatedLessons', { titles: (asg.lessonIds?.length ? asg.lessonIds : asg.lessonId ? [asg.lessonId] : []).map(id => lessonTitleById.get(id) || tr('lesson.relatedLesson')).join(lang === 'ar' ? '، ' : ', ') || tr('lesson.wholeCourse') })}
 
               </p>
+              {asg.requiresPurchase && <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>{lang === 'ar' ? 'يلزم شراء كل الدروس المدفوعة المرتبطة بهذا الواجب.' : 'Purchase every paid lesson linked to this assignment.'}</p>}
               {asg.accessible ? (
                 <button
                   className="btn-primary"
@@ -2045,8 +2085,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   <FileCheck size={14} /> {tr("lesson.openAssignment")}
                 </button>
               ) : (
-                <button className="btn-primary" style={{ width: "100%", justifyContent: "center", gap: 6 }} onClick={() => { const lesson = (currentCourse?.lessons || []).find((l) => l.id === asg.lessonId); if (lesson) handleBuyLesson(lesson); }}>
-                  <Lock size={14} /> {tr("lesson.buyAssignmentSolve")}
+                <button className="btn-primary" style={{ width: "100%", justifyContent: "center", gap: 6 }} onClick={() => void openCatalogAssessment(asg)}>
+                  <Lock size={14} /> {asg.requiresPurchase === false ? tr('lesson.openAssignment') : tr("lesson.buyAssignmentSolve")}
                 </button>
               )}
             </div>
@@ -2240,6 +2280,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
 
                 </p>
               </div>
+              {qz.requiresPurchase && <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>{lang === 'ar' ? 'يلزم شراء كل الدروس المدفوعة المرتبطة بهذا الامتحان.' : 'Purchase every paid lesson linked to this exam.'}</p>}
               {quizAvailability(qz) ? <div>
                 <p role="status">{quizAvailability(qz)}</p>
                 {(qz.attemptsUsed ?? 0) > 0 && <button type="button" className="btn-secondary" onClick={() => void openQuizResultPage(qz.id)}>{tr("lesson.result")}</button>}
@@ -2358,8 +2399,8 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
                   )}
                 </div>
               ) : (
-                <button className="btn-primary" style={{ width: "100%", justifyContent: "center", gap: 6 }} onClick={() => { const lesson = (currentCourse?.lessons || []).find((l) => l.id === qz.lessonId); if (lesson) handleBuyLesson(lesson); }}>
-                  <Lock size={14} /> {tr("lesson.buyExam")}
+                <button className="btn-primary" style={{ width: "100%", justifyContent: "center", gap: 6 }} onClick={() => void openCatalogAssessment(qz)}>
+                  <Lock size={14} /> {qz.requiresPurchase === false ? (lang === 'ar' ? 'فتح الامتحان' : 'Open exam') : tr("lesson.buyExam")}
                 </button>
               )}
             </div>

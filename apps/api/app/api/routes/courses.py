@@ -202,7 +202,11 @@ def _safe_course_responses(db: Session, user: User | None, courses: list, *,
             elif entitlement.entitlement_type == EntitlementType.LESSON:
                 lesson_entitlements.add(entitlement.resource_id)
 
+    from app.services.assessment_catalog import assessment_catalog
+    previews = assessment_catalog(db, user, courses,
+        [orm_lessons_by_id[lid] for lid in all_lesson_ids], course_entitlements, lesson_entitlements) if user else {}
     for course in responses:
+        course.catalog_assessments = previews.get(course.id, [])
         is_enrolled = course.id in enrolled_course_ids
         course_is_free = float(course.price_egp or 0) == 0
         has_course_entitlement = course.id in course_entitlements

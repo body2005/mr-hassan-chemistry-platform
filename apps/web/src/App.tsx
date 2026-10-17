@@ -487,9 +487,9 @@ function App() {
       if (enrollmentIntent?.id === courseId) {
         setEnrollmentIntent(null); saveEnrollmentIntent(null); setEnrollmentError('');
       }
-      const course = await courseService.getMappedCourseContent(courseId);
-      const assessments = await courseService.getCourseAssessmentRefs(courseId);
-      setCourses(existing => [...existing.filter(c => c.id !== courseId), { ...course, assessments }]);
+      // Free enrollment must hydrate only server-authorized lesson content;
+      // it must not need a paid course-detail admission to finish.
+      setCourses(await courseService.getCourses({ skipCache: true }));
     } catch (error) {
       if (error instanceof ApiClientError && [402, 403].includes(error.status)) {
         // Enrollment alone cannot read purchased course details/assessments.
@@ -585,10 +585,6 @@ function App() {
     // Keep the selected auth tab across reload; enrollment intent is separate.
     window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${authTabHash(tab)}`);
   }
-
-  const enrolledCoursesList = courses.filter((c) => {
-    return enrolledCourseIds.includes(c.id);
-  });
 
   const activeEntitlements = useMemo(() => entitlements.filter((item) => item.active), [entitlements]);
 
@@ -810,8 +806,9 @@ function App() {
               window.history.replaceState(window.history.state, '', `${page}${params.size ? `?${params}` : ''}`);
             }}
             onInitialLessonHandled={() => { clearSharedLesson(); setSharedLessonTarget(null); }}
-            enrolledCourses={enrolledCoursesList}
-            catalogCourses={courses}
+            enrolledCourses={courses}
+            enrolledCourseIds={enrolledCourseIds}
+            purchasedCourseIds={activeEntitlements.filter(item => item.entitlement_type === 'course').map(item => item.resource_id || '')}
             onEnrollCourse={handleEnrollCourse}
             onNavigateToCatalog={() => navigateToTab("Payments")}
             lang={lang}

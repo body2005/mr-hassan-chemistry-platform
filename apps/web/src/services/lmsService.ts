@@ -90,6 +90,7 @@ type ApiUser = {
 };
 
 type ApiCourse = {
+  catalog_assessments?: Array<{id: string; kind: 'quiz' | 'assignment'; title: string; lesson_ids: string[]; requires_purchase: boolean}>;
   grade_level?: "SECONDARY_1" | "SECONDARY_2" | "SECONDARY_3" | null;
   id: string;
   institution_id?: string;
@@ -335,7 +336,10 @@ function mapApiCourse(course: ApiCourse): Course {
     lessons,
     enrolledStudentsCount: 0,
     price: Number(course.price_egp || 0),
-    assessments: [],
+    assessments: (course.catalog_assessments || []).map(item => ({
+      id: item.id, kind: item.kind, title: item.title, lessonIds: item.lesson_ids,
+      lessonId: item.lesson_ids[0], accessible: false, catalogOnly: true, requiresPurchase: item.requires_purchase,
+    })),
   };
 }
 

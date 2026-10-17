@@ -103,12 +103,14 @@ def test_unenrolled_students_receive_no_assessment_metadata(db, account):
 
 
 @pytest.mark.parametrize('state', [EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED])
-def test_free_enrollment_cannot_read_purchase_endpoints_but_sales_entries_are_redacted(db, state):
+def test_free_enrollment_reads_only_free_activities_and_sales_entries_stay_redacted(db, state):
     inst, _, student, _, course, free, paid, quiz, *_ = domain(db)
     db.add(Enrollment(course_id=course.id, student_id=student.id, status=state)); db.commit()
     client = login(TestClient(app), student, inst.slug)
     response = client.get(f'/api/v1/courses/{course.id}/assessments')
-    assert response.status_code == 403
+    assert response.status_code == 200
+    assert [row['id'] for row in response.json()['quizzes']] == [str(quiz.id)]
+    assert response.json()['assignments'] == []
     assert str(paid.id) not in response.text
     assert 'SEALED' not in response.text
     assert client.get(f'/api/v1/courses/{course.id}').status_code == 403

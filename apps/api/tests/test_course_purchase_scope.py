@@ -48,18 +48,18 @@ def test_enrollment_or_an_unrelated_inactive_purchase_does_not_authorize_either_
     client = login(TestClient(app), student, inst.slug)
     for suffix in ['', '/', '/assessments', '/assessments/']:
         response = client.get(f'/api/v1/courses/{course.id}{suffix}', follow_redirects=False)
-        assert response.status_code == 403
+        assert response.status_code == (200 if 'assessments' in suffix else 403)
         assert 'SEALED' not in response.text and str(paid.id) not in response.text
 
 
 def test_one_lesson_purchase_returns_only_that_lessons_detail_and_assessments(db):
-    inst, owner, student, _, course, free, paid, _, paid_quiz, assignment = domain(db)
+    inst, owner, student, _, course, free, paid, free_quiz, paid_quiz, assignment = domain(db)
     db.add(Enrollment(course_id=course.id, student_id=student.id))
     paid_quiz.starts_at = datetime.now(timezone.utc) - timedelta(hours=1)
     general = Quiz(institution_id=inst.id, course_id=course.id, creator_id=owner.id,
         title='UNPURCHASED GENERAL QUIZ', status='published')
     unit = Quiz(institution_id=inst.id, course_id=course.id, creator_id=owner.id,
-        module_id=paid.module_id, title='UNPURCHASED FULL UNIT QUIZ', status='published')
+        module_id=paid.module_id, title='AUTHORIZED MIXED UNIT QUIZ', status='published')
     db.add_all([general, unit]); db.commit()
     grant(db, inst, student, paid.id)
     client = login(TestClient(app), student, inst.slug)
@@ -75,10 +75,10 @@ def test_one_lesson_purchase_returns_only_that_lessons_detail_and_assessments(db
         response = client.get(f'/api/v1/courses/{course.id}{suffix}', follow_redirects=False)
         assert response.status_code == 200
         data = response.json()
-        assert [row['id'] for row in data['lessons']] == [str(paid.id)]
-        assert [row['id'] for row in data['quizzes']] == [str(paid_quiz.id)]
+        assert {row['id'] for row in data['lessons']} == {str(free.id), str(paid.id)}
+        assert {row['id'] for row in data['quizzes']} == {str(free_quiz.id), str(paid_quiz.id), str(unit.id)}
         assert [row['id'] for row in data['assignments']] == [str(assignment.id)]
-        assert 'UNPURCHASED' not in response.text and str(free.id) not in response.text
+        assert 'UNPURCHASED' not in response.text
         assert response.headers['cache-control'] == 'private, no-store'
 
 
@@ -112,7 +112,7 @@ def test_restoring_an_unpurchased_accounts_own_cookie_does_not_grant_access(db):
     client = login(TestClient(app), student, inst.slug)
     session = client.cookies.get('matgar_session')
     assert session
-    path = f'/api/v1/courses/{course.id}/assessments'
+    path = f'/api/v1/courses/{course.id}'
     assert client.get(path).status_code == 403
     client.cookies.clear()
     assert client.get(path).status_code == 401

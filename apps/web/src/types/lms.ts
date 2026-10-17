@@ -115,6 +115,9 @@ export interface VideoLesson {
 }
 
 export interface CourseAssessmentRef {
+  /** Minimal published catalogue card; never contains questions or solutions. */
+  catalogOnly?: boolean;
+  requiresPurchase?: boolean;
   id: string;
   kind: "quiz" | "assignment";
   title: string;

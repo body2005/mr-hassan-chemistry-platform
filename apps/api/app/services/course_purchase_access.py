@@ -11,7 +11,7 @@ from app.models.user import User, UserRole
 from app.services.payment_service import is_entitlement_active
 
 
-def require_purchased_course_access(db: Session, user: User, course: Course | None) -> set[uuid.UUID] | None:
+def require_purchased_course_access(db: Session, user: User, course: Course | None, *, allow_free_lessons=False) -> set[uuid.UUID] | None:
     """Return purchased lesson IDs; None is an authorized whole-course scope."""
     if course is None or (user.role != UserRole.PLATFORM_ADMIN
                          and course.institution_id != user.institution_id):
@@ -51,5 +51,10 @@ def require_purchased_course_access(db: Session, user: User, course: Course | No
             return None
         purchased.add(row.resource_id)
     if not purchased:
+        if allow_free_lessons and float(course.price_egp or 0) == 0:
+            free = set(db.scalars(select(Lesson.id).where(Lesson.course_id == course.id,
+                Lesson.price_egp == 0, Lesson.publication_status == 'published')))
+            if free:
+                return free
         raise HTTPException(403, 'An active lesson purchase is required')
     return purchased

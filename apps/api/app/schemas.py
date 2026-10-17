@@ -333,6 +333,14 @@ class ModuleResponse(BaseModel):
     lessons: list[LessonResponse] = []
 
 
+class AssessmentCatalogSummary(BaseModel):
+    id: uuid.UUID
+    kind: Literal['quiz', 'assignment']
+    title: str
+    lesson_ids: list[uuid.UUID]
+    requires_purchase: bool
+
+
 class CourseResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -349,6 +357,7 @@ class CourseResponse(BaseModel):
     price_egp: float = 0
     grade_level: str | None = None
     modules: list[ModuleResponse] = []
+    catalog_assessments: list[AssessmentCatalogSummary] = []
 
 
 class PublicCourseResponse(BaseModel):

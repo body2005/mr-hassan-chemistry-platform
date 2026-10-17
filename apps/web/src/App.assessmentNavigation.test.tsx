@@ -19,9 +19,9 @@ vi.mock('./components/Header', () => ({ Header: ({ notifications, onSelectNotifi
   <button onClick={() => onSelectNotification(notifications[0])}>Open notification</button> }));
 vi.mock('./views/LandingPageView', () => ({ LandingPageView: () => <p>Landing</p> }));
 vi.mock('./views/AuthView', () => ({ AuthView: () => <p>Sign in</p> }));
-vi.mock('./views/MyCoursesView', () => ({ MyCoursesView: (props: { initialAssessment?: SharedAssessment; onInitialAssessmentHandled: () => void; catalogCourses: Course[] }) => {
+vi.mock('./views/MyCoursesView', () => ({ MyCoursesView: (props: { initialAssessment?: SharedAssessment; onInitialAssessmentHandled: () => void; enrolledCourses: Course[] }) => {
   mocks.received(props.initialAssessment);
-  mocks.catalogReceived(props.catalogCourses);
+  mocks.catalogReceived(props.enrolledCourses);
   return <div><p>Courses view</p><button onClick={props.onInitialAssessmentHandled}>Handled</button></div>;
 } }));
 const target: SharedAssessment = { courseId: '11111111-1111-4111-8111-111111111111', assessmentId: '22222222-2222-4222-8222-222222222222', kind: 'quiz' };
