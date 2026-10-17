@@ -377,8 +377,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 <strong style={{ fontSize: "18px", color: "#059669", display: "block", marginTop: "2px" }}>{summary?.uploaded_videos_count ?? '—'}</strong>
               </div>
               <div style={{ background: "var(--bg-surface-secondary)", padding: "16px", borderRadius: "12px", border: "1px solid var(--border-color)" }}>
-                <span style={{ fontSize: "12px", color: "var(--text-muted)", display: "block" }}>{lang === "ar" ? "الطلاب المسجلون" : "Enrolled Students"}</span>
-                <strong style={{ fontSize: "18px", color: "#2563eb", display: "block", marginTop: "2px" }}>{summary?.enrolled_students_count ?? '—'}</strong>
+                <span style={{ fontSize: "12px", color: "var(--text-muted)", display: "block" }}>{summary?.registered_students_count != null
+                  ? (lang === 'ar' ? 'حسابات الطلاب المسجلة' : 'Registered student accounts')
+                  : (lang === 'ar' ? 'الطلاب المشتركون' : 'Enrolled students')}</span>
+                <strong style={{ fontSize: "18px", color: "#2563eb", display: "block", marginTop: "2px" }}>{summary?.registered_students_count ?? summary?.enrolled_students_count ?? '—'}</strong>
               </div>
             </div>
 

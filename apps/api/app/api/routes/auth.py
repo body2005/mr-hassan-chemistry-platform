@@ -78,7 +78,13 @@ def profile_summary(user: CurrentUser, db: Db):
     # Count lessons with a stored ready video, not pending upload jobs.
     videos = db.scalar(select(func.count(Lesson.id))
                        .where(Lesson.course_id.in_(managed), Lesson.kind == "video", Lesson.video_asset_key.is_not(None))) or 0
-    return {"enrolled_students_count": students, "uploaded_videos_count": videos}
+    from app.services.student_management import manages_registered_students
+    summary = {"enrolled_students_count": students, "uploaded_videos_count": videos}
+    if manages_registered_students(user):
+        summary["registered_students_count"] = db.scalar(select(func.count(User.id)).where(
+            User.institution_id == user.institution_id, User.role == UserRole.STUDENT,
+            User.deleted_at.is_(None))) or 0
+    return summary
 
 
 def _cookie_options(request: Request | None = None) -> tuple[str, bool]:

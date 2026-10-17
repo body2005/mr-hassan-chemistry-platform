@@ -1482,7 +1482,7 @@ export type ApiManagedUser = Pick<
 };
 
 export const userService = {
-  async getProfileSummary(): Promise<{enrolled_students_count?: number; uploaded_videos_count?: number; progress?: Array<{lesson_id: string; title: string; completion_percent: number}>;
+  async getProfileSummary(): Promise<{enrolled_students_count?: number; registered_students_count?: number | null; uploaded_videos_count?: number; progress?: Array<{lesson_id: string; title: string; completion_percent: number}>;
     grade_summary?: {total_overall_grade: number | null; earned_points: number; possible_points: number;
       pending_assessments_count: number; unattempted_assessments_count: number; grade_basis: 'approved'}
   }> {

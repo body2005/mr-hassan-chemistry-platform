@@ -46,6 +46,7 @@ from app.models.platform import (
 from app.models.progress import LessonProgress
 from app.models.platform import LessonComment, AttemptStatus, QuizAttempt
 from app.models.user import User, UserRole
+from app.services.student_management import manages_registered_students
 from app.schemas import (
     AnalyticsResponse,
     AssignmentCreateRequest,
@@ -1608,10 +1609,13 @@ def list_users(user: Manager, db: Db, role: UserRole | None = None) -> list[Mana
     if role:
         query = query.where(User.role == role)
     if user.role == UserRole.TEACHER:
-        enrolled_students = select(Enrollment.student_id).join(
-            Course, Course.id == Enrollment.course_id
-        ).where(Course.teacher_id == user.id)
-        query = query.where((User.id == user.id) | (User.id.in_(enrolled_students)))
+        if manages_registered_students(user):
+            query = query.where((User.id == user.id) | (User.role == UserRole.STUDENT))
+        else:
+            enrolled_students = select(Enrollment.student_id).join(
+                Course, Course.id == Enrollment.course_id
+            ).where(Course.teacher_id == user.id)
+            query = query.where((User.id == user.id) | (User.id.in_(enrolled_students)))
     users = db.scalars(query.order_by(User.created_at.desc())).all()
     from app.services.gradebook import published_grade_summaries, group_grade_summary
     summaries = published_grade_summaries(db, user, [item.id for item in users])
@@ -1635,7 +1639,7 @@ def block_user(user_id: uuid.UUID, actor: Manager, db: Db, request: Request) -> 
     )
     if target is None:
         raise HTTPException(status_code=404, detail="Student not found")
-    if actor.role == UserRole.TEACHER:
+    if actor.role == UserRole.TEACHER and not manages_registered_students(actor):
         has_course = db.scalar(
             select(Enrollment.id)
             .join(Course, Course.id == Enrollment.course_id)
@@ -1670,7 +1674,7 @@ def delete_user(user_id: uuid.UUID, actor: Manager, db: Db, request: Request) ->
     )
     if target is None:
         raise HTTPException(status_code=404, detail="Student not found")
-    if actor.role == UserRole.TEACHER:
+    if actor.role == UserRole.TEACHER and not manages_registered_students(actor):
         has_course = db.scalar(
             select(Enrollment.id)
             .join(Course, Course.id == Enrollment.course_id)

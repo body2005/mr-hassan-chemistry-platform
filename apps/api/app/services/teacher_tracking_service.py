@@ -10,15 +10,20 @@ from app.models.course import Course, Enrollment, EnrollmentStatus
 from app.models.teacher_tracking import TeacherTrackingColumn, TeacherTrackingValue
 from app.models.user import User, UserRole
 from app.schemas_tracking import TrackingColumnCreate
+from app.services.student_management import manages_registered_students
 
 MAX_COLUMNS = 50
 
 
 def eligible_students(user: User):
-    return select(User.id).where(
+    query = select(User.id).where(
         User.institution_id == user.institution_id,
         User.role == UserRole.STUDENT,
         User.deleted_at.is_(None),
+    )
+    if manages_registered_students(user):
+        return query
+    return query.where(
         User.id.in_(
             select(Enrollment.student_id)
             .join(Course, Course.id == Enrollment.course_id)

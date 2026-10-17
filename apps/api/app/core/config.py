@@ -7,6 +7,7 @@ load_dotenv()
 
 from pydantic import AliasChoices, Field, SecretStr, model_validator
 from typing import Literal
+from uuid import UUID
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,6 +51,9 @@ class Settings(BaseSettings):
     smtp_from_email: str | None = None
     smtp_tls_verify: bool = True
     default_institution_slug: str = "demo"
+    # Explicit account-administration capability; never a content entitlement.
+    # JSON list of teacher UUIDs, still restricted to each teacher's institution.
+    registered_student_manager_ids: list[UUID] = Field(default_factory=list)
     database_url: str = Field(default="sqlite:///./learning_website.db", repr=False, exclude=True)
     db_pool_size: int = Field(default=15, ge=1, le=50)
     db_max_overflow: int = Field(default=25, ge=0, le=100)
