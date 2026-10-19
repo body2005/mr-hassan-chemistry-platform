@@ -17,6 +17,7 @@ from redis.asyncio import Redis
 from app.core.config import get_settings
 from app.core.leases import ResourceLease
 from app.core.rate_limit import _get_redis_client
+from app.core.performance import measure
 
 # Inherit Uvicorn's operational handler/level; no tokens or event payloads.
 logger = logging.getLogger("uvicorn.error.realtime")
@@ -122,7 +123,13 @@ class RealTimeEventBroker:
             if target_roles is not None and sub.role not in target_roles:
                 continue
             if sub.queue.full():
-                sub.queue.get_nowait()
+                # Hints are not durable history. End a slow consumer instead
+                # of retaining an unbounded backlog or silently losing its last
+                # update. Reconnect reloads authoritative state in the client.
+                while not sub.queue.empty():
+                    sub.queue.get_nowait()
+                sub.queue.put_nowait(None)
+                continue
             sub.queue.put_nowait(envelope["payload"])
             delivered += 1
         return delivered
@@ -146,11 +153,19 @@ class RealTimeEventBroker:
     ) -> EventSubscription:
         await self.start()
         self.set_loop(asyncio.get_running_loop())
+        settings = get_settings()
+        # A finite process budget complements the distributed tenant budget.
+        # register mutates the loop's map without await after the final check.
+        if len(self._subscribers) >= settings.sse_process_limit:
+            raise HTTPException(503, 'Realtime process capacity reached', headers={'Retry-After': '5'})
         sub_id = uuid.uuid4()
         lease = ResourceLease([(f"sse:user:{institution_id}:{user_id}", 5),
-                               (f"sse:institution:{institution_id}", 200)], global_index=2)
+                               (f"sse:institution:{institution_id}", settings.sse_institution_limit)], global_index=2)
         distributed = await lease.acquire()
-        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=200)
+        if len(self._subscribers) >= settings.sse_process_limit:
+            await lease.release()
+            raise HTTPException(503, 'Realtime process capacity reached', headers={'Retry-After': '5'})
+        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=settings.sse_queue_size)
         sub = EventSubscription(
             id=sub_id,
             institution_id=institution_id,
@@ -274,8 +289,10 @@ async def sse_event_generator(
                 msg = await asyncio.wait_for(sub.queue.get(), timeout=min(15.0, remaining))
                 if monotonic() >= deadline:
                     break
-                if authorized and not await asyncio.to_thread(authorized):
-                    break
+                if authorized:
+                    with measure('sse_auth_ms'):
+                        if not await asyncio.to_thread(authorized):
+                            break
                 if msg is None:
                     # Subscriber was unregistered
                     break
@@ -286,8 +303,10 @@ async def sse_event_generator(
             except asyncio.TimeoutError:
                 if monotonic() >= deadline:
                     break
-                if authorized and not await asyncio.to_thread(authorized):
-                    break
+                if authorized:
+                    with measure('sse_auth_ms'):
+                        if not await asyncio.to_thread(authorized):
+                            break
                 # Keep-alive comment line (standard SSE heartbeat)
                 yield ": ping\n\n"
     except asyncio.CancelledError:

@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from app.core.config import get_settings
 from app.core.rate_limit import _get_redis_client
+from app.core.performance import measure
 
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 120
@@ -58,8 +59,9 @@ class ResourceLease:
                 raise HTTPException(503, "Admission service temporarily unavailable", headers={"Retry-After": "2"})
             return False
         try:
-            denied = await asyncio.to_thread(self.client.eval, ACQUIRE, len(self.keys), *self.keys,
-                                             self.token, LEASE_SECONDS, *self.limits)
+            with measure('redis_admission_ms'):
+                denied = await asyncio.to_thread(self.client.eval, ACQUIRE, len(self.keys), *self.keys,
+                                                 self.token, LEASE_SECONDS, *self.limits)
         except Exception as exc:
             # Never multiply local budgets during a production Redis outage.
             # Class only: connection strings, keys and backend messages can
@@ -131,7 +133,8 @@ class ResourceLease:
             self.renew_task = None
         if self.client:
             try:
-                await asyncio.to_thread(self.client.eval, RELEASE, len(self.keys), *self.keys, self.token)
+                with measure('redis_release_ms'):
+                    await asyncio.to_thread(self.client.eval, RELEASE, len(self.keys), *self.keys, self.token)
             except Exception:
                 # Crash/connection loss is recovered by the bounded lease TTL.
                 logger.warning("Resource lease release deferred until expiry")

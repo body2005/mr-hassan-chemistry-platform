@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -8,11 +8,31 @@ from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.core.metrics import render_metrics
 from app.schemas import ReadinessResponse
-from app.api.dependencies import require_roles
+from app.api.dependencies import CurrentUser, require_roles
 from app.models.user import UserRole
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import threading
 import time
+import logging
+from contextlib import contextmanager
+
+logger = logging.getLogger('uvicorn.error.readiness')
+_probe_stage = 'idle'
+
+@contextmanager
+def probe_stage(name):
+    global _probe_stage
+    _probe_stage = name
+    started = time.monotonic()
+    try:
+        yield
+    except Exception as exc:
+        logger.warning('readiness_dependency name=%s elapsed_ms=%.1f result=failed reason=%s',
+                       name, (time.monotonic()-started)*1000, type(exc).__name__)
+        raise
+    else:
+        logger.info('readiness_dependency name=%s elapsed_ms=%.1f result=completed',
+                    name, (time.monotonic()-started)*1000)
 
 router = APIRouter()
 
@@ -31,6 +51,32 @@ def health_check() -> HealthResponse:
         service=settings.app_name,
         environment=settings.app_env,
     )
+
+
+@router.get('/operations/client-network', include_in_schema=False)
+def client_network_check(
+    request: Request,
+    response: Response,
+    _user: CurrentUser,
+    expected: str = Header(alias='X-Expected-Client-IP', max_length=45),
+):
+    """Verify only the caller's own network path without a signing-key read.
+
+    The expected address is compared, never used as an identity. Return only
+    booleans, not IPs, headers, user IDs, secrets or internal proxy addresses.
+    """
+    from app.core.client_ip import address, asserted_client_ip, render_client_ip
+    from app.core.rate_limit import resolve_client_ip
+
+    parsed = address(expected)
+    if parsed is None:
+        raise HTTPException(400, 'A valid expected client address is required')
+    settings = get_settings()
+    response.headers['Cache-Control'] = 'private, no-store'
+    response.headers['Vary'] = 'Cookie, Authorization, X-Expected-Client-IP'
+    return {'expected_match': resolve_client_ip(request) == parsed,
+            'signed_proxy_assertion': asserted_client_ip(request, settings) is not None,
+            'render_edge_contract': render_client_ip(request, settings) is not None}
 
 
 @router.get("/metrics", include_in_schema=False)
@@ -92,7 +138,8 @@ def _probe_readiness(db: Session) -> ReadinessResponse:
     settings = get_settings()
     from app.core.storage import get_storage_provider
     try:
-        storage_check = get_storage_provider().check_readiness()
+        with probe_stage('storage'):
+            storage_check = get_storage_provider().check_readiness()
     except Exception:
         storage_check = {"status": "unavailable"}
 
@@ -105,7 +152,12 @@ def _probe_readiness(db: Session) -> ReadinessResponse:
         "ingestion_dispatcher": "unavailable",
     }
     try:
-        db.execute(text("SELECT 1"))
+        with probe_stage('database'):
+            if db.bind.dialect.name == 'postgresql':
+                db.execute(text("SET LOCAL statement_timeout = '1500ms'"))
+            db.execute(text("SELECT 1"))
+        # A readiness object-store round trip must not hold a DB connection.
+        db.rollback()
     except SQLAlchemyError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -116,7 +168,9 @@ def _probe_readiness(db: Session) -> ReadinessResponse:
     try:
         import redis
 
-        redis.Redis.from_url(settings.redis_url, socket_connect_timeout=0.2, socket_timeout=0.3).ping()
+        with probe_stage('redis'):
+            with redis.Redis.from_url(settings.redis_url, socket_connect_timeout=0.2, socket_timeout=0.3) as probe:
+                probe.ping()
         dependencies["redis"] = "ok"
     except Exception:
         pass
@@ -177,6 +231,7 @@ def _probe_readiness(db: Session) -> ReadinessResponse:
         critical_deps.append(dependencies["redis"])
 
         if any(d != "ok" for d in critical_deps):
+            logger.warning('readiness_failed dependencies=%s', dependencies)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
@@ -208,7 +263,8 @@ def _probe_readiness(db: Session) -> ReadinessResponse:
     )
 
 # One shared probe per API process, max one background connection/task, with a
-# 2s HTTP wait budget and 5s cache. A slow dependency cannot grow a work queue.
+# Finite configurable HTTP wait budget and 5s cache. A slow dependency cannot
+# grow a work queue. The budget covers a real write/read/delete storage probe.
 _probe_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="readiness")
 _probe_lock = threading.Lock()
 _probe_future = None
@@ -218,8 +274,6 @@ _probe_cache = None
 def _run_probe():
     try:
         with SessionLocal() as db:
-            if db.bind.dialect.name == "postgresql":
-                db.execute(text("SET LOCAL statement_timeout = '1500ms'"))
             return _probe_readiness(db)
     except SQLAlchemyError as exc:
         raise HTTPException(503, detail={"message": "Database is unavailable",
@@ -239,8 +293,10 @@ def _cached_readiness():
             _probe_future = _probe_executor.submit(_run_probe)
         future = _probe_future
     try:
-        result = future.result(timeout=2)
+        result = future.result(timeout=getattr(get_settings(), 'readiness_wait_seconds', 5))
     except TimeoutError:
+        logger.warning('readiness_deadline stage=%s wait_seconds=%s', _probe_stage,
+                       getattr(get_settings(), 'readiness_wait_seconds', 5))
         raise HTTPException(503, "Readiness temporarily unavailable")
     except Exception as error:
         # Negative readiness results are cached too. A fast failing dependency

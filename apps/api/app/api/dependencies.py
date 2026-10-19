@@ -112,6 +112,31 @@ def get_current_user(
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
+def session_is_current(request: Request, db: Session) -> bool:
+    """One-query SSE revalidation, retaining expiry, role, family and revocation.
+
+    Called for every emitted message and heartbeat, as before. No cached
+    authorization or grace period permits a revoked account to keep a stream.
+    """
+    token = _extract_token(request, request.cookies.get(get_settings().session_cookie_name))
+    payload = decode_session_token(token) if token else None
+    if not payload:
+        return False
+    try:
+        actor = uuid.UUID(payload['sub'])
+        institution = uuid.UUID(payload['institution_id'])
+        family = uuid.UUID(str(payload.get('family_id')))
+    except (ValueError, TypeError, KeyError):
+        return False
+    active_family = select(RefreshSession.id).where(
+        RefreshSession.user_id == actor, RefreshSession.family_id == family,
+        RefreshSession.revoked_at.is_(None), RefreshSession.expires_at > datetime.now(timezone.utc)).exists()
+    revoked = select(RevokedSession.id).where(RevokedSession.jti == payload['jti']).exists()
+    return bool(db.scalar(select(User.id).where(User.id == actor, User.institution_id == institution,
+        User.is_active.is_(True), User.deleted_at.is_(None), User.role == payload.get('role'),
+        active_family, ~revoked)))
+
+
 def get_optional_user(
     request: Request,
     db: DbSession,

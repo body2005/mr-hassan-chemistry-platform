@@ -100,6 +100,12 @@ class Settings(BaseSettings):
     allow_local_ingestion: bool = False
     payment_receipt_max_mb: int = Field(default=10, ge=1, le=25)
     trusted_proxies: str = "127.0.0.1,::1"
+    client_ip_mode: Literal['proxy_chain', 'render'] = 'proxy_chain'
+    proxy_assertion_secret: SecretStr | None = Field(default=None, repr=False, exclude=True)
+    readiness_wait_seconds: float = Field(default=5, ge=2, le=10)
+    sse_institution_limit: int = Field(default=200, ge=5, le=5000)
+    sse_process_limit: int = Field(default=1000, ge=5, le=5000)
+    sse_queue_size: int = Field(default=32, ge=4, le=200)
     rate_limit_login: int = Field(default=10, ge=1, le=1000)
     rate_limit_read: int = Field(default=300, ge=1, le=10000)
     rate_limit_video_stream: int = Field(default=600, ge=1, le=10000)
@@ -160,6 +166,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_secret(self) -> "Settings":
+        if self.proxy_assertion_secret:
+            value = self.proxy_assertion_secret.get_secret_value()
+            if len(value) < 32 or value == self.secret_key:
+                raise ValueError('PROXY_ASSERTION_SECRET must be a separate key of at least 32 characters')
         self.app_env = self.app_env.strip().lower()
         if self.app_env not in {'development', 'test', 'testing', 'production', 'production_like', 'staging'}:
             raise ValueError('Unsupported APP_ENV; do not silently treat a deployment as development')

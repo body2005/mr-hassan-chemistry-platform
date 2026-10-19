@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from app.api.router import api_router
 from app.core.access_log import RedactAccessTokenFilter
@@ -23,6 +24,7 @@ from app.core.upload_auth import UploadAuthenticationMiddleware
 from app.core.rate_limit import enforce_rate_limit
 from app.core.response_security import ResponseSecurityHeadersMiddleware
 from app.core.rate_limit_proof import RateLimitProofMiddleware
+from app.core.performance import PerformanceMiddleware
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -141,7 +143,9 @@ async def security_middleware(request, call_next):
         try:
             category = classify_rate_limit_category(request.method, request.url.path)
             request.state.category = category
-            enforce_rate_limit(request, category=category)
+            # Redis is synchronous. Waiting on it on the event loop serializes
+            # unrelated requests and stalls all SSE streams during a slow call.
+            await run_in_threadpool(enforce_rate_limit, request, category=category)
             request.state.rate_limit_categories = {category}
         except HTTPException as exc:
             res = JSONResponse(
@@ -279,6 +283,7 @@ app.add_middleware(
 # including CORS preflights and upload/admission failures. It never grants
 # identity, overrides CORS or buffers the streaming body.
 app.add_middleware(ResponseSecurityHeadersMiddleware, secure=settings.secure_cookies)
+app.add_middleware(PerformanceMiddleware)
 # A short-lived operator signature permits observations only. This wrapper
 # cannot authenticate, rewrite a limiter identity, or bypass another middleware.
 app.add_middleware(RateLimitProofMiddleware)

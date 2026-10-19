@@ -17,6 +17,7 @@ import redis
 from app.core.config import get_settings
 from app.core.security import decode_session_token
 from app.core.rate_limit_proof import observe_policy
+from app.core.performance import measure
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,10 @@ def _is_trusted(ip: str, trusted_exact: set[str], trusted_networks: list[Any]) -
 
 def resolve_client_ip(request: Request) -> str:
     settings = get_settings()
+    from app.core.client_ip import asserted_client_ip, render_client_ip
+    verified = asserted_client_ip(request, settings) or render_client_ip(request, settings)
+    if verified:
+        return verified
     direct_ip = request.client.host if request.client else "127.0.0.1"
     trusted_raw = getattr(settings, "trusted_proxies", "127.0.0.1,::1")
     if trusted_raw.strip() == "*":
@@ -241,13 +246,15 @@ def enforce_rate_limit(
     key += f':{final_limit}:{final_window}'
 
     # Attempt Redis atomic sliding window first
-    r = _get_redis_client()
+    with measure('redis_connect_ms'):
+        r = _get_redis_client()
     if r is not None and _redis_script is not None:
         try:
             now_ms = int(time.time() * 1000)
             window_ms = int(final_window * 1000)
             member = f"{now_ms}:{uuid.uuid4().hex[:8]}"
-            result = _redis_script(keys=[key], args=[now_ms, window_ms, final_limit, member])
+            with measure('redis_rate_ms'):
+                result = _redis_script(keys=[key], args=[now_ms, window_ms, final_limit, member])
             allowed = bool(result[0])
             observe_policy(request, category=effective_category, key=key, limit=final_limit,
                            window=final_window, backend='redis', allowed=allowed)

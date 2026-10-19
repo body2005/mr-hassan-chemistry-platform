@@ -95,6 +95,9 @@ class RateLimitProofMiddleware:
         async def observed_send(message):
             if message['type'] == 'http.response.start':
                 proof['status'] = message['status']
+                timings = getattr(request.state, 'request_timings', None)
+                if isinstance(timings, dict):
+                    proof['timings'] = {key: round(value, 2) for key, value in timings.items()}
                 encoded = base64.urlsafe_b64encode(json.dumps(proof, separators=(',', ':')).encode()).decode()
                 outgoing = MutableHeaders(scope=message)
                 outgoing['X-RateLimit-Proof'] = encoded

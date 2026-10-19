@@ -1,0 +1,100 @@
+# Loopback-only isolated staging. Never use production credentials or volumes.
+name: chemistry-reliability-staging
+x-api: &api
+  image: ${STAGING_API_IMAGE:?set a reviewed local API runtime image ID}
+  working_dir: /srv
+  user: "10001:10001"
+  read_only: true
+  cpus: 1.0
+  mem_limit: 768m
+  env_file: ${STAGING_ENV_FILE:?generate staging-only environment first}
+  environment: &runtime_env
+    PYTHONPATH: /srv
+  volumes:
+    - ${STAGING_SOURCE_ROOT:?set source root}/apps/api:/srv:ro
+    - ${STAGING_SOURCE_ROOT}/scripts/qa/reliability:/audit:ro
+  tmpfs: [/tmp, /srv/uploads]
+  networks: [isolated, loopback]
+  command: [uvicorn, app.main:app, --host, 0.0.0.0, --port, "8000", --no-proxy-headers]
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    cpus: 1.0
+    mem_limit: 512m
+    environment:
+      POSTGRES_USER: staging
+      POSTGRES_DB: staging
+      POSTGRES_PASSWORD: ${STAGING_DB_PASSWORD:?generate isolated password}
+    volumes: [staging_db:/var/lib/postgresql/data]
+    networks: [isolated]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U staging -d staging]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+  redis:
+    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    command: [redis-server, --maxmemory, 128mb, --maxmemory-policy, noeviction]
+    cpus: 0.5
+    mem_limit: 192m
+    ports: ["127.0.0.1:18379:6379"]
+    networks: [isolated]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+  s3:
+    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+    cpus: 0.5
+    mem_limit: 512m
+    environment:
+      AWS_ACCESS_KEY_ID: staging
+      AWS_SECRET_ACCESS_KEY: ${STAGING_S3_PASSWORD:?generate isolated password}
+      S3_BUCKET: staging
+      GOMEMLIMIT: 256MiB
+    command: [mini, -dir=/data, -s3.readerCacheSizeMB=32, -s3.cacheCapacityMB=0]
+    volumes: [staging_s3:/data]
+    networks: [isolated]
+  migration:
+    <<: *api
+    command: [alembic, upgrade, head]
+    depends_on:
+      postgres: {condition: service_healthy}
+  api-a:
+    <<: *api
+    ports: ["127.0.0.1:18121:8000"]
+    environment: {<<: *runtime_env, HOSTNAME: reliability-api-a}
+    depends_on:
+      migration: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+  api-b:
+    <<: *api
+    ports: ["127.0.0.1:18122:8000"]
+    environment: {<<: *runtime_env, HOSTNAME: reliability-api-b}
+    depends_on:
+      migration: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+  load:
+    <<: *api
+    profiles: [load]
+    networks: [isolated]
+    environment:
+      <<: *runtime_env
+      RELIABILITY_OUTPUT_DIR: /results
+      STAGING_API_A: http://api-a:8000/api/v1
+      STAGING_API_B: http://api-b:8000/api/v1
+      STAGING_PUBLISH_LOCAL: "true"
+    volumes:
+      - ${STAGING_SOURCE_ROOT}/apps/api:/srv:ro
+      - ${STAGING_SOURCE_ROOT}/scripts/qa/reliability:/audit:ro
+      - ${STAGING_RESULTS_DIR:?set isolated results directory}:/results
+    command: [python, -u, /audit/stage_sse.py]
+
+networks:
+  isolated: {internal: true}
+  loopback: {}
+volumes:
+  staging_db:
+  staging_s3:

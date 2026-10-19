@@ -5,8 +5,8 @@ import anyio
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
-from app.api.dependencies import CurrentUser, DbSession, get_current_user
-from app.core.database import SessionLocal
+from app.api.dependencies import CurrentUser, DbSession, session_is_current
+from app.core.database import SessionLocal, close_request_session
 from app.core.config import get_settings
 from app.core.events import event_broker, sse_event_generator
 
@@ -41,18 +41,19 @@ async def realtime_event_stream(
     Authenticated via user session cookie or token. Yields keep-alives and targeted
     events for the logged-in user and their institution.
     """
+    # Release BEFORE the first async broker/lease wait. Otherwise a burst can
+    # hold every DB connection while waiting for Redis work queued behind SSE
+    # revalidation threads that themselves need those connections.
+    await close_request_session(db)
     sub = await event_broker.register(
         institution_id=user.institution_id,
         user_id=user.id,
         role=user.role.value if hasattr(user.role, "value") else str(user.role),
     )
-    # Do not occupy a PostgreSQL connection for the lifetime of an SSE stream.
-    db.close()
     def still_authorized():
         with SessionLocal() as fresh:
             try:
-                get_current_user(request, fresh, request.cookies.get(get_settings().session_cookie_name))
-                return True
+                return session_is_current(request, fresh)
             except Exception:
                 return False
 

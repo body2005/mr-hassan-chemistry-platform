@@ -377,7 +377,7 @@ def test_readiness_does_not_queue_new_work_while_a_probe_is_slow(monkeypatch):
         def done(self):
             return False
     scheduled = []
-    monkeypatch.setattr(health, 'get_settings', lambda: SimpleNamespace(app_env='production'))
+    monkeypatch.setattr(health, 'get_settings', lambda: SimpleNamespace(app_env='production', readiness_wait_seconds=2))
     monkeypatch.setattr(health, '_probe_future', None)
     monkeypatch.setattr(health, '_probe_cache', None)
     monkeypatch.setattr(health, '_probe_executor', SimpleNamespace(submit=lambda _fn: scheduled.append(1) or SlowProbe()))
