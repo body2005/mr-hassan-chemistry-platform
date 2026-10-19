@@ -66,6 +66,19 @@ Use a normal session, repeat forged forwarding/assertion headers, then log out.
 The successful Vercel path must have `expected_match=true` and
 `signed_proxy_assertion=true`; direct Render must match through its edge contract.
 
+After both deployments, run the bounded smoke with an ordinary authorized
+student; the password is prompted without echo (or supplied only to the process
+as`LIVE_STUDENT_PASSWORD`). It never reads a server key or saves raw IP/cookies:
+
+```powershell
+apps/api/.venv/Scripts/python.exe scripts/qa/reliability/live_network.py --email student03@demo.com --output .qa/reliability-live/network.json --login-guard
+```
+
+The optional guard sends five failed login attempts to a new nonexistent reserved
+identity through Vercel only, after network and normal smoke checks pass. Acceptance
+requires four401responses followed by429with a positive Retry-After within10s.
+It does not create an account, change real student credentials, or bypass limits.
+
 Primary contracts: [Vercel request headers](https://vercel.com/docs/headers/request-headers),
 [Vercel middleware](https://vercel.com/docs/routing-middleware/api),
 [Render edge forwarding](https://render.com/articles/host-pocketbase-on-render).
@@ -150,6 +163,21 @@ apps/api/.venv/Scripts/python.exe scripts/qa/reliability/stage_capacity.py
 docker compose --env-file .qa/reliability-staging/staging.env -f infra/staging/compose.yml run --rm --no-deps load python -u /audit/stage_sse.py
 docker compose --env-file .qa/reliability-staging/staging.env -f infra/staging/compose.yml run --rm --no-deps load python -u /audit/stage_capacity.py --output capacity-linux.json
 ```
+
+The optional sizing profile is explicitly separate from the1CPU baseline:
+
+```powershell
+docker compose --env-file .qa/reliability-staging/staging.env -f infra/staging/compose.yml -f infra/staging/capacity.override.yml up -d --no-deps api-a api-b
+docker compose --env-file .qa/reliability-staging/staging.env -f infra/staging/compose.yml -f infra/staging/capacity.override.yml run --rm --no-deps load python -u /audit/stage_capacity.py --arrival-per-second 6.666667 --output capacity-scaled.json
+```
+
+It allocates2CPU/1024MB and two Uvicorn workers per API instance, leaving DB/Redis
+unchanged. Record actual Docker limits/worker arguments with the report. This
+does not change Render billing or demonstrate that a0.1CPU instance handles500.
+The generator uses8independent transport pools by default with no more than900
+total connections;`--client-pools 1` reproduces the earlier generator. Its optional
+`--stages` accepts only an increasing subset of the standard stages and records
+that subset: a500-only diagnostic must not be called a gradual capacity pass.
 
 Wait for both APIs to finish startup before sending the proof or load requests.
 The fixture command refuses any non-staging database or nonempty institution

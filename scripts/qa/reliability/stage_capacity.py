@@ -1,4 +1,5 @@
 import argparse,asyncio,collections,json,os,random,time
+from contextlib import AsyncExitStack
 import httpx
 from stage_common import BASES,OUT,credentials,observation,write
 
@@ -8,15 +9,31 @@ async def main():
     parser=argparse.ArgumentParser(description='Bounded isolated staging browse/SSE workload')
     parser.add_argument('--arrival-per-second',type=float,default=1/.03)
     parser.add_argument('--output',default='capacity-staging.json')
+    parser.add_argument('--client-pools',type=int,default=8)
+    parser.add_argument('--stages',default='5,10,25,50,100,250,500',
+        help='Increasing subset of the standard stages; diagnostic subsets are reported explicitly')
     args=parser.parse_args()
     if not .1<=args.arrival_per_second<=50:parser.error('arrival rate must be between .1 and50 students/second')
+    if not 1<=args.client_pools<=16:parser.error('client pools must be between1 and16')
+    try:stages=[int(n) for n in args.stages.split(',')]
+    except ValueError:parser.error('stages must be comma-separated integers')
+    if not stages or stages!=sorted(set(stages)) or not set(stages)<={5,10,25,50,100,250,500}:
+        parser.error('stages must be an increasing subset of5,10,25,50,100,250,500')
     ramp=1/args.arrival_per_second
-    report={'environment':'Isolated local Docker staging; two API containers each1CPU/768MB, shared PostgreSQL and Redis. Not proof of RenderFree capacity.',
+    report={'environment':os.getenv('STAGING_CAPACITY_PROFILE') or 'Isolated local Docker staging; two API containers each1CPU/768MB, shared PostgreSQL and Redis. Not proof of RenderFree capacity.',
         'workload':'Distinct students: bootstrap, courses/calendar every10sec, one SSE/student with bounded reconnect;500stage150sec includes stream recycle and lease renewal.',
         'arrival_per_second':args.arrival_per_second,
+        'client_pools':args.client_pools,
+        'requested_stages':stages,
         'transport':'Docker internal Linux' if os.getenv('STAGING_PUBLISH_LOCAL')=='true' else 'Windows Docker loopback',
         'stages':[]}
-    async with httpx.AsyncClient(timeout=httpx.Timeout(20,connect=8),limits=httpx.Limits(max_connections=900,max_keepalive_connections=900,keepalive_expiry=2),trust_env=False) as client:
+    # A single transport scans every active SSE connection on pool changes.
+    # Shard independent virtual browsers while retaining <=900 total slots.
+    async with AsyncExitStack() as stack:
+        clients=[await stack.enter_async_context(httpx.AsyncClient(timeout=httpx.Timeout(20,connect=8),
+            limits=httpx.Limits(max_connections=900//args.client_pools,max_keepalive_connections=900//args.client_pools,keepalive_expiry=2),
+            trust_env=False)) for _ in range(args.client_pools)]
+        client=clients[0]
         preflight=await client.get(BASES[0]+'/courses?page=1&page_size=100',headers=credentials(0))
         preflight.raise_for_status()
         lessons=[lesson for course in preflight.json()['items'] for module in course['modules'] for lesson in module['lessons']]
@@ -24,7 +41,7 @@ async def main():
         if not all(lesson['content'] is None and not lesson['has_video'] for lesson in lessons):
             raise RuntimeError('Paid content must remain locked')
         report['fixture_visible_locked_lessons']=len(lessons)
-        for number in [5,10,25,50,100,250,500]:
+        for number in stages:
             stage={'target':number,'requests':[],'streams':[],'events':0,'control':[],'stop_reason':None}
             report['stages'].append(stage);stop=asyncio.Event();start=time.monotonic();seen=set()
             def abort(reason):
@@ -32,7 +49,7 @@ async def main():
             async def call(index,path,kind):
                 t=time.monotonic()
                 try:
-                    r=await client.get(BASES[index%2]+path,headers=credentials(index))
+                    r=await clients[index%len(clients)].get(BASES[index%2]+path,headers=credentials(index))
                     row={'status':r.status_code,'s':round(time.monotonic()-t,3),'kind':kind,'timings':observation(r).get('timings')}
                     if r.status_code!=200:abort(f'{kind} returned {r.status_code}')
                 except httpx.HTTPError as e:
@@ -41,7 +58,7 @@ async def main():
             async def stream(index):
                 while not stop.is_set():
                     try:
-                        async with client.stream('GET',BASES[index%2]+'/realtime/stream',headers=credentials(index),timeout=httpx.Timeout(40,connect=8)) as r:
+                        async with clients[index%len(clients)].stream('GET',BASES[index%2]+'/realtime/stream',headers=credentials(index),timeout=httpx.Timeout(40,connect=8)) as r:
                             stage['streams'].append({'status':r.status_code,'student':index})
                             if r.status_code!=200:abort(f'SSE returned {r.status_code}');return
                             async for line in r.aiter_lines():

@@ -1,0 +1,14 @@
+# Optional measured capacity profile, never a production/Render setting.
+# Two API instances, two independent workers each. Common DB/Redis stay unchanged.
+services:
+  api-a:
+    cpus: 2.0
+    mem_limit: 1024m
+    command: [uvicorn, app.main:app, --host, 0.0.0.0, --port, "8000", --no-proxy-headers, --workers, "2"]
+  api-b:
+    cpus: 2.0
+    mem_limit: 1024m
+    command: [uvicorn, app.main:app, --host, 0.0.0.0, --port, "8000", --no-proxy-headers, --workers, "2"]
+  load:
+    environment:
+      STAGING_CAPACITY_PROFILE: "Isolated local Docker staging; two API containers each2CPU/1024MB with2workers, shared PostgreSQL1CPU/512MB and Redis0.5CPU/192MB. Not proof of RenderFree capacity."
