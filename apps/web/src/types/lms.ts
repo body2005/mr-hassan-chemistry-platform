@@ -297,13 +297,17 @@ export interface QuestionTypeConfig {
 }
 
 export interface CalendarScheduleEvent {
+  creatorId?: string;
+  creatorName?: string;
+  startsAt?: string;
+  endsAt?: string;
   courseId?: string;
   id: string;
   academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary" | "all";
   date: string; // YYYY-MM-DD
   dayName: string; // Title / Name of the day
   time: string; // e.g. "06:00 م"
-  contentType: "lesson" | "assignment" | "quiz" | "general";
+  contentType: "lesson" | "assignment" | "quiz" | "general" | "review";
   isRecurringWeekly?: boolean;
   isCancelled?: boolean;
   isPublishedToStudents?: boolean; // Checkbox: visible to students on calendar

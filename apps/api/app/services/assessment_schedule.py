@@ -16,6 +16,11 @@ def sync_assessment_schedule(db, assessment):
     for event in db.scalars(select(CalendarEvent).where(
             CalendarEvent.institution_id == assessment.institution_id,
             CalendarEvent.course_id == assessment.course_id, CalendarEvent.request_key == key)):
+        if published:
+            from app.services.calendar_capacity import require_calendar_capacity
+            require_calendar_capacity(db, institution_id=event.institution_id, creator_id=event.creator_id,
+                course_id=event.course_id, starts_at=as_utc(assessment.starts_at) or now,
+                description=event.description, exclude_id=event.id)
         event.starts_at = as_utc(assessment.starts_at) or now
         event.ends_at = as_utc(end)
         event.cancelled_at = None if published else now

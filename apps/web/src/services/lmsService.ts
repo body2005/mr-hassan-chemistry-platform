@@ -158,6 +158,9 @@ type ApiNotification = {
 };
 
 type ApiCalendarEvent = {
+  creator_id?: string;
+  creator_name?: string;
+  academic_year?: CalendarScheduleEvent['academicYear'];
   id: string;
   course_id: string | null;
   title: string;
@@ -387,7 +390,7 @@ function mapApiNotification(item: ApiNotification): NotificationItem {
 function mapApiCalendarEvent(item: ApiCalendarEvent): CalendarScheduleEvent {
   const starts = new Date(item.starts_at);
   const time = starts.toLocaleTimeString("ar-EG", { timeZone: "Africa/Cairo", hour: "2-digit", minute: "2-digit" });
-  const contentType = ["lesson", "assignment", "quiz", "general"].includes(item.event_type)
+  const contentType = ["lesson", "assignment", "quiz", "general", "review"].includes(item.event_type)
     ? (item.event_type as CalendarScheduleEvent["contentType"])
     : "general";
 
@@ -424,7 +427,11 @@ function mapApiCalendarEvent(item: ApiCalendarEvent): CalendarScheduleEvent {
 
   return {
     id: item.id,
-    academicYear,
+    creatorId: item.creator_id,
+    creatorName: item.creator_name,
+    startsAt: item.starts_at,
+    endsAt: item.ends_at || undefined,
+    academicYear: item.academic_year || academicYear,
     courseId: item.course_id || undefined,
     closeDeadline: item.ends_at ? cairoLocalValue(item.ends_at).replace("T", " ") : undefined,
     date: cairoLocalValue(item.starts_at).slice(0, 10),
@@ -963,15 +970,8 @@ export const calendarService = {
     return this.getCalendarEvents();
   },
 
-  async cancelCalendarEvent(dateStr: string, academicYear: string): Promise<CalendarScheduleEvent[]> {
-    const current = await this.getCalendarEvents();
-    const normDate = (dateStr || "").split("T")[0];
-    await Promise.all(
-      current
-        .filter((event) => event.date === normDate && (event.academicYear === academicYear || event.academicYear === "all"))
-        .filter((event) => !event.isCancelled)
-        .map((event) => apiRequest(`/calendar/${event.id}/cancel`, { method: "POST" })),
-    );
+  async cancelCalendarEvent(eventId: string): Promise<CalendarScheduleEvent[]> {
+    await apiRequest(`/calendar/${eventId}/cancel`, { method: "POST" });
     invalidateApiCache("/calendar");
     return this.getCalendarEvents();
   },
@@ -1005,6 +1005,7 @@ export const calendarService = {
 };
 
 function parseScheduleClock(value: string): string {
+  value = value.replace(/[٠-٩۰-۹]/g, c => String(c.charCodeAt(0) - (c >= '۰' ? 0x6f0 : 0x660)));
   const match = value.match(/(\d{1,2})(?::(\d{2}))?/);
   if (!match) return "18:00";
   let hour = Number(match[1]);

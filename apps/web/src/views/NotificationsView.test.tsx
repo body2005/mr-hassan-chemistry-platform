@@ -2,14 +2,15 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { NotificationsView } from './NotificationsView';
-import { notificationService } from '../services/lmsService';
-import type { NotificationItem, TeacherProfile } from '../types/lms';
+import { calendarService, notificationService } from '../services/lmsService';
+import type { CalendarScheduleEvent, NotificationItem, TeacherProfile } from '../types/lms';
 
 vi.mock('../services/lmsService', () => ({
   calendarService: {
     getCachedCalendarEvents: () => [],
     getNotificationSchedules: async () => [],
-    getCalendarEvents: async () => [],
+    getCalendarEvents: vi.fn(async () => []),
+    saveCalendarEvent: vi.fn(async () => []),
   },
   notificationService: { getNotifications: vi.fn(async () => []) },
 }));
@@ -25,6 +26,8 @@ let host: HTMLDivElement, root: Root;
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.mocked(notificationService.getNotifications).mockResolvedValue([]);
+  vi.mocked(calendarService.getCalendarEvents).mockResolvedValue([]);
+  vi.mocked(calendarService.saveCalendarEvent).mockReset();
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
 afterEach(async () => {
@@ -61,4 +64,25 @@ it('sends manual broadcasts to Notifications even when the teacher selects quiz 
   await act(async () => window.dispatchEvent(new Event('lms_notifications_updated')));
   await act(async () => button('عرض الإشعارات').click());
   expect(navigate).toHaveBeenCalledWith('Notifications');
+});
+
+it('adds two same-day appointments with distinct identities even when their forms are identical', async () => {
+  const rows: CalendarScheduleEvent[] = [];
+  vi.mocked(calendarService.getCalendarEvents).mockImplementation(async () => [...rows]);
+  vi.mocked(calendarService.saveCalendarEvent).mockImplementation(async event => {
+    rows.push({ ...event, id: `saved-${rows.length + 1}` }); return [...rows];
+  });
+  await act(async () => root.render(<NotificationsView notifications={[]} currentUser={teacher}
+    onMarkNotificationRead={vi.fn()} onNavigateToTab={vi.fn()} onAddNotification={async () => undefined} />));
+  for (let i = 0; i < 2; i++) {
+    await act(async () => button('إضافة موعد جديد').click());
+    await change(host.querySelector<HTMLInputElement>('input[placeholder="مثال: الثلاثاء - المحاضرة الأسبوعية"]')!, 'موعد مستقل');
+    await act(async () => button('التالي: تحديد التوقيت').click());
+    await act(async () => button('التالي: مراجعة وحفظ').click());
+    await act(async () => button('تأكيد وحفظ الموعد في الجدول').click());
+  }
+  const calls = vi.mocked(calendarService.saveCalendarEvent).mock.calls;
+  expect(calls).toHaveLength(2);
+  expect(calls[0][0].id).not.toBe(calls[1][0].id);
+  expect(host.querySelectorAll('.calendar-day-event')).toHaveLength(2);
 });

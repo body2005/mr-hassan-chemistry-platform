@@ -1,3 +1,6 @@
+import { CalendarDayCell } from "../components/CalendarDayCell";
+import { CALENDAR_TYPES, calendarClock, calendarDay, calendarEventTime, sortCalendarEvents } from "../utils/calendarDay";
+import { cairoLocalValue } from "../utils/cairoTime";
 import { ScheduleBadges } from "../components/ScheduleBadges";
 import { assessmentTimestamp } from "../services/assessmentSchedule";
 import React, { useState, useEffect, useRef } from "react";
@@ -18,7 +21,7 @@ import {
   CheckCircle2,
   CreditCard,
 } from "lucide-react";
-import { CurrentUser, NotificationItem, NotificationSchedule, StudentProfile } from "../types/lms";
+import { CalendarScheduleEvent, CurrentUser, NotificationItem, NotificationSchedule, StudentProfile } from "../types/lms";
 import { NavTab } from "../components/Sidebar";
 import { calendarService, notificationService, notificationScheduleStorageKey } from "../services/lmsService";
 import { InvoiceModal } from "../components/InvoiceModal";
@@ -35,23 +38,7 @@ interface NotificationsViewProps {
   lang?: string;
 }
 
-export interface CalendarScheduleEvent {
-  courseId?: string;
-  id: string;
-  academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary" | "all";
-  date: string; // YYYY-MM-DD
-  dayName: string; // Title / Name of the day
-  time: string; // e.g. "06:00 م"
-  contentType: "lesson" | "assignment" | "quiz" | "general";
-  isRecurringWeekly?: boolean;
-  isCancelled?: boolean;
-  isPublishedToStudents?: boolean;
-  quizDurationMinutes?: number;
-  publishStartDate?: string;
-  publishStartTime?: string;
-  closeDeadline?: string;
-  customMessage?: string;
-}
+export type { CalendarScheduleEvent } from "../types/lms";
 
 const DEFAULT_SCHEDULES: NotificationSchedule[] = [
   {
@@ -94,19 +81,12 @@ const ARABIC_MONTHS = [
 ];
 
 function parseScheduleTime(timeStr: string): { hour: string; period: "ص" | "م" } {
-  const period = timeStr && timeStr.includes("ص") ? "ص" : "م";
-  const match = timeStr ? timeStr.match(/(\d{1,2}(?::\d{2})?)/) : null;
-  let hour = match ? match[1] : "06:00";
-  if (!hour.includes(":")) {
-    hour = hour.padStart(2, "0") + ":00";
-  } else {
-    const [h, m] = hour.split(":");
-    hour = `${h.padStart(2, "0")}:${(m || "00").padStart(2, "0")}`;
-  }
-  if (!TIME_OPTIONS.includes(hour)) {
-    hour = "06:00";
-  }
-  return { hour, period };
+  const [h, m] = calendarClock(timeStr || '18:00').split(':');
+  const hour = Number(h);
+  return { hour: `${String(hour % 12 || 12).padStart(2, '0')}:${m}`, period: hour >= 12 ? 'م' : 'ص' };
+}
+function cairoToday(): Date {
+  return new Date(`${cairoLocalValue(new Date().toISOString()).slice(0, 10)}T12:00:00`);
 }
 
 function formatIsoDate(d: Date): string {
@@ -134,6 +114,7 @@ function getGradeLabel(g: "1st_secondary" | "2nd_secondary" | "3rd_secondary"): 
 function getContentTypeLabel(t: string): string {
   if (t === "assignment") return "واجب منزلي";
   if (t === "quiz") return "اختبار تقييمي";
+  if (t === "review") return "مراجعة";
   if (t === "general") return "تنبيه عام";
   return "رفع وشرح درس جديد";
 }
@@ -169,8 +150,9 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   const initialGrade = !isTeacher ? studentYear : "1st_secondary";
 
   const [selectedGrade, setSelectedGrade] = useState<"1st_secondary" | "2nd_secondary" | "3rd_secondary">(initialGrade);
-  const [calendarCurrentDate, setCalendarCurrentDate] = useState<Date>(() => new Date());
-  const [selectedDayDate, setSelectedDayDate] = useState<string>(() => formatIsoDate(new Date()));
+  const [calendarCurrentDate, setCalendarCurrentDate] = useState<Date>(() => cairoToday());
+  const [selectedDayDate, setSelectedDayDate] = useState<string>(() => formatIsoDate(cairoToday()));
+  const [selectedTeacherId, setSelectedTeacherId] = useState("");
   const [isMonthPickerOpen, setIsMonthPickerOpen] = useState(false);
   const [pickerYear, setPickerYear] = useState<number>(() => new Date().getFullYear());
 
@@ -264,7 +246,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
     dayTitle: string;
     timeHour: string;
     timePeriod: "ص" | "م";
-    contentType: "lesson" | "assignment" | "quiz" | "general";
+    contentType: CalendarScheduleEvent["contentType"];
     isRecurringWeekly: boolean;
     isPublishedToStudents: boolean;
     quizDurationMinutes: number;
@@ -380,11 +362,12 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       const fullTimeStr = `${wizardState.timeHour} ${wizardState.timePeriod}`;
       const newEvent: CalendarScheduleEvent = {
         id: requestRef.current.id,
+        creatorId: currentUser.id,
         courseId: calendarEvents.find(event => event.id === wizardState.editingEventId)?.courseId,
         closeDeadline: calendarEvents.find(event => event.id === wizardState.editingEventId)?.closeDeadline,
         academicYear: selectedGrade,
         date: wizardState.selectedDate,
-        dayName: wizardState.dayTitle.trim() || `${getArabicDayName(new Date(wizardState.selectedDate))} - موعد إرسال`,
+        dayName: wizardState.dayTitle.trim() || `${getArabicDayName(new Date(wizardState.selectedDate + 'T12:00:00'))} - موعد إرسال`,
         time: fullTimeStr,
         contentType: wizardState.contentType,
         isRecurringWeekly: wizardState.isRecurringWeekly,
@@ -435,7 +418,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
         else setActiveNotifications(await notificationService.saveNotification(autoNotif));
       }
       if (wizardState.isRecurringWeekly) {
-        const day = getArabicDayName(new Date(wizardState.selectedDate));
+        const day = getArabicDayName(new Date(wizardState.selectedDate + 'T12:00:00'));
         const updated = schedules.map(s => s.academicYear === selectedGrade ? {...s, days: [...new Set([...s.days, day])], time: fullTimeStr} : s);
         await calendarService.saveNotificationSchedules(updated);
         setSchedules(updated);
@@ -450,18 +433,16 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
     } finally { setSaving(false); }
   }
 
-  async function handleCancelSchedule(dateStr: string) {
+  async function handleCancelSchedule(eventId: string) {
     if (!isTeacher || saving) return;
 
-    const normTargetDate = (dateStr || "").split("T")[0];
-    const targetEvent = calendarEvents.find(
-      (e) => e.academicYear === selectedGrade && (e.date || "").split("T")[0] === normTargetDate
-    );
-    const dayName = getArabicDayName(new Date(dateStr));
-    const eventTitle = targetEvent?.dayName || `${dayName} - موعد مجدول`;
+    const targetEvent = calendarEvents.find(event => event.id === eventId);
+    if (!targetEvent) return;
+    const dateStr = calendarDay(targetEvent);
+    const eventTitle = targetEvent.dayName;
 
     const cancelNotif: NotificationItem = {
-      id: `cancel_${targetEvent?.id || `${selectedGrade}_${normTargetDate}`}`,
+      id: `cancel_${targetEvent.id}`,
       title: `تنبيه: تم إلغاء موعد (${eventTitle})`.slice(0, 200),
       message: "تم إلغاء الموعد المجدول؛ راجع الجدول لمعرفة المواعيد المتاحة.",
       type: "warning",
@@ -475,7 +456,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
     setSaveError("");
     let cancelled = false;
     try {
-      setCalendarEvents(await calendarService.cancelCalendarEvent(dateStr, selectedGrade));
+      setCalendarEvents(await calendarService.cancelCalendarEvent(eventId));
       cancelled = true;
       if (onAddNotification) await onAddNotification(cancelNotif);
       else setActiveNotifications(await notificationService.saveNotification(cancelNotif));
@@ -527,6 +508,33 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
     }
   }
 
+  const gradeEvents = calendarEvents.filter(event => event.academicYear === selectedGrade || event.academicYear === 'all');
+  const teachers = [...new Map(gradeEvents.map(event => [event.creatorId || currentUser.id,
+    event.creatorName || (isTeacher ? currentUser.name : 'المدرس')])).entries()];
+  const activeTeacherId = isTeacher ? currentUser.id
+    : teachers.find(([id]) => id === selectedTeacherId)?.[0] || teachers[0]?.[0] || currentUser.id;
+  const scopeEvents = gradeEvents.filter(event => (event.creatorId || currentUser.id) === activeTeacherId
+    && (isTeacher || event.isPublishedToStudents === true) && !event.isCancelled);
+  const selectedDayEvents = sortCalendarEvents(scopeEvents.filter(event => calendarDay(event) === selectedDayDate));
+
+  function openCalendarWizard(evt: CalendarScheduleEvent | undefined, targetDate: string) {
+    if (!isTeacher) return;
+    setSaveError(null);
+    requestRef.current = { signature: '', id: '', notificationId: '' };
+    const parsed = parseScheduleTime(evt?.time || gradeSchedule?.time || '18:00');
+    setSelectedDayDate(targetDate);
+    setWizardState({
+      isOpen: true, step: 1, editingEventId: evt?.id, selectedDate: targetDate,
+      dayTitle: evt?.dayName || '', timeHour: parsed.hour, timePeriod: parsed.period,
+      contentType: evt?.contentType || 'lesson', isRecurringWeekly: evt?.isRecurringWeekly ?? false,
+      isPublishedToStudents: evt?.isPublishedToStudents ?? true, quizDurationMinutes: evt?.quizDurationMinutes ?? 45,
+      customMessage: evt?.customMessage || '', isScheduledNotif: !!evt?.publishStartDate,
+      scheduledNotifDate: evt?.publishStartDate || targetDate,
+      scheduledNotifHour: evt?.publishStartTime ? parseScheduleTime(evt.publishStartTime).hour : '06:00',
+      scheduledNotifPeriod: evt?.publishStartTime ? parseScheduleTime(evt.publishStartTime).period : 'م',
+    });
+  }
+
   function renderMonthCalendarCells() {
     const year = calendarCurrentDate.getFullYear();
     const month = calendarCurrentDate.getMonth();
@@ -561,187 +569,10 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       const dayName = getArabicDayName(cellDate);
       const isSelected = selectedDayDate === dateStr || (wizardState.isOpen && wizardState.selectedDate === dateStr);
 
-      const dayEvents = calendarEvents.filter((e) => {
-        const eventDateNorm = (e.date || "").split("T")[0].trim();
-        const matchesGrade = e.academicYear === selectedGrade;
-        const matchesDate = eventDateNorm === dateStr;
-        // For students: show events that are published OR cancelled (so they see the cancellation badge)
-        const isVisible = isTeacher || e.isPublishedToStudents === true || e.isCancelled === true;
-        return matchesGrade && matchesDate && isVisible;
-      });
-
-      const isRecurringDay = gradeSchedule?.days.includes(dayName);
-      const activeEvent = dayEvents.find((e) => !e.isCancelled) || dayEvents[0];
-      const cellTime = activeEvent?.time || (isRecurringDay ? gradeSchedule?.time : null);
-
-      const openWizard = (evt: CalendarScheduleEvent | undefined, targetDate: string) => {
-        if (!isTeacher) return;
-        const targetDayName = getArabicDayName(new Date(targetDate));
-        setSelectedDayDate(targetDate);
-        setWizardState({
-          isOpen: true,
-          step: 1,
-          editingEventId: evt ? evt.id : undefined,
-          selectedDate: targetDate,
-          dayTitle: evt ? evt.dayName : `${targetDayName} - موعد إرسال مجدول`,
-          timeHour: evt ? parseScheduleTime(evt.time).hour : (gradeSchedule?.time ? parseScheduleTime(gradeSchedule.time).hour : "06:00"),
-          timePeriod: evt ? parseScheduleTime(evt.time).period : (gradeSchedule?.time ? parseScheduleTime(gradeSchedule.time).period : "م"),
-          contentType: evt ? evt.contentType : "lesson",
-          isRecurringWeekly: evt?.isRecurringWeekly ?? isRecurringDay ?? true,
-          isPublishedToStudents: evt?.isPublishedToStudents ?? true,
-          quizDurationMinutes: evt?.quizDurationMinutes ?? 45,
-          customMessage: evt?.customMessage || "",
-          isScheduledNotif: !!(evt?.publishStartDate),
-          scheduledNotifDate: evt?.publishStartDate || targetDate,
-          scheduledNotifHour: evt?.publishStartTime ? parseScheduleTime(evt.publishStartTime).hour : "06:00",
-          scheduledNotifPeriod: evt?.publishStartTime ? parseScheduleTime(evt.publishStartTime).period : "م",
-        });
-      };
-
-      const hasQuiz = dayEvents.some((e) => e.contentType === "quiz" && !e.isCancelled);
-      const hasAssignment = dayEvents.some((e) => e.contentType === "assignment" && !e.isCancelled);
-      const hasLesson = dayEvents.some((e) => e.contentType === "lesson" && !e.isCancelled);
-      const hasGeneral = dayEvents.some((e) => e.contentType === "general" && !e.isCancelled);
-
-      // User requirement: Quiz = Red, Assignment = Yellow, Video = Green, General Alert = Blue
-      let cellBg = "var(--bg-surface)";
-      let cellBorder = "1px solid var(--border-color)";
-      let textColor = "var(--text-main)";
-      let eventTypeLabel = "";
-      let eventColorDot = "";
-
-      if (hasQuiz) {
-        cellBg = "rgba(239, 68, 68, 0.16)";
-        cellBorder = "2px solid #ef4444";
-        textColor = "#dc2626";
-        eventTypeLabel = "اختبار";
-        eventColorDot = "#ef4444";
-      } else if (hasAssignment) {
-        cellBg = "rgba(245, 158, 11, 0.18)";
-        cellBorder = "2px solid #f59e0b";
-        textColor = "#d97706";
-        eventTypeLabel = "واجب";
-        eventColorDot = "#f59e0b";
-      } else if (hasLesson) {
-        cellBg = "rgba(16, 185, 129, 0.18)";
-        cellBorder = "2px solid #10b981";
-        textColor = "#059669";
-        eventTypeLabel = "فيديو";
-        eventColorDot = "#10b981";
-      } else if (hasGeneral) {
-        cellBg = "rgba(59, 130, 246, 0.16)";
-        cellBorder = "2px solid #3b82f6";
-        textColor = "#2563eb";
-        eventTypeLabel = "تنبيه عام";
-        eventColorDot = "#3b82f6";
-      }
-
-      if (isSelected) {
-        if (hasQuiz) {
-          cellBg = "rgba(239, 68, 68, 0.32)";
-          cellBorder = "2.5px solid #b91c1c";
-        } else if (hasAssignment) {
-          cellBg = "rgba(245, 158, 11, 0.32)";
-          cellBorder = "2.5px solid #b45309";
-        } else if (hasLesson) {
-          cellBg = "rgba(16, 185, 129, 0.32)";
-          cellBorder = "2.5px solid #047857";
-        } else if (hasGeneral) {
-          cellBg = "rgba(59, 130, 246, 0.32)";
-          cellBorder = "2.5px solid #1d4ed8";
-        } else {
-          cellBg = "#0f392b";
-          cellBorder = "2px solid #059669";
-          textColor = "#ffffff";
-        }
-      }
-
-      cells.push(
-        <button
-          key={dateStr}
-          type="button"
-          className="calendar-cell"
-          aria-label={`${dayName} ${dayNum} ${getMonthYearTitle(calendarCurrentDate)}${eventTypeLabel ? ` — ${eventTypeLabel}` : ''}${cellTime ? ` — ${cellTime}` : ''}`}
-          aria-pressed={isSelected}
-          onClick={() => {
-            setSelectedDayDate(dateStr);
-            if (isTeacher) {
-              openWizard(dayEvents.length === 1 ? dayEvents[0] : undefined, dateStr);
-            }
-          }}
-          style={{
-            minHeight: "50px",
-            background: cellBg,
-            border: cellBorder,
-            borderRadius: "10px",
-            padding: "5px 4px",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: "2px",
-            cursor: "pointer",
-            transition: "all 0.15s ease",
-            fontFamily: 'inherit',
-            boxShadow: isSelected
-              ? "0 4px 12px rgba(0, 0, 0, 0.18)"
-              : hasQuiz
-              ? "0 2px 8px rgba(239, 68, 68, 0.2)"
-              : hasAssignment
-              ? "0 2px 8px rgba(245, 158, 11, 0.2)"
-              : hasLesson
-              ? "0 2px 8px rgba(16, 185, 129, 0.2)"
-              : hasGeneral
-              ? "0 2px 8px rgba(59, 130, 246, 0.2)"
-              : "none",
-          }}
-        >
-          <span className="calendar-cell-weekday">{dayName}</span>
-          {cellTime && (
-            <span
-              style={{
-                fontSize: "9px",
-                fontWeight: 800,
-                color: textColor,
-                opacity: 0.95,
-                lineHeight: 1.1,
-                direction: "ltr",
-                marginBottom: "2px",
-              }}
-            >
-              {cellTime}
-            </span>
-          )}
-          <span
-            className="calendar-cell-day"
-            style={{
-              fontSize: "14px",
-              fontWeight: 800,
-              color: textColor,
-            }}
-          >
-            {dayNum}
-          </span>
-          {eventTypeLabel && (
-            <span
-              className="calendar-cell-badge"
-              style={{
-                fontSize: "9.5px",
-                fontWeight: 800,
-                color: textColor,
-                background: "var(--bg-surface)",
-                padding: "1px 5px",
-                borderRadius: "4px",
-                border: `1px solid ${eventColorDot}`,
-                lineHeight: 1.2,
-                whiteSpace: "nowrap",
-              }}
-            >
-              {eventTypeLabel}
-            </span>
-          )}
-        </button>
-      );
+      const dayEvents = sortCalendarEvents(scopeEvents.filter(event => calendarDay(event) === dateStr));
+      cells.push(<CalendarDayCell key={dateStr} date={dateStr} day={dayNum} weekday={dayName}
+        events={dayEvents} selected={isSelected} today={formatIsoDate(cairoToday()) === dateStr}
+        onSelect={() => setSelectedDayDate(dateStr)} onOpen={event => openCalendarWizard(event, dateStr)} />);
     }
 
     return cells;
@@ -1123,28 +954,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
             </div>
             {isTeacher && (
               <button
-                onClick={() => {
-                  const todayStr = formatIsoDate(calendarCurrentDate);
-                  const dayName = getArabicDayName(calendarCurrentDate);
-                  setSelectedDayDate(todayStr);
-                  setWizardState({
-                    isOpen: true,
-                    step: 1,
-                    selectedDate: todayStr,
-                    dayTitle: `${dayName} - موعد إرسال جديد`,
-                    timeHour: "06:00",
-                    timePeriod: "م",
-                    contentType: "lesson",
-                    isRecurringWeekly: true,
-                    isPublishedToStudents: true,
-                    quizDurationMinutes: 45,
-                    isScheduledNotif: false,
-                    scheduledNotifDate: todayStr,
-                    scheduledNotifHour: "06:00",
-                    scheduledNotifPeriod: "م",
-                    customMessage: "",
-                  });
-                }}
+                onClick={() => openCalendarWizard(undefined, selectedDayDate)}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -1206,7 +1016,14 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
             </div>
           )}
 
-          {/* Success Banner */}
+          {!isTeacher && teachers.length > 1 && <label style={{ display: 'block', marginBottom: 12 }}>
+            المدرس
+            <select aria-label="مدرس التقويم" value={activeTeacherId} onChange={event => setSelectedTeacherId(event.target.value)}
+              style={{ marginInlineStart: 8, padding: 8, background: 'var(--bg-surface)', color: 'var(--text-main)' }}>
+              {teachers.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+            </select>
+          </label>}
+                    {/* Success Banner */}
           {scheduleSavedMsg && (
             <div
               style={{
@@ -1514,7 +1331,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
               </div>
               <div style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
                 <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: "#3b82f6", display: "inline-block" }} />
-                <span style={{ color: "#2563eb" }}>تنبيه عام (أزرق)</span>
+                <span style={{ color: "#2563eb" }}>مراجعة / تنبيه عام (أزرق)</span>
               </div>
             </div>
 
@@ -1531,15 +1348,17 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
             <div className="calendar-days">
               {renderMonthCalendarCells()}
             </div>
-            {!isTeacher && calendarEvents.filter(event => event.academicYear === selectedGrade
-              && event.isPublishedToStudents === true && !event.isCancelled
-              && event.date.split('T')[0] === selectedDayDate).map(event => {
-              let start: string | null = null;
-              let end: string | null = null;
-              try { start = assessmentTimestamp(`${event.publishStartDate || event.date.split('T')[0]}T${event.publishStartTime || event.time}`, 'الإتاحة'); } catch { /* Hide malformed legacy dates. */ }
-              try { end = assessmentTimestamp(event.closeDeadline, 'الإغلاق'); } catch { /* No invented deadline. */ }
-              return <ScheduleBadges key={event.id} startsAt={start} endsAt={end} />;
-            })}
+            <div className="calendar-day-events" aria-label={`مواعيد ${selectedDayDate}`}>
+              <strong>{selectedDayDate} — {selectedDayEvents.length} / 4 مواعيد</strong>
+              {selectedDayEvents.length > 4 && <p role="status">هذا اليوم يحتوي مواعيد قديمة أكثر من أربعة؛ جميعها محفوظة وتظهر تفاصيلها بالأسفل.</p>}
+              {selectedDayEvents.map(event => <div key={event.id} className="calendar-day-event"
+                style={{ '--calendar-event-color': CALENDAR_TYPES[event.contentType].color } as React.CSSProperties}>
+                <div><strong>{event.dayName}</strong><div>{CALENDAR_TYPES[event.contentType].label} · {calendarEventTime(event)}</div>
+                  {!isTeacher && <ScheduleBadges startsAt={event.startsAt} endsAt={event.endsAt} />}</div>
+                {isTeacher && <button type="button" onClick={() => openCalendarWizard(event, selectedDayDate)}>تعديل الموعد</button>}
+              </div>)}
+              {!selectedDayEvents.length && <p>لا توجد مواعيد في هذا اليوم.</p>}
+            </div>
 
           </div>
         </div>
@@ -1650,7 +1469,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                     التاريخ المختار في التقويم:
                   </label>
                   <div style={{ padding: "9px 12px", background: "var(--bg-surface-secondary)", border: "1px solid var(--border-color)", borderRadius: "8px", fontSize: "12.5px", fontWeight: 800, color: "#059669" }}>
-                    {wizardState.selectedDate} - {getArabicDayName(new Date(wizardState.selectedDate))}
+                    {wizardState.selectedDate} - {getArabicDayName(new Date(wizardState.selectedDate + 'T12:00:00'))}
                   </div>
                 </div>
 
@@ -1683,7 +1502,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                   </label>
                   <select
                     value={wizardState.contentType}
-                    onChange={(e) => setWizardState((prev) => ({ ...prev, contentType: e.target.value as "lesson" | "assignment" | "quiz" | "general" }))}
+                    onChange={(e) => setWizardState((prev) => ({ ...prev, contentType: e.target.value as CalendarScheduleEvent["contentType"] }))}
                     style={{
                       width: "100%",
                       padding: "9px 12px",
@@ -1701,6 +1520,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                     <option value="quiz">اختبار تقييمي دوري (لون أحمر 🔴)</option>
                     <option value="assignment">موعد تسليم واجب منزلي (لون أصفر 🟡)</option>
                     <option value="lesson">رفع وشرح درس جديد / فيديو (لون أخضر 🟢)</option>
+                    <option value="review">مراجعة (لون أزرق)</option>
                     <option value="general">تنبيه عام وتذكير للمجموعة (لون أزرق 🔵)</option>
                   </select>
                   {wizardState.contentType === "general" && (
@@ -1903,13 +1723,12 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
 
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px", flexWrap: "wrap", gap: "8px" }}>
                   {(() => {
-                    const normWizDate = (wizardState.selectedDate || "").split("T")[0];
-                    const existingEvt = calendarEvents.find((e) => (e.academicYear === selectedGrade || e.academicYear === "all") && (e.date || "").split("T")[0] === normWizDate);
+                    const existingEvt = calendarEvents.find(e => e.id === wizardState.editingEventId);
                     if (existingEvt && !existingEvt.isCancelled) {
                       return (
                         <button
                           type="button"
-                          onClick={() => handleCancelSchedule(wizardState.selectedDate)}
+                          onClick={() => handleCancelSchedule(wizardState.editingEventId!)}
                             className="destructive-action"
                           style={{
                             padding: "8px 14px",
@@ -2010,7 +1829,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                           cursor: "pointer",
                         }}
                       >
-                        {TIME_OPTIONS.map((t) => (
+                        {[...new Set([...TIME_OPTIONS, wizardState.timeHour, wizardState.scheduledNotifHour])].sort().map((t) => (
                           <option key={t} value={t}>
                             {t}
                           </option>
@@ -2041,7 +1860,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                   />
                   <div>
                     <strong style={{ fontSize: "12px", color: "var(--text-main)", display: "block" }}>
-                      تكرار أسبوعي كل {getArabicDayName(new Date(wizardState.selectedDate))}
+                      تكرار أسبوعي كل {getArabicDayName(new Date(wizardState.selectedDate + 'T12:00:00'))}
                     </strong>
                     <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
                       تثبيت هذا الموعد بشكل دائم لطلاب {getGradeLabel(selectedGrade)}
@@ -2076,7 +1895,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px solid var(--border-color)", paddingBottom: "6px" }}>
                     <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>التاريخ واليوم:</span>
-                    <strong style={{ fontSize: "12px", color: "var(--text-main)" }}>{wizardState.selectedDate} ({getArabicDayName(new Date(wizardState.selectedDate))})</strong>
+                    <strong style={{ fontSize: "12px", color: "var(--text-main)" }}>{wizardState.selectedDate} ({getArabicDayName(new Date(wizardState.selectedDate + 'T12:00:00'))})</strong>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px solid var(--border-color)", paddingBottom: "6px" }}>
                     <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>اسم الموعد:</span>
@@ -2116,10 +1935,10 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                     >
                       السابق
                     </button>
-                    {calendarEvents.some((e) => e.academicYear === selectedGrade && e.date === wizardState.selectedDate && !e.isCancelled) && (
+                    {!!wizardState.editingEventId && (
                       <button
                         type="button"
-                        onClick={() => handleCancelSchedule(wizardState.selectedDate)}
+                        onClick={() => handleCancelSchedule(wizardState.editingEventId!)}
                         style={{
                           padding: "9px 14px",
                           borderRadius: "8px",

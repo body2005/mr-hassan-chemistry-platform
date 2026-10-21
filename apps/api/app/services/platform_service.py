@@ -1134,6 +1134,9 @@ def create_calendar_event(
             return existing
     require_upcoming_time(payload.starts_at)
     require_upcoming_time(payload.ends_at)
+    from app.services.calendar_capacity import require_calendar_capacity
+    require_calendar_capacity(db, institution_id=user.institution_id, creator_id=user.id,
+        course_id=payload.course_id, starts_at=payload.starts_at, description=payload.description)
     event = CalendarEvent(
         institution_id=user.institution_id,
         creator_id=user.id,

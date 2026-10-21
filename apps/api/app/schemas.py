@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 try:
     from enum import StrEnum
 except ImportError:
@@ -536,6 +536,9 @@ class CalendarEventResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    creator_id: uuid.UUID
+    creator_name: str | None = None
+    academic_year: str | None = None
     course_id: uuid.UUID | None
     title: str
     description: str | None
@@ -545,6 +548,14 @@ class CalendarEventResponse(BaseModel):
     is_published: bool
     cancelled_at: datetime | None
     created_at: datetime
+
+    @field_validator('starts_at', 'ends_at', mode='before')
+    @classmethod
+    def calendar_utc_times(cls, value):
+        # Legacy/SQLite naive values are stored UTC, never browser-local time.
+        if isinstance(value, datetime):
+            return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+        return value
 
 
 class QuestionCreateRequest(BaseModel):

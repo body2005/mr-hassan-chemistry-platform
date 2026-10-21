@@ -1467,13 +1467,14 @@ def list_calendar(
         )
     elif user.role == UserRole.TEACHER:
         query = query.where(CalendarEvent.creator_id == user.id)
-    return [
-        CalendarEventResponse.model_validate(item)
-        for item in db.scalars(
-            query.order_by(CalendarEvent.starts_at.asc(), CalendarEvent.id.asc())
-            .offset(offset).limit(limit)
-        ).all()
-    ]
+    from app.services.calendar_capacity import calendar_grade
+    rows = db.execute(query.add_columns(Course.grade_level, User.display_name)
+        .outerjoin(Course, Course.id == CalendarEvent.course_id)
+        .join(User, User.id == CalendarEvent.creator_id)
+        .order_by(CalendarEvent.starts_at.asc(), CalendarEvent.id.asc()).offset(offset).limit(limit)).all()
+    return [CalendarEventResponse.model_validate(item).model_copy(update={
+        'academic_year': calendar_grade(item.description, grade), 'creator_name': creator_name,
+    }) for item, grade, creator_name in rows]
 
 
 @router.post("/calendar", response_model=CalendarEventResponse, status_code=201)
@@ -1534,6 +1535,9 @@ def update_calendar(
     from app.services.scheduling import require_upcoming_time
     require_upcoming_time(payload.starts_at, existing=event.starts_at)
     require_upcoming_time(payload.ends_at, existing=event.ends_at)
+    from app.services.calendar_capacity import require_calendar_capacity
+    require_calendar_capacity(db, institution_id=event.institution_id, creator_id=event.creator_id,
+        course_id=payload.course_id, starts_at=payload.starts_at, description=payload.description, exclude_id=event.id)
     event.course_id = payload.course_id
     event.title = payload.title.strip()
     event.description = payload.description

@@ -1,0 +1,23 @@
+.calendar-day-cell { position: relative; min-height: 72px; aspect-ratio: 1; border-radius: 10px; border: 2px solid var(--border-color); background: var(--bg-surface); isolation: isolate; overflow: hidden; }
+.calendar-event-segment, .calendar-empty-day-button { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; padding: 0; cursor: pointer; border-radius: 7px; touch-action: manipulation; }
+.calendar-event-segment { border-radius: 0; transition: filter 120ms ease; }
+.calendar-event-segment:hover { filter: brightness(1.12); }
+.calendar-event-segment svg { width: 100%; height: 100%; pointer-events: none; }
+.calendar-event-segment polygon { fill: none; stroke: transparent; stroke-width: 5; }
+.calendar-event-segment:focus-visible { outline: none; }
+.calendar-event-segment:focus-visible polygon { stroke: var(--text-main); }
+.calendar-empty-day-button { background: transparent; }
+.calendar-day-cell:focus-within, .calendar-day-cell.is-selected { outline: 3px solid var(--text-main); outline-offset: 2px; }
+.calendar-day-cell.is-selected { outline-style: double; outline-width: 4px; }
+.calendar-day-cell.is-today { border: 2px dashed var(--text-main); }
+.calendar-day-caption { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; z-index: 1; }
+.calendar-day-caption > span, .calendar-day-caption > small { background: var(--bg-surface); color: var(--text-main); border-radius: 5px; padding: 1px 5px; font-weight: 800; }
+.calendar-day-caption > small { font-size: 11px; }
+.calendar-time-tooltip { position: fixed; z-index: 90000; max-width: calc(100vw - 16px); background: var(--text-main); color: var(--bg-surface); font-size: 13px; font-weight: 700; padding: 6px 10px; border-radius: 6px; box-shadow: 0 3px 12px rgb(0 0 0 / 25%); direction: rtl; white-space: nowrap; pointer-events: auto; }
+.calendar-tooltip-arrow { position: absolute; bottom: -5px; width: 10px; height: 10px; background: inherit; transform: translateX(-50%) rotate(45deg); }
+.calendar-time-tooltip.below .calendar-tooltip-arrow { top: -5px; bottom: auto; }
+.calendar-day-events { display: grid; gap: 8px; margin-top: 16px; }
+.calendar-day-event { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px; border: 1px solid var(--border-color); border-inline-start: 4px solid var(--calendar-event-color); border-radius: 8px; }
+.calendar-day-event button { min-height: 44px; padding: 6px 12px; background: var(--bg-surface); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 7px; cursor: pointer; }
+@media (max-width: 767px) { .calendar-days .calendar-day-cell { padding: 0 !important; min-height: 88px !important; } .calendar-day-event { flex-wrap: wrap; } }
+@media (prefers-reduced-motion: reduce) { .calendar-event-segment { transition: none; } }

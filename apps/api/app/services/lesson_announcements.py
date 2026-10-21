@@ -25,6 +25,11 @@ def sync_lesson_calendar(db, lesson, course):
     enabled = lesson.publication_status == 'published'
     if not enabled and not event:
         return
+    if enabled and (event is None or event.cancelled_at is None):
+        from app.services.calendar_capacity import require_calendar_capacity
+        require_calendar_capacity(db, institution_id=course.institution_id, creator_id=course.teacher_id,
+            course_id=course.id, starts_at=lesson.publish_at or lesson.created_at or datetime.now(timezone.utc),
+            exclude_id=event.id if event else None)
     if not event:
         event = CalendarEvent(institution_id=course.institution_id, creator_id=course.teacher_id,
                               course_id=course.id, request_key=key, event_type='lesson')

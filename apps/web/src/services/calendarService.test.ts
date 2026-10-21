@@ -72,3 +72,26 @@ it('rejects duplicate records within a page instead of reporting a complete cale
   await expect(calendarService.getCalendarEvents()).rejects.toMatchObject({ code: 'INVALID_CALENDAR_PAGE' });
   expect(fetcher).toHaveBeenCalledTimes(1);
 });
+
+it('cancels only the selected event, retaining its same-day siblings', async () => {
+  const fetcher = vi.fn(async (_input: string, init?: RequestInit) =>
+    json(init?.method === 'POST' ? event(1) : [event(1), event(2)]));
+  vi.stubGlobal('fetch', fetcher);
+  const { calendarService } = await import('./lmsService');
+  expect(await calendarService.cancelCalendarEvent('calendar-1')).toHaveLength(2);
+  expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST').map(([url]) => url))
+    .toEqual(['/api/v1/calendar/calendar-1/cancel']);
+});
+
+it('saves a new same-day appointment with POST and preserves Arabic clock minutes on edit', async () => {
+  const fetcher = vi.fn(async (_input: string, init?: RequestInit) => json(init?.method ? event(1) : [event(1), event(2)]));
+  vi.stubGlobal('fetch', fetcher);
+  const { calendarService } = await import('./lmsService');
+  const draft = { id: 'evt_new-independent-event', academicYear: '1st_secondary' as const,
+    date: '2035-05-13', dayName: 'Independent new lesson', time: '٩:٤٥ ص', contentType: 'lesson' as const };
+  await calendarService.saveCalendarEvent(draft);
+  const [, init] = fetcher.mock.calls.find(([, options]) => options?.method)!;
+  expect(init?.method).toBe('POST');
+  expect(JSON.parse(init!.body as string).starts_at).toBe('2035-05-13T06:45:00.000Z');
+  expect(JSON.parse(init!.body as string).idempotency_key).toBe(draft.id);
+});
