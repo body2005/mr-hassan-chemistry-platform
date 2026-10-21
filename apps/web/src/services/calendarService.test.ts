@@ -9,6 +9,20 @@ const event = (ordinal: number) => ({ id: `calendar-${ordinal}`, course_id: null
 const firstPage = () => Array.from({ length: 500 }, (_, ordinal) => event(ordinal));
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
 
+it('persists the same Cairo publication instant used for the notification and clears it for immediate mode', async () => {
+  const fetcher = vi.fn(async (_input: string, init?: RequestInit) => json(init?.method ? event(1) : []));
+  vi.stubGlobal('fetch', fetcher);
+  const { calendarService } = await import('./lmsService');
+  const draft = { id: 'evt_scheduled-calendar', academicYear: '1st_secondary' as const,
+    date: '2035-05-14', dayName: 'موعد مجدول', time: '06:00 م', contentType: 'lesson' as const,
+    isPublishedToStudents: true, publishStartDate: '2035-05-13', publishStartTime: '٠٦:٣٠ م' };
+  await calendarService.saveCalendarEvent(draft);
+  await calendarService.saveCalendarEvent({ ...draft, publishStartDate: undefined, publishStartTime: undefined });
+  const writes = fetcher.mock.calls.filter(([, init]) => init?.method);
+  expect(JSON.parse(writes[0][1]!.body as string).publish_at).toBe('2035-05-13T15:30:00.000Z');
+  expect(JSON.parse(writes[1][1]!.body as string).publish_at).toBeNull();
+});
+
 it('reads beyond500 in bounded pages and retains the real final event', async () => {
   const fetcher = vi.fn(async (input: string) => json(input.includes('offset=500') ? [event(500)] : firstPage()));
   vi.stubGlobal('fetch', fetcher);

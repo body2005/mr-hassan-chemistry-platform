@@ -1,0 +1,19 @@
+/* The site's quiz styles hide native radios globally; publication choices
+   need visible, keyboard-focusable controls within this calendar only. */
+.calendar-publication-options input[type="radio"] {
+  visibility: visible !important;
+  position: static !important;
+  width: 16px !important;
+  height: 16px !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  appearance: auto !important;
+  -webkit-appearance: auto !important;
+  flex-shrink: 0;
+  accent-color: #059669;
+}
+.calendar-publication-options label { min-height: 44px; align-items: center; }
+.calendar-publication-options label:focus-within {
+  outline: 2px solid var(--text-main);
+  outline-offset: 2px;
+}

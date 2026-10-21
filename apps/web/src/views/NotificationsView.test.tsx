@@ -86,3 +86,37 @@ it('adds two same-day appointments with distinct identities even when their form
   expect(calls[0][0].id).not.toBe(calls[1][0].id);
   expect(host.querySelectorAll('.calendar-day-event')).toHaveLength(2);
 });
+
+it('requires a clear title and makes immediate, scheduled and private publication exclusive', async () => {
+  const add = vi.fn<(item: NotificationItem) => Promise<void>>(async () => undefined);
+  vi.mocked(calendarService.saveCalendarEvent).mockResolvedValue([]);
+  await act(async () => root.render(<NotificationsView notifications={[]} currentUser={teacher}
+    onMarkNotificationRead={vi.fn()} onNavigateToTab={vi.fn()} onAddNotification={add} />));
+  await act(async () => button('إضافة موعد جديد').click());
+  expect(button('التالي: تحديد التوقيت').disabled).toBe(true);
+  expect(host.querySelector('#calendar-title-help')?.textContent).toContain('حرفين');
+  const title = host.querySelector<HTMLInputElement>('input[placeholder="مثال: الثلاثاء - المحاضرة الأسبوعية"]')!;
+  await change(title, 'س');
+  expect(button('التالي: تحديد التوقيت').disabled).toBe(true);
+  await change(title, 'مراجعة الجدولة');
+  expect(button('التالي: تحديد التوقيت').disabled).toBe(false);
+  const immediate = host.querySelector<HTMLInputElement>('input[value="immediate"]')!;
+  const scheduled = host.querySelector<HTMLInputElement>('input[value="scheduled"]')!;
+  const privateOption = host.querySelector<HTMLInputElement>('input[value="private"]')!;
+  expect(immediate.checked).toBe(true);
+  await act(async () => scheduled.click());
+  expect(immediate.checked).toBe(false);
+  expect(scheduled.checked).toBe(true);
+  await act(async () => privateOption.click());
+  expect(scheduled.checked).toBe(false);
+  await act(async () => scheduled.click());
+  await change(host.querySelector<HTMLInputElement>('input[type="date"]')!, '2035-05-13');
+  await act(async () => button('التالي: تحديد التوقيت').click());
+  await act(async () => button('التالي: مراجعة وحفظ').click());
+  expect(host.textContent).toContain('ظهور الموعد والإشعار: 2035-05-13');
+  await act(async () => button('تأكيد وحفظ الموعد في الجدول').click());
+  expect(calendarService.saveCalendarEvent).toHaveBeenCalledWith(expect.objectContaining({
+    isPublishedToStudents: true, publishStartDate: '2035-05-13', publishStartTime: '06:00 م',
+  }));
+  expect(add).toHaveBeenCalledWith(expect.objectContaining({ scheduledFor: '2035-05-13T15:00:00.000Z' }));
+});

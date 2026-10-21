@@ -1461,6 +1461,7 @@ def list_calendar(
     if user.role == UserRole.STUDENT:
         query = query.where(
             CalendarEvent.is_published.is_(True), CalendarEvent.cancelled_at.is_(None),
+            or_(CalendarEvent.publish_at.is_(None), CalendarEvent.publish_at <= datetime.now(UTC)),
             or_(CalendarEvent.course_id.is_(None), CalendarEvent.course_id.in_(select(Enrollment.course_id).where(
                 Enrollment.student_id == user.id,
                 Enrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]))))
@@ -1535,6 +1536,7 @@ def update_calendar(
     from app.services.scheduling import require_upcoming_time
     require_upcoming_time(payload.starts_at, existing=event.starts_at)
     require_upcoming_time(payload.ends_at, existing=event.ends_at)
+    require_upcoming_time(payload.publish_at, existing=event.publish_at)
     from app.services.calendar_capacity import require_calendar_capacity
     require_calendar_capacity(db, institution_id=event.institution_id, creator_id=event.creator_id,
         course_id=payload.course_id, starts_at=payload.starts_at, description=payload.description, exclude_id=event.id)
@@ -1545,6 +1547,7 @@ def update_calendar(
     event.starts_at = platform_service._as_utc(payload.starts_at)
     event.ends_at = platform_service._as_utc(payload.ends_at)
     event.is_published = payload.is_published
+    event.publish_at = platform_service._as_utc(payload.publish_at)
     event.cancelled_at = None
     db.commit()
     db.refresh(event)

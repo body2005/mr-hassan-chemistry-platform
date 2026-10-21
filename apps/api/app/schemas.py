@@ -525,10 +525,12 @@ class CalendarEventCreateRequest(BaseModel):
     starts_at: datetime
     ends_at: datetime | None = None
     is_published: bool = True
+    publish_at: datetime | None = None
 
     @model_validator(mode="after")
     def valid_window(self):
         validate_schedule_window(self.starts_at, self.ends_at)
+        validate_schedule_window(self.publish_at, None)
         return self
 
 
@@ -546,10 +548,11 @@ class CalendarEventResponse(BaseModel):
     starts_at: datetime
     ends_at: datetime | None
     is_published: bool
+    publish_at: datetime | None = None
     cancelled_at: datetime | None
     created_at: datetime
 
-    @field_validator('starts_at', 'ends_at', mode='before')
+    @field_validator('starts_at', 'ends_at', 'publish_at', mode='before')
     @classmethod
     def calendar_utc_times(cls, value):
         # Legacy/SQLite naive values are stored UTC, never browser-local time.

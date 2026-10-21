@@ -169,6 +169,7 @@ type ApiCalendarEvent = {
   starts_at: string;
   ends_at: string | null;
   is_published: boolean;
+  publish_at?: string | null;
   cancelled_at: string | null;
   created_at: string;
 };
@@ -442,8 +443,8 @@ function mapApiCalendarEvent(item: ApiCalendarEvent): CalendarScheduleEvent {
     isPublishedToStudents: item.is_published,
     isRecurringWeekly,
     quizDurationMinutes,
-    publishStartDate,
-    publishStartTime,
+    publishStartDate: item.publish_at ? cairoLocalValue(item.publish_at).slice(0, 10) : publishStartDate,
+    publishStartTime: item.publish_at ? cairoLocalValue(item.publish_at).slice(11, 16) : publishStartTime,
     customMessage,
   };
 }
@@ -960,6 +961,8 @@ export const calendarService = {
       starts_at: startsAt,
       ends_at: schedule.endsAt,
       is_published: event.isPublishedToStudents !== false,
+      publish_at: event.publishStartDate ? assessmentTimestamp(
+        `${event.publishStartDate}T${parseScheduleClock(event.publishStartTime || '06:00 م')}:00`, 'ظهور الموعد والإشعار') : null,
     };
     const isServerId = !event.id.startsWith("evt_");
     await apiRequest<ApiCalendarEvent>(isServerId ? `/calendar/${event.id}` : "/calendar", {

@@ -1,4 +1,5 @@
 import { CalendarDayCell } from "../components/CalendarDayCell";
+import './CalendarPublication.css';
 import { CALENDAR_TYPES, calendarClock, calendarDay, calendarEventTime, sortCalendarEvents } from "../utils/calendarDay";
 import { cairoLocalValue } from "../utils/cairoTime";
 import { ScheduleBadges } from "../components/ScheduleBadges";
@@ -379,18 +380,11 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
         publishStartTime: wizardState.isScheduledNotif ? `${wizardState.scheduledNotifHour} ${wizardState.scheduledNotifPeriod}` : undefined,
       };
 
-      // Build the notification createdAt — either scheduled ISO date or "الآن"
-      let notifCreatedAt = "الآن";
-      if (wizardState.isScheduledNotif && wizardState.scheduledNotifDate) {
-        const schedDate = wizardState.scheduledNotifDate;
-        const schedHour = wizardState.scheduledNotifHour || "06:00";
-        const schedPeriod = wizardState.scheduledNotifPeriod || "م";
-        const [hh, mm = '00'] = schedHour.split(":");
-        let hour24 = parseInt(hh, 10) || 6;
-        if (schedPeriod === "م" && hour24 < 12) hour24 += 12;
-        if (schedPeriod === "ص" && hour24 === 12) hour24 = 0;
-        notifCreatedAt = assessmentTimestamp(`${schedDate}T${String(hour24).padStart(2, "0")}:${mm}:00`, "الإشعار")!;
-      }
+      // One Cairo instant controls both student calendar visibility and notice.
+      if (wizardState.isScheduledNotif && !wizardState.scheduledNotifDate) throw new Error('اختر تاريخ ظهور الموعد والإشعار.');
+      const scheduledFor = wizardState.isScheduledNotif ? assessmentTimestamp(
+        `${wizardState.scheduledNotifDate}T${calendarClock(`${wizardState.scheduledNotifHour} ${wizardState.scheduledNotifPeriod}`)}:00`,
+        'ظهور الموعد والإشعار')! : undefined;
 
       let autoNotif: NotificationItem | undefined = undefined;
       if (wizardState.isPublishedToStudents) {
@@ -403,7 +397,8 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
           message: notifMessage,
           type: wizardState.contentType === "quiz" ? "quiz" : wizardState.contentType === "assignment" ? "assignment" : wizardState.contentType === "general" ? "warning" : "system",
           targetYear: selectedGrade,
-          createdAt: notifCreatedAt,
+          createdAt: scheduledFor || 'الآن',
+          scheduledFor,
           read: false,
           actionTab: "Notifications",
           quizDurationMinutes: wizardState.contentType === "quiz" ? wizardState.quizDurationMinutes : undefined,
@@ -528,7 +523,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       dayTitle: evt?.dayName || '', timeHour: parsed.hour, timePeriod: parsed.period,
       contentType: evt?.contentType || 'lesson', isRecurringWeekly: evt?.isRecurringWeekly ?? false,
       isPublishedToStudents: evt?.isPublishedToStudents ?? true, quizDurationMinutes: evt?.quizDurationMinutes ?? 45,
-      customMessage: evt?.customMessage || '', isScheduledNotif: !!evt?.publishStartDate,
+      customMessage: evt?.customMessage || '', isScheduledNotif: evt?.isPublishedToStudents !== false && !!evt?.publishStartDate,
       scheduledNotifDate: evt?.publishStartDate || targetDate,
       scheduledNotifHour: evt?.publishStartTime ? parseScheduleTime(evt.publishStartTime).hour : '06:00',
       scheduledNotifPeriod: evt?.publishStartTime ? parseScheduleTime(evt.publishStartTime).period : 'م',
@@ -1479,6 +1474,8 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                   </label>
                   <input
                     type="text"
+                    maxLength={200}
+                    aria-describedby="calendar-title-help"
                     value={wizardState.dayTitle}
                     onChange={(e) => setWizardState((prev) => ({ ...prev, dayTitle: e.target.value }))}
                     placeholder="مثال: الثلاثاء - المحاضرة الأسبوعية"
@@ -1494,6 +1491,9 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                       outline: "none",
                     }}
                   />
+                  <small id="calendar-title-help" style={{ display: 'block', marginTop: '5px', color: 'var(--text-muted)' }}>
+                    {wizardState.dayTitle.trim().length < 2 ? 'اكتب عنوان الموعد (حرفين على الأقل) لتفعيل زر التالي.' : 'عنوان الموعد جاهز؛ يمكنك المتابعة لتحديد الوقت.'}
+                  </small>
                 </div>
 
                 <div>
@@ -1584,7 +1584,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                     </div>
                   )}
 
-                  {/* Student Calendar Visibility Checkbox */}
+                  <div className="calendar-publication-options" role="radiogroup" aria-label="ظهور الموعد وإشعار الطلاب">
                   <label
                     style={{
                       display: "flex",
@@ -1592,30 +1592,29 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                       gap: "10px",
                       marginTop: "12px",
                       padding: "10px 12px",
-                      background: wizardState.isPublishedToStudents ? "var(--bg-accent, #ecfdf5)" : "var(--bg-surface-secondary)",
-                      border: wizardState.isPublishedToStudents ? "1.5px solid #059669" : "1px solid var(--border-color)",
+                      background: wizardState.isPublishedToStudents && !wizardState.isScheduledNotif ? "var(--bg-accent, #ecfdf5)" : "var(--bg-surface-secondary)",
+                      border: wizardState.isPublishedToStudents && !wizardState.isScheduledNotif ? "1.5px solid #059669" : "1px solid var(--border-color)",
                       borderRadius: "8px",
                       cursor: "pointer",
                     }}
                   >
                     <input
-                      type="checkbox"
-                      checked={wizardState.isPublishedToStudents}
-                      onChange={(e) => setWizardState((prev) => ({ ...prev, isPublishedToStudents: e.target.checked }))}
+                      type="radio" name="calendar-publication" value="immediate"
+                      checked={wizardState.isPublishedToStudents && !wizardState.isScheduledNotif}
+                      onChange={() => setWizardState((prev) => ({ ...prev, isPublishedToStudents: true, isScheduledNotif: false }))}
                       style={{ width: "16px", height: "16px", accentColor: "#059669", cursor: "pointer" }}
                     />
                     <div>
                       <strong style={{ fontSize: "12px", color: "var(--text-main)", display: "block" }}>
-                        إظهار هذا الموعد للطلاب في تقويم صفهم الدراسي
+                        إظهار الموعد وإرسال الإشعار فورًا
                       </strong>
                       <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                        {wizardState.isPublishedToStudents ? "معروض في جدول وتقويم الطلاب" : "مخفي عن الطلاب ويظهر في جدولك كمعلم فقط"}
+                        يظهر في تقويم الصف ويصل إشعاره عند الحفظ
                       </span>
                     </div>
                   </label>
 
-                  {/* Scheduled Notification Checkbox */}
-                  {wizardState.isPublishedToStudents && (
+                  {/* A single alternative schedules both visibility and notice. */}
                     <div style={{ marginTop: "6px" }}>
                       <label
                         style={{
@@ -1630,21 +1629,22 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                         }}
                       >
                         <input
-                          type="checkbox"
-                          checked={wizardState.isScheduledNotif}
-                          onChange={(e) => setWizardState((prev) => ({
+                          type="radio" name="calendar-publication" value="scheduled"
+                          checked={wizardState.isPublishedToStudents && wizardState.isScheduledNotif}
+                          onChange={() => setWizardState((prev) => ({
                             ...prev,
-                            isScheduledNotif: e.target.checked,
-                            scheduledNotifDate: e.target.checked ? prev.selectedDate : "",
+                            isPublishedToStudents: true,
+                            isScheduledNotif: true,
+                            scheduledNotifDate: prev.scheduledNotifDate || prev.selectedDate,
                           }))}
                           style={{ width: "16px", height: "16px", accentColor: "#f59e0b", cursor: "pointer" }}
                         />
                         <div>
                           <strong style={{ fontSize: "12px", color: "var(--text-main)", display: "block" }}>
-                            جدولة ظهور الإشعار للطلاب في وقت محدد
+                            جدولة ظهور الموعد والإشعار معًا
                           </strong>
                           <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                            {wizardState.isScheduledNotif ? "الطلاب سيرون الإشعار في التاريخ والوقت المحدد أدناه" : "الإشعار يظهر للطلاب فوراً عند الحفظ"}
+                            لن يظهر الموعد أو الإشعار للطلاب قبل التاريخ والوقت المحددين
                           </span>
                         </div>
                       </label>
@@ -1652,9 +1652,10 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                       {wizardState.isScheduledNotif && (
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "8px", marginTop: "8px", padding: "10px 12px", background: "var(--urgency-bg)", border: "1px solid var(--urgency-border)", borderRadius: "8px" }}>
                           <div>
-                            <small style={{ display: "block", color: "var(--text-muted)", fontSize: "10.5px", marginBottom: "3px", fontWeight: 700 }}>تاريخ ظهور الإشعار:</small>
+                            <small style={{ display: "block", color: "var(--text-muted)", fontSize: "10.5px", marginBottom: "3px", fontWeight: 700 }}>تاريخ ظهور الموعد والإشعار:</small>
                             <input
                               type="date"
+                              min={cairoLocalValue(new Date().toISOString()).slice(0, 10)}
                               value={wizardState.scheduledNotifDate}
                               onChange={(e) => setWizardState((prev) => ({ ...prev, scheduledNotifDate: e.target.value }))}
                               style={{
@@ -1710,7 +1711,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                                 cursor: "pointer",
                               }}
                             >
-                              {["12:00","01:00","02:00","03:00","04:00","05:00","06:00","07:00","08:00","09:00","10:00","11:00"].map((t) => (
+                              {[...new Set([...TIME_OPTIONS, wizardState.scheduledNotifHour])].sort().map((t) => (
                                 <option key={t} value={t}>{t}</option>
                               ))}
                             </select>
@@ -1718,7 +1719,12 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                         </div>
                       )}
                     </div>
-                  )}
+                  <label style={{ display: 'flex', gap: '10px', padding: '10px 12px', marginTop: '6px', cursor: 'pointer', color: 'var(--text-main)' }}>
+                    <input type="radio" name="calendar-publication" value="private" checked={!wizardState.isPublishedToStudents}
+                      onChange={() => setWizardState(prev => ({ ...prev, isPublishedToStudents: false, isScheduledNotif: false }))} />
+                    خاص بالمدرس — لا يظهر للطلاب ولا يُرسل إشعارًا
+                  </label>
+                  </div>
                 </div>
 
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px", flexWrap: "wrap", gap: "8px" }}>
@@ -1756,7 +1762,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                     <button
                       type="button"
                       onClick={() => setWizardState((prev) => ({ ...prev, step: 2 }))}
-                      disabled={!wizardState.dayTitle.trim()}
+                      disabled={wizardState.dayTitle.trim().length < 2}
                       style={{
                         padding: "9px 16px",
                         borderRadius: "8px",
@@ -1766,7 +1772,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                         fontSize: "12.5px",
                         fontWeight: 800,
                         cursor: "pointer",
-                        opacity: !wizardState.dayTitle.trim() ? 0.6 : 1,
+                        opacity: wizardState.dayTitle.trim().length < 2 ? 0.6 : 1,
                       }}
                     >
                       التالي: تحديد التوقيت
@@ -1914,7 +1920,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                   <div style={{ display: "flex", justifyContent: "space-between" }}>
                     <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>الظهور في تقويم الطلاب:</span>
                     <strong style={{ fontSize: "12px", color: wizardState.isPublishedToStudents ? "#059669" : "#b45309" }}>
-                      {wizardState.isPublishedToStudents ? "معروض في جدول الطلاب" : "مخفي عن الطلاب (خاص بالمعلم)"}
+                      {wizardState.isScheduledNotif ? `ظهور الموعد والإشعار: ${wizardState.scheduledNotifDate} ${wizardState.scheduledNotifHour} ${wizardState.scheduledNotifPeriod}` : wizardState.isPublishedToStudents ? "ظهور وإشعار فوري عند الحفظ" : "مخفي عن الطلاب (خاص بالمعلم)"}
                     </strong>
                   </div>
                   {wizardState.contentType === "general" && wizardState.customMessage.trim() && (
