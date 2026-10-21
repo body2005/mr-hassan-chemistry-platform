@@ -146,3 +146,28 @@ it('closes promptly while saving, restores a failed draft, and retries without a
   expect(calls[0][0].dayDescription).toBe('');
   expect(calls[0][0].dayName.length).toBeGreaterThan(2);
 });
+
+it('adds another appointment from the existing event editor without replacing the original', async () => {
+  const date = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo' }).format(new Date());
+  const rows: CalendarScheduleEvent[] = [{ id: 'stored-original', creatorId: teacher.id,
+    academicYear: '1st_secondary', date, dayName: 'الموعد المحفوظ', time: '06:00 م', contentType: 'lesson' }];
+  vi.mocked(calendarService.getCalendarEvents).mockImplementation(async () => [...rows]);
+  vi.mocked(calendarService.saveCalendarEvent).mockImplementation(async event => {
+    rows.push({ ...event, id: 'stored-second' }); return [...rows];
+  });
+  await act(async () => root.render(<NotificationsView notifications={[]} currentUser={teacher}
+    onMarkNotificationRead={vi.fn()} onNavigateToTab={vi.fn()} onAddNotification={async () => undefined} />));
+  expect(button('إضافة موعد في هذا اليوم')).toBeDefined();
+  await act(async () => button('تعديل الموعد').click());
+  expect(host.querySelector<HTMLInputElement>('#calendar-day-description')?.value).toBe('الموعد المحفوظ');
+  await act(async () => button('إضافة موعد آخر لنفس اليوم').click());
+  expect(host.querySelector<HTMLInputElement>('#calendar-day-description')?.value).toBe('');
+  await act(async () => button('التالي: تحديد التوقيت').click());
+  await act(async () => button('التالي: مراجعة وحفظ').click());
+  await act(async () => button('تأكيد وحفظ الموعد في الجدول').click());
+  const sent = vi.mocked(calendarService.saveCalendarEvent).mock.calls[0][0];
+  expect(sent.id).toMatch(/^evt_/);
+  expect(sent.date).toBe(date);
+  expect(rows).toHaveLength(2);
+  expect(rows[0].dayName).toBe('الموعد المحفوظ');
+});

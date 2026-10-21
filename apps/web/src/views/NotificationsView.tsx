@@ -955,6 +955,8 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
             {isTeacher && (
               <button
                 onClick={() => openCalendarWizard(undefined, selectedDayDate)}
+                disabled={saving || selectedDayEvents.length >= 4}
+                title={selectedDayEvents.length >= 4 ? 'وصلت إلى الحد الأقصى: أربعة مواعيد في هذا اليوم.' : undefined}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -1350,7 +1352,15 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
               {renderMonthCalendarCells()}
             </div>
             <div className="calendar-day-events" aria-label={`مواعيد ${selectedDayDate}`}>
-              <strong>{selectedDayDate} — {selectedDayEvents.length} / 4 مواعيد</strong>
+              <div className="calendar-day-actions">
+                <strong>{selectedDayDate} — {selectedDayEvents.length} / 4 مواعيد</strong>
+                {isTeacher && <button type="button" className="calendar-add-appointment"
+                  disabled={saving || selectedDayEvents.length >= 4}
+                  onClick={() => openCalendarWizard(undefined, selectedDayDate)}>
+                  <Plus size={16} aria-hidden="true" />إضافة موعد في هذا اليوم
+                </button>}
+              </div>
+              {isTeacher && selectedDayEvents.length === 4 && <small>وصلت إلى الحد الأقصى: أربعة مواعيد في هذا اليوم.</small>}
               {selectedDayEvents.length > 4 && <p role="status">هذا اليوم يحتوي مواعيد قديمة أكثر من أربعة؛ جميعها محفوظة وتظهر تفاصيلها بالأسفل.</p>}
               {selectedDayEvents.map(event => <div key={event.id} className="calendar-day-event"
                 style={{ '--calendar-event-color': CALENDAR_TYPES[event.contentType].color } as React.CSSProperties}>
@@ -1436,6 +1446,15 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                 <X size={18} />
               </button>
             </div>
+
+            {wizardState.editingEventId && <div className="calendar-new-from-edit">
+              <button type="button" className="calendar-add-appointment"
+                disabled={saving || selectedDayEvents.length >= 4}
+                onClick={() => openCalendarWizard(undefined, wizardState.selectedDate)}>
+                <Plus size={16} aria-hidden="true" />إضافة موعد آخر لنفس اليوم
+              </button>
+              <small>{selectedDayEvents.length >= 4 ? 'وصلت إلى الحد الأقصى: أربعة مواعيد في هذا اليوم.' : 'افتح موعدًا جديدًا بنفس التاريخ.'}</small>
+            </div>}
 
             {/* Wizard Steps Indicator */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "6px", marginBottom: "18px" }}>

@@ -17,3 +17,13 @@
   outline: 2px solid #059669;
   outline-offset: 2px;
 }
+.calendar-day-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.calendar-add-appointment {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 44px; padding: 8px 12px; border: 1px solid #059669; border-radius: 8px;
+  background: #0f392b; color: #fff; font: inherit; font-size: 12px; font-weight: 800; cursor: pointer;
+}
+.calendar-add-appointment:disabled { opacity: .55; cursor: not-allowed; }
+.calendar-add-appointment:focus-visible { outline: 2px solid #059669; outline-offset: 2px; }
+.calendar-new-from-edit { display: grid; gap: 6px; margin-bottom: 14px; }
+.calendar-new-from-edit small { color: var(--text-muted); }
