@@ -255,7 +255,6 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
     scheduledNotifDate: string;
     scheduledNotifHour: string;
     scheduledNotifPeriod: "ص" | "م";
-    customMessage: string;
   }>({
     isOpen: false,
     step: 1,
@@ -272,7 +271,6 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
     scheduledNotifDate: "",
     scheduledNotifHour: "06:00",
     scheduledNotifPeriod: "م",
-    customMessage: "",
   });
 
   const [activeFilter, setActiveFilter] = useState<"all" | "assignment" | "quiz" | "system" | "payment">("all");
@@ -368,13 +366,14 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
         closeDeadline: calendarEvents.find(event => event.id === wizardState.editingEventId)?.closeDeadline,
         academicYear: selectedGrade,
         date: wizardState.selectedDate,
-        dayName: wizardState.dayTitle.trim() || `${getArabicDayName(new Date(wizardState.selectedDate + 'T12:00:00'))} - موعد إرسال`,
+        dayName: `${CALENDAR_TYPES[wizardState.contentType].label} — ${wizardState.dayTitle.trim() || getArabicDayName(new Date(wizardState.selectedDate + 'T12:00:00'))}`.slice(0, 200),
+        dayDescription: wizardState.dayTitle.trim(),
         time: fullTimeStr,
         contentType: wizardState.contentType,
         isRecurringWeekly: wizardState.isRecurringWeekly,
         isPublishedToStudents: wizardState.isPublishedToStudents,
         quizDurationMinutes: wizardState.contentType === "quiz" ? wizardState.quizDurationMinutes : undefined,
-        customMessage: wizardState.contentType === "general" ? (wizardState.customMessage.trim() || undefined) : undefined,
+        customMessage: wizardState.dayTitle.trim() || undefined,
         isCancelled: false,
         publishStartDate: wizardState.isScheduledNotif ? wizardState.scheduledNotifDate : undefined,
         publishStartTime: wizardState.isScheduledNotif ? `${wizardState.scheduledNotifHour} ${wizardState.scheduledNotifPeriod}` : undefined,
@@ -389,7 +388,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       let autoNotif: NotificationItem | undefined = undefined;
       if (wizardState.isPublishedToStudents) {
         // If teacher wrote a custom message, use it; otherwise title only (no day/time in body)
-        const notifMessage = wizardState.customMessage?.trim() || `${newEvent.dayName} — ${newEvent.date} ${newEvent.time}`;
+        const notifMessage = [wizardState.dayTitle.trim(), `${CALENDAR_TYPES[wizardState.contentType].label} — ${newEvent.date} ${newEvent.time}`].filter(Boolean).join('\n');
 
         autoNotif = {
           id: requestRef.current.notificationId,
@@ -406,6 +405,10 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
 
       }
 
+      // Close immediately without claiming success before the server confirms.
+      // The draft and idempotency keys remain intact and reopen on failure.
+      setScheduleSavedMsg(false);
+      setWizardState(prev => ({ ...prev, isOpen: false }));
       setCalendarEvents(await calendarService.saveCalendarEvent(newEvent));
       eventSaved = true;
       if (autoNotif) {
@@ -424,6 +427,8 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       setTimeout(() => setScheduleSavedMsg(false), 3000);
       window.dispatchEvent(new Event('lms_schedule_updated'));
     } catch (err) {
+      setSelectedGrade(selectedGrade);
+      setWizardState(prev => ({ ...prev, isOpen: true }));
       setSaveError(`${eventSaved ? 'حُفظ الموعد، لكن تعذر إرسال الإشعار أو تحديث التكرار؛ أعد المحاولة دون تكرار الموعد. ' : 'تعذر تأكيد حفظ الموعد؛ المدخلات محفوظة وإعادة المحاولة لا تكرره. '}${err instanceof Error ? err.message : ''}`);
     } finally { setSaving(false); }
   }
@@ -513,17 +518,17 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   const selectedDayEvents = sortCalendarEvents(scopeEvents.filter(event => calendarDay(event) === selectedDayDate));
 
   function openCalendarWizard(evt: CalendarScheduleEvent | undefined, targetDate: string) {
-    if (!isTeacher) return;
+    if (!isTeacher || saving) return;
     setSaveError(null);
     requestRef.current = { signature: '', id: '', notificationId: '' };
     const parsed = parseScheduleTime(evt?.time || gradeSchedule?.time || '18:00');
     setSelectedDayDate(targetDate);
     setWizardState({
       isOpen: true, step: 1, editingEventId: evt?.id, selectedDate: targetDate,
-      dayTitle: evt?.dayName || '', timeHour: parsed.hour, timePeriod: parsed.period,
+      dayTitle: evt?.dayDescription ?? evt?.customMessage ?? evt?.dayName ?? '', timeHour: parsed.hour, timePeriod: parsed.period,
       contentType: evt?.contentType || 'lesson', isRecurringWeekly: evt?.isRecurringWeekly ?? false,
       isPublishedToStudents: evt?.isPublishedToStudents ?? true, quizDurationMinutes: evt?.quizDurationMinutes ?? 45,
-      customMessage: evt?.customMessage || '', isScheduledNotif: evt?.isPublishedToStudents !== false && !!evt?.publishStartDate,
+      isScheduledNotif: evt?.isPublishedToStudents !== false && !!evt?.publishStartDate,
       scheduledNotifDate: evt?.publishStartDate || targetDate,
       scheduledNotifHour: evt?.publishStartTime ? parseScheduleTime(evt.publishStartTime).hour : '06:00',
       scheduledNotifPeriod: evt?.publishStartTime ? parseScheduleTime(evt.publishStartTime).period : 'م',
@@ -1018,6 +1023,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
               {teachers.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
             </select>
           </label>}
+            {saving && !wizardState.isOpen && !isBroadcastModalOpen && <p role="status" style={{ color: 'var(--text-muted)' }}>جارٍ حفظ تغييرات الموعد…</p>}
                     {/* Success Banner */}
           {scheduleSavedMsg && (
             <div
@@ -1434,7 +1440,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
             {/* Wizard Steps Indicator */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "6px", marginBottom: "18px" }}>
               {[
-                { step: 1, title: "1. اسم اليوم والموعد" },
+                { step: 1, title: "1. وصف اليوم والموعد" },
                 { step: 2, title: "2. التوقيت والفترة" },
                 { step: 3, title: "3. المراجعة والتأكيد" },
               ].map((s) => (
@@ -1470,15 +1476,17 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
 
                 <div>
                   <label style={{ display: "block", fontSize: "11.5px", fontWeight: 800, color: "var(--text-main)", marginBottom: "4px" }}>
-                    اسم اليوم / عنوان الموعد:
+                    وصف اليوم (اختياري):
                   </label>
                   <input
                     type="text"
                     maxLength={200}
+                    id="calendar-day-description"
+                    aria-label="وصف اليوم (اختياري)"
                     aria-describedby="calendar-title-help"
                     value={wizardState.dayTitle}
                     onChange={(e) => setWizardState((prev) => ({ ...prev, dayTitle: e.target.value }))}
-                    placeholder="مثال: الثلاثاء - المحاضرة الأسبوعية"
+                    placeholder="مثال: مراجعة الفصل الأول قبل الاختبار"
                     style={{
                       width: "100%",
                       padding: "9px 12px",
@@ -1492,7 +1500,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                     }}
                   />
                   <small id="calendar-title-help" style={{ display: 'block', marginTop: '5px', color: 'var(--text-muted)' }}>
-                    {wizardState.dayTitle.trim().length < 2 ? 'اكتب عنوان الموعد (حرفين على الأقل) لتفعيل زر التالي.' : 'عنوان الموعد جاهز؛ يمكنك المتابعة لتحديد الوقت.'}
+                    يظهر الوصف في إشعار الطلاب. يمكنك تركه فارغًا؛ سيظهر نوع الموعد ووقته.
                   </small>
                 </div>
 
@@ -1523,37 +1531,6 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                     <option value="review">مراجعة (لون أزرق)</option>
                     <option value="general">تنبيه عام وتذكير للمجموعة (لون أزرق 🔵)</option>
                   </select>
-                  {wizardState.contentType === "general" && (
-                    <div style={{ marginTop: "12px" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
-                        <label style={{ fontSize: "11.5px", fontWeight: 700, color: "var(--text-main)" }}>
-                          رسالة خاصة في الإشعار عن هذا اليوم:
-                        </label>
-                        <span style={{ fontSize: "11px", color: "#2563eb", fontWeight: 700 }}>
-                          ستظهر في إشعار الطلاب
-                        </span>
-                      </div>
-                      <textarea
-                        value={wizardState.customMessage}
-                        onChange={(e) => setWizardState((prev) => ({ ...prev, customMessage: e.target.value }))}
-                        placeholder="اكتب هنا نص التنبيه الخاص أو التعليمات الموجهة للطلاب في هذا اليوم..."
-                        rows={3}
-                        style={{
-                          width: "100%",
-                          padding: "8px 12px",
-                          border: "1.5px solid #3b82f6",
-                          borderRadius: "8px",
-                          fontSize: "12.5px",
-                          lineHeight: "1.5",
-                          background: "rgba(59, 130, 246, 0.04)",
-                          color: "var(--text-main)",
-                          boxSizing: "border-box",
-                          outline: "none",
-                          resize: "vertical",
-                        }}
-                      />
-                    </div>
-                  )}
                   {wizardState.contentType === "quiz" && (
                     <div style={{ marginTop: "12px" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
@@ -1719,10 +1696,15 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                         </div>
                       )}
                     </div>
-                  <label style={{ display: 'flex', gap: '10px', padding: '10px 12px', marginTop: '6px', cursor: 'pointer', color: 'var(--text-main)' }}>
+                  <label style={{ display: 'flex', gap: '10px', padding: '10px 12px', marginTop: '6px', cursor: 'pointer', color: 'var(--text-main)',
+                    background: !wizardState.isPublishedToStudents ? 'var(--bg-accent, #ecfdf5)' : 'var(--bg-surface-secondary)',
+                    border: !wizardState.isPublishedToStudents ? '1.5px solid #059669' : '1px solid var(--border-color)', borderRadius: '8px' }}>
                     <input type="radio" name="calendar-publication" value="private" checked={!wizardState.isPublishedToStudents}
                       onChange={() => setWizardState(prev => ({ ...prev, isPublishedToStudents: false, isScheduledNotif: false }))} />
-                    خاص بالمدرس — لا يظهر للطلاب ولا يُرسل إشعارًا
+                    <div>
+                      <strong style={{ display: 'block', fontSize: '12px' }}>خاص بالمدرس</strong>
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>لا يظهر للطلاب ولا يُرسل إشعارًا</span>
+                    </div>
                   </label>
                   </div>
                 </div>
@@ -1762,7 +1744,6 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                     <button
                       type="button"
                       onClick={() => setWizardState((prev) => ({ ...prev, step: 2 }))}
-                      disabled={wizardState.dayTitle.trim().length < 2}
                       style={{
                         padding: "9px 16px",
                         borderRadius: "8px",
@@ -1772,7 +1753,6 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                         fontSize: "12.5px",
                         fontWeight: 800,
                         cursor: "pointer",
-                        opacity: wizardState.dayTitle.trim().length < 2 ? 0.6 : 1,
                       }}
                     >
                       التالي: تحديد التوقيت
@@ -1904,8 +1884,8 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                     <strong style={{ fontSize: "12px", color: "var(--text-main)" }}>{wizardState.selectedDate} ({getArabicDayName(new Date(wizardState.selectedDate + 'T12:00:00'))})</strong>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px solid var(--border-color)", paddingBottom: "6px" }}>
-                    <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>اسم الموعد:</span>
-                    <strong style={{ fontSize: "12px", color: "#059669" }}>{wizardState.dayTitle}</strong>
+                    <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>وصف اليوم:</span>
+                    <strong style={{ fontSize: "12px", color: "#059669" }}>{wizardState.dayTitle.trim() || 'بدون وصف إضافي'}</strong>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px solid var(--border-color)", paddingBottom: "6px" }}>
                     <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>وقت الإرسال:</span>
@@ -1923,14 +1903,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                       {wizardState.isScheduledNotif ? `ظهور الموعد والإشعار: ${wizardState.scheduledNotifDate} ${wizardState.scheduledNotifHour} ${wizardState.scheduledNotifPeriod}` : wizardState.isPublishedToStudents ? "ظهور وإشعار فوري عند الحفظ" : "مخفي عن الطلاب (خاص بالمعلم)"}
                     </strong>
                   </div>
-                  {wizardState.contentType === "general" && wizardState.customMessage.trim() && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: "4px", borderTop: "1px dashed var(--border-color)", paddingTop: "6px" }}>
-                      <span style={{ fontSize: "12px", color: "#2563eb", fontWeight: 700 }}>نص الإشعار الخاص:</span>
-                      <p style={{ margin: 0, fontSize: "12px", color: "var(--text-main)", background: "rgba(59, 130, 246, 0.08)", padding: "6px 10px", borderRadius: "6px", lineHeight: "1.5" }}>
-                        {wizardState.customMessage.trim()}
-                      </p>
-                    </div>
-                  )}
+
                 </div>
 
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "10px", flexWrap: "wrap", gap: "8px" }}>

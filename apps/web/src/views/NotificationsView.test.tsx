@@ -76,7 +76,7 @@ it('adds two same-day appointments with distinct identities even when their form
     onMarkNotificationRead={vi.fn()} onNavigateToTab={vi.fn()} onAddNotification={async () => undefined} />));
   for (let i = 0; i < 2; i++) {
     await act(async () => button('إضافة موعد جديد').click());
-    await change(host.querySelector<HTMLInputElement>('input[placeholder="مثال: الثلاثاء - المحاضرة الأسبوعية"]')!, 'موعد مستقل');
+    await change(host.querySelector<HTMLInputElement>('input[placeholder="مثال: مراجعة الفصل الأول قبل الاختبار"]')!, 'موعد مستقل');
     await act(async () => button('التالي: تحديد التوقيت').click());
     await act(async () => button('التالي: مراجعة وحفظ').click());
     await act(async () => button('تأكيد وحفظ الموعد في الجدول').click());
@@ -87,17 +87,17 @@ it('adds two same-day appointments with distinct identities even when their form
   expect(host.querySelectorAll('.calendar-day-event')).toHaveLength(2);
 });
 
-it('requires a clear title and makes immediate, scheduled and private publication exclusive', async () => {
+it('allows an optional description and makes immediate, scheduled and private publication exclusive', async () => {
   const add = vi.fn<(item: NotificationItem) => Promise<void>>(async () => undefined);
   vi.mocked(calendarService.saveCalendarEvent).mockResolvedValue([]);
   await act(async () => root.render(<NotificationsView notifications={[]} currentUser={teacher}
     onMarkNotificationRead={vi.fn()} onNavigateToTab={vi.fn()} onAddNotification={add} />));
   await act(async () => button('إضافة موعد جديد').click());
-  expect(button('التالي: تحديد التوقيت').disabled).toBe(true);
-  expect(host.querySelector('#calendar-title-help')?.textContent).toContain('حرفين');
-  const title = host.querySelector<HTMLInputElement>('input[placeholder="مثال: الثلاثاء - المحاضرة الأسبوعية"]')!;
+  expect(button('التالي: تحديد التوقيت').disabled).toBe(false);
+  expect(host.querySelector('#calendar-title-help')?.textContent).toContain('يمكنك تركه فارغًا');
+  const title = host.querySelector<HTMLInputElement>('input[placeholder="مثال: مراجعة الفصل الأول قبل الاختبار"]')!;
   await change(title, 'س');
-  expect(button('التالي: تحديد التوقيت').disabled).toBe(true);
+  expect(button('التالي: تحديد التوقيت').disabled).toBe(false);
   await change(title, 'مراجعة الجدولة');
   expect(button('التالي: تحديد التوقيت').disabled).toBe(false);
   const immediate = host.querySelector<HTMLInputElement>('input[value="immediate"]')!;
@@ -118,5 +118,31 @@ it('requires a clear title and makes immediate, scheduled and private publicatio
   expect(calendarService.saveCalendarEvent).toHaveBeenCalledWith(expect.objectContaining({
     isPublishedToStudents: true, publishStartDate: '2035-05-13', publishStartTime: '06:00 م',
   }));
-  expect(add).toHaveBeenCalledWith(expect.objectContaining({ scheduledFor: '2035-05-13T15:00:00.000Z' }));
+  expect(add).toHaveBeenCalledWith(expect.objectContaining({ scheduledFor: '2035-05-13T15:00:00.000Z', message: expect.stringContaining('مراجعة الجدولة') }));
+});
+
+it('closes promptly while saving, restores a failed draft, and retries without a new event key', async () => {
+  let rejectSave!: (error: Error) => void;
+  const pending = new Promise<CalendarScheduleEvent[]>((_, reject) => { rejectSave = reject; });
+  vi.mocked(calendarService.saveCalendarEvent).mockReturnValueOnce(pending).mockResolvedValue([]);
+  await act(async () => root.render(<NotificationsView notifications={[]} currentUser={teacher}
+    onMarkNotificationRead={vi.fn()} onNavigateToTab={vi.fn()} onAddNotification={async () => undefined} />));
+  await act(async () => button('إضافة موعد جديد').click());
+  // Blank description is optional and must still produce a valid server title.
+  await act(async () => button('التالي: تحديد التوقيت').click());
+  await act(async () => button('التالي: مراجعة وحفظ').click());
+  await act(async () => button('تأكيد وحفظ الموعد في الجدول').click());
+  expect(button('تأكيد وحفظ الموعد في الجدول')).toBeUndefined();
+  expect(host.querySelector('[role="status"]')?.textContent).toContain('جارٍ حفظ');
+  await act(async () => button('إضافة موعد جديد').click());
+  expect(button('تأكيد وحفظ الموعد في الجدول')).toBeUndefined();
+  await act(async () => rejectSave(new Error('QA save unavailable')));
+  expect(button('تأكيد وحفظ الموعد في الجدول')).toBeDefined();
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('QA save unavailable');
+  await act(async () => button('تأكيد وحفظ الموعد في الجدول').click());
+  const calls = vi.mocked(calendarService.saveCalendarEvent).mock.calls;
+  expect(calls).toHaveLength(2);
+  expect(calls[0][0].id).toBe(calls[1][0].id);
+  expect(calls[0][0].dayDescription).toBe('');
+  expect(calls[0][0].dayName.length).toBeGreaterThan(2);
 });

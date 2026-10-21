@@ -9,6 +9,13 @@ const event = (ordinal: number) => ({ id: `calendar-${ordinal}`, course_id: null
 const firstPage = () => Array.from({ length: 500 }, (_, ordinal) => event(ordinal));
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
 
+it('retains a deliberately blank optional description after a server reload', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => json([{ ...event(1),
+    title: 'درس — الأحد', description: JSON.stringify({ dayDescription: '' }) }])));
+  const { calendarService } = await import('./lmsService');
+  expect((await calendarService.getCalendarEvents())[0].dayDescription).toBe('');
+});
+
 it('persists the same Cairo publication instant used for the notification and clears it for immediate mode', async () => {
   const fetcher = vi.fn(async (_input: string, init?: RequestInit) => json(init?.method ? event(1) : []));
   vi.stubGlobal('fetch', fetcher);

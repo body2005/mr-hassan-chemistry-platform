@@ -32,10 +32,10 @@ it('uses the exact three nonoverlapping triangles and per-event time on focus', 
     'polygon(0% 0%, 50% 0%, 0% 100%)', 'polygon(50% 0%, 100% 100%, 0% 100%)', 'polygon(50% 0%, 100% 0%, 100% 100%)',
   ]);
   await act(async () => buttons[0].focus());
-  expect(document.querySelector('[role="tooltip"]')?.textContent).toBe('٤:٣٠ م');
+  expect(document.querySelector('[role="tooltip"]')?.textContent).toBe('درس · ٤:٣٠ م');
   expect(host.querySelector('[role="tooltip"]')).toBeNull(); // Portal escapes clipping ancestors.
   await act(async () => buttons[1].focus());
-  expect(document.querySelector('[role="tooltip"]')?.textContent).toBe('٥:٣٠ م');
+  expect(document.querySelector('[role="tooltip"]')?.textContent).toBe('اختبار · ٥:٣٠ م');
   await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
   expect(document.querySelector('[role="tooltip"]')).toBeNull();
 });
@@ -44,7 +44,7 @@ it('shows time on touch without opening the editor and opens it on keyboard acti
   const button = host.querySelector('button')!;
   const touch = new Event('pointerdown', { bubbles: true }); Object.defineProperty(touch, 'pointerType', { value: 'touch' });
   await act(async () => { button.dispatchEvent(touch); button.click(); });
-  expect(document.querySelector('[role="tooltip"]')?.textContent).toBe('٤:٣٠ م');
+  expect(document.querySelector('[role="tooltip"]')?.textContent).toBe('درس · ٤:٣٠ م');
   expect(open).not.toHaveBeenCalled();
   await act(async () => { button.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); button.click(); });
   expect(open).toHaveBeenCalledWith(event(0));
@@ -56,4 +56,18 @@ it('groups by Cairo day and sorts Arabic12-hour values numerically', () => {
   const events = [{ ...event(0), startsAt: undefined, time: '١٠:٣٠ ص' },
     { ...event(1), startsAt: undefined, time: '٩:١٥ ص' }];
   expect(sortCalendarEvents(events).map(e => e.id)).toEqual(['event-1', 'event-0']);
+});
+
+it('keeps same-color appointments separate and identifies each one by type and time', async () => {
+  await act(async () => root.render(<CalendarDayCell date="2035-05-13" day={13} weekday="الأحد"
+    events={[{ ...event(0), contentType: 'quiz' }, { ...event(1), contentType: 'quiz' }]}
+    selected={false} today={false} onSelect={vi.fn()} onOpen={vi.fn()} />));
+  expect(host.querySelector('.has-multiple-events')).not.toBeNull();
+  const buttons = [...host.querySelectorAll<HTMLButtonElement>('.calendar-event-segment')];
+  expect(buttons[0].style.background).toBe(buttons[1].style.background);
+  expect(buttons[0].style.clipPath).not.toBe(buttons[1].style.clipPath);
+  await act(async () => buttons[0].focus());
+  expect(document.querySelector('[role="tooltip"]')?.textContent).toBe('اختبار · ٤:٣٠ م');
+  await act(async () => buttons[1].focus());
+  expect(document.querySelector('[role="tooltip"]')?.textContent).toBe('اختبار · ٥:٣٠ م');
 });

@@ -9,6 +9,21 @@ export const CALENDAR_TYPES = {
   review: { color: '#3b82f6', label: 'مراجعة' },
 } as const;
 
+// Original calendar tints and selection colors, shared by every partition.
+export const CALENDAR_TINTS = {
+  lesson: { background: 'rgba(16, 185, 129, 0.18)', selected: 'rgba(16, 185, 129, 0.32)', text: '#059669', border: '#047857' },
+  quiz: { background: 'rgba(239, 68, 68, 0.18)', selected: 'rgba(239, 68, 68, 0.32)', text: '#dc2626', border: '#b91c1c' },
+  assignment: { background: 'rgba(245, 158, 11, 0.18)', selected: 'rgba(245, 158, 11, 0.32)', text: '#d97706', border: '#b45309' },
+  general: { background: 'rgba(59, 130, 246, 0.16)', selected: 'rgba(59, 130, 246, 0.32)', text: '#2563eb', border: '#1d4ed8' },
+  review: { background: 'rgba(59, 130, 246, 0.16)', selected: 'rgba(59, 130, 246, 0.32)', text: '#2563eb', border: '#1d4ed8' },
+} as const;
+
+export function calendarEventTooltip(event: CalendarScheduleEvent, lang = 'ar') {
+  const label = lang === 'en' ? { lesson: 'Lesson', quiz: 'Exam', assignment: 'Assignment',
+    review: 'Review', general: 'Announcement' }[event.contentType] : CALENDAR_TYPES[event.contentType].label;
+  return `${label} · ${calendarEventTime(event, lang)}`;
+}
+
 export function calendarDay(event: CalendarScheduleEvent): string {
   return event.startsAt ? cairoLocalValue(event.startsAt).slice(0, 10) : event.date.split('T')[0];
 }

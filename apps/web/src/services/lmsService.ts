@@ -401,6 +401,7 @@ function mapApiCalendarEvent(item: ApiCalendarEvent): CalendarScheduleEvent {
   let publishStartDate: string | undefined = undefined;
   let publishStartTime: string | undefined = undefined;
   let customMessage: string | undefined = undefined;
+  let dayDescription: string | undefined = undefined;
 
   if (item.description) {
     try {
@@ -414,6 +415,7 @@ function mapApiCalendarEvent(item: ApiCalendarEvent): CalendarScheduleEvent {
         if (parsed.publishStartDate) publishStartDate = parsed.publishStartDate;
         if (parsed.publishStartTime) publishStartTime = parsed.publishStartTime;
         if (parsed.customMessage) customMessage = parsed.customMessage;
+        if (typeof parsed.dayDescription === 'string') dayDescription = parsed.dayDescription;
       }
     } catch {
       if (item.description.includes("2nd_secondary") || item.description.includes("الثاني الثانوي")) {
@@ -446,6 +448,7 @@ function mapApiCalendarEvent(item: ApiCalendarEvent): CalendarScheduleEvent {
     publishStartDate: item.publish_at ? cairoLocalValue(item.publish_at).slice(0, 10) : publishStartDate,
     publishStartTime: item.publish_at ? cairoLocalValue(item.publish_at).slice(11, 16) : publishStartTime,
     customMessage,
+    dayDescription,
   };
 }
 
@@ -951,6 +954,7 @@ export const calendarService = {
       publishStartDate: event.publishStartDate,
       publishStartTime: event.publishStartTime,
       customMessage: event.customMessage,
+      dayDescription: event.dayDescription,
     };
     const payload = {
       idempotency_key: event.id.startsWith('evt_') ? event.id : undefined,

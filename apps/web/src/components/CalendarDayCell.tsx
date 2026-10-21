@@ -1,7 +1,7 @@
-import { useEffect, useLayoutEffect, useId, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useId, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import type { CalendarScheduleEvent } from '../types/lms';
-import { CALENDAR_TYPES, calendarEventTime } from '../utils/calendarDay';
+import { CALENDAR_TYPES, CALENDAR_TINTS, calendarEventTooltip } from '../utils/calendarDay';
 import './CalendarDayCell.css';
 
 // Points cover the entire cell. CSS clip-path also clips each button's hit area.
@@ -71,11 +71,14 @@ export function CalendarDayCell({ date, day, weekday, events, selected, today, o
     };
   }, [active, events]);
 
-  return <div ref={cell} className={`calendar-cell calendar-day-cell${visible.length ? ' has-events' : ''}${selected ? ' is-selected' : ''}${today ? ' is-today' : ''}`}
+  const primaryType = visible[0]?.contentType;
+  return <div ref={cell} className={`calendar-cell calendar-day-cell${visible.length ? ' has-events' : ''}${visible.length > 1 ? ' has-multiple-events' : ''}${selected ? ' is-selected' : ''}${today ? ' is-today' : ''}`}
+    style={primaryType ? { '--calendar-day-color': visible.length === 1 ? CALENDAR_TINTS[primaryType].text : 'var(--text-main)',
+      borderColor: selected ? CALENDAR_TINTS[primaryType].border : CALENDAR_TYPES[primaryType].color } as CSSProperties : undefined}
     role="group" aria-label={`${weekday} ${date}${today ? ' — اليوم' : ''}${selected ? ' — اليوم المحدد' : ''}`} data-date={date}>
     {visible.length ? visible.map((event, index) => <button key={event.id} type="button"
       className="calendar-event-segment" data-event-id={event.id}
-      style={{ background: CALENDAR_TYPES[event.contentType].color,
+      style={{ background: selected ? CALENDAR_TINTS[event.contentType].selected : CALENDAR_TINTS[event.contentType].background,
         clipPath: `polygon(${points[index].split(' ').map(p => p.split(',').map(v => `${v}%`).join(' ')).join(', ')})` }}
       aria-label={`${event.dayName} — ${CALENDAR_TYPES[event.contentType].label} — ${date}`}
       aria-describedby={active === index ? id : undefined}
@@ -98,7 +101,7 @@ export function CalendarDayCell({ date, day, weekday, events, selected, today, o
     {active !== null && visible[active] && createPortal(<div ref={tooltip} id={id} role="tooltip"
       className={`calendar-time-tooltip${position.below ? ' below' : ''}`}
       style={{ left: position.left, top: position.top }} onPointerEnter={clearHide} onPointerLeave={hideSoon}>
-      {calendarEventTime(visible[active], lang)}<span className="calendar-tooltip-arrow" style={{ left: position.arrow }} />
+      {calendarEventTooltip(visible[active], lang)}<span className="calendar-tooltip-arrow" style={{ left: position.arrow }} />
     </div>, document.body)}
   </div>;
 }

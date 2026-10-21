@@ -306,6 +306,7 @@ export interface CalendarScheduleEvent {
   academicYear: "1st_secondary" | "2nd_secondary" | "3rd_secondary" | "all";
   date: string; // YYYY-MM-DD
   dayName: string; // Title / Name of the day
+  dayDescription?: string; // Optional manual calendar description; empty remains empty on edit.
   time: string; // e.g. "06:00 م"
   contentType: "lesson" | "assignment" | "quiz" | "general" | "review";
   isRecurringWeekly?: boolean;
