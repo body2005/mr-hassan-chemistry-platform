@@ -828,7 +828,7 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
 
       {/* PREVIEW QUIZ MODAL */}
       {previewQuiz && (
-        <div
+        <div data-modal-overlay="true"
           style={{
             position: "fixed",
             inset: 0,
@@ -1180,7 +1180,7 @@ export const QuizHistorySection: React.FC<QuizHistorySectionProps> = ({
 
       {/* DELETE CONFIRMATION MODAL */}
       {deletingQuizId && (
-        <div
+        <div data-modal-overlay="true"
           style={{
             position: "fixed",
             inset: 0,

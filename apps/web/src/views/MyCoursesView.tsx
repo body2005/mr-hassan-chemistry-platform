@@ -2700,7 +2700,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           at a time with a question-map sidebar, flagging and submit.
          ========================================================================= */}
       {(serverQuiz || serverQuizLoading || serverQuizError) && (
-        <div
+        <div data-modal-overlay="true"
           style={{
             position: "fixed",
             inset: 0,
@@ -3129,7 +3129,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
         const flaggedCount = serverQuiz.questions.filter((q) => Boolean(serverQuizFlagged[q.id])).length;
 
         return (
-          <div
+          <div data-modal-overlay="true"
             style={{
               position: "fixed",
               inset: 0,
@@ -3381,7 +3381,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           pending: { bg: "var(--bg-surface-secondary)", fg: "var(--text-main)", border: "var(--border-color)" },
         };
         return (
-          <div dir={lang === "ar" ? "rtl" : "ltr"} style={{ position: "fixed", inset: 0, backgroundColor: "var(--bg-primary, #f8fafc)", zIndex: 100000, overflowY: "auto" }}>
+          <div data-modal-overlay="true" dir={lang === "ar" ? "rtl" : "ltr"} style={{ position: "fixed", inset: 0, backgroundColor: "var(--bg-primary, #f8fafc)", zIndex: 100000, overflowY: "auto" }}>
             {/* Unified Quiz Result Header (Single bar matching Image 3 with Sidebar, Logo, Theme, Lang, and Exit) */}
             <header
               style={{
@@ -3809,7 +3809,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           countdown to due date + PDF sheet card + upload card (per approved mock).
          ========================================================================= */}
       {(serverAssignment || serverAssignmentLoading || serverAssignmentError) && (
-        <div
+        <div data-modal-overlay="true"
           dir={lang === "ar" ? "rtl" : "ltr"}
           style={{
             position: "fixed",
@@ -4096,7 +4096,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           MODAL 0: BOOK READER MODAL
          ========================================================================= */}
       {activeBookModal && (
-        <div
+        <div data-modal-overlay="true"
           style={{
             position: "fixed",
             inset: 0,
@@ -4182,7 +4182,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           MODAL 2: ASSIGNMENT SOLVING & SUBMISSION MODAL
          ========================================================================= */}
       {activeAssignmentModal && (
-        <div
+        <div data-modal-overlay="true"
           style={{
             position: "fixed",
             inset: 0,
@@ -4307,7 +4307,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           MODAL 3: INTERACTIVE QUIZ SOLVING MODAL
          ========================================================================= */}
       {activeQuizModal && (
-        <div
+        <div data-modal-overlay="true"
           style={{
             position: "fixed",
             inset: 0,
@@ -4507,7 +4507,7 @@ export const MyCoursesView: React.FC<MyCoursesViewProps> = ({
           QUIZ ATTEMPT HISTORY MODAL — select any past attempt to review mistakes
          ========================================================================= */}
       {activeQuizHistoryModal && (
-        <div
+        <div data-modal-overlay="true"
           dir={lang === "ar" ? "rtl" : "ltr"}
           className="modal-overlay"
           style={{

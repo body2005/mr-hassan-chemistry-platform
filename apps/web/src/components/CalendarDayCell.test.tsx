@@ -71,3 +71,30 @@ it('keeps same-color appointments separate and identifies each one by type and t
   await act(async () => buttons[1].focus());
   expect(document.querySelector('[role="tooltip"]')?.textContent).toBe('اختبار · ٥:٣٠ م');
 });
+
+it.each([0, 1])('selects with one mouse click and opens with double-click (%s events)', async count => {
+  const open = vi.fn(); await render(count, open);
+  const button = host.querySelector('button')!;
+  await act(async () => button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 })));
+  expect(open).not.toHaveBeenCalled();
+  await act(async () => {
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 }));
+    button.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, detail: 2 }));
+  });
+  expect(open).toHaveBeenCalledTimes(1);
+  expect(open).toHaveBeenCalledWith(count ? event(0) : undefined);
+});
+
+it('opens on a second touch of the same region, while touching a different region only selects it', async () => {
+  const open = vi.fn(); await render(2, open);
+  const buttons = [...host.querySelectorAll('button')];
+  const tap = async (index: number) => act(async () => {
+    const touch = new Event('pointerdown', { bubbles: true }); Object.defineProperty(touch, 'pointerType', { value: 'touch' });
+    buttons[index].dispatchEvent(touch); buttons[index].click();
+  });
+  await tap(0); await tap(1);
+  expect(open).not.toHaveBeenCalled();
+  await tap(1);
+  expect(open).toHaveBeenCalledTimes(1);
+  expect(open).toHaveBeenCalledWith(event(1));
+});

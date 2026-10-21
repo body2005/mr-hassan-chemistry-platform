@@ -28,6 +28,7 @@ export function CalendarDayCell({ date, day, weekday, events, selected, today, o
   const tooltip = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const pointerType = useRef('mouse');
+  const lastTouch = useRef<{ key: string; at: number } | null>(null);
   const [active, setActive] = useState<number | null>(null);
   const [position, setPosition] = useState({ left: 0, top: 0, arrow: 40, below: false });
   const visible = events.slice(0, 4);
@@ -37,6 +38,23 @@ export function CalendarDayCell({ date, day, weekday, events, selected, today, o
   const hideSoon = () => { clearHide(); hideTimer.current = setTimeout(() => {
     if (!cell.current?.contains(document.activeElement)) setActive(null);
   }, 120); };
+  const activate = (detail: number, event?: CalendarScheduleEvent, index?: number) => {
+    onSelect();
+    if (index !== undefined) show(index);
+    if (pointerType.current === 'touch') {
+      const key = event?.id || 'empty', now = performance.now();
+      if (lastTouch.current?.key === key && now - lastTouch.current.at <= 500) {
+        lastTouch.current = null; setActive(null); onOpen(event);
+      } else lastTouch.current = { key, at: now };
+    } else if (detail === 0 || pointerType.current === 'keyboard') {
+      // Enter/Space and assistive activation remain one explicit action.
+      setActive(null); onOpen(event);
+    }
+  };
+  const openOnDoubleClick = (event?: CalendarScheduleEvent) => {
+    if (pointerType.current === 'touch') return; // Touch uses the same-region double tap above.
+    lastTouch.current = null; setActive(null); onOpen(event);
+  };
 
   useEffect(() => () => clearTimeout(hideTimer.current), []);
   useLayoutEffect(() => {
@@ -85,17 +103,16 @@ export function CalendarDayCell({ date, day, weekday, events, selected, today, o
       onPointerDown={e => { pointerType.current = e.pointerType; }}
       onPointerEnter={e => { if (e.pointerType !== 'touch') show(index); }} onPointerLeave={e => { if (e.pointerType !== 'touch') hideSoon(); }}
       onFocus={() => show(index)} onBlur={hideSoon}
-      onClick={() => {
-        onSelect();
-        if (pointerType.current === 'touch') show(index);
-        else { setActive(null); onOpen(event); }
-        pointerType.current = 'mouse';
-      }} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') pointerType.current = 'keyboard'; }}>
+      onClick={e => activate(e.detail, event, index)}
+      onDoubleClick={e => { e.preventDefault(); openOnDoubleClick(event); }}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') pointerType.current = 'keyboard'; }}>
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
         <polygon points={points[index]} />
       </svg>
     </button>) : <button type="button" className="calendar-empty-day-button" aria-label={`${weekday} ${date}`}
-      aria-pressed={selected} onClick={() => { onSelect(); onOpen(); }} />}
+      aria-pressed={selected} onPointerDown={e => { pointerType.current = e.pointerType; }}
+      onClick={e => activate(e.detail)} onDoubleClick={e => { e.preventDefault(); openOnDoubleClick(); }}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') pointerType.current = 'keyboard'; }} />}
     <span className="calendar-day-caption" aria-hidden="true"><span className="calendar-cell-weekday">{weekday}</span>
       <span className="calendar-cell-day">{day}</span></span>
     {active !== null && visible[active] && createPortal(<div ref={tooltip} id={id} role="tooltip"

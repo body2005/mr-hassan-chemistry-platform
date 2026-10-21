@@ -145,6 +145,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   onSelectNotification,
   onAddNotification,
   currentUser,
+  lang = 'ar',
 }) => {
   const isTeacher = currentUser.role === "teacher";
   const studentYear = ((currentUser as StudentProfile).academicYear as "1st_secondary" | "2nd_secondary" | "3rd_secondary") || "1st_secondary";
@@ -571,6 +572,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
 
       const dayEvents = sortCalendarEvents(scopeEvents.filter(event => calendarDay(event) === dateStr));
       cells.push(<CalendarDayCell key={dateStr} date={dateStr} day={dayNum} weekday={dayName}
+        lang={lang}
         events={dayEvents} selected={isSelected} today={formatIsoDate(cairoToday()) === dateStr}
         onSelect={() => setSelectedDayDate(dateStr)} onOpen={event => openCalendarWizard(event, dateStr)} />);
     }
@@ -1338,6 +1340,9 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
               </div>
             </div>
 
+            {isTeacher && <p style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+              {lang === 'en' ? 'Click once to select a day; double-click to open it.' : 'اضغط مرة لتحديد اليوم، ومرتين متتاليتين لفتحه.'}
+            </p>}
             {/* Weekdays Grid Header */}
             <div className="calendar-weekdays">
               {WEEK_DAYS.map((d) => (
@@ -1380,6 +1385,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
          ========================================================================= */}
       {isTeacher && wizardState.isOpen && (
         <div
+          role="dialog" aria-modal="true" aria-label="إضافة وتعديل موعد"
           style={{
             position: "fixed",
             top: 0,

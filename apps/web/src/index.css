@@ -765,14 +765,6 @@ main {
 }
 
 /* Prevent page background scrolling whenever any wizard, modal, or popup dialog is open */
-body:has(.modal-overlay),
-body:has(.confirm-wizard-overlay),
-body:has([role="dialog"]),
-body:has([aria-modal="true"]),
-html:has(.modal-overlay),
-html:has(.confirm-wizard-overlay),
-html:has([role="dialog"]),
-html:has([aria-modal="true"]),
 body.modal-open,
 html.modal-open {
   overflow: hidden !important;
