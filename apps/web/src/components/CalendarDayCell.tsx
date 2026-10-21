@@ -71,7 +71,7 @@ export function CalendarDayCell({ date, day, weekday, events, selected, today, o
     };
   }, [active, events]);
 
-  return <div ref={cell} className={`calendar-cell calendar-day-cell${selected ? ' is-selected' : ''}${today ? ' is-today' : ''}`}
+  return <div ref={cell} className={`calendar-cell calendar-day-cell${visible.length ? ' has-events' : ''}${selected ? ' is-selected' : ''}${today ? ' is-today' : ''}`}
     role="group" aria-label={`${weekday} ${date}${today ? ' — اليوم' : ''}${selected ? ' — اليوم المحدد' : ''}`} data-date={date}>
     {visible.length ? visible.map((event, index) => <button key={event.id} type="button"
       className="calendar-event-segment" data-event-id={event.id}
@@ -94,7 +94,7 @@ export function CalendarDayCell({ date, day, weekday, events, selected, today, o
     </button>) : <button type="button" className="calendar-empty-day-button" aria-label={`${weekday} ${date}`}
       aria-pressed={selected} onClick={() => { onSelect(); onOpen(); }} />}
     <span className="calendar-day-caption" aria-hidden="true"><span className="calendar-cell-weekday">{weekday}</span>
-      <span className="calendar-cell-day">{day}</span>{today && <small>{lang === 'en' ? 'Today' : 'اليوم'}</small>}</span>
+      <span className="calendar-cell-day">{day}</span></span>
     {active !== null && visible[active] && createPortal(<div ref={tooltip} id={id} role="tooltip"
       className={`calendar-time-tooltip${position.below ? ' below' : ''}`}
       style={{ left: position.left, top: position.top }} onPointerEnter={clearHide} onPointerLeave={hideSoon}>
