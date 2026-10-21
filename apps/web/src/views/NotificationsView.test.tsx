@@ -80,6 +80,10 @@ it('adds two same-day appointments with distinct identities even when their form
     await act(async () => button('التالي: تحديد التوقيت').click());
     await act(async () => button('التالي: مراجعة وحفظ').click());
     await act(async () => button('تأكيد وحفظ الموعد في الجدول').click());
+    if (i === 1) {
+      expect(calendarService.saveCalendarEvent).toHaveBeenCalledTimes(1);
+      await act(async () => button('نعم، احفظ في نفس الوقت').click());
+    }
   }
   const calls = vi.mocked(calendarService.saveCalendarEvent).mock.calls;
   expect(calls).toHaveLength(2);
@@ -117,7 +121,7 @@ it('allows an optional description and makes immediate, scheduled and private pu
   await act(async () => button('تأكيد وحفظ الموعد في الجدول').click());
   expect(calendarService.saveCalendarEvent).toHaveBeenCalledWith(expect.objectContaining({
     isPublishedToStudents: true, publishStartDate: '2035-05-13', publishStartTime: '06:00 م',
-  }));
+  }), {checkTimeConflict: true, confirmTimeConflict: false});
   expect(add).toHaveBeenCalledWith(expect.objectContaining({ scheduledFor: '2035-05-13T15:00:00.000Z', message: expect.stringContaining('مراجعة الجدولة') }));
 });
 
@@ -165,9 +169,38 @@ it('adds another appointment from the existing event editor without replacing th
   await act(async () => button('التالي: تحديد التوقيت').click());
   await act(async () => button('التالي: مراجعة وحفظ').click());
   await act(async () => button('تأكيد وحفظ الموعد في الجدول').click());
+  expect(calendarService.saveCalendarEvent).not.toHaveBeenCalled();
+  await act(async () => button('نعم، احفظ في نفس الوقت').click());
   const sent = vi.mocked(calendarService.saveCalendarEvent).mock.calls[0][0];
   expect(sent.id).toMatch(/^evt_/);
   expect(sent.date).toBe(date);
   expect(rows).toHaveLength(2);
   expect(rows[0].dayName).toBe('الموعد المحفوظ');
+});
+
+it('restores a server-detected conflict, refuses without writing, then saves only on explicit approval', async () => {
+  const add = vi.fn(async () => undefined);
+  vi.mocked(calendarService.saveCalendarEvent)
+    .mockRejectedValueOnce(Object.assign(new Error('Conflict'), {code: 'CALENDAR_TIME_CONFLICT'}))
+    .mockResolvedValue([]);
+  await act(async () => root.render(<NotificationsView notifications={[]} currentUser={teacher}
+    onMarkNotificationRead={vi.fn()} onNavigateToTab={vi.fn()} onAddNotification={add} />));
+  await act(async () => button('إضافة موعد جديد').click());
+  await act(async () => button('التالي: تحديد التوقيت').click());
+  await act(async () => button('التالي: مراجعة وحفظ').click());
+  await act(async () => button('تأكيد وحفظ الموعد في الجدول').click());
+  expect(host.querySelector('.calendar-time-conflict')?.textContent).toContain('نفس وقت البداية');
+  expect(add).not.toHaveBeenCalled();
+  await act(async () => button('لا، لا تضف الموعد').click());
+  expect(button('التالي: مراجعة وحفظ')).toBeDefined();
+  expect(calendarService.saveCalendarEvent).toHaveBeenCalledTimes(1);
+  await act(async () => button('التالي: مراجعة وحفظ').click());
+  vi.mocked(calendarService.saveCalendarEvent).mockRejectedValueOnce(Object.assign(new Error('Conflict'), {code:'CALENDAR_TIME_CONFLICT'}));
+  await act(async () => button('تأكيد وحفظ الموعد في الجدول').click());
+  await act(async () => button('نعم، احفظ في نفس الوقت').click());
+  const calls = vi.mocked(calendarService.saveCalendarEvent).mock.calls;
+  expect(calls).toHaveLength(3);
+  expect(calls[2][1]).toEqual({checkTimeConflict:true, confirmTimeConflict:true});
+  expect(calls[1][0].id).toBe(calls[2][0].id);
+  expect(add).toHaveBeenCalledTimes(1);
 });

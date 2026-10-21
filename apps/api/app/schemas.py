@@ -526,6 +526,8 @@ class CalendarEventCreateRequest(BaseModel):
     ends_at: datetime | None = None
     is_published: bool = True
     publish_at: datetime | None = None
+    check_time_conflict: bool = False
+    confirm_time_conflict: bool = False
 
     @model_validator(mode="after")
     def valid_window(self):

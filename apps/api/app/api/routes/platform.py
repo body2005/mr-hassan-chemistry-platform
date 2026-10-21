@@ -1539,7 +1539,8 @@ def update_calendar(
     require_upcoming_time(payload.publish_at, existing=event.publish_at)
     from app.services.calendar_capacity import require_calendar_capacity
     require_calendar_capacity(db, institution_id=event.institution_id, creator_id=event.creator_id,
-        course_id=payload.course_id, starts_at=payload.starts_at, description=payload.description, exclude_id=event.id)
+        course_id=payload.course_id, starts_at=payload.starts_at, description=payload.description, exclude_id=event.id,
+        check_time_conflict=payload.check_time_conflict, confirm_time_conflict=payload.confirm_time_conflict)
     event.course_id = payload.course_id
     event.title = payload.title.strip()
     event.description = payload.description

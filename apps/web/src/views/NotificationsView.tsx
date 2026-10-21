@@ -1,6 +1,6 @@
 import { CalendarDayCell } from "../components/CalendarDayCell";
 import './CalendarPublication.css';
-import { CALENDAR_TYPES, calendarClock, calendarDay, calendarEventTime, sortCalendarEvents } from "../utils/calendarDay";
+import { CALENDAR_TYPES, calendarClock, calendarDay, calendarEventTime, calendarTimeConflicts, sortCalendarEvents } from "../utils/calendarDay";
 import { cairoLocalValue } from "../utils/cairoTime";
 import { ScheduleBadges } from "../components/ScheduleBadges";
 import { assessmentTimestamp } from "../services/assessmentSchedule";
@@ -289,6 +289,13 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   const [broadcastDueDate, setBroadcastDueDate] = useState("");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [conflictConfirmationKey, setConflictConfirmationKey] = useState<string | null>(null);
+  const wizardTimeKey = JSON.stringify([selectedGrade, wizardState.selectedDate, wizardState.timeHour, wizardState.timePeriod, wizardState.editingEventId]);
+  const needsTimeConfirmation = conflictConfirmationKey === wizardTimeKey;
+  const timeConflictRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (needsTimeConfirmation && wizardState.isOpen && wizardState.step === 3) timeConflictRef.current?.focus();
+  }, [needsTimeConfirmation, wizardState.isOpen, wizardState.step]);
   const requestRef = useRef({signature: '', id: '', notificationId: ''});
   const broadcastRef = useRef({signature: '', id: ''});
 
@@ -351,7 +358,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   }
   void toggleScheduleDay;
 
-  async function handleSaveWizardSchedule() {
+  async function handleSaveWizardSchedule(confirmTimeConflict = false) {
     if (saving) return;
     setSaving(true);
     setSaveError(null);
@@ -386,6 +393,12 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
         `${wizardState.scheduledNotifDate}T${calendarClock(`${wizardState.scheduledNotifHour} ${wizardState.scheduledNotifPeriod}`)}:00`,
         'ظهور الموعد والإشعار')! : undefined;
 
+      if (!confirmTimeConflict && calendarTimeConflicts(calendarEvents, newEvent, currentUser.id).length) {
+        setConflictConfirmationKey(wizardTimeKey);
+        return;
+      }
+      setConflictConfirmationKey(null);
+
       let autoNotif: NotificationItem | undefined = undefined;
       if (wizardState.isPublishedToStudents) {
         // If teacher wrote a custom message, use it; otherwise title only (no day/time in body)
@@ -410,7 +423,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       // The draft and idempotency keys remain intact and reopen on failure.
       setScheduleSavedMsg(false);
       setWizardState(prev => ({ ...prev, isOpen: false }));
-      setCalendarEvents(await calendarService.saveCalendarEvent(newEvent));
+      setCalendarEvents(await calendarService.saveCalendarEvent(newEvent, {checkTimeConflict: true, confirmTimeConflict}));
       eventSaved = true;
       if (autoNotif) {
         if (onAddNotification) await onAddNotification(autoNotif);
@@ -430,7 +443,11 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
     } catch (err) {
       setSelectedGrade(selectedGrade);
       setWizardState(prev => ({ ...prev, isOpen: true }));
-      setSaveError(`${eventSaved ? 'حُفظ الموعد، لكن تعذر إرسال الإشعار أو تحديث التكرار؛ أعد المحاولة دون تكرار الموعد. ' : 'تعذر تأكيد حفظ الموعد؛ المدخلات محفوظة وإعادة المحاولة لا تكرره. '}${err instanceof Error ? err.message : ''}`);
+      if (err instanceof Error && 'code' in err && err.code === 'CALENDAR_TIME_CONFLICT') {
+        setConflictConfirmationKey(wizardTimeKey);
+      } else {
+        setSaveError(`${eventSaved ? 'حُفظ الموعد، لكن تعذر إرسال الإشعار أو تحديث التكرار؛ أعد المحاولة دون تكرار الموعد. ' : 'تعذر تأكيد حفظ الموعد؛ المدخلات محفوظة وإعادة المحاولة لا تكرره. '}${err instanceof Error ? err.message : ''}`);
+      }
     } finally { setSaving(false); }
   }
 
@@ -519,6 +536,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   const selectedDayEvents = sortCalendarEvents(scopeEvents.filter(event => calendarDay(event) === selectedDayDate));
 
   function openCalendarWizard(evt: CalendarScheduleEvent | undefined, targetDate: string) {
+    setConflictConfirmationKey(null);
     if (!isTeacher || saving) return;
     setSaveError(null);
     requestRef.current = { signature: '', id: '', notificationId: '' };
@@ -1963,8 +1981,9 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                     )}
                   </div>
 
-                  <button
-                    onClick={handleSaveWizardSchedule}
+                  {!needsTimeConfirmation && <button
+                    disabled={saving}
+                    onClick={() => void handleSaveWizardSchedule()}
                     style={{
                       padding: "10px 22px",
                       borderRadius: "8px",
@@ -1982,8 +2001,19 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                   >
                     <CheckCircle2 size={16} />
                     <span>تأكيد وحفظ الموعد في الجدول</span>
-                  </button>
+                  </button>}
                 </div>
+                {needsTimeConfirmation && <div className="calendar-time-conflict" role="alert" tabIndex={-1} ref={timeConflictRef}>
+                  <strong>تنبيه: موعدان في نفس الوقت</strong>
+                  <p>يوجد موعد آخر لنفس المدرس والصف في نفس اليوم ونفس وقت البداية بتوقيت القاهرة. هل تريد حفظ هذا الموعد رغم التعارض؟</p>
+                  <div>
+                    <button type="button" disabled={saving} onClick={() => void handleSaveWizardSchedule(true)}>نعم، احفظ في نفس الوقت</button>
+                    <button type="button" disabled={saving} onClick={() => {
+                      setConflictConfirmationKey(null);
+                      setWizardState(prev => ({...prev, step: 2}));
+                    }}>لا، لا تضف الموعد</button>
+                  </div>
+                </div>}
               </div>
             )}
           </div>

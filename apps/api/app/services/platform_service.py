@@ -1124,7 +1124,7 @@ def create_calendar_event(
     if payload.course_id:
         course = course_for_user(db, user, payload.course_id)
         ensure_course_manager(user, course)
-    digest = hashlib.sha256(json.dumps(payload.model_dump(mode="json", exclude={"idempotency_key"}), sort_keys=True).encode()).hexdigest()
+    digest = hashlib.sha256(json.dumps(payload.model_dump(mode="json", exclude={"idempotency_key", "check_time_conflict", "confirm_time_conflict"}), sort_keys=True).encode()).hexdigest()
     db.execute(select(User.id).where(User.id == user.id).with_for_update())
     if payload.idempotency_key:
         existing = db.scalar(select(CalendarEvent).where(CalendarEvent.creator_id == user.id, CalendarEvent.request_key == payload.idempotency_key))
@@ -1137,7 +1137,8 @@ def create_calendar_event(
     from app.services.calendar_capacity import require_calendar_capacity
     require_upcoming_time(payload.publish_at)
     require_calendar_capacity(db, institution_id=user.institution_id, creator_id=user.id,
-        course_id=payload.course_id, starts_at=payload.starts_at, description=payload.description)
+        course_id=payload.course_id, starts_at=payload.starts_at, description=payload.description,
+        check_time_conflict=payload.check_time_conflict, confirm_time_conflict=payload.confirm_time_conflict)
     event = CalendarEvent(
         institution_id=user.institution_id,
         creator_id=user.id,

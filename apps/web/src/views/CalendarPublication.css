@@ -27,3 +27,9 @@
 .calendar-add-appointment:focus-visible { outline: 2px solid #059669; outline-offset: 2px; }
 .calendar-new-from-edit { display: grid; gap: 6px; margin-bottom: 14px; }
 .calendar-new-from-edit small { color: var(--text-muted); }
+.calendar-time-conflict { margin-top:14px; padding:14px; background:var(--urgency-bg, #fffbeb); border:1px solid var(--urgency-border, #f59e0b); border-radius:10px; color:var(--text-main); }
+.calendar-time-conflict p { line-height:1.7; }
+.calendar-time-conflict > div { display:flex; flex-wrap:wrap; gap:10px; }
+.calendar-time-conflict button { min-height:44px; padding:8px 14px; border:1px solid var(--border-color); border-radius:8px; background:var(--bg-surface); color:var(--text-main); cursor:pointer; }
+.calendar-time-conflict button:first-child { background:#0f392b; color:white; }
+.calendar-time-conflict button:disabled { opacity:.6; cursor:wait; }

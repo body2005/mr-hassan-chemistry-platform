@@ -38,6 +38,15 @@ export function calendarClock(value: string): string {
   return `${String(hour).padStart(2, '0')}:${match[2]}`;
 }
 
+export function calendarTimeConflicts(events: CalendarScheduleEvent[], target: CalendarScheduleEvent, creatorId: string) {
+  const clock = (event: CalendarScheduleEvent) => event.startsAt
+    ? cairoLocalValue(event.startsAt).slice(11, 16) : calendarClock(event.time);
+  return events.filter(event => event.id !== target.id && !event.isCancelled
+    && (event.creatorId || creatorId) === creatorId
+    && (event.academicYear === target.academicYear || event.academicYear === 'all' || target.academicYear === 'all')
+    && calendarDay(event) === calendarDay(target) && clock(event) === clock(target));
+}
+
 export function sortCalendarEvents(events: CalendarScheduleEvent[]) {
   return [...events].sort((a, b) => {
     if (a.startsAt && b.startsAt) return Date.parse(a.startsAt) - Date.parse(b.startsAt) || a.id.localeCompare(b.id);

@@ -9,6 +9,24 @@ const event = (ordinal: number) => ({ id: `calendar-${ordinal}`, course_id: null
 const firstPage = () => Array.from({ length: 500 }, (_, ordinal) => event(ordinal));
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
 
+it('requires an explicit confirmation retry after the server reports a time conflict', async () => {
+  const fetcher = vi.fn(async (_url: string, init?: RequestInit) => {
+    if (!init?.method) return json([]);
+    return JSON.parse(init.body as string).confirm_time_conflict ? json(event(1))
+      : json({detail:'Conflict',error:{code:'CALENDAR_TIME_CONFLICT',message:'Conflict'}}, 409);
+  });
+  vi.stubGlobal('fetch', fetcher);
+  const { calendarService } = await import('./lmsService');
+  const draft = {id:'evt_conflict', academicYear:'1st_secondary' as const, date:'2035-05-13',
+    dayName:'درس', time:'06:00 م', contentType:'lesson' as const};
+  await expect(calendarService.saveCalendarEvent(draft, {checkTimeConflict:true})).rejects.toMatchObject({code:'CALENDAR_TIME_CONFLICT'});
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  await calendarService.saveCalendarEvent(draft, {checkTimeConflict:true,confirmTimeConflict:true});
+  const writes = fetcher.mock.calls.filter(([, init]) => init?.method);
+  expect(writes).toHaveLength(2);
+  expect(JSON.parse(writes[1][1]!.body as string)).toMatchObject({check_time_conflict:true,confirm_time_conflict:true,idempotency_key:draft.id});
+});
+
 it('retains a deliberately blank optional description after a server reload', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => json([{ ...event(1),
     title: 'درس — الأحد', description: JSON.stringify({ dayDescription: '' }) }])));

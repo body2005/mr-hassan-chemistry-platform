@@ -944,7 +944,7 @@ export const calendarService = {
     return mapped;
   },
 
-  async saveCalendarEvent(event: CalendarScheduleEvent): Promise<CalendarScheduleEvent[]> {
+  async saveCalendarEvent(event: CalendarScheduleEvent, options: { checkTimeConflict?: boolean; confirmTimeConflict?: boolean } = {}): Promise<CalendarScheduleEvent[]> {
     const schedule = assessmentWindow(`${event.date}T${parseScheduleClock(event.time)}:00`, event.closeDeadline?.replace(' ', 'T'));
     const startsAt = schedule.startsAt;
     const metaPayload = {
@@ -960,6 +960,8 @@ export const calendarService = {
       idempotency_key: event.id.startsWith('evt_') ? event.id : undefined,
       course_id: event.courseId || null,
       title: event.dayName,
+      check_time_conflict: options.checkTimeConflict === true,
+      confirm_time_conflict: options.confirmTimeConflict === true,
       description: JSON.stringify(metaPayload),
       event_type: event.contentType,
       starts_at: startsAt,
@@ -972,6 +974,7 @@ export const calendarService = {
     await apiRequest<ApiCalendarEvent>(isServerId ? `/calendar/${event.id}` : "/calendar", {
       method: isServerId ? "PUT" : "POST",
       body: JSON.stringify(payload),
+      suppressErrorToast: options.checkTimeConflict === true,
     });
     invalidateApiCache("/calendar");
     return this.getCalendarEvents();

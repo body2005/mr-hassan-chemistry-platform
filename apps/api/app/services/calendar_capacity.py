@@ -31,7 +31,8 @@ def calendar_grade(description, course_grade=None):
 
 
 def require_calendar_capacity(db, *, institution_id, creator_id, course_id,
-                              starts_at, description=None, exclude_id=None):
+                              starts_at, description=None, exclude_id=None,
+                              check_time_conflict=False, confirm_time_conflict=False):
     # One creator lock serializes count+write across instances and all calendar writers.
     db.execute(select(User.id).where(User.id == creator_id,
         User.institution_id == institution_id).with_for_update())
@@ -49,10 +50,17 @@ def require_calendar_capacity(db, *, institution_id, creator_id, course_id,
     if exclude_id is not None:
         query = query.where(CalendarEvent.id != exclude_id)
     counts = dict.fromkeys(GRADES, 0)
+    same_time = False
     for event, linked_grade in db.execute(query):
         existing_grade = calendar_grade(event.description, linked_grade)
+        if check_time_conflict and (grade == 'all' or existing_grade in (grade, 'all')):
+            existing_time = event.starts_at.replace(tzinfo=timezone.utc) if event.starts_at.tzinfo is None else event.starts_at
+            same_time |= existing_time.astimezone(CAIRO).strftime('%H:%M') == instant.astimezone(CAIRO).strftime('%H:%M')
         for candidate in GRADES:
             if existing_grade in (candidate, 'all'):
                 counts[candidate] += 1
     if any(counts[candidate] >= 4 for candidate in (GRADES if grade == 'all' else (grade,))):
         raise HTTPException(409, 'لا يمكن إضافة موعد خامس لنفس المدرس والصف في هذا اليوم بتوقيت القاهرة. المواعيد الأربعة محفوظة؛ عدّل موعدًا أو اختر يومًا آخر.')
+    if check_time_conflict and same_time and not confirm_time_conflict:
+        raise HTTPException(409, {'code': 'CALENDAR_TIME_CONFLICT',
+            'message': 'يوجد موعد آخر لنفس المدرس والصف في نفس اليوم ونفس وقت البداية بتوقيت القاهرة. هل تريد حفظ الموعد رغم التعارض؟'})
